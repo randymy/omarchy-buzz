@@ -30,17 +30,18 @@ an explicit retry. Retry reloads configuration after setup. A pending keyring op
 
 Protocol version 1 requests are JSON lines with `version`, `id`, `type`;
 allowed types are `get_snapshot`, `subscribe`, `retry_connection`, and
-`fetch_recent`, and `send_message`. Room requests require a canonical UUID
+`fetch_recent`, `fetch_recipients`, and `send_message`. Room requests require a canonical UUID
 `roomId` from the current discovered catalog. Sending also requires a canonical
-request UUID, current helper `instanceId`/`generation`, text of at most4096 UTF-8
-bytes, and at most20 distinct canonical mention public keys. The native composer
-currently supplies an empty mention list; name resolution is not implemented. Request IDs
+request UUID, current helper `instanceId`/`generation`, text of at most 4096 UTF-8
+bytes, and at most 20 distinct canonical mention public keys. Nonempty mentions must appear in the current selected-room recipient snapshot;
+the native composer supplies exact keys selected from that list. Typed names
+alone are not resolved. Request IDs
 are 1–128 ASCII alphanumeric, underscore or hyphen. Lines including newline
 are capped at 64 KiB. Eight clients maximum; output writes time out after ten
 seconds. Invalid requests receive a category-only error and the connection closes.
 Hello/status responses expose public identity/origin, helper instance/generation,
 connection category, and capabilities `connection_status`, `room_catalog`,
-`room_history`, `message_send`. At most twenty rooms and twenty projected message rows are
+`room_history`, `message_send`, `room_recipients`. At most twenty rooms and twenty projected message rows are
 returned. Message previews are plain text capped at 768 UTF-8 bytes, with
 explicit truncation. No raw events, backend errors or credential material is forwarded. UI EOF closes the bridge connection.
 
@@ -72,9 +73,16 @@ positive relay OK produces acknowledged status. Rejection, unknown delivery,
 preflight failure and acknowledgement are distinct. The15-second receipt deadline
 runs beside connection probes. Repeated request IDs never produce a new event;
 after restart, old request IDs are refused because text was not persisted.
-The ledger holds at most1024 records and256KiB; either capacity limit disables
+The ledger holds at most 1024 records and 256 KiB; either capacity limit disables
 further reservations. There is no automatic pruning or retransmission. Keep the
 ledger on upgrade; an archive/reconciliation workflow is still a release task.
 Ledger writes use synchronous fsync within the isolated helper: a stalled
 filesystem can delay its event loop despite the byte cap. No UI thread performs
 these writes. See [sending](../docs/SENDING.md) for failure semantics.
+
+Recipient discovery verifies a relay-signed room roster and current identity
+membership, then projects at most 20 keys and optional signed kind-0 display names.
+Names are self-asserted hints of at most 64 UTF-8 bytes. Missing, malformed or
+conflicting profiles fall back to keys. The helper fetches no avatars or NIP05
+URLs and infers no human/agent classification. Room/scope/authentication changes
+clear the snapshot; the sender validates selected keys against the current one.

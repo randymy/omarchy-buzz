@@ -189,3 +189,96 @@ fn exact_ack_evidence_survives_failed_outcome_journal_in_memory() {
     drop(sender);
     std::fs::remove_dir_all(path).unwrap();
 }
+#[test]
+fn selected_mentions_require_current_room_roster_and_use_exact_key() {
+    let (mut sender, mut intent, keys, mut status, path) = fixture();
+    let recipient = Keys::generate().public_key().to_hex();
+    intent.mentions = vec![recipient.clone()];
+    assert_eq!(
+        sender
+            .prepare(
+                intent.clone(),
+                "ws://127.0.0.1/",
+                &keys,
+                &status,
+                true,
+                true
+            )
+            .0
+            .category
+            .as_deref(),
+        Some("send_access_denied")
+    );
+    status.recipients = crate::protocol::RecipientsView {
+        state: "snapshot".into(),
+        room_id: Some(uuid::Uuid::new_v4().to_string()),
+        partial: false,
+        category: None,
+        entries: vec![crate::protocol::Recipient {
+            key: recipient.clone(),
+            name: "Untrusted label".into(),
+        }],
+    };
+    assert!(sender
+        .prepare(
+            intent.clone(),
+            "ws://127.0.0.1/",
+            &keys,
+            &status,
+            true,
+            true
+        )
+        .1
+        .is_none());
+    status.recipients.room_id = Some(intent.room.clone());
+    status.recipients.entries.clear();
+    assert!(sender
+        .prepare(
+            intent.clone(),
+            "ws://127.0.0.1/",
+            &keys,
+            &status,
+            true,
+            true
+        )
+        .1
+        .is_none());
+    status.recipients.entries.push(crate::protocol::Recipient {
+        key: recipient.clone(),
+        name: "Duplicate display name".into(),
+    });
+    let (_, event) = sender.prepare(intent, "ws://127.0.0.1/", &keys, &status, true, true);
+    let event = event.unwrap();
+    event.verify().unwrap();
+    let tags: Vec<_> = event
+        .tags
+        .iter()
+        .filter(|t| t.as_slice()[0] == "p")
+        .collect();
+    assert_eq!(tags.len(), 1);
+    assert_eq!(tags[0].as_slice(), ["p", recipient.as_str()]);
+    sender.unknown();
+    drop(sender);
+    std::fs::remove_dir_all(path).unwrap();
+}
+#[test]
+fn known_roster_revocation_denies_plain_sends_even_with_stale_catalog() {
+    let (mut sender, intent, keys, mut status, path) = fixture();
+    status.recipients = crate::protocol::RecipientsView::unavailable(
+        Some(intent.room.clone()),
+        Some("recipients_access_denied"),
+    );
+    let (delivery, event) = sender.prepare(intent, "ws://127.0.0.1/", &keys, &status, true, true);
+    assert!(event.is_none());
+    assert!(!sender.is_pending());
+    assert_eq!(delivery.category.as_deref(), Some("send_access_denied"));
+    drop(sender);
+    std::fs::remove_dir_all(path).unwrap();
+}
+#[test]
+fn malformed_recipient_result_does_not_invent_membership_revocation() {
+    let (mut sender,intent,keys,mut status,path)=fixture();
+    status.recipients=crate::protocol::RecipientsView::unavailable(Some(intent.room.clone()),Some("recipients_invalid"));
+    let (_,event)=sender.prepare(intent,"ws://127.0.0.1/",&keys,&status,true,true);
+    assert!(event.is_some());sender.unknown();drop(sender);std::fs::remove_dir_all(path).unwrap();
+}

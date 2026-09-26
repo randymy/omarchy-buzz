@@ -99,6 +99,7 @@ async fn client(
                 let command=match r.kind.as_str() {
                     "retry_connection"=>Some(protocol::Command::Retry),
                     "fetch_recent"=>Some(protocol::Command::FetchRecent(r.room_id.clone().unwrap())),
+                    "fetch_recipients"=>Some(protocol::Command::FetchRecipients(r.room_id.clone().unwrap())),
                     "send_message"=>Some(protocol::Command::Send(protocol::SendIntent {
                         request_id:r.id.clone(),room:r.room_id.clone().unwrap(),text:r.text.clone().unwrap(),
                         mentions:r.mentions.clone().unwrap(),generation:r.generation.unwrap(),

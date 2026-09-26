@@ -41,17 +41,24 @@ impl Drop for AbortOnDrop {
     }
 }
 async fn integrated(mode: u8) {
-    let reauth = mode == 1;
+    let reauth = mode == 1 || mode == 4;
     let withhold = mode == 2;
+    let mentioning = mode == 3 || mode == 4;
+    let revoking = mode == 5;
     use tokio::io::AsyncWriteExt;
     let _guard = crate::NETWORK_TEST_LOCK.lock().await;
     timeout(Duration::from_secs(if withhold {25} else {12}),async {
+        let recipient=Keys::generate();let recipient_key=recipient.public_key().to_hex();
         let user=Keys::generate();let signer=Keys::generate();let public=user.public_key();let room=uuid::Uuid::new_v4().to_string();
         let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();let origin=format!("ws://{}/",listener.local_addr().unwrap());
         let signed=|kind, tags|nostr::EventBuilder::new(nostr::Kind::Custom(kind),"").tags(tags).sign_with_keys(&signer).unwrap();
-        let membership=signed(39002,vec![nostr::Tag::parse(["d",&room]).unwrap(),nostr::Tag::parse(["p",&public.to_hex()]).unwrap()]);
+        let membership=signed(39002,vec![nostr::Tag::parse(["d",&room]).unwrap(),nostr::Tag::parse(["p",&public.to_hex(),"","member"]).unwrap(),nostr::Tag::parse(["p",&recipient_key,"","member"]).unwrap()]);
         let metadata=signed(39000,vec![nostr::Tag::parse(["d",&room]).unwrap(),nostr::Tag::parse(["name","Send Fixture"]).unwrap(),nostr::Tag::parse(["t","stream"]).unwrap()]);
-        let payloads=vec![json!({"self":signer.public_key().to_hex()}).to_string(),serde_json::to_string(&vec![membership]).unwrap(),serde_json::to_string(&vec![metadata]).unwrap()];
+        let roster=serde_json::to_string(&vec![membership]).unwrap();
+        let mut payloads=vec![json!({"self":signer.public_key().to_hex()}).to_string(),roster.clone(),serde_json::to_string(&vec![metadata]).unwrap()];
+        if mentioning {let profile=nostr::EventBuilder::new(nostr::Kind::Metadata,r#"{"display_name":"Self asserted name"}"#).sign_with_keys(&recipient).unwrap();payloads.push(roster);payloads.push(serde_json::to_string(&vec![profile]).unwrap());}
+        if revoking {let revoked=signed(39002,vec![nostr::Tag::parse(["d",&room]).unwrap(),nostr::Tag::parse(["p",&recipient_key,"","member"]).unwrap()]);payloads.push(serde_json::to_string(&vec![revoked]).unwrap());}
+        let expected_recipient=recipient_key.clone();
         let expected_room=room.clone();
         let (done_send,mut done_wait)=tokio::sync::oneshot::channel();
         let server=tokio::spawn(async move {
@@ -71,12 +78,12 @@ async fn integrated(mode: u8) {
                                 if event.is_some(){count_after_event=true;if !withhold {let id=event.take().unwrap();ws.send(Message::Text(json!(["OK",id,true,""]).to_string().into())).await.unwrap();}}
                             },
                             "AUTH"=>{let auth:Event=serde_json::from_value(frame[1].clone()).unwrap();auth.verify().unwrap();assert_eq!(auth.pubkey,public);ws.send(Message::Text(json!(["OK",auth.id.to_hex(),true,""]).to_string().into())).await.unwrap();},
-                            "EVENT"=>{let message:Event=serde_json::from_value(frame[1].clone()).unwrap();message.verify().unwrap();assert_eq!(message.pubkey,public);assert_eq!(message.kind.as_u16(),9);assert!(message.tags.iter().any(|t|t.as_slice()==["h",expected_room.as_str()]));assert_eq!(message.content,"observer fixture");event=Some(message.id.to_hex());ws.send(Message::Text(json!(["OK","0".repeat(64),true,""]).to_string().into())).await.unwrap();if reauth {ws.send(Message::Text(json!(["AUTH","reauth-send"]).to_string().into())).await.unwrap();}},
+                            "EVENT"=>{assert!(!revoking,"EVENT after known membership loss");let message:Event=serde_json::from_value(frame[1].clone()).unwrap();message.verify().unwrap();assert_eq!(message.pubkey,public);assert_eq!(message.kind.as_u16(),9);assert!(message.tags.iter().any(|t|t.as_slice()==["h",expected_room.as_str()]));assert_eq!(message.content,"observer fixture");if mentioning {assert!(message.tags.iter().any(|t|t.as_slice()==["p",expected_recipient.as_str()]));}event=Some(message.id.to_hex());ws.send(Message::Text(json!(["OK","0".repeat(64),true,""]).to_string().into())).await.unwrap();if reauth {ws.send(Message::Text(json!(["AUTH","reauth-send"]).to_string().into())).await.unwrap();}},
                             other=>panic!("unexpected {other}"),
                         }
                     }
                 }}
-                assert!(count_after_event);
+                assert!(revoking || count_after_event);
             });
             let _websocket_guard=AbortOnDrop(websocket.abort_handle());
             for payload in payloads {let (mut stream,_)=listener.accept().await.unwrap();let _=request(&mut stream).await;stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",payload.len(),payload).as_bytes()).await.unwrap();}
@@ -84,17 +91,34 @@ async fn integrated(mode: u8) {
         });
         let _server_guard=AbortOnDrop(server.abort_handle());
         let path=std::env::temp_dir().join(format!("buzz-observer-send-{}",uuid::Uuid::new_v4()));let ledger=Ledger::open(path.join("ledger.json")).unwrap();
-        let (tx,mut rx)=watch::channel(Status::new(&config::Config{relay:Some(origin.clone()),identity:Some(public.to_hex())}));let (commands,mut requests)=mpsc::channel(4);let mut conn=connect_identity(&origin,&user).await.unwrap();
+        let (tx,mut rx)=watch::channel(Status::new(&config::Config{relay:Some(origin.clone()),identity:Some(public.to_hex())}));let history_tx=tx.clone();let (commands,mut requests)=mpsc::channel(4);let mut conn=connect_identity(&origin,&user).await.unwrap();
         let observer=tokio::spawn(async move {let mut sender=Sender::new(Some(ledger));let mut backoff=Backoff::default();let mut pin=None;observe_sending(&mut conn,&user,&origin,&mut pin,&tx,&mut requests,&mut backoff,FreshnessPolicy{interval:Duration::from_millis(150),response:Duration::from_secs(1)},&mut sender).await});
         let _observer_guard=AbortOnDrop(observer.abort_handle());
         while rx.borrow().catalog.rooms.is_empty(){rx.changed().await.unwrap();}
+        if mentioning {
+            commands.send(Command::FetchRecipients(room.clone())).await.unwrap();
+            while rx.borrow().recipients.state!="snapshot" {rx.changed().await.unwrap();}
+            assert!(rx.borrow().recipients.entries.iter().any(|r|r.key==recipient_key && r.name=="Self asserted name"));
+        }
+        if revoking {
+            history_tx.send_modify(|s|s.history=crate::protocol::History {state:"snapshot".into(),room_id:Some(room.clone()),rows:vec![crate::protocol::HistoryRow {id:"1".repeat(64),author:public.to_hex(),time:1,text:"previously authorized history".into(),edited:false,truncated:false,unavailable:false}],has_more:Some(false),category:Some("history_completeness_unknown".into())});
+            commands.send(Command::FetchRecipients(room.clone())).await.unwrap();
+            while rx.borrow().recipients.category.as_deref()!=Some("recipients_access_denied") {rx.changed().await.unwrap();}
+            assert!(rx.borrow().catalog.rooms.iter().all(|r|r.id!=room));assert!(rx.borrow().history.rows.is_empty());assert_eq!(rx.borrow().history.category.as_deref(),Some("history_access_denied"));
+        }
         let sent_at=tokio::time::Instant::now();
         let generation=rx.borrow().generation;
-        commands.send(Command::Send(SendIntent{request_id:uuid::Uuid::new_v4().to_string(),room,text:"observer fixture".into(),mentions:vec![],generation})).await.unwrap();
+        commands.send(Command::Send(SendIntent{request_id:uuid::Uuid::new_v4().to_string(),room,text:"observer fixture".into(),mentions:if mentioning {vec![recipient_key]} else {vec![]},generation})).await.unwrap();
+        if revoking {
+            while rx.borrow().delivery.state!="failed" {rx.changed().await.unwrap();}
+            assert_eq!(rx.borrow().delivery.category.as_deref(),Some("send_access_denied"));assert!(rx.borrow().delivery.event_id.is_none());
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            commands.send(Command::Retry).await.unwrap();assert!(matches!(observer.await.unwrap(),ConnectionExit::Retry));let _=done_send.send(());server.await.unwrap();std::fs::remove_dir_all(path).unwrap();return;
+        }
         while rx.borrow().delivery.state!=if reauth || withhold {"unknown"} else {"acknowledged"} {rx.changed().await.unwrap();}
         assert!(rx.borrow().delivery.event_id.is_some());
         if withhold {assert!(sent_at.elapsed()>=Duration::from_millis(14900));assert_eq!(rx.borrow().connection,"authenticated");assert_eq!(rx.borrow().delivery.category.as_deref(),Some("delivery_unknown"));}
-        if reauth {while rx.borrow().connection!="authenticated" {rx.changed().await.unwrap();} tokio::time::sleep(Duration::from_millis(200)).await;assert_eq!(rx.borrow().delivery.state,"unknown");}
+        if reauth {while rx.borrow().connection!="authenticated" {rx.changed().await.unwrap();} tokio::time::sleep(Duration::from_millis(200)).await;assert_eq!(rx.borrow().delivery.state,"unknown");assert!(rx.borrow().recipients.entries.is_empty());assert_eq!(rx.borrow().recipients.state,"unavailable");}
         commands.send(Command::Retry).await.unwrap();assert!(matches!(observer.await.unwrap(),ConnectionExit::Retry));let _=done_send.send(());server.await.unwrap();std::fs::remove_dir_all(path).unwrap();
     }).await.unwrap();
 }
@@ -111,4 +135,19 @@ async fn observer_reauth_pending_send_remains_unknown() {
 #[tokio::test]
 async fn observer_missing_ack_expires_while_count_stays_fresh() {
     integrated(2).await;
+}
+
+#[tokio::test]
+async fn observer_selected_recipient_uses_signed_roster_public_key() {
+    integrated(3).await;
+}
+
+#[tokio::test]
+async fn observer_reauth_clears_selected_recipient_snapshot() {
+    integrated(4).await;
+}
+
+#[tokio::test]
+async fn observer_roster_revocation_clears_history_and_blocks_plain_event() {
+    integrated(5).await;
 }

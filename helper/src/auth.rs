@@ -30,6 +30,7 @@ fn update(tx: &watch::Sender<Status>, state: &str, category: Option<&str>) {
         if state != "authenticated" {
             s.catalog = crate::protocol::Catalog::unavailable(None);
             s.history = History::unavailable(None, None);
+            s.recipients = crate::protocol::RecipientsView::unavailable(None, None);
         }
     });
 }
@@ -73,6 +74,7 @@ fn apply_loaded_config(
                     s.category = None;
                     s.catalog = crate::protocol::Catalog::unavailable(None);
                     s.history = History::unavailable(None, None);
+                    s.recipients = crate::protocol::RecipientsView::unavailable(None, None);
                 }
             });
             Ok(c)
@@ -189,6 +191,25 @@ fn history_category(error: &str) -> &'static str {
         _ => "history_unavailable",
     }
 }
+fn recipients_category(error: &str) -> &'static str {
+    match error {
+        "query_timeout" | "recipients_timeout" => "recipients_timeout",
+        "query_access_denied" | "recipients_access_denied" => "recipients_access_denied",
+        e if e.starts_with("recipients_")
+            || matches!(
+                e,
+                "query_oversized"
+                    | "query_invalid_response"
+                    | "query_invalid_signature"
+                    | "query_invalid_scope"
+                    | "query_redirect_rejected"
+            ) =>
+        {
+            "recipients_invalid"
+        }
+        _ => "recipients_unavailable",
+    }
+}
 async fn wait_after_failure(
     error: &str,
     backoff: &mut Backoff,
@@ -274,6 +295,8 @@ async fn observe_inner(
         tokio::task::JoinSet::new();
     let mut history_jobs = tokio::task::JoinSet::new();
     let mut history_ticket = 0_u64;
+    let mut recipient_jobs = tokio::task::JoinSet::new();
+    let mut recipient_ticket = 0_u64;
     loop {
         tokio::select! {
             biased;
@@ -308,6 +331,23 @@ async fn observe_inner(
                         }
                     }
                 },
+                Some(Command::FetchRecipients(room))=> {
+                    recipient_jobs.abort_all();recipient_jobs=tokio::task::JoinSet::new();recipient_ticket=recipient_ticket.wrapping_add(1);
+                    let status=tx.borrow();
+                    let allowed=fresh && relay_pin.is_some() && status.catalog.rooms.iter().any(|r|r.id==room);
+                    let generation=status.generation;drop(status);
+                    let parsed=uuid::Uuid::parse_str(&room).ok().filter(|id|id.to_string()==room);
+                    if !allowed || parsed.is_none() {
+                        tx.send_modify(|s|s.recipients=crate::protocol::RecipientsView::unavailable(Some(room),Some("recipients_access_denied")));
+                        continue;
+                    }
+                    tx.send_modify(|s|s.recipients=crate::protocol::RecipientsView {state:"loading".into(),..crate::protocol::RecipientsView::unavailable(Some(room.clone()),None)});
+                    let ticket=recipient_ticket;let relay=relay.to_owned();let keys=keys.clone();let pin=relay_pin.unwrap();let id=parsed.unwrap();
+                    recipient_jobs.spawn(async move {
+                        let result=match timeout(Duration::from_secs(15),crate::recipients::fetch(&relay,&keys,pin,id)).await {Ok(r)=>r,Err(_)=>Err("recipients_timeout")};
+                        (ticket,generation,room,result)
+                    });
+                },
                 Some(Command::FetchRecent(room))=> {
                     history_jobs.abort_all(); history_jobs=tokio::task::JoinSet::new();
                     history_ticket=history_ticket.wrapping_add(1);
@@ -323,6 +363,32 @@ async fn observe_inner(
                         let result=match timeout(Duration::from_secs(15),crate::history::fetch(&relay,&keys,pin,id)).await {Ok(r)=>r,Err(_)=>Err("history_timeout")};
                         (ticket,room,result)
                     });
+                }
+            },
+            result=recipient_jobs.join_next(), if !recipient_jobs.is_empty()=> {
+                if matches!(&result,Some(Err(e)) if !e.is_cancelled()) {
+                    recipient_jobs.abort_all();recipient_jobs=tokio::task::JoinSet::new();recipient_ticket=recipient_ticket.wrapping_add(1);
+                    tx.send_modify(|s|s.recipients=crate::protocol::RecipientsView::unavailable(s.recipients.room_id.clone(),Some("recipients_unavailable")));
+                }
+                if let Some(Ok((ticket,generation,room,result)))=result {
+                    let status=tx.borrow();
+                    let allowed=ticket==recipient_ticket && generation==status.generation && fresh && relay_pin.is_some() && status.catalog.rooms.iter().any(|r|r.id==room);drop(status);
+                    if allowed {
+                        if result.as_ref().is_err_and(|error|recipients_category(error)=="recipients_access_denied") {
+                            if tx.borrow().history.room_id.as_deref()==Some(room.as_str()) {
+                                history_jobs.abort_all();history_jobs=tokio::task::JoinSet::new();history_ticket=history_ticket.wrapping_add(1);
+                            }
+                            if let Some(delivery)=sender.revoke_room(&room) {tx.send_modify(|s|s.delivery=delivery);}
+                            tx.send_modify(|s| {
+                                s.catalog.rooms.retain(|r|r.id!=room);
+                                if s.history.room_id.as_deref()==Some(room.as_str()) {s.history=History::unavailable(Some(room.clone()),Some("history_access_denied"));}
+                            });
+                        }
+                        tx.send_modify(|s|s.recipients=match result {
+                        Ok(r) if r.room==room=>crate::protocol::RecipientsView {state:"snapshot".into(),room_id:Some(r.room),partial:r.partial,category:None,entries:r.entries.into_iter().map(|r|crate::protocol::Recipient {key:r.key,name:r.name}).collect()},
+                        Ok(_)=>crate::protocol::RecipientsView::unavailable(Some(room),Some("recipients_invalid")),
+                        Err(error)=>crate::protocol::RecipientsView::unavailable(Some(room),Some(recipients_category(error))),
+                    });}
                 }
             },
             result=history_jobs.join_next(), if !history_jobs.is_empty()=> {
@@ -357,7 +423,8 @@ async fn observe_inner(
             },
             _=tokio::time::sleep_until(catalog_due), if fresh && jobs.is_empty()=> {
                 history_jobs.abort_all(); history_jobs=tokio::task::JoinSet::new(); history_ticket=history_ticket.wrapping_add(1);
-                tx.send_modify(|s| {s.catalog=crate::protocol::Catalog::loading();s.history=History::unavailable(None,None);});
+                recipient_jobs.abort_all();recipient_jobs=tokio::task::JoinSet::new();recipient_ticket=recipient_ticket.wrapping_add(1);
+                tx.send_modify(|s| {s.catalog=crate::protocol::Catalog::loading();s.history=History::unavailable(None,None);s.recipients=crate::protocol::RecipientsView::unavailable(None,None);});
                 let relay=relay.to_owned();let keys=keys.clone();let pin=*relay_pin;
                 jobs.spawn(async move {
                     match timeout(Duration::from_secs(15),crate::catalog::discover(&relay,&keys,pin)).await {
@@ -377,6 +444,7 @@ async fn observe_inner(
                 Ok(RelayMessage::Auth { challenge })=> {
                     if challenge.len()>1024 { return ConnectionExit::Failure("relay_protocol_error"); }
                     if let Some(delivery)=sender.unknown() {tx.send_modify(|s|s.delivery=delivery);}
+                    recipient_jobs.abort_all();recipient_jobs=tokio::task::JoinSet::new();recipient_ticket=recipient_ticket.wrapping_add(1);
                     fresh=false;
                     jobs.abort_all();
                     history_jobs.abort_all(); history_jobs=tokio::task::JoinSet::new(); history_ticket=history_ticket.wrapping_add(1);

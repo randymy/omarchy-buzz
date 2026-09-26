@@ -13,6 +13,7 @@ ShellRoot {
     implicitHeight: 570
     Buzz.PanelContent {
       id: content
+      recipientPickerExpanded: !!Quickshell.env("BUZZ_PREVIEW_RECIPIENTS")
       anchors.fill: parent
       service: Quickshell.env("BUZZ_PREVIEW_CATALOG") || Quickshell.env("BUZZ_PREVIEW_HISTORY") || Quickshell.env("BUZZ_PREVIEW_SEND") ? protocolService : sampleService
     }
@@ -257,9 +258,73 @@ ShellRoot {
         protocolService.acceptFrame(deliveryFrame(idleDelivery, 2))
         if (protocolService.draftText !== "" || protocolService.deliveryState !== "unknown")
           throw new Error("Scope change retained private draft or claimed delivery")
+        var recipientA = {key:"a".repeat(64),name:"Same name"}
+        var recipientB = {key:"b".repeat(64),name:"Same name"}
+        var roster = {state:"snapshot",roomId:roomA.id,entries:[recipientA,recipientB],partial:true,category:null}
+        if (!protocolService.validatedRecipients(roster)
+            || protocolService.validatedRecipients(Object.assign({}, roster, {entries:[recipientA,recipientA]}))
+            || protocolService.validatedRecipients(Object.assign({}, roster, {entries:[{key:recipientA.key,name:"💬".repeat(17)}]}))
+            || protocolService.validatedRecipients(Object.assign({}, roster, {entries:[{key:"invalid",name:"Name"}]}))
+            || protocolService.validatedRecipients(Object.assign({}, roster, {entries:[{key:recipientA.key,name:"bad\nname"}]}))
+            || protocolService.validatedRecipients(Object.assign({}, roster, {entries:[{key:recipientA.key,name:"bad\u202ename"}]})))
+          throw new Error("Invalid recipient profile or duplicate key accepted")
+        function recipientFrame(value, gen) {
+          var frame = JSON.parse(deliveryFrame(idleDelivery, gen || 3))
+          frame.capabilities.push("room_recipients")
+          frame.status.recipients = value
+          return JSON.stringify(frame)
+        }
+        protocolService.newDraft()
+        protocolService.acceptFrame(recipientFrame(roster))
+        protocolService.toggleRecipient(recipientB.key)
+        protocolService.updateDraft("Exact recipient")
+        var mentioned = protocolService.prepareSubmission()
+        if (!mentioned || mentioned.mentions.length !== 1 || mentioned.mentions[0] !== recipientB.key)
+          throw new Error("Duplicate name was not bound to selected public key")
+        protocolService.toggleRecipient(recipientA.key)
+        if (protocolService.selectedRecipients.length !== 1) throw new Error("Pending picker changed intent")
+        protocolService.acceptFrame(recipientFrame(Object.assign({}, roster, {roomId:roomB.id,entries:[{key:"c".repeat(64),name:"Stale room"}]})))
+        if (protocolService.recipientEntries[0].key !== recipientA.key) throw new Error("Stale room recipients replaced active roster")
+        protocolService.losePendingDelivery()
+        protocolService.newDraft(true)
+        protocolService.toggleRecipient(recipientA.key)
+        var changedMentions = protocolService.prepareSubmission()
+        if (changedMentions.id === mentioned.id || changedMentions.mentions.length !== 2) throw new Error("Recipient intent retained stale UUID")
+        protocolService.acceptFrame(recipientFrame(roster, 4))
+        if (protocolService.selectedRecipients.length !== 0 || protocolService.draftText !== "")
+          throw new Error("Scope change retained recipient selection or private draft")
+        protocolService.newDraft()
+        protocolService.updateDraft("Keep across roster refresh")
+        protocolService.toggleRecipient(recipientB.key)
+        var catalogLoading = JSON.parse(recipientFrame(roster, 4))
+        catalogLoading.status.catalog = {state:"loading",rooms:[],category:null}
+        protocolService.acceptFrame(JSON.stringify(catalogLoading))
+        if (protocolService.selectedRecipients.length !== 1 || protocolService.selectedRecipients[0] !== recipientB.key
+            || protocolService.recipientEntries.length || protocolService.canSend
+            || protocolService.draftText !== "Keep across roster refresh")
+          throw new Error("Catalog refresh discarded intent or allowed unvalidated mentions")
+        protocolService.acceptFrame(recipientFrame(roster, 4))
+        if (!protocolService.canSend || protocolService.selectedRecipients[0] !== recipientB.key)
+          throw new Error("Validated refreshed roster did not restore preserved intent")
+        protocolService.acceptFrame(recipientFrame(Object.assign({}, roster, {entries:[recipientA]}), 4))
+        if (protocolService.selectedRecipients.length !== 1 || protocolService.canSend || protocolService.unavailableRecipients.length !== 1)
+          throw new Error("Missing recipient was silently removed or allowed to send")
+        protocolService.toggleRecipient(recipientB.key)
+        if (protocolService.selectedRecipients.length !== 0 || !protocolService.canSend)
+          throw new Error("Unavailable recipient could not be explicitly deselected")
+        protocolService.acceptFrame(recipientFrame(roster, 4))
+        protocolService.toggleRecipient(recipientA.key)
+        protocolService.selectRoom(roomB.id)
+        if (protocolService.selectedRecipients.length) throw new Error("Room change inherited another room's recipients")
+        protocolService.selectRoom(roomA.id)
+        if (protocolService.selectedRecipients.length !== 1 || protocolService.selectedRecipients[0] !== recipientA.key || protocolService.canSend)
+          throw new Error("Room draft lost intent or used an unvalidated returning roster")
+        protocolService.acceptFrame(recipientFrame(roster, 4))
         if (Quickshell.env("BUZZ_PREVIEW_SEND")) {
           protocolService.newDraft()
           protocolService.updateDraft("A synthetic draft. No helper is running in this screenshot.")
+          if (Quickshell.env("BUZZ_PREVIEW_MISSING_RECIPIENTS"))
+            protocolService.acceptFrame(recipientFrame(Object.assign({}, roster, {entries:[recipientB]}), 4))
         }
         if (Quickshell.env("BUZZ_PREVIEW_HISTORY")) {
           protocolService.beginSession()

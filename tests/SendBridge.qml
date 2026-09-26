@@ -23,7 +23,8 @@ ShellRoot {
       test.ticks++
       if (test.ticks > 100) { console.error("Synthetic composer bridge timed out: " + test.stage + " " + service.connection); Qt.exit(1); return }
       if (test.stage === -1) { service.retry(); test.stage = 0; return }
-      if (test.stage === 0 && service.connection === "authenticated" && service.historyState === "snapshot") {
+      if (test.stage === 0 && service.connection === "authenticated" && service.historyState === "snapshot" && service.recipientsState === "snapshot") {
+        service.toggleRecipient("c".repeat(64))
         service.updateDraft("Synthetic accepted draft")
         if (!service.submitDraft() || service.submitDraft()) throw new Error("Send or double-click fence failed")
         test.stage = 1
@@ -31,7 +32,7 @@ ShellRoot {
         if (service.draftText !== "") throw new Error("Acknowledgement retained unchanged draft")
         record.reload()
         var first = JSON.parse(record.text())
-        if (first.sends.length !== 1 || first.fetches !== 2) return
+        if (first.sends.length !== 1 || first.fetches !== 2 || first.recipientFetches !== 1) return
         service.updateDraft("Synthetic lost draft")
         if (!service.submitDraft() || service.submitDraft()) throw new Error("Second send fence failed")
         test.stage = 2
@@ -44,7 +45,7 @@ ShellRoot {
         test.stage = 4
       } else if (test.stage === 4) {
         var finalRecord = JSON.parse(record.text())
-        if (finalRecord.sends.length !== 2 || finalRecord.fetches !== 2
+        if (finalRecord.sends.length !== 2 || finalRecord.fetches !== 2 || finalRecord.recipientFetches !== 1
             || finalRecord.sends[0].id === finalRecord.sends[1].id)
           throw new Error("Duplicate send, unexpected refresh, or reused draft UUID")
         console.log("PASS: composer Process requests, scope fences, acknowledgement, one refresh, double-click and lost receipt")

@@ -62,6 +62,24 @@ impl Sender {
         if !status.catalog.rooms.iter().any(|r| r.id == intent.room) {
             return (fail("send_access_denied"), None);
         }
+        if status.recipients.room_id.as_deref() == Some(intent.room.as_str())
+            && status.recipients.category.as_deref() == Some("recipients_access_denied")
+        {
+            return (fail("send_access_denied"), None);
+        }
+        if !intent.mentions.is_empty()
+            && (status.recipients.state != "snapshot"
+                || status.recipients.room_id.as_deref() != Some(intent.room.as_str())
+                || !intent.mentions.iter().all(|key| {
+                    status
+                        .recipients
+                        .entries
+                        .iter()
+                        .any(|recipient| recipient.key == *key)
+                }))
+        {
+            return (fail("send_access_denied"), None);
+        }
         if let Some(last) = &self.last {
             if last.request_id == intent.request_id
                 && (last.room != intent.room
@@ -166,6 +184,13 @@ impl Sender {
         } else {
             Outcome::Rejected
         })
+    }
+    pub fn revoke_room(&mut self, room: &str) -> Option<Delivery> {
+        if self.last.as_ref().is_some_and(|intent| intent.room == room) {
+            self.unknown()
+        } else {
+            None
+        }
     }
     pub fn unknown(&mut self) -> Option<Delivery> {
         let result = self.finish(Outcome::Unknown);

@@ -9,11 +9,12 @@ ROOM = "11111111-1111-4111-8111-111111111111"
 INSTANCE = "send-bridge-fixture"
 UUID = re.compile(r"^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$")
 assert sys.argv[1:] == ["ui-bridge"]
-record = {"sends": [], "fetches": 0}
+record = {"sends": [], "fetches": 0, "recipientFetches": 0}
 status = {"connection": "authenticated", "identity": "a" * 64,
           "relay": "wss://fixture.invalid", "generation": 7, "category": None,
           "catalog": {"state": "ready", "rooms": [{"id": ROOM, "name": "Synthetic room", "description": ""}], "category": None},
           "history": {"state": "unavailable", "roomId": None, "rows": [], "hasMore": None, "category": None},
+          "recipients": {"state": "unavailable", "roomId": None, "entries": [], "partial": False, "category": None},
           "delivery": {"requestId": None, "roomId": None, "eventId": None, "state": "idle", "category": None}}
 
 def save():
@@ -27,7 +28,7 @@ def save():
 def emit(kind="status", request_id=None):
     print(json.dumps({"version": 1, "type": kind, "id": request_id,
                       "instanceId": INSTANCE, "generation": 7,
-                      "capabilities": ["connection_status", "room_catalog", "room_history", "message_send"],
+                      "capabilities": ["connection_status", "room_catalog", "room_history", "message_send", "room_recipients"],
                       "status": status}), flush=True)
 
 save()
@@ -38,7 +39,7 @@ for line in sys.stdin:
     if request["type"] == "send_message":
         assert UUID.fullmatch(request["id"])
         assert request["roomId"] == ROOM and request["generation"] == 7
-        assert request["instanceId"] == INSTANCE and request["mentions"] == []
+        assert request["instanceId"] == INSTANCE and request["mentions"] == ["c" * 64]
         assert request["text"] == ["Synthetic accepted draft", "Synthetic lost draft"][len(record["sends"])]
         record["sends"].append(request)
         save()
@@ -55,6 +56,14 @@ for line in sys.stdin:
         save()
         status["history"] = {"state": "snapshot", "roomId": ROOM, "rows": [],
                              "hasMore": False, "category": "history_completeness_unknown"}
+        emit(request_id=request["id"])
+    elif request["type"] == "fetch_recipients":
+        assert request["roomId"] == ROOM
+        record["recipientFetches"] += 1
+        save()
+        status["recipients"] = {"state": "snapshot", "roomId": ROOM,
+                                "entries": [{"key": "c" * 64, "name": "Duplicate name"}, {"key": "d" * 64, "name": "Duplicate name"}],
+                                "partial": True, "category": None}
         emit(request_id=request["id"])
     elif request["type"] in ("subscribe", "get_snapshot"):
         emit(request_id=request["id"])

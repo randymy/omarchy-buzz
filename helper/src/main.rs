@@ -8,6 +8,7 @@ mod ipc;
 mod ledger;
 mod protocol;
 mod query;
+mod recipients;
 mod sending;
 // Network fixtures share the production concurrency budgets. Serialize fixtures,
 // while individual tests still exercise multiple simultaneous requests explicitly.

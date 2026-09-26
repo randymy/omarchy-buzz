@@ -32,9 +32,25 @@ Item {
   property int submissionGeneration: 0
   property string submissionInstance: ""
   property string acknowledgedRefreshId: ""
+  property bool recipientsSupported: false
+  property string recipientsState: "unavailable"
+  property string recipientsCategory: ""
+  property var recipientEntries: []
+  property var recipientDrafts: ({})
+  readonly property var selectedRecipients: recipientDrafts[selectedRoomId] || []
+  readonly property var unavailableRecipients: selectedRecipients.filter(function(key) {
+    return recipientsState !== "snapshot" || !recipientEntries.some(function(entry) { return entry.key === key })
+  })
+  readonly property bool recipientIntentValid: selectedRecipients.length === 0 || (recipientsSupported && recipientsState === "snapshot" && unavailableRecipients.length === 0)
+  property bool recipientsPartial: false
+  property string pendingRecipientsRequestId: ""
+  property var submissionMentions: []
+  readonly property bool recipientPickerLocked: deliveryState === "sending" || deliveryState === "unknown" || deliveryState === "rejected" || deliveryCategory === "send_request_reused"
+  readonly property string recipientsLabel: recipientsState === "loading" ? "Loading recipients" : recipientsState === "snapshot" ? (recipientsPartial ? "Partial recipient list · " : "Room recipients · ") + recipientEntries.length : "Recipients unavailable"
+
   readonly property bool canSend: sendSupported && !sampleMode && !sessionFailed && connection === "authenticated"
     && selectedRoom !== null && deliveryState !== "sending" && deliveryState !== "unknown" && deliveryState !== "rejected" && deliveryCategory !== "send_request_reused"
-    && draftText.trim().length > 0 && draftText.indexOf("\u0000") === -1 && utf8Size(draftText) <= 4096
+    && recipientIntentValid && draftText.trim().length > 0 && draftText.indexOf("\u0000") === -1 && utf8Size(draftText) <= 4096
   readonly property string deliveryLabel: deliveryCategory === "send_request_reused" ? "Submission ID cannot be reused. Start a new submission explicitly." : deliveryCategory === "send_ledger_unavailable" ? "Local send ledger unavailable. Check state directory permissions and free space, then retry." : ({idle:"",sending:"Sending…",acknowledged:"Acknowledged by relay",rejected:"Message rejected. Start a new submission explicitly to retry; this receipt will not send again.",failed:"Send failed · draft retained",unknown:"Outcome unknown. Sending again may create a duplicate. Start a new draft explicitly to continue."})[deliveryState] || ""
 
   readonly property var sample: sampleMode ? SampleData.snapshot().payload : null
@@ -68,7 +84,7 @@ Item {
     : (connection === "identity_locked" || category === "identity_access_pending")
       ? "Unlock your OS secret store, then Retry. Your existing identity is retained."
       : connection === "authenticated"
-        ? "Relay authentication succeeded. Choose a joined room to fetch a recent snapshot. Use the composer to send plain text. Mention routing and agent execution are not available in this panel."
+        ? "Relay authentication succeeded. Choose a joined room to fetch a recent snapshot. Use the composer to send plain text. Select exact room recipients when available; agent execution is configured separately."
         : providerInstructions + "\nLink manually in a terminal after installing the helper:\nomarchy-buzz setup relay <community-url>\nomarchy-buzz setup identity enroll\nEnroll the same existing Buzz identity using hidden input and your OS secret store, then Retry. Hosted account sign-in stays in your browser. Never enter keys or account tokens in this panel."
 
   function chooseSetupProvider(provider) {
@@ -78,9 +94,9 @@ Item {
 
   function selectRoom(roomId) {
     if (rooms.some(function(room) { return room.id === roomId })) {
-      if (selectedRoomId !== roomId) clearHistory()
+      if (selectedRoomId !== roomId) { clearHistory(); clearRecipients() }
       selectedRoomId = roomId
-      if (!sampleMode) refreshHistory()
+      if (!sampleMode) { refreshHistory(); refreshRecipients() }
     }
   }
   function uuidValue(value) { return typeof value === "string" && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(value) }
@@ -109,6 +125,20 @@ Item {
     submissionId = ""
     submissionText = ""
   }
+  function toggleRecipient(key) {
+    if (recipientPickerLocked) return
+    var copy = selectedRecipients.slice()
+    var index = copy.indexOf(key)
+    if (index >= 0) copy.splice(index, 1)
+    else if (recipientsState === "snapshot" && recipientEntries.some(function(entry) { return entry.key === key }) && copy.length < 20) copy.push(key)
+    else return
+    var intents = Object.assign({}, recipientDrafts)
+    intents[selectedRoomId] = copy
+    recipientDrafts = intents
+    submissionId = ""
+    deliveryState = "idle"
+    deliveryCategory = ""
+  }
   function correlationUuid() {
     // Randomness supplies correlation only; helper scope/identity are the authority.
     return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, function(c) {
@@ -118,15 +148,16 @@ Item {
   }
   function prepareSubmission() {
     if (!canSend) return null
-    if (!submissionId || submissionRoom !== selectedRoomId || submissionText !== draftText) submissionId = correlationUuid()
+    if (!submissionId || submissionRoom !== selectedRoomId || submissionText !== draftText || JSON.stringify(submissionMentions) !== JSON.stringify(selectedRecipients)) submissionId = correlationUuid()
     submissionRoom = selectedRoomId
     submissionText = draftText
+    submissionMentions = selectedRecipients.slice()
     submissionGeneration = generation
     submissionInstance = instanceId
     deliveryState = "sending"
     deliveryCategory = ""
     return {version:1,id:submissionId,type:"send_message",roomId:submissionRoom,text:submissionText,
-      mentions:[],generation:generation,instanceId:instanceId}
+      mentions:submissionMentions.slice(),generation:generation,instanceId:instanceId}
   }
   function submitDraft() {
     if (!bridge.running) return false
@@ -185,18 +216,49 @@ Item {
     send("fetch_recent", selectedRoomId)
   }
   function formatTimestamp(seconds) { return Qt.formatDateTime(new Date(seconds * 1000), "yyyy-MM-dd HH:mm:ss t") }
+  function clearRecipients() {
+    pendingRecipientsRequestId = ""
+    recipientEntries = []
+    recipientsState = "unavailable"
+    recipientsCategory = ""
+    recipientsPartial = false
+  }
+  function refreshRecipients() {
+    clearRecipients()
+    if (sampleMode || !recipientsSupported || connection !== "authenticated" || !selectedRoom) return
+    recipientsState = "loading"
+    send("fetch_recipients", selectedRoomId)
+  }
+  function validatedRecipients(value) {
+    if (!value || ["unavailable", "loading", "snapshot"].indexOf(value.state) === -1
+        || (value.roomId !== null && !uuidValue(value.roomId)) || typeof value.partial !== "boolean"
+        || !Array.isArray(value.entries) || value.entries.length > 20
+        || (value.category !== null && ["recipients_unavailable", "recipients_timeout", "recipients_invalid", "recipients_access_denied"].indexOf(value.category) === -1)) return null
+    if (value.state === "snapshot" && value.roomId === null || value.state !== "snapshot" && value.entries.length !== 0) return null
+    var seen = ({})
+    var entries = []
+    for (var i = 0; i < value.entries.length; i++) {
+      var entry = value.entries[i]
+      if (!entry || typeof entry.key !== "string" || !/^[a-f0-9]{64}$/.test(entry.key) || seen[entry.key]
+          || !boundedString(entry.name, 64) || utf8Size(entry.name) > 64 || /[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069\u200e\u200f\u061c]/.test(entry.name)) return null
+      seen[entry.key] = true
+      entries.push({key:entry.key,name:entry.name})
+    }
+    return {state:value.state,roomId:value.roomId,entries:entries,partial:value.partial,category:value.category || ""}
+  }
   function clearCatalog() {
     clearHistory()
+    clearRecipients()
     catalogRooms = []
     catalogState = "unavailable"
     catalogCategory = ""
     if (!sampleMode) selectedRoomId = ""
   }
   function validCapabilities(capabilities) {
-    return Array.isArray(capabilities) && capabilities.length >= 1 && capabilities.length <= 4
+    return Array.isArray(capabilities) && capabilities.length >= 1 && capabilities.length <= 5
       && capabilities.indexOf("connection_status") !== -1
       && capabilities.every(function(cap, index) {
-        return ["connection_status", "room_catalog", "room_history", "message_send"].indexOf(cap) !== -1 && capabilities.indexOf(cap) === index
+        return ["connection_status", "room_catalog", "room_history", "message_send", "room_recipients"].indexOf(cap) !== -1 && capabilities.indexOf(cap) === index
       })
   }
   function validatedCatalog(catalog) {
@@ -250,6 +312,7 @@ Item {
     relay = ""
     sessionFailed = false
     historySupported = false
+    recipientsSupported = false
     generation = 0
     connection = "connecting"
     category = ""
@@ -261,6 +324,7 @@ Item {
     clearCatalog()
     sessionFailed = true
     historySupported = false
+    recipientsSupported = false
     relay = ""
     connection = "unavailable"
     category = reason
@@ -283,6 +347,10 @@ Item {
       if (frame.id === pendingHistoryRequestId) {
         clearHistory()
         historyCategory = "request_busy"
+      }
+      if (frame.id === pendingRecipientsRequestId) {
+        clearRecipients()
+        recipientsCategory = "recipients_unavailable"
       }
       // A bounded queue rejection is recoverable and never retries automatically.
       return true
@@ -318,6 +386,9 @@ Item {
       history = validatedHistory(state.history)
       if (!history) { fail("invalid_response"); return false }
     }
+    var supportsRecipients = frame.capabilities.indexOf("room_recipients") !== -1
+    var recipients = supportsRecipients ? validatedRecipients(state.recipients) : null
+    if (supportsRecipients && !recipients) { fail("invalid_response"); return false }
     var supportsSend = frame.capabilities.indexOf("message_send") !== -1
     var delivery = supportsSend ? validatedDelivery(state.delivery) : null
     if (supportsSend && !delivery) { fail("invalid_response"); return false }
@@ -325,6 +396,7 @@ Item {
     if (draftScopeKey && (incomingScope !== draftScopeKey || (instanceId !== "" && frame.generation !== generation))) {
       losePendingDelivery()
       drafts = ({})
+      recipientDrafts = ({})
       submissionText = ""
     }
     draftScopeKey = incomingScope
@@ -339,6 +411,7 @@ Item {
     if (["partial", "ready"].indexOf(catalogState) !== -1
         && !catalogRooms.some(function(room) { return room.id === root.selectedRoomId })) {
       clearHistory()
+      clearRecipients()
       selectedRoomId = catalogRooms.length ? catalogRooms[0].id : ""
     }
     historySupported = supportsHistory
@@ -349,6 +422,14 @@ Item {
       historyCategory = history.category
       historyHasMore = history.hasMore
     }
+    if (state.connection !== "authenticated" || !supportsRecipients || ["loading", "unavailable"].indexOf(catalogState) !== -1) clearRecipients()
+    else if (recipients && recipients.roomId === selectedRoomId && selectedRoomId !== "") {
+      recipientEntries = recipients.entries
+      recipientsState = recipients.state
+      recipientsCategory = recipients.category
+      recipientsPartial = recipients.partial
+    }
+    recipientsSupported = supportsRecipients
     instanceId = frame.instanceId
     generation = frame.generation
     relay = state.relay || ""
@@ -362,6 +443,9 @@ Item {
     if (supportsHistory && connection === "authenticated" && selectedRoom
         && (selectedBeforeCatalog === "" || previousCatalogState === "loading")
         && historyState !== "snapshot") refreshHistory()
+    if (supportsRecipients && connection === "authenticated" && selectedRoom
+        && (selectedBeforeCatalog === "" || previousCatalogState === "loading")
+        && recipientsState !== "snapshot") refreshRecipients()
     return true
   }
   function send(kind, roomId) {
@@ -369,6 +453,7 @@ Item {
       requestSequence++
       var request = { version: 1, id: "ui-" + requestSequence, type: kind }
       if (kind === "fetch_recent") { request.roomId = roomId; pendingHistoryRequestId = request.id }
+      if (kind === "fetch_recipients") { request.roomId = roomId; pendingRecipientsRequestId = request.id }
       bridge.write(JSON.stringify(request) + "\n")
     }
   }
@@ -407,6 +492,7 @@ Item {
       handshake.stop()
       root.clearCatalog()
       root.historySupported = false
+      root.recipientsSupported = false
       root.sessionFailed = true
       root.relay = ""
       root.connection = "unavailable"

@@ -34,11 +34,19 @@ pub fn request(bytes: &[u8]) -> Result<Request, &'static str> {
     }
     if !matches!(
         r.kind.as_str(),
-        "get_snapshot" | "retry_connection" | "subscribe" | "fetch_recent" | "send_message"
+        "get_snapshot"
+            | "retry_connection"
+            | "subscribe"
+            | "fetch_recent"
+            | "fetch_recipients"
+            | "send_message"
     ) {
         return Err("unsupported_request");
     }
-    if matches!(r.kind.as_str(), "fetch_recent" | "send_message") {
+    if matches!(
+        r.kind.as_str(),
+        "fetch_recent" | "fetch_recipients" | "send_message"
+    ) {
         let room = r.room_id.as_deref().ok_or("invalid_request")?;
         let parsed = uuid::Uuid::parse_str(room).map_err(|_| "invalid_request")?;
         if parsed.to_string() != room {
@@ -99,6 +107,7 @@ pub struct SendIntent {
 pub enum Command {
     Retry,
     FetchRecent(String),
+    FetchRecipients(String),
     Send(SendIntent),
 }
 #[derive(Clone, Serialize)]
@@ -118,6 +127,31 @@ impl Default for Delivery {
             event_id: None,
             state: "idle".into(),
             category: None,
+        }
+    }
+}
+#[derive(Clone, Serialize)]
+pub struct Recipient {
+    pub key: String,
+    pub name: String,
+}
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecipientsView {
+    pub state: String,
+    pub room_id: Option<String>,
+    pub entries: Vec<Recipient>,
+    pub partial: bool,
+    pub category: Option<String>,
+}
+impl RecipientsView {
+    pub fn unavailable(room: Option<String>, category: Option<&str>) -> Self {
+        Self {
+            state: "unavailable".into(),
+            room_id: room,
+            entries: Vec::new(),
+            partial: true,
+            category: category.map(str::to_owned),
         }
     }
 }
@@ -189,6 +223,7 @@ pub struct Status {
     pub catalog: Catalog,
     pub history: History,
     pub delivery: Delivery,
+    pub recipients: RecipientsView,
 }
 impl Status {
     pub fn new(c: &crate::config::Config) -> Self {
@@ -201,11 +236,12 @@ impl Status {
             catalog: Catalog::unavailable(None),
             history: History::unavailable(None, None),
             delivery: Delivery::default(),
+            recipients: RecipientsView::unavailable(None, None),
         }
     }
 }
 pub fn envelope(kind: &str, id: Option<&str>, instance: &str, s: &Status) -> serde_json::Value {
-    serde_json::json!({"version":1,"type":kind,"id":id,"instanceId":instance,"generation":s.generation,"capabilities":["connection_status","room_catalog","room_history","message_send"],"backendRevision":crate::compatibility::BUZZ_REVISION,"status":s})
+    serde_json::json!({"version":1,"type":kind,"id":id,"instanceId":instance,"generation":s.generation,"capabilities":["connection_status","room_catalog","room_history","message_send","room_recipients"],"backendRevision":crate::compatibility::BUZZ_REVISION,"status":s})
 }
 pub async fn read_line<R: tokio::io::AsyncBufRead + Unpin>(
     r: &mut R,
@@ -278,7 +314,8 @@ mod state_tests {
                 "connection_status",
                 "room_catalog",
                 "room_history",
-                "message_send"
+                "message_send",
+                "room_recipients"
             ])
         );
         assert_eq!(v["status"]["catalog"]["state"], "unavailable");
@@ -367,6 +404,19 @@ mod state_tests {
                 unavailable: false,
             })
             .collect();
+        status.recipients.entries = (0..20)
+            .map(|_| Recipient {
+                key: "c".repeat(64),
+                name: "\\".repeat(64),
+            })
+            .collect();
+        status.delivery = Delivery {
+            request_id: Some("00000000-0000-4000-8000-000000000001".into()),
+            room_id: Some("00000000-0000-4000-8000-000000000002".into()),
+            event_id: Some("a".repeat(64)),
+            state: "acknowledged".into(),
+            category: None,
+        };
         let encoded = serde_json::to_vec(&envelope(
             "status",
             Some(&"a".repeat(128)),

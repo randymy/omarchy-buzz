@@ -23,10 +23,18 @@ pub enum QueryRequest {
     JoinedRooms { limit: u16 },
     RoomMetadata { rooms: Vec<Uuid> },
     RoomHistory { room: Uuid, limit: u16 },
+    RoomMembers { room: Uuid },
+    Profiles { authors: Vec<nostr::PublicKey> },
 }
 impl QueryRequest {
     fn body(&self, keys: &Keys) -> Result<Vec<u8>, &'static str> {
         let filter = match self {
+            Self::RoomMembers { room } => {
+                serde_json::json!({"kinds":[39002],"#d":[room.to_string()],"limit":1})
+            }
+            Self::Profiles { authors } if !authors.is_empty() && authors.len() <= 20 => {
+                serde_json::json!({"kinds":[0],"authors":authors.iter().map(|p|p.to_hex()).collect::<Vec<_>>(),"limit":authors.len()})
+            }
             Self::JoinedRooms { limit } if (1..=50).contains(limit) => {
                 serde_json::json!({"kinds":[39002],"#p":[keys.public_key().to_hex()],"limit":limit})
             }
@@ -46,6 +54,18 @@ impl QueryRequest {
     }
     fn matches(&self, event: &Event, keys: &Keys) -> bool {
         match self {
+            Self::RoomMembers { room } => {
+                event.kind.as_u16() == 39002
+                    && event.tags.iter().any(|t| {
+                        t.as_slice().first().map(String::as_str) == Some("d")
+                            && t.as_slice()
+                                .get(1)
+                                .is_some_and(|id| *id == room.to_string())
+                    })
+            }
+            Self::Profiles { authors } => {
+                event.kind.as_u16() == 0 && authors.contains(&event.pubkey)
+            }
             Self::RoomHistory { room, .. } => {
                 let kind = event.kind.as_u16();
                 matches!(kind, 9 | 40002 | 40003 | 5 | 9005 | 7 | 39006)

@@ -2,7 +2,7 @@
 
 A community-first, native Omarchy surface for collaboration with people and AI agents through [Block's Buzz](https://github.com/block/buzz).
 
-**Status: M2 messaging development preview (`0.0.3`), not yet a community release.** The native bar and panel use a separate local helper for setup, authenticated connection state, joined stream rooms, and recent message snapshots. Plain-text sending has explicit acknowledged, rejected, and unknown outcomes. Exact mention selection, unread counts, verified human/agent badges, notifications, and agent execution remain unfinished. Production UI never displays synthetic rooms or agent activity.
+**Status: M2 messaging development preview (`0.0.3`), not yet a community release.** The native bar and panel use a separate local helper for setup, authenticated connection state, joined stream rooms, and recent message snapshots. Plain-text sending has explicit acknowledged, rejected, and unknown outcomes. A recipient picker adds exact public-key mentions from a verified room roster. Unread counts, verified human/agent badges, notifications, and agent execution remain unfinished. Production UI never displays synthetic rooms or agent activity.
 
 The helper owns identity access through Linux Secret Service. Enrollment uses hidden terminal input; QML receives bounded presentation data and never identity keys. Missing or failed helpers leave the panel usable with setup instructions and Retry. Authentication is not a claim that room synchronization works.
 
@@ -29,7 +29,8 @@ omarchy-shell shell summon community.buzz '{}'
 
 Git refuses to replace an existing destination. Keep any existing plugin of this ID; do not overwrite it. `community.buzz` is a development ID pending marketplace uniqueness review. This repository has not been published or submitted to the marketplace.
 
-Click **Buzz** to toggle the panel, then use **Close** or Escape. Without the separately installed helper/socket, the panel shows an unavailable state. No menu entry, shortcut, service, or credentials are installed by the plugin itself. Omarchy's enable command changes its plugin configuration through the native manager.
+Click **Buzz** to toggle the panel, then use **Close** or Escape. An optional,
+reversible [Super+B shortcut](docs/NATIVE.md) checks for conflicts before installation. Without the separately installed helper/socket, the panel shows an unavailable state. No menu entry, shortcut, service, or credentials are installed by the plugin itself. Omarchy's enable command changes its plugin configuration through the native manager.
 
 ## Install the development helper
 
@@ -79,8 +80,10 @@ Rejected messages require an explicit new submission before another attempt.
 
 Drafts stay in memory. The helper stores only bounded request/event identifiers
 and delivery outcomes, never message bodies, in its private state directory.
-Keep that delivery record during updates. Replies, attachments and agent mention
-routing are not available through this composer yet. See [sending semantics](docs/SENDING.md).
+Keep that delivery record during updates. Select recipients to attach exact mention keys; a typed `@name` alone is not
+resolved. Names are self-asserted hints beside public keys, and the roster is
+explicitly partial. Agent execution still requires separately configured Buzz ACP.
+Replies and attachments are not available through this composer yet. See [sending semantics](docs/SENDING.md).
 
 ## Staying current
 
@@ -104,7 +107,7 @@ The native manager unloads the plugin and removes its Git checkout. Commit or sa
 
 [DESIGN.md](DESIGN.md) records the inspected interfaces, security boundary, release gates, and milestones. The QML service consumes a versioned, bounded presentation protocol through the helper bridge. Signed room discovery and recent history are projected in Rust. History is a partial snapshot, with explicit truncation and unavailable-content markers; it does not claim complete edits/deletions or live synchronization. Synthetic rooms are available only in explicit test mode.
 
-Release gates still include conformance against an isolated real Buzz relay and bounded upstream WebSocket buffering. Next in M2 are exact mentions, profile classification, and local unread accounting. vPerps-specific behavior remains in downstream configuration and separate integrations.
+Release gates still include conformance against an isolated real Buzz relay and bounded upstream WebSocket buffering. Next in M2 are profile classification and local unread accounting. vPerps-specific behavior remains in downstream configuration and separate integrations.
 
 ## License
 

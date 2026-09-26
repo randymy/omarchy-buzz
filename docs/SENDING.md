@@ -120,13 +120,14 @@ claim these resource limits are fixed by the sender.
 
 ## Current operational limits
 
-Input is limited to4096 UTF-8 bytes and20 distinct canonical mention keys; the
-native composer currently sends no mention tags. It has no reply/media inputs.
+Input is limited to 4096 UTF-8 bytes and 20 distinct canonical mention keys; the
+native composer supplies selected keys from the current verified room roster.
+Names are optional self-asserted profile hints; typed `@name` text is not resolved. It has no reply/media inputs.
 Terminal outcomes preserve the draft except for a matching acknowledgement of
 unchanged text. Rejected or reused submissions require an explicit new request;
 unknown outcomes require starting a new draft and may already have been delivered.
 
-The ledger is limited to256KiB and1024 records, whichever is reached first,
+The ledger is limited to 256 KiB and 1024 records, whichever is reached first,
 without automatic pruning. It lives under XDG_STATE_HOME (default
 `~/.local/state/omarchy-buzz/delivery`). Capacity/permission failures disable new
 sends. Reconciliation, safe archival and same-event retry are future work.

@@ -20,7 +20,10 @@ are limited to 64 KiB, the daemon limits clients and write deadlines, and QML
 validates protocol version, helper instance, generation, categories, and public
 fields. Allowed requests read status, subscribe, retry, fetch a current
 catalog room’s history, or submit a bounded plain-text message for that room.
-Sending additionally fences the current helper instance and identity generation. There
+Sending additionally fences the current helper instance and identity generation.
+Mention keys must be selected from a current verified room-roster snapshot;
+profile display names never choose or replace a recipient key. No avatar or
+NIP05 URL is fetched. Self-asserted names do not certify human or agent identity. There
 is no arbitrary command, signing, credential-export, or agent-launch request.
 
 QML launches a local executable using an argv array, never a shell command

@@ -7,6 +7,7 @@ import qs.Commons
 FocusScope {
   id: root
   property var service: null
+  property bool recipientPickerExpanded: false
   signal closeRequested()
   Keys.onEscapePressed: closeRequested()
 
@@ -189,10 +190,98 @@ FocusScope {
             onClicked: if (root.service) root.service.retry()
           }
           Ui.Button {
-            text: "Refresh history"
+            text: "Refresh room"
             focusable: true
             visible: root.service && root.service.connection === "authenticated" && root.service.historySupported && root.service.selectedRoom !== null
-            onClicked: if (root.service) root.service.refreshHistory()
+            onClicked: if (root.service) { root.service.refreshHistory(); root.service.refreshRecipients() }
+          }
+        }
+        ColumnLayout {
+          Layout.fillWidth: true
+          visible: root.service && !root.service.sampleMode && (root.service.recipientsSupported || root.service.selectedRecipients.length > 0) && root.service.selectedRoom !== null
+          spacing: Style.space(4)
+          Ui.Button {
+            text: root.service ? root.service.recipientsLabel + " · " + root.service.selectedRecipients.length + " selected" + (root.recipientPickerExpanded ? " · Hide" : " · Choose") : ""
+            focusable: true
+            onClicked: root.recipientPickerExpanded = !root.recipientPickerExpanded
+          }
+          Controls.ScrollView {
+            visible: root.recipientPickerExpanded
+            Layout.fillWidth: true
+            Layout.preferredHeight: Math.min(Style.space(72), people.implicitHeight)
+            clip: true
+            contentWidth: availableWidth
+            Column {
+              id: people
+              width: parent.width
+              Repeater {
+                model: root.service ? root.service.recipientEntries : []
+                delegate: Controls.CheckBox {
+                  required property var modelData
+                  width: people.width
+                  text: (modelData.name || "Unnamed") + " · " + modelData.key.slice(0, 12) + "…" + modelData.key.slice(-8)
+                  hoverEnabled: true
+                  Controls.ToolTip.visible: hovered
+                  Controls.ToolTip.text: modelData.key
+                  contentItem: Text {
+                    text: parent.text
+                    textFormat: Text.PlainText
+                    leftPadding: parent.indicator ? parent.indicator.width + Style.space(6) : 0
+                    color: Color.foreground
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.caption
+                    elide: Text.ElideRight
+                  }
+                  checked: root.service && root.service.selectedRecipients.indexOf(modelData.key) !== -1
+                  enabled: root.service && !root.service.recipientPickerLocked && root.service.recipientsState === "snapshot"
+                  onClicked: root.service.toggleRecipient(modelData.key)
+                }
+              }
+            }
+          }
+          Controls.ScrollView {
+            visible: root.service && root.service.unavailableRecipients.length > 0
+            Layout.fillWidth: true
+            Layout.preferredHeight: Math.min(Style.space(72), missingPeople.implicitHeight)
+            clip: true
+            contentWidth: availableWidth
+            Column {
+              id: missingPeople
+              width: parent.width
+              Repeater {
+                model: root.service ? root.service.unavailableRecipients : []
+                delegate: RowLayout {
+                  required property string modelData
+                  width: missingPeople.width
+                  Text {
+                    Layout.fillWidth: true
+                    text: "Selected " + modelData.slice(0, 12) + "…" + modelData.slice(-8) + " · unavailable in current roster"
+                    textFormat: Text.PlainText
+                    wrapMode: Text.WordWrap
+                    color: Color.foreground
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.caption
+                  }
+                  Ui.Button {
+                    text: "Deselect"
+                    focusable: true
+                    enabled: root.service && !root.service.recipientPickerLocked
+                    onClicked: root.service.toggleRecipient(modelData)
+                  }
+                }
+              }
+            }
+          }
+          Text {
+            Layout.fillWidth: true
+            visible: root.recipientPickerExpanded
+            text: "Names self-asserted. Select recipients to create exact mentions; agent execution configured separately."
+            textFormat: Text.PlainText
+            wrapMode: Text.WordWrap
+            color: Color.foreground
+            opacity: 0.7
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
           }
         }
         Controls.ScrollView {
@@ -254,7 +343,7 @@ FocusScope {
             Layout.fillWidth: true
             Layout.preferredHeight: Style.space(70)
             visible: root.service && root.service.selectedRoom !== null && root.service.connection === "authenticated"
-            placeholderText: "Plain text · mentions and agent routing unavailable"
+            placeholderText: "Plain text · choose exact recipients above"
             textFormat: TextEdit.PlainText
             wrapMode: TextEdit.Wrap
             text: root.service ? root.service.draftText : ""
