@@ -1,0 +1,125 @@
+#!/usr/bin/env python3
+"""Create a reproducible local helper archive; never install or publish it."""
+import argparse
+import gzip
+import hashlib
+import io
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import tarfile
+import tomllib
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def architecture(data):
+    if len(data) < 64 or data[:4] != b"\x7fELF" or data[4] != 2 or data[5] not in (1, 2) or data[6] != 1:
+        raise ValueError("expected a 64-bit ELF binary")
+    if data[7] not in (0, 3):
+        raise ValueError("unsupported ELF operating system ABI")
+    endian = "little" if data[5] == 1 else "big"
+    if int.from_bytes(data[16:18], endian) not in (2, 3):
+        raise ValueError("expected an executable ELF type")
+    machine = int.from_bytes(data[18:20], endian)
+    if machine not in (62, 183):
+        raise ValueError("only Linux x86_64 and aarch64 are supported")
+    return {62: "x86_64", 183: "aarch64"}[machine]
+
+
+def run_metadata(binary):
+    result = subprocess.run([str(binary), "--version"], capture_output=True, timeout=10, check=True)
+    if len(result.stdout) > 4096 or result.stderr:
+        raise ValueError("unexpected version output")
+    return json.loads(result.stdout)
+
+
+def validated_metadata(root, value):
+    if not isinstance(value, dict):
+        raise ValueError("version output must be a JSON object")
+    manifest = json.loads((root / "manifest.json").read_text())
+    cargo = tomllib.loads((root / "helper/Cargo.toml").read_text())
+    version = cargo["package"]["version"]
+    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?", version):
+        raise ValueError("unsafe package version")
+    if manifest["version"] != version or value.get("helperVersion") != version:
+        raise ValueError("plugin, crate and binary versions must match")
+    revisions = [cargo["dependencies"][name]["rev"] for name in ("buzz-sdk", "buzz-ws-client")]
+    if revisions[0] != revisions[1] or not re.fullmatch(r"[0-9a-f]{40}", revisions[0]):
+        raise ValueError("Buzz dependency pins must match")
+    compatibility = (root / "helper/src/compatibility.rs").read_text()
+    match = re.search(r'BUZZ_REVISION\s*:\s*&str\s*=\s*"([0-9a-f]{40})"', compatibility)
+    if not match or match[1] != revisions[0] or value.get("backendRevision") != revisions[0]:
+        raise ValueError("binary and source Buzz revisions must match")
+    if type(value.get("protocolVersion")) is not int or value["protocolVersion"] != 1:
+        raise ValueError("unsupported helper protocol version")
+    return {"helperVersion": version, "backendRevision": revisions[0], "protocolVersion": 1}
+
+
+def encoded(value):
+    return (json.dumps(value, sort_keys=True, indent=2) + "\n").encode()
+
+
+def package(binary, output, root=ROOT, metadata_runner=run_metadata):
+    binary = Path(binary).resolve(strict=True)
+    data = binary.read_bytes()
+    arch = architecture(data)
+    metadata = validated_metadata(Path(root), metadata_runner(binary))
+    metadata.update({"os": "linux", "architecture": arch, "developmentPreview": True, "binarySha256": hashlib.sha256(data).hexdigest()})
+    stem = f"omarchy-buzz-{metadata['helperVersion']}-linux-{arch}"
+    members = {"bin/omarchy-buzz": data, "version.json": encoded(metadata)}
+    for path in ("LICENSE", "service/omarchy-buzz.service", "service/omarchy-buzz.socket", "service/README.md", "helper/README.md"):
+        source = Path(root) / path
+        if source.is_symlink() or not source.is_file():
+            raise ValueError("package source must be a regular file: " + path)
+        members[path] = source.read_bytes()
+    archive = io.BytesIO()
+    with gzip.GzipFile(fileobj=archive, mode="wb", filename="", mtime=0) as gz:
+        with tarfile.open(fileobj=gz, mode="w", format=tarfile.USTAR_FORMAT) as tar:
+            for path, content in sorted(members.items()):
+                info = tarfile.TarInfo(stem + "/" + path)
+                info.size = len(content)
+                info.mode = 0o755 if path == "bin/omarchy-buzz" else 0o644
+                info.mtime = info.uid = info.gid = 0
+                info.uname = info.gname = ""
+                tar.addfile(info, io.BytesIO(content))
+    payload = archive.getvalue()
+    filename = stem + ".tar.gz"
+    checksum = {"schemaVersion": 1, "artifacts": [{"filename": filename, "sha256": hashlib.sha256(payload).hexdigest(), "bytes": len(payload)}], "version": metadata}
+    output = Path(output)
+    output.mkdir(parents=True, exist_ok=True)
+    targets = [(output / filename, payload), (output / (stem + ".sha256.json"), encoded(checksum))]
+    if any(path.exists() or path.is_symlink() for path, _ in targets):
+        raise ValueError("output already exists; choose an empty output directory")
+    written = []
+    try:
+        for path, content in targets:
+            with path.open("xb") as file:
+                written.append(path)
+                file.write(content)
+                file.flush()
+                os.fsync(file.fileno())
+    except Exception:
+        for path in written:
+            path.unlink(missing_ok=True)
+        raise
+    return targets[0][0], targets[1][0]
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("binary", type=Path)
+    parser.add_argument("output_directory", type=Path)
+    args = parser.parse_args()
+    try:
+        paths = package(args.binary, args.output_directory)
+    except (ValueError, OSError, KeyError, TypeError, subprocess.SubprocessError) as error:
+        parser.exit(1, f"packaging failed: {error}\n")
+    for path in paths:
+        print(path)
+
+
+if __name__ == "__main__":
+    main()

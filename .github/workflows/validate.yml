@@ -29,6 +29,7 @@ jobs:
         working-directory: omarchy-buzz
         run: |
           python3 tests/desktop_shortcut.py
+          python3 tests/package_helper.py
           python3 scripts/check-upstream --self-test
       - name: Validate manifest
         working-directory: omarchy-buzz

@@ -277,8 +277,70 @@ fn known_roster_revocation_denies_plain_sends_even_with_stale_catalog() {
 }
 #[test]
 fn malformed_recipient_result_does_not_invent_membership_revocation() {
-    let (mut sender,intent,keys,mut status,path)=fixture();
-    status.recipients=crate::protocol::RecipientsView::unavailable(Some(intent.room.clone()),Some("recipients_invalid"));
-    let (_,event)=sender.prepare(intent,"ws://127.0.0.1/",&keys,&status,true,true);
-    assert!(event.is_some());sender.unknown();drop(sender);std::fs::remove_dir_all(path).unwrap();
+    let (mut sender, intent, keys, mut status, path) = fixture();
+    status.recipients = crate::protocol::RecipientsView::unavailable(
+        Some(intent.room.clone()),
+        Some("recipients_invalid"),
+    );
+    let (_, event) = sender.prepare(intent, "ws://127.0.0.1/", &keys, &status, true, true);
+    assert!(event.is_some());
+    sender.unknown();
+    drop(sender);
+    std::fs::remove_dir_all(path).unwrap();
+}
+#[test]
+fn in_flight_replay_and_other_request_preserve_original_receipt() {
+    let (mut sender, intent, keys, status, path) = fixture();
+    let (original, event) = sender.prepare(
+        intent.clone(),
+        "ws://127.0.0.1/",
+        &keys,
+        &status,
+        true,
+        true,
+    );
+    let id = event.unwrap().id.to_hex();
+    let (replay, event) = sender.prepare(
+        intent.clone(),
+        "ws://127.0.0.1/",
+        &keys,
+        &status,
+        true,
+        true,
+    );
+    assert!(event.is_none());
+    assert_eq!(replay.state, "sending");
+    assert_eq!(replay.event_id, original.event_id);
+    assert_eq!(replay.request_id, original.request_id);
+    let mut other = intent;
+    other.request_id = uuid::Uuid::new_v4().to_string();
+    let (busy, event) = sender.prepare(other, "ws://127.0.0.1/", &keys, &status, true, true);
+    assert!(event.is_none());
+    assert_eq!(busy.state, "sending");
+    assert_eq!(busy.request_id, original.request_id);
+    assert_eq!(sender.acknowledge(&id, true).unwrap().state, "acknowledged");
+    drop(sender);
+    std::fs::remove_dir_all(path).unwrap();
+}
+#[test]
+fn distinct_requests_same_second_sign_distinct_events() {
+    let (_sender, mut intent, keys, _status, path) = fixture();
+    let stamp = nostr::Timestamp::from(1700000000);
+    let first = build_event(&intent, &keys, Some(stamp)).unwrap();
+    first.verify().unwrap();
+    assert!(first
+        .tags
+        .iter()
+        .any(|t| t.as_slice() == ["omarchy-buzz-request", intent.request_id.as_str()]));
+    assert_eq!(
+        build_event(&intent, &keys, Some(stamp)).unwrap().id,
+        first.id
+    );
+    intent.request_id = uuid::Uuid::new_v4().to_string();
+    let second = build_event(&intent, &keys, Some(stamp)).unwrap();
+    second.verify().unwrap();
+    assert_eq!(first.created_at, second.created_at);
+    assert_ne!(first.id, second.id);
+    drop(_sender);
+    std::fs::remove_dir_all(path).unwrap();
 }

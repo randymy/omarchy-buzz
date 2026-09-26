@@ -47,11 +47,19 @@ impl Sender {
         trusted: bool,
     ) -> (Delivery, Option<Event>) {
         let fail = |category| delivery(&intent, None, "failed", Some(category));
+        if let Some((_, event_id, _)) = &self.pending {
+            // Preserve the active receipt, including identical in-flight replay.
+            // A second submission must never hide the first one's eventual OK.
+            if let Some(active) = &self.last {
+                return (
+                    delivery(active, Some(event_id.clone()), "sending", None),
+                    None,
+                );
+            }
+            return (fail("send_unavailable"), None);
+        }
         if !valid(&intent) {
             return (fail("send_invalid"), None);
-        }
-        if self.pending.is_some() {
-            return (fail("send_busy"), None);
         }
         if intent.generation != status.generation {
             return (fail("send_scope_changed"), None);
@@ -132,20 +140,7 @@ impl Sender {
                 None,
             );
         }
-        let mentions: Vec<&str> = intent.mentions.iter().map(String::as_str).collect();
-        let event = match buzz_sdk::build_message(
-            uuid::Uuid::parse_str(&intent.room).unwrap(),
-            &intent.text,
-            None,
-            &mentions,
-            false,
-            &[],
-            &[],
-        )
-        .and_then(|b| {
-            b.sign_with_keys(keys)
-                .map_err(|_| buzz_sdk::SdkError::InvalidInput("signing failed".into()))
-        }) {
+        let event = match build_event(&intent, keys, None) {
             Ok(event) => event,
             Err(_) => return (fail("send_invalid"), None),
         };
@@ -217,6 +212,24 @@ impl Sender {
             },
         ))
     }
+}
+// Local correlation extension; not a Buzz command, authority or protocol nonce.
+fn build_event(
+    intent: &SendIntent,
+    keys: &Keys,
+    created_at: Option<nostr::Timestamp>,
+) -> Result<Event, &'static str> {
+    let room = uuid::Uuid::parse_str(&intent.room).map_err(|_| "send_invalid")?;
+    let mentions: Vec<&str> = intent.mentions.iter().map(String::as_str).collect();
+    let correlation = nostr::Tag::parse(["omarchy-buzz-request", intent.request_id.as_str()])
+        .map_err(|_| "send_invalid")?;
+    let mut builder = buzz_sdk::build_message(room, &intent.text, None, &mentions, false, &[], &[])
+        .map_err(|_| "send_invalid")?
+        .tag(correlation);
+    if let Some(timestamp) = created_at {
+        builder = builder.custom_created_at(timestamp);
+    }
+    builder.sign_with_keys(keys).map_err(|_| "send_invalid")
 }
 fn outcome_status(outcome: &Outcome) -> (&'static str, Option<&'static str>) {
     match outcome {

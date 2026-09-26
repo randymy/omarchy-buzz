@@ -28,7 +28,8 @@ change breaks those checks, the draft explicitly identifies failed/incomplete
 validation and remains for repair and review. A failed dependency resolution can
 leave Cargo.lock at the previous version; that draft is not buildable until
 resolution and all checks pass. The workflow never automatically merges,
-installs, or deploys a candidate. It does not equate synthetic checks with
+installs, or deploys a candidate. Candidate checks do not run native Omarchy/QML
+or compare the installed plugin/helper pair; those remain release checks. It does not equate synthetic checks with
 real-relay runtime compatibility.
 
 GitHub token-created PRs can create approval-required `pull_request` runs for

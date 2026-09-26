@@ -96,6 +96,10 @@ async fn client(
                     write(&mut out,&serde_json::json!({"version":1,"type":"error","id":r.id,"category":"send_scope_changed","instanceId":instance})).await?;
                     continue;
                 }
+                if r.kind=="send_message" {
+                    let busy={let pending=status.borrow();pending.delivery.state=="sending" && pending.delivery.request_id.as_deref()!=Some(r.id.as_str())};
+                    if busy {write(&mut out,&serde_json::json!({"version":1,"type":"error","id":r.id,"category":"send_busy","instanceId":instance})).await?;continue;}
+                }
                 let command=match r.kind.as_str() {
                     "retry_connection"=>Some(protocol::Command::Retry),
                     "fetch_recent"=>Some(protocol::Command::FetchRecent(r.room_id.clone().unwrap())),

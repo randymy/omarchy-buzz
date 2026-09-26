@@ -67,6 +67,15 @@ means acknowledged; a negative exact-ID `OK` means rejected. Map reason strings
 to static categories instead of forwarding arbitrary relay text. Socket write
 completion alone never means accepted.
 
+The helper adds a signed `['omarchy-buzz-request', request_uuid]` tag through
+upstream `EventBuilder.tag`. This is a local correlation extension, not a new
+Buzz protocol command or an authorization credential. It distinguishes separate
+intentional submissions with identical text and tags in the same second; Nostr's
+second-resolution timestamp alone would otherwise give them the same event ID.
+An existing request is never signed again. Repeating an in-flight request retains
+its original sending receipt; another busy submission cannot overwrite that
+receipt or suppress its eventual acknowledgement.
+
 Once transmission starts, timeout, cancellation, or disconnect means
 `delivery_unknown`. The preview offers no retransmission. Any later retry feature must reuse the
 original event rather than re-sign automatically. Identical-event deduplication does not establish

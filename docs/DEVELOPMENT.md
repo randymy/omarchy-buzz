@@ -29,7 +29,7 @@ BUZZ_PREVIEW_OUTPUT="$PWD/artifacts/m0-preview.png" ./scripts/preview
 
 `artifacts/` is ignored by Git. The render uses the installed theme through upstream components. Offscreen window-mask warnings are expected; restricted environments may also reject the test-only Quickshell IPC server. This test does not use that server. The check does not instantiate the Wayland `PanelWindow`, exercise physical keyboard focus, or replace the live-shell smoke procedure below.
 
-Local evidence on 2026-09-26: pinned and installed manifest validators passed; offscreen component assertions passed; an 820×570 sample-panel image was inspected for layout/contrast. QML analysis passed with the native modules available and dynamic-property/unqualified-access/Quickshell platform-type warnings suppressed; that limited analysis is not a clean full-lint or runtime claim. Outside the IPC-restricted sandbox, native plugin enable/summon/hide worked and the shell answered `ping` afterward. A live desktop capture confirmed the centered themed panel and bar widget; the private desktop capture is not a repository fixture. Keyboard interaction, multiple monitors, and full removal/reload lifecycle checks remain pending. CI is configured but has not run on GitHub because this repository is still local.
+Local evidence on 2026-09-26: pinned and installed manifest validators passed; offscreen component assertions passed; an 820×570 sample-panel image was inspected for layout/contrast. QML analysis passed with the native modules available and dynamic-property/unqualified-access/Quickshell platform-type warnings suppressed; that limited analysis is not a clean full-lint or runtime claim. Outside the IPC-restricted sandbox, native plugin enable/summon/hide worked and the shell answered `ping` afterward. A live desktop capture confirmed the centered themed panel and bar widget; the private desktop capture is not a repository fixture. At that checkpoint, keyboard interaction, multiple monitors, and full removal/reload lifecycle checks remained pending; see subsequent evidence below. CI is configured but has not run on GitHub because this repository is still local.
 
 ## Graphical smoke check
 
@@ -122,11 +122,11 @@ concurrency limits. It is not yet wired to room discovery or QML.
 The hosted/custom selection passed native visual review. No hosted account was
 created and no browser login was initiated. Native plugin disable left the shell
 responsive and the helper inactive after idle grace; re-enable reactivated it.
-Full removal and multi-monitor/keyboard checks remain pending.
+At that checkpoint, full removal and multi-monitor/keyboard checks remained pending.
 
 ## Read-only history checkpoint
 
-The current ARM64 suite passes 44 Rust tests. Integrated synthetic relay tests
+The read-only checkpoint passed 44 ARM64 Rust tests. Integrated synthetic relay tests
 exercise authentication, exact-ID freshness probes, trusted `/info` discovery,
 signed joined-room metadata and NIP-CW history, unauthorized-room rejection,
 and clearing completed/in-flight history on reauthentication. The history
@@ -182,3 +182,9 @@ blocks delivery until every selected key is revalidated; removed recipients
 require explicit deselection. Native shortcut removal and reinstall both passed
 with clean configuration and unrelated bindings preserved. The official GitHub
 Buzz HEAD check at 07:52 UTC matched the pinned revision.
+
+Native installation follow-up: `omarchy plugin remove community.buzz --yes`, a
+fresh local clone, enable, helper replacement and shell restart all passed.
+Plugin rescan is asynchronous; wait until listPlugins shows the plugin before
+enabling it. The live setup panel was visually checked after restart. The socket
+is now enabled for future user logins; no relay or identity is configured.
