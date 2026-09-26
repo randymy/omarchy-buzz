@@ -258,6 +258,27 @@ ShellRoot {
         protocolService.acceptFrame(deliveryFrame(idleDelivery, 2))
         if (protocolService.draftText !== "" || protocolService.deliveryState !== "unknown")
           throw new Error("Scope change retained private draft or claimed delivery")
+        // Correlated actor rejection must not tear down the helper connection,
+        // clear a draft, or let a later original receipt acknowledge changed intent.
+        ;["send_busy", "send_request_reused", "send_invalid", "send_unavailable", "send_access_denied", "send_ledger_unavailable", "delivery_unknown"].forEach(function(category) {
+          protocolService.beginSession()
+          if (!protocolService.acceptFrame(JSON.stringify(sendHello))) throw new Error("Correlated error setup failed")
+          protocolService.newDraft()
+          protocolService.updateDraft("Preserve correlated rejection")
+          var submitted = protocolService.prepareSubmission()
+          var error = {version:1,type:"error",category:category,id:submitted.id,instanceId:protocolService.instanceId}
+          var unrelated = Object.assign({}, error, {id:"00000000-0000-4000-8000-000000000099"})
+          protocolService.acceptFrame(JSON.stringify(unrelated))
+          if (protocolService.deliveryState !== "sending") throw new Error("Unrelated rejection stopped active send")
+          if (!protocolService.acceptFrame(JSON.stringify(error)) || protocolService.sessionFailed
+              || protocolService.deliveryCategory !== category
+              || protocolService.deliveryState !== (category === "delivery_unknown" ? "unknown" : "failed")
+              || protocolService.draftText !== "Preserve correlated rejection") throw new Error("Correlated error lost connection or draft: " + category)
+          protocolService.acceptFrame(deliveryFrame(Object.assign({}, accepted, {requestId:submitted.id})))
+          if (protocolService.draftText !== "Preserve correlated rejection") throw new Error("Rejected intent accepted original receipt")
+          if ((category === "send_request_reused" || category === "delivery_unknown") && protocolService.prepareSubmission() !== null)
+            throw new Error("Ambiguous or reused request silently resubmitted")
+        })
         var recipientA = {key:"a".repeat(64),name:"Same name"}
         var recipientB = {key:"b".repeat(64),name:"Same name"}
         var roster = {state:"snapshot",roomId:roomA.id,entries:[recipientA,recipientB],partial:true,category:null}

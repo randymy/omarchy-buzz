@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Actual daemon scope fences; synthetic text, no relay or Secret Service."""
 import json
+import re
+import tomllib
 import socket
 import subprocess
 import sys
@@ -21,7 +23,13 @@ def main():
             (base / name).mkdir(mode=0o700)
             env[variable] = str(base / name)
         version = json.loads(subprocess.check_output([binary, "--version"], env=env, timeout=5))
-        assert version["protocolVersion"] == 1 and len(version["backendRevision"]) == 40
+        root = Path(__file__).resolve().parents[1]
+        manifest = tomllib.loads((root / "helper/Cargo.toml").read_text())
+        pins = re.findall(r'pub const BUZZ_REVISION:\s*&str\s*=\s*"([0-9a-f]{40})"', (root / "helper/src/compatibility.rs").read_text())
+        assert version["protocolVersion"] == 1
+        assert version["helperVersion"] == manifest["package"]["version"]
+        assert version["helperVersion"] == json.loads((root / "manifest.json").read_text())["version"]
+        assert pins == [version["backendRevision"]]
         daemon = subprocess.Popen([binary, "daemon", "--keep-running"], env=env,
                                   stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         sentinel = "synthetic-private-draft-do-not-log"
@@ -49,14 +57,12 @@ def main():
                     assert sentinel not in json.dumps(reply)
                 # Valid local scope still cannot send without authenticated membership.
                 client.sendall(json.dumps(intent).encode() + b"\n")
-                for _ in range(8):
-                    reply = frames.read()
-                    assert sentinel not in json.dumps(reply)
-                    delivery = reply.get("status", {}).get("delivery", {})
-                    if delivery.get("requestId") == intent["id"]:
-                        break
-                assert delivery["state"] == "failed" and delivery["category"] == "send_unavailable", delivery
-                assert delivery["eventId"] is None
+                reply = frames.matching(intent["id"])
+                assert reply["type"] == "error" and reply["category"] == "send_unavailable", reply
+                assert sentinel not in json.dumps(reply)
+                client.sendall(request("offline-status", "get_snapshot"))
+                delivery = frames.matching("offline-status")["status"]["delivery"]
+                assert delivery["state"] == "idle" and delivery["eventId"] is None, delivery
                 assert not list((base / "state").rglob("ledger.json")), "offline send created a durable reservation"
             stop(daemon)
             output, error = daemon.communicate(timeout=5)

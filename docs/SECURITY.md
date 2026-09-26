@@ -42,7 +42,8 @@ Even valid bounds do not prove the relay disclosed every relevant change.
 History is a partial snapshot and is cleared on scope/authentication changes.
 The helper grants no approvals.
 
-Sending signs only the upstream SDK’s fixed kind-9 message shape. The UI cannot
+Sending signs only the upstream SDK’s fixed kind-9 message shape, with a
+helper-owned signed request UUID tag distinguishing intentional submissions. The UI cannot
 choose event kinds, headers, relay origins, or signing instructions. A private
 same-UID ledger stores request UUID, origin, public identity, room, event ID and
 outcome before publication; it stores no content, signed event, unkeyed text

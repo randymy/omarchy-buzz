@@ -40,10 +40,18 @@ for line in sys.stdin:
         assert UUID.fullmatch(request["id"])
         assert request["roomId"] == ROOM and request["generation"] == 7
         assert request["instanceId"] == INSTANCE and request["mentions"] == ["c" * 64]
-        assert request["text"] == ["Synthetic accepted draft", "Synthetic lost draft"][len(record["sends"])]
+        assert request["text"] == ["Synthetic accepted draft", "Synthetic rejected draft", "Synthetic lost draft"][len(record["sends"])]
         record["sends"].append(request)
         save()
         if len(record["sends"]) == 2:
+            print(json.dumps({"version": 1, "type": "error", "id": request["id"],
+                              "instanceId": INSTANCE, "category": "send_request_reused"}), flush=True)
+            # The old request may still produce a receipt; it must not clear
+            # the rejected replacement intent's text or trigger a refresh.
+            status["delivery"].update(requestId=request["id"], state="acknowledged")
+            emit()
+            continue
+        if len(record["sends"]) == 3:
             break  # Deliberately lose the outcome before any delivery receipt.
         status["delivery"] = {"requestId": request["id"], "roomId": ROOM,
                               "eventId": None, "state": "sending", "category": None}

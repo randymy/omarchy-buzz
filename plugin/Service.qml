@@ -336,13 +336,13 @@ Item {
     if (!boundedString(line, 65536)) { fail("invalid_response"); return false }
     var frame
     try { frame = JSON.parse(line) } catch (_) { fail("invalid_response"); return false }
-    if (frame && frame.version === 1 && frame.type === "error" && ["request_busy", "send_scope_changed"].indexOf(frame.category) !== -1) {
+    if (frame && frame.version === 1 && frame.type === "error" && ["request_busy", "send_busy", "send_scope_changed", "send_request_reused", "send_invalid", "send_unavailable", "send_access_denied", "send_ledger_unavailable", "delivery_unknown"].indexOf(frame.category) !== -1) {
       if (instanceId === "" || frame.instanceId !== instanceId) return false
       if (!boundedString(frame.id, 128) || !/^ui-[0-9]+$/.test(frame.id) && !uuidValue(frame.id)) { fail("invalid_response"); return false }
       if (frame.id === submissionId && deliveryState === "sending") {
         deliveryTimeout.stop()
-        deliveryState = frame.category === "send_scope_changed" ? "unknown" : "failed"
-        deliveryCategory = frame.category === "send_scope_changed" ? "send_scope_changed" : "send_busy"
+        deliveryState = ["send_scope_changed", "delivery_unknown"].indexOf(frame.category) !== -1 ? "unknown" : "failed"
+        deliveryCategory = frame.category === "request_busy" ? "send_busy" : frame.category
       }
       if (frame.id === pendingHistoryRequestId) {
         clearHistory()

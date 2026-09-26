@@ -33,8 +33,18 @@ ShellRoot {
         record.reload()
         var first = JSON.parse(record.text())
         if (first.sends.length !== 1 || first.fetches !== 2 || first.recipientFetches !== 1) return
-        service.updateDraft("Synthetic lost draft")
+        service.updateDraft("Synthetic rejected draft")
         if (!service.submitDraft() || service.submitDraft()) throw new Error("Second send fence failed")
+        test.stage = 5
+      } else if (test.stage === 5 && service.deliveryCategory === "send_request_reused") {
+        if (service.sessionFailed || service.connection !== "authenticated" || service.draftText !== "Synthetic rejected draft"
+            || service.submitDraft()) throw new Error("Correlated rejection lost draft, disconnected, or retried")
+        record.reload()
+        var rejectedRecord = JSON.parse(record.text())
+        if (rejectedRecord.sends.length !== 2 || rejectedRecord.fetches !== 2) return
+        service.newDraft()
+        service.updateDraft("Synthetic lost draft")
+        if (!service.submitDraft() || service.submitDraft()) throw new Error("Third send fence failed")
         test.stage = 2
       } else if (test.stage === 2 && service.deliveryState === "unknown") {
         if (service.drafts["11111111-1111-4111-8111-111111111111"] !== "Synthetic lost draft" || service.submitDraft()) throw new Error("Lost receipt lost draft or retried")
@@ -45,10 +55,10 @@ ShellRoot {
         test.stage = 4
       } else if (test.stage === 4) {
         var finalRecord = JSON.parse(record.text())
-        if (finalRecord.sends.length !== 2 || finalRecord.fetches !== 2 || finalRecord.recipientFetches !== 1
-            || finalRecord.sends[0].id === finalRecord.sends[1].id)
+        if (finalRecord.sends.length !== 3 || finalRecord.fetches !== 2 || finalRecord.recipientFetches !== 1
+            || finalRecord.sends[0].id === finalRecord.sends[1].id || finalRecord.sends[1].id === finalRecord.sends[2].id)
           throw new Error("Duplicate send, unexpected refresh, or reused draft UUID")
-        console.log("PASS: composer Process requests, scope fences, acknowledgement, one refresh, double-click and lost receipt")
+        console.log("PASS: composer Process requests, scope fences, acknowledgement, one refresh, correlated rejection, double-click and lost receipt")
         Qt.quit()
       }
       } catch (error) { console.error(error.message); Qt.exit(1) }

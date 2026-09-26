@@ -68,6 +68,15 @@ async fn write<W: tokio::io::AsyncWrite + Unpin>(
         .map_err(|_| "io_timeout")?
         .map_err(|_| "io_unavailable")
 }
+async fn send_result(
+    reply: tokio::sync::oneshot::Receiver<Option<&'static str>>,
+    deadline: Duration,
+) -> Option<&'static str> {
+    match tokio::time::timeout(deadline, reply).await {
+        Ok(Ok(category)) => category,
+        _ => Some("delivery_unknown"),
+    }
+}
 async fn client(
     s: UnixStream,
     mut status: watch::Receiver<Status>,
@@ -100,17 +109,22 @@ async fn client(
                     let busy={let pending=status.borrow();pending.delivery.state=="sending" && pending.delivery.request_id.as_deref()!=Some(r.id.as_str())};
                     if busy {write(&mut out,&serde_json::json!({"version":1,"type":"error","id":r.id,"category":"send_busy","instanceId":instance})).await?;continue;}
                 }
+                let mut send_reply=None;
                 let command=match r.kind.as_str() {
                     "retry_connection"=>Some(protocol::Command::Retry),
                     "fetch_recent"=>Some(protocol::Command::FetchRecent(r.room_id.clone().unwrap())),
                     "fetch_recipients"=>Some(protocol::Command::FetchRecipients(r.room_id.clone().unwrap())),
-                    "send_message"=>Some(protocol::Command::Send(protocol::SendIntent {
+                    "send_message"=>{let (reply,receiver)=tokio::sync::oneshot::channel();send_reply=Some(receiver);Some(protocol::Command::SendChecked(protocol::SendIntent {
                         request_id:r.id.clone(),room:r.room_id.clone().unwrap(),text:r.text.clone().unwrap(),
                         mentions:r.mentions.clone().unwrap(),generation:r.generation.unwrap(),
-                    })),
+                    },reply))},
                     _=>None,
                 };
                 if let Some(command)=command {if retry.try_send(command).is_err() {write(&mut out,&serde_json::json!({"version":1,"type":"error","id":r.id,"category":"request_busy","instanceId":instance})).await?;continue;}}
+                if let Some(reply)=send_reply {
+                    let category=send_result(reply,Duration::from_secs(5)).await;
+                    if let Some(category)=category {write(&mut out,&serde_json::json!({"version":1,"type":"error","id":r.id,"category":category,"instanceId":instance})).await?;continue;}
+                }
                 if r.kind=="subscribe" { subscribed=true; }
                 let snapshot=status.borrow().clone();
                 write(&mut out,&protocol::envelope("status",Some(&r.id),&instance,&snapshot)).await?;
@@ -223,4 +237,33 @@ pub async fn bridge() -> Result<(), &'static str> {
         Ok::<(), &'static str>(())
     };
     tokio::select! {r=send=>r,r=receive=>r}
+}
+
+#[cfg(test)]
+mod send_reply_tests {
+    use super::*;
+    #[tokio::test]
+    async fn timeout_abandons_queued_reply_and_reports_unknown() {
+        let (send, reply) = tokio::sync::oneshot::channel();
+        assert_eq!(
+            send_result(reply, Duration::from_millis(5)).await,
+            Some("delivery_unknown")
+        );
+        assert!(send.is_closed());
+    }
+    #[tokio::test]
+    async fn actor_loss_is_unknown_but_explicit_rejection_remains_exact() {
+        let (send, reply) = tokio::sync::oneshot::channel();
+        drop(send);
+        assert_eq!(
+            send_result(reply, Duration::from_secs(1)).await,
+            Some("delivery_unknown")
+        );
+        let (send, reply) = tokio::sync::oneshot::channel();
+        send.send(Some("send_request_reused")).unwrap();
+        assert_eq!(
+            send_result(reply, Duration::from_secs(1)).await,
+            Some("send_request_reused")
+        );
+    }
 }

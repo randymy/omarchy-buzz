@@ -344,3 +344,32 @@ fn distinct_requests_same_second_sign_distinct_events() {
     drop(_sender);
     std::fs::remove_dir_all(path).unwrap();
 }
+#[test]
+fn pending_uuid_binding_rejects_changed_text_mentions_or_scope() {
+    let (mut sender, intent, keys, status, path) = fixture();
+    let (_, event) = sender.prepare(
+        intent.clone(),
+        "ws://127.0.0.1/",
+        &keys,
+        &status,
+        true,
+        true,
+    );
+    let id = event.unwrap().id.to_hex();
+    assert!(sender.pending_error(&intent).is_none());
+    let mut changed = intent.clone();
+    changed.text.push('!');
+    assert_eq!(sender.pending_error(&changed), Some("send_request_reused"));
+    let mut changed = intent.clone();
+    changed.mentions = vec![Keys::generate().public_key().to_hex()];
+    assert_eq!(sender.pending_error(&changed), Some("send_request_reused"));
+    let mut changed = intent.clone();
+    changed.room = uuid::Uuid::new_v4().to_string();
+    assert_eq!(sender.pending_error(&changed), Some("send_request_reused"));
+    let mut changed = intent;
+    changed.request_id = uuid::Uuid::new_v4().to_string();
+    assert_eq!(sender.pending_error(&changed), Some("send_busy"));
+    assert_eq!(sender.acknowledge(&id, true).unwrap().state, "acknowledged");
+    drop(sender);
+    std::fs::remove_dir_all(path).unwrap();
+}

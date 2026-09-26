@@ -108,7 +108,13 @@ pub enum Command {
     Retry,
     FetchRecent(String),
     FetchRecipients(String),
+    // Trusted fixture path; external IPC always uses the checked reply boundary.
+    #[allow(dead_code)]
     Send(SendIntent),
+    SendChecked(
+        SendIntent,
+        tokio::sync::oneshot::Sender<Option<&'static str>>,
+    ),
 }
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]

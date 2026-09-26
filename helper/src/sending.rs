@@ -37,6 +37,23 @@ impl Sender {
     pub fn is_pending(&self) -> bool {
         self.pending.is_some()
     }
+    pub fn pending_error(&self, intent: &SendIntent) -> Option<&'static str> {
+        if !self.is_pending() {
+            return None;
+        }
+        let active = self.last.as_ref()?;
+        if active.request_id != intent.request_id {
+            return Some("send_busy");
+        }
+        if active.room != intent.room
+            || active.text != intent.text
+            || active.mentions != intent.mentions
+            || active.generation != intent.generation
+        {
+            return Some("send_request_reused");
+        }
+        None
+    }
     pub fn prepare(
         &mut self,
         intent: SendIntent,

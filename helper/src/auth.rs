@@ -150,23 +150,28 @@ enum ConnectionExit {
     Shutdown,
     Failure(&'static str),
 }
-fn offline_command(command: &Command, tx: &watch::Sender<Status>) {
-    if let Command::Send(intent) = command {
-        tx.send_modify(|s| {
+fn offline_command(command: Command, tx: &watch::Sender<Status>) -> bool {
+    match command {
+        Command::Retry => return true,
+        Command::SendChecked(_, reply) => {
+            let _ = reply.send(Some("send_unavailable"));
+        }
+        Command::Send(intent) => tx.send_modify(|s| {
             s.delivery = crate::protocol::Delivery {
-                request_id: Some(intent.request_id.clone()),
-                room_id: Some(intent.room.clone()),
+                request_id: Some(intent.request_id),
+                room_id: Some(intent.room),
                 event_id: None,
                 state: "failed".into(),
                 category: Some("send_unavailable".into()),
             }
-        });
+        }),
+        _ => {}
     }
+    false
 }
 async fn next_retry(commands: &mut mpsc::Receiver<Command>, tx: &watch::Sender<Status>) -> bool {
     while let Some(command) = commands.recv().await {
-        offline_command(&command, tx);
-        if matches!(command, Command::Retry) {
+        if offline_command(command, tx) {
             return true;
         }
     }
@@ -189,6 +194,18 @@ fn history_category(error: &str) -> &'static str {
             "history_invalid"
         }
         _ => "history_unavailable",
+    }
+}
+fn send_category(category: &str) -> Option<&'static str> {
+    match category {
+        "send_invalid" => Some("send_invalid"),
+        "send_busy" => Some("send_busy"),
+        "send_request_reused" => Some("send_request_reused"),
+        "send_scope_changed" => Some("send_scope_changed"),
+        "send_access_denied" => Some("send_access_denied"),
+        "send_ledger_unavailable" => Some("send_ledger_unavailable"),
+        "send_unavailable" => Some("send_unavailable"),
+        _ => None,
     }
 }
 fn recipients_category(error: &str) -> &'static str {
@@ -318,9 +335,26 @@ async fn observe_inner(
             command=retry.recv()=>match command {
                 Some(Command::Retry)=> {backoff.reset(); update(tx,"connecting",None); return ConnectionExit::Retry;},
                 None=>{update(tx,"disconnected",None);return ConnectionExit::Shutdown;},
-                Some(Command::Send(intent))=> {
+                Some(command @ (Command::Send(_) | Command::SendChecked(..)))=> {
+                    let (intent,reply)=match command {Command::Send(intent)=>(intent,None),Command::SendChecked(intent,reply)=>(intent,Some(reply)),_=>unreachable!()};
+                    if reply.as_ref().is_some_and(|reply|reply.is_closed()) {continue;}
+                    if let Some(category)=sender.pending_error(&intent) {
+                        if let Some(reply)=reply {let _=reply.send(Some(category));}
+                        // Keep the active watch receipt intact for every rejected replay.
+                        continue;
+                    }
                     let (delivery,event)=sender.prepare(intent,relay,keys,&tx.borrow(),fresh,relay_pin.is_some());
+                    if reply.is_some() && delivery.state=="failed" {
+                        if let Some(reply)=reply {let _=reply.send(Some(delivery.category.as_deref().and_then(send_category).unwrap_or("send_unavailable")));}
+                        continue;
+                    }
                     tx.send_modify(|s|s.delivery=delivery);
+                    if reply.is_some_and(|reply|reply.send(None).is_err()) && event.is_some() {
+                        // Reservation completed after the caller stopped waiting. No EVENT
+                        // is sent, and the durable association remains conservatively unknown.
+                        if let Some(delivery)=sender.unknown() {tx.send_modify(|s|s.delivery=delivery);}
+                        continue;
+                    }
                     if let Some(event)=event {
                         let frame=serde_json::json!(["EVENT",event]);
                         // A dropped/timed-out write may already have reached the relay.
@@ -480,8 +514,7 @@ pub async fn run(
         // Coalesce retry requests already queued for this attempt. Only this
         // sequential task owns key lookups, including any pending prompt.
         while let Ok(command) = retry.try_recv() {
-            offline_command(&command, &tx);
-            if matches!(command, Command::Retry) {
+            if offline_command(command, &tx) {
                 backoff.reset();
             }
         }
@@ -528,8 +561,7 @@ pub async fn run(
         // its single operation to finish, then reload before any relay auth.
         let mut retry_requested = false;
         while let Ok(command) = retry.try_recv() {
-            offline_command(&command, &tx);
-            if matches!(command, Command::Retry) {
+            if offline_command(command, &tx) {
                 retry_requested = true;
             }
         }

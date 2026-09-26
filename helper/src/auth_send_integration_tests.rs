@@ -45,6 +45,7 @@ async fn integrated(mode: u8) {
     let withhold = mode == 2;
     let mentioning = mode == 3 || mode == 4;
     let revoking = mode == 5;
+    let checking = mode == 7;
     use tokio::io::AsyncWriteExt;
     let _guard = crate::NETWORK_TEST_LOCK.lock().await;
     timeout(Duration::from_secs(if withhold {25} else {12}),async {
@@ -59,6 +60,7 @@ async fn integrated(mode: u8) {
         if mentioning {let profile=nostr::EventBuilder::new(nostr::Kind::Metadata,r#"{"display_name":"Self asserted name"}"#).sign_with_keys(&recipient).unwrap();payloads.push(roster);payloads.push(serde_json::to_string(&vec![profile]).unwrap());}
         if revoking {let revoked=signed(39002,vec![nostr::Tag::parse(["d",&room]).unwrap(),nostr::Tag::parse(["p",&recipient_key,"","member"]).unwrap()]);payloads.push(serde_json::to_string(&vec![revoked]).unwrap());}
         let expected_recipient=recipient_key.clone();
+        let ack_gate=std::sync::Arc::new(std::sync::atomic::AtomicBool::new(!checking));let server_gate=ack_gate.clone();
         let expected_room=room.clone();
         let (done_send,mut done_wait)=tokio::sync::oneshot::channel();
         let server=tokio::spawn(async move {
@@ -75,7 +77,7 @@ async fn integrated(mode: u8) {
                         match frame[0].as_str().unwrap() {
                             "COUNT"=>{
                                 ws.send(Message::Text(json!(["COUNT",frame[1],{"count":0}]).to_string().into())).await.unwrap();
-                                if event.is_some(){count_after_event=true;if !withhold {let id=event.take().unwrap();ws.send(Message::Text(json!(["OK",id,true,""]).to_string().into())).await.unwrap();}}
+                                if event.is_some(){count_after_event=true;if !withhold && server_gate.load(std::sync::atomic::Ordering::SeqCst) {let id=event.take().unwrap();ws.send(Message::Text(json!(["OK",id,true,""]).to_string().into())).await.unwrap();}}
                             },
                             "AUTH"=>{let auth:Event=serde_json::from_value(frame[1].clone()).unwrap();auth.verify().unwrap();assert_eq!(auth.pubkey,public);ws.send(Message::Text(json!(["OK",auth.id.to_hex(),true,""]).to_string().into())).await.unwrap();},
                             "EVENT"=>{assert!(!revoking,"EVENT after known membership loss");let message:Event=serde_json::from_value(frame[1].clone()).unwrap();message.verify().unwrap();assert_eq!(message.pubkey,public);assert_eq!(message.kind.as_u16(),9);assert!(message.tags.iter().any(|t|t.as_slice()==["h",expected_room.as_str()]));assert_eq!(message.content,"observer fixture");if mentioning {assert!(message.tags.iter().any(|t|t.as_slice()==["p",expected_recipient.as_str()]));}event=Some(message.id.to_hex());ws.send(Message::Text(json!(["OK","0".repeat(64),true,""]).to_string().into())).await.unwrap();if reauth {ws.send(Message::Text(json!(["AUTH","reauth-send"]).to_string().into())).await.unwrap();}},
@@ -108,7 +110,20 @@ async fn integrated(mode: u8) {
         }
         let sent_at=tokio::time::Instant::now();
         let generation=rx.borrow().generation;
-        commands.send(Command::Send(SendIntent{request_id:uuid::Uuid::new_v4().to_string(),room,text:"observer fixture".into(),mentions:if mentioning {vec![recipient_key]} else {vec![]},generation})).await.unwrap();
+        let submission=SendIntent{request_id:uuid::Uuid::new_v4().to_string(),room,text:"observer fixture".into(),mentions:if mentioning {vec![recipient_key]} else {vec![]},generation};
+        if checking {
+            let (reply,received)=tokio::sync::oneshot::channel();commands.send(Command::SendChecked(submission.clone(),reply)).await.unwrap();assert_eq!(received.await.unwrap(),None);
+            let original=rx.borrow().delivery.clone();assert_eq!(original.state,"sending");
+            let mut changed=submission.clone();changed.text.push('!');
+            let (reply,received)=tokio::sync::oneshot::channel();commands.send(Command::SendChecked(changed,reply)).await.unwrap();assert_eq!(received.await.unwrap(),Some("send_request_reused"));
+            let mut changed=submission.clone();changed.mentions=vec![Keys::generate().public_key().to_hex()];
+            let (reply,received)=tokio::sync::oneshot::channel();commands.send(Command::SendChecked(changed,reply)).await.unwrap();assert_eq!(received.await.unwrap(),Some("send_request_reused"));
+            let mut changed=submission.clone();changed.request_id=uuid::Uuid::new_v4().to_string();
+            let (reply,received)=tokio::sync::oneshot::channel();commands.send(Command::SendChecked(changed,reply)).await.unwrap();assert_eq!(received.await.unwrap(),Some("send_busy"));
+            let (reply,received)=tokio::sync::oneshot::channel();commands.send(Command::SendChecked(submission,reply)).await.unwrap();assert_eq!(received.await.unwrap(),None);
+            assert_eq!(rx.borrow().delivery.state,"sending");assert_eq!(rx.borrow().delivery.event_id,original.event_id);assert_eq!(rx.borrow().delivery.request_id,original.request_id);
+            ack_gate.store(true,std::sync::atomic::Ordering::SeqCst);
+        } else {commands.send(Command::Send(submission)).await.unwrap();}
         if revoking {
             while rx.borrow().delivery.state!="failed" {rx.changed().await.unwrap();}
             assert_eq!(rx.borrow().delivery.category.as_deref(),Some("send_access_denied"));assert!(rx.borrow().delivery.event_id.is_none());
@@ -150,4 +165,9 @@ async fn observer_reauth_clears_selected_recipient_snapshot() {
 #[tokio::test]
 async fn observer_roster_revocation_clears_history_and_blocks_plain_event() {
     integrated(5).await;
+}
+
+#[tokio::test]
+async fn observer_checked_conflicts_preserve_original_ack_and_identical_replay() {
+    integrated(7).await;
 }

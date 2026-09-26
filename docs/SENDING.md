@@ -74,7 +74,16 @@ intentional submissions with identical text and tags in the same second; Nostr's
 second-resolution timestamp alone would otherwise give them the same event ID.
 An existing request is never signed again. Repeating an in-flight request retains
 its original sending receipt; another busy submission cannot overwrite that
-receipt or suppress its eventual acknowledgement.
+receipt or suppress its eventual acknowledgement. The actor compares the exact
+pending room, text, mention list and generation before admitting a replay.
+Conflicting reuse receives a correlated `send_request_reused` error, and another
+request receives `send_busy`, without replacing the watched receipt. QML retains
+the rejected draft and ignores later acknowledgements for that rejected intent.
+The IPC actor-reply deadline is five seconds: losing that reply is an unknown
+outcome, never proof of rejection or permission to retry. An already abandoned
+queued request is discarded before reservation; if the reply disappears during
+reservation, the helper retains the durable binding as unknown and skips the
+EVENT write.
 
 Once transmission starts, timeout, cancellation, or disconnect means
 `delivery_unknown`. The preview offers no retransmission. Any later retry feature must reuse the
