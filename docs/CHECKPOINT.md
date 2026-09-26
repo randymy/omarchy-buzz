@@ -24,7 +24,8 @@ replies are explicitly unknown, and QML retains rejected drafts without treating
 late receipts as acknowledgement of changed intent.
 
 Runtime source is committed in `617bd73`; the installed plugin was updated to
-`1fac562`, which also includes notice packaging and downstream documentation.
+`17c1cf9`, including notice packaging, downstream documentation and clearer
+incompatible-helper update guidance.
 The installed 0.0.3 helper SHA256 is
 `cfaa915036f1cf26b553a34ec93dbc3c0f893b11f9f106cc0e7eb6844054bebf`.
 The prior installed helper is preserved as
@@ -36,7 +37,12 @@ A verified local ARM64 development archive and checksum manifest are saved in
 `artifacts/local-20260926-checked/` (ignored by Git). The archive is 7.7 MB and
 matches the installed binary. It includes a 252-package dependency notice
 inventory, with 19 review flags and no compliance or public-release claim.
-Five cached packages lack notice text; see [DEPENDENCY_NOTICES.md](DEPENDENCY_NOTICES.md).
+Five cached packages lack notice text. An exact-commit nostr notice and its
+verified provenance are separately saved under ignored
+`artifacts/supplemental-notices/`; it has not yet been integrated into the
+archive inventory. Four Bitcoin packages lack exact source revision metadata,
+so their notice provenance remains unresolved. See
+[DEPENDENCY_NOTICES.md](DEPENDENCY_NOTICES.md).
 All public publication and production-relay work remains deferred.
 
 ## Validation and installed state
