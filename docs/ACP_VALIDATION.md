@@ -161,3 +161,10 @@ disposable `OMARCHY_BUZZ_TEST_RELAY_URL`, then run the ignored `acp_relay_` test
 Built binaries must include `buzz-acp`, `buzz`, `git-sign-nostr`, and
 `git-credential-nostr`. No production identity or provider credentials are
 accepted by this synthetic supervisor.
+
+The manual relay workflow now offers `synthetic_acp=true` (default false).
+It builds the four pinned tools, then passes paired `--acp-bin-dir` and
+`--acp-node` arguments to the runner. The ACP test runs only after exact
+messaging conformance passes. Evidence records messaging and ACP results
+separately; an ACP failure cannot erase or imply the messaging result.
+No real agent/provider is selected by this option.

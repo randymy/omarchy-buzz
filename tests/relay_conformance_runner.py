@@ -47,6 +47,10 @@ class RunnerTests(unittest.TestCase):
         project = "obuzz-test-" + "a" * 24
         plan = runner.compose_plan(project, Path("/tmp/binary with spaces"), [43210, 43211], "synthetic-password", "b" * 64)
         self.assertTrue(plan["networks"]["fixture"]["internal"])
+        self.assertEqual(plan["networks"]["ingress"], {"driver": "bridge"})
+        self.assertEqual(plan["services"]["postgres"]["networks"], ["fixture", "ingress"])
+        self.assertEqual(plan["services"]["relay"]["networks"], ["fixture", "ingress"])
+        self.assertEqual(plan["services"]["redis"]["networks"], ["fixture"])
         for name, service in plan["services"].items():
             self.assertNotIn("container_name", service)
             self.assertNotIn("external", service)

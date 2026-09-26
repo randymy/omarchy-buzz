@@ -175,3 +175,14 @@ Evidence records `validationScope: messaging-only` and `objectStoreProbe: false`
 This does not certify Git, media, or object-store deployment. The optional runner
 mode without this flag retains the object-store probe when its images are
 accessible; even that probe is not full Git/media conformance.
+
+The runner attaches PostgreSQL and the relay to a second dedicated bridge for
+loopback port publication. Docker does not publish ports for containers attached
+only to an internal network; that caused schema connection refusal in runs
+36279871986 and 36280066547. Redis/object storage stay on the internal network.
+The second bridge permits outbound traffic from the relay/database; evidence
+records `relayEgressBlocked: false`. This fixture isolates data and inbound
+ports, not all egress. It runs only on a disposable CI host with synthetic
+identities and no provider credentials. This topology is not a sandbox claim
+for a real agent. See [Docker networking](https://docs.docker.com/engine/network/)
+and [the upstream report](https://github.com/moby/moby/discussions/53256).

@@ -2,6 +2,11 @@ name: Isolated Buzz messaging conformance
 
 on:
   workflow_dispatch:
+    inputs:
+      synthetic_acp:
+        description: Also test the pinned synthetic ACP peer after messaging passes
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -71,6 +76,10 @@ jobs:
         id: build
         working-directory: buzz
         run: cargo +1.95.0 build --locked -p buzz-relay --target-dir "$RUNNER_TEMP/relay-target"
+      - name: Build optional pinned ACP tools
+        if: inputs.synthetic_acp
+        working-directory: buzz
+        run: cargo +1.95.0 build --locked -p buzz-acp -p buzz-cli -p git-sign-nostr -p git-credential-nostr --target-dir "$RUNNER_TEMP/relay-target"
       - name: Compile the helper conformance tests
         working-directory: plugin
         run: cargo +1.95.0 test --locked --no-run --manifest-path helper/Cargo.toml --target-dir "$RUNNER_TEMP/helper-target"
@@ -82,9 +91,15 @@ jobs:
               subprocess.run(['docker', 'pull', image], check=True, timeout=180)
           PYCODE
       - name: Exercise the helper against an isolated real relay
+        env:
+          SYNTHETIC_ACP: ${{ inputs.synthetic_acp }}
         run: |
           export RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}"
-          python3 plugin/scripts/relay-conformance-runner --messaging-only \
+          acp_args=()
+          if [[ "$SYNTHETIC_ACP" == "true" ]]; then
+            acp_args=(--acp-bin-dir "$RUNNER_TEMP/relay-target/debug" --acp-node "$(command -v node)")
+          fi
+          python3 plugin/scripts/relay-conformance-runner --messaging-only "${acp_args[@]}" \
             --buzz-source "$GITHUB_WORKSPACE/buzz" \
             --relay-binary "$RUNNER_TEMP/relay-target/debug/buzz-relay" \
             --helper-source "$GITHUB_WORKSPACE/plugin" \

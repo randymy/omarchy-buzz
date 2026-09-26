@@ -62,7 +62,7 @@ def compose_plan(project, binary, ports, password, relay_key, messaging_only=Fal
     pg_port, relay_port = ports
     shared = {"networks": ["fixture"], "restart": "no"}
     services = {
-        "postgres": {**shared, "image": "postgres:17-alpine",
+        "postgres": {**shared, "networks": ["fixture", "ingress"], "image": "postgres:17-alpine",
                      "environment": {"POSTGRES_USER": "buzz", "POSTGRES_PASSWORD": password, "POSTGRES_DB": "buzz"},
                      "ports": [f"127.0.0.1:{pg_port}:5432"], "volumes": ["postgres-data:/var/lib/postgresql/data"],
                      "healthcheck": {"test": ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "buzz", "-d", "buzz"], "interval": "2s", "timeout": "3s", "retries": 60}},
@@ -75,7 +75,7 @@ def compose_plan(project, binary, ports, password, relay_key, messaging_only=Fal
                   "healthcheck": {"test": ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"], "interval": "2s", "timeout": "3s", "retries": 60}},
         "minio-init": {**shared, "image": MC, "environment": {"FIXTURE_PASSWORD": password},
                        "entrypoint": ["/bin/sh", "-ec", 'mc alias set fixture http://minio:9000 fixture "$$FIXTURE_PASSWORD" >/dev/null; mc mb --ignore-existing fixture/buzz-media >/dev/null; mc anonymous set none fixture/buzz-media >/dev/null']},
-        "relay": {**shared, "image": project + "-runtime:local", "init": True, "user": "65532:65532", "read_only": True,
+        "relay": {**shared, "networks": ["fixture", "ingress"], "image": project + "-runtime:local", "init": True, "user": "65532:65532", "read_only": True,
                   "cap_drop": ["ALL"], "security_opt": ["no-new-privileges:true"],
                   "tmpfs": ["/tmp:mode=0700,uid=65532,gid=65532"],
                   "volumes": [{"type": "bind", "source": str(binary), "target": "/opt/buzz-relay", "read_only": True}],
@@ -101,7 +101,7 @@ def compose_plan(project, binary, ports, password, relay_key, messaging_only=Fal
             "BUZZ_GIT_CONFORMANCE_PROBE": "false",
             "BUZZ_S3_ENDPOINT": "http://127.0.0.1:9",
         })
-    return {"name": project, "services": services, "networks": {"fixture": {"internal": True}},
+    return {"name": project, "services": services, "networks": {"fixture": {"internal": True}, "ingress": {"driver": "bridge"}},
             "volumes": volumes}
 
 
@@ -221,7 +221,7 @@ def run(args):
     log.touch(mode=0o600)
     report = {"schemaVersion": 1, "state": "failed", "stage": "preflight", "upstreamRevision": REVISION,
               "validationScope": "messaging-only" if args.messaging_only else "messaging-with-object-store-probe",
-              "objectStoreProbe": not args.messaging_only, "loopbackOnly": True, "productionStateUsed": False, "images": {}, "cleanupComplete": False,
+              "objectStoreProbe": not args.messaging_only, "loopbackOnly": True, "relayEgressBlocked": False, "productionStateUsed": False, "images": {}, "cleanupComplete": False,
               "relayBinarySha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
               "messaging": {"state": "not_run"},
               "acp": {"state": "not_run" if acp_binary is not None else "not_requested", "syntheticOnly": True}}
