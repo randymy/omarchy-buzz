@@ -50,3 +50,9 @@ jobs:
         run: cargo +1.95.0 build --locked --manifest-path helper/Cargo.toml
       - name: Test daemon and bridge without credentials
         run: python3 tests/helper_smoke.py helper/target/debug/omarchy-buzz
+      - name: Test inherited socket idle reactivation
+        run: python3 tests/helper_activation.py helper/target/debug/omarchy-buzz
+      - name: Install isolated keyring test dependencies
+        run: sudo apt-get update && sudo apt-get install -y dbus gnome-keyring
+      - name: Test synthetic identity enrollment in a private keyring
+        run: python3 tests/helper_keyring.py helper/target/debug/omarchy-buzz

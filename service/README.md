@@ -38,6 +38,8 @@ Remove only this project's two installed unit files and helper binary, then run
 entries unless the user explicitly chooses to delete them. Omarchy's native
 plugin removal cannot remove these separately installed files.
 
-Validation so far: systemd parsed the units; verification correctly reports the
-not-yet-installed executable as missing. Socket activation, idle reactivation,
-resource limits, and Secret Service access still require runtime validation.
+Validation so far: installed systemd socket activation passed with unconfigured
+public status, and an isolated inherited-socket test passed idle exit/reactivation.
+Secret Service enrollment/retrieval passed in a separate private test session.
+Keyring access under every service hardening setting and resource limits under
+hostile relay load still require validation.

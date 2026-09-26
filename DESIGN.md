@@ -283,6 +283,30 @@ M1 must establish a reusable authenticated HTTP seam before M2. If upstream extr
 
 ## 8. Configuration, distribution, lifecycle, and compatibility
 
+### Hosted and independently operated communities
+
+Self-hosting is optional. Setup offers **Buzz hosted** and **Custom relay** as
+first-class choices. Both ultimately configure the same canonical community
+origin and human identity; the messaging/agent architecture does not fork by
+hosting provider. No credentials or hosted account tokens belong in QML.
+
+The inspected upstream `desktop/src/features/communities/hostedCommunityApi.ts`
+uses community-specific `*.communities.buzz.xyz` hosts. Its onboarding components
+call Tauri commands for Builderlab browser login, identity binding, community
+listing/creation, and joining. These desktop commands are not a supported local
+API for an external Omarchy plugin. The official [support guidance](https://block.github.io/buzz/support.html)
+directs users to buzz.xyz and explains invitation-based access. A relay URL alone
+does not grant membership. Source and public documentation disagree on numeric
+account limits, so the plugin must not embed plan/quota promises.
+
+Initially the hosted option opens the fixed official onboarding site only on a
+user click, then connects to the resulting community address after upstream
+account/invitation setup and explicit secure identity enrollment. It must clearly
+identify this manual handoff. Do not invent a global public relay, guess a
+community from an email, scrape desktop tokens, or implement a parallel account
+system. A future seamless browser handoff must use a reviewed upstream contract
+implemented in the helper, with account credentials outside QML.
+
 Planned non-secret helper config: `~/.config/omarchy-buzz/config.toml`. It holds the relay origin, public identity reference, preferred room, monitored rooms, notification mode, optional integration declarations, and later supported agent references. No arbitrary environment map. QML settings contain only presentation preferences/helper executable location. Validate helper path locally; remote messages cannot change it.
 
 Planned state: `~/.local/state/omarchy-buzz/` with 0700 directory/0600 files for unread cursors and send metadata; no credential fallback. Runtime socket disappears with the session. Keep logging category-based and bounded. Background notifications are opt-in so disabling the plugin does not unexpectedly keep a network client active.

@@ -10,6 +10,7 @@ Item {
   // Only offscreen fixtures opt into sampleMode; production never loads sample rooms.
   property bool sampleMode: false
   property bool autoConnect: true
+  property string setupProvider: "hosted"
   property string helperExecutable: Quickshell.env("HOME") + "/.local/bin/omarchy-buzz"
   property string connection: "unavailable"
   property string category: "helper_unavailable"
@@ -30,7 +31,21 @@ Item {
     unconfigured: "Setup required", connecting: "Connecting", authenticated: "Authenticated · history unavailable",
     identity_locked: "Identity locked", disconnected: "Disconnected", unavailable: "Helper unavailable"
   })[connection] || "Unavailable"
-  readonly property string setupInstructions: (category === "config_unavailable" || category === "invalid_config") ? "The helper configuration could not be read or validated. Check your local omarchy-buzz configuration, then select Retry. Credentials do not belong in the configuration file." : (connection === "identity_locked" || category === "identity_access_pending") ? "Unlock your OS secret store, then select Retry. The existing identity is retained; no replacement identity is created." : connection === "authenticated" ? "Relay authentication succeeded. Room discovery, history synchronization, and message sending are not implemented yet. No unread or agent health claims are available." : "Install the helper and enable its user socket first.\nIn a terminal, run: omarchy-buzz setup relay wss://your-relay.example\nThen: omarchy-buzz setup identity enroll\nEnrollment uses hidden terminal input and your OS secret store. Never paste a private key into this panel.\nSelect Retry after setup. Authentication does not mean room history is synchronized; messaging arrives in a later milestone."
+  readonly property string providerInstructions: setupProvider === "hosted"
+    ? "Set up your account and identity binding at buzz.xyz. Create or join a community, then use its assigned URL. There is no single public global relay; invitations and membership still apply."
+    : "Use the URL of a relay you already belong to, including one you were invited to. Choosing custom does not require running your own relay."
+  readonly property string setupInstructions: (category === "config_unavailable" || category === "invalid_config")
+    ? "Check your local helper configuration, then Retry. Credentials do not belong in that file."
+    : (connection === "identity_locked" || category === "identity_access_pending")
+      ? "Unlock your OS secret store, then Retry. Your existing identity is retained."
+      : connection === "authenticated"
+        ? "Relay authentication succeeded. Room history and messaging are not available yet."
+        : providerInstructions + "\nLink manually in a terminal after installing the helper:\nomarchy-buzz setup relay <community-url>\nomarchy-buzz setup identity enroll\nEnroll the same existing Buzz identity using hidden input and your OS secret store, then Retry. Hosted account sign-in stays in your browser. Never enter keys or account tokens in this panel."
+
+  function chooseSetupProvider(provider) {
+    // Presentation only: choosing a provider never writes config or sends IPC.
+    if (provider === "hosted" || provider === "custom") setupProvider = provider
+  }
 
   function selectRoom(roomId) {
     if (rooms.some(function(room) { return room.id === roomId })) selectedRoomId = roomId

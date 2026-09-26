@@ -12,7 +12,7 @@ The community plugin will remain generic. vPerps is a downstream integration, de
 
 Development targets the built-in Omarchy bar and the shell interfaces inspected at [`7b336b1`](https://github.com/omacom/omarchy/tree/7b336b1b0da722e7bb864a7136f91e784ef731bf). Required runtime dependencies are Omarchy's Quickshell, QtQuick/Layouts/Controls, Wayland/Hyprland modules, and `qs.Ui`/`qs.Commons`; these come from the Omarchy installation. Other bar implementations may not expose the service facade. The panel can be summoned separately.
 
-Manifest validation, a native sample-panel render, ARM64 helper tests, isolated Secret Service enrollment, inherited-socket idle reactivation, and actual QML/helper process integration have passed locally. Full keyboard, multi-monitor, and removal verification remain pending. Do not infer support for every 4.x snapshot from the package version.
+Manifest validation, a native sample-panel render, ARM64 helper tests, isolated Secret Service enrollment, inherited-socket idle reactivation, and actual QML/helper process integration have passed locally. The installed native setup panel and systemd socket activation also passed a live desktop check. Full keyboard, multi-monitor, and removal verification remain pending. Do not infer support for every 4.x snapshot from the package version.
 
 ## Try the local development preview
 
@@ -41,7 +41,17 @@ cargo build --release --locked --manifest-path helper/Cargo.toml
 
 Install the resulting `helper/target/release/omarchy-buzz` binary at `~/.local/bin/omarchy-buzz`, and follow [helper supervision](service/README.md) to install and enable its user socket. Review existing files before replacement. There is no automatic binary download. A functioning Linux Secret Service is required for enrollment and authentication.
 
-Configure your relay and enroll your existing human Buzz identity in a terminal:
+You do not need to run a relay. Choose **Buzz hosted** to create or join a
+Block-hosted community through [buzz.xyz](https://buzz.xyz), or **Custom relay**
+for a relay you or someone else operates. Hosted communities have their own
+addresses and access rules; there is no shared public default relay. Complete
+upstream account/invitation setup first, then use your community's assigned
+relay URL. See [upstream hosted-community guidance](https://block.github.io/buzz/support.html).
+
+The current connection preview opens upstream hosted setup in your browser;
+automatic account/identity handoff is not implemented. It never collects hosted
+account passwords or bearer tokens in QML. Configure either type of community
+and enroll your existing human Buzz identity in a terminal:
 
 ```bash
 omarchy-buzz setup relay wss://your-relay.example
@@ -56,7 +66,7 @@ This local clone can be updated after committing changes to the source checkout:
 omarchy plugin update community.buzz
 ```
 
-For direct UI iteration, edit the installed development copy; Omarchy watches user plugins. An update will refuse conflicting local changes. See [development and validation](docs/DEVELOPMENT.md) for the full smoke procedure and pinned validator.
+For direct UI iteration, edit the installed development copy; Omarchy watches user plugins. An update will refuse conflicting local changes. On the tested package, rescan and disable/re-enable retained old compiled QML after an update. If the UI remains stale, use the supported `omarchy restart shell` command; it restarts the bar/panels, not applications. Do not rename plugin entry points to bypass caching. See [development and validation](docs/DEVELOPMENT.md) for the full smoke procedure and pinned validator.
 
 ## Remove
 

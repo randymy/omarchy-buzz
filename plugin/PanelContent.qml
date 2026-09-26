@@ -134,6 +134,29 @@ FocusScope {
           font.pixelSize: Style.font.body * 1.2
           font.bold: true
         }
+        RowLayout {
+          visible: root.service && !root.service.sampleMode && root.service.connection !== "authenticated"
+          spacing: Style.space(8)
+          Ui.Button {
+            text: "Buzz hosted"
+            selected: root.service && root.service.setupProvider === "hosted"
+            focusable: true
+            onClicked: if (root.service) root.service.chooseSetupProvider("hosted")
+          }
+          Ui.Button {
+            text: "Custom relay"
+            selected: root.service && root.service.setupProvider === "custom"
+            focusable: true
+            onClicked: if (root.service) root.service.chooseSetupProvider("custom")
+          }
+        }
+        Ui.Button {
+          visible: root.service && !root.service.sampleMode && root.service.setupProvider === "hosted" && root.service.connection !== "authenticated"
+          text: "Open Buzz hosted setup"
+          focusable: true
+          // Fixed upstream URL, opened only by this explicit user action.
+          onClicked: Qt.openUrlExternally("https://buzz.xyz")
+        }
         Text {
           Layout.fillWidth: true
           text: root.service && root.service.selectedRoom ? root.service.selectedRoom.description : (root.service ? root.service.setupInstructions : "Enable the plugin and reopen this panel.")

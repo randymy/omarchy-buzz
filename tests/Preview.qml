@@ -58,6 +58,18 @@ ShellRoot {
         sampleService.selectRoom("sample-general")
         if (protocolService.rooms.length !== 0 || protocolService.messages.length !== 0)
           throw new Error("Production state exposed sample data")
+        if (protocolService.setupProvider !== "hosted") throw new Error("Hosted setup is not the default")
+        var beforeProvider = [protocolService.relay, protocolService.instanceId, protocolService.generation,
+          protocolService.requestSequence, protocolService.connection, protocolService.category].join("|")
+        protocolService.chooseSetupProvider("custom")
+        if (protocolService.setupProvider !== "custom" || protocolService.providerInstructions.indexOf("invited") === -1)
+          throw new Error("Custom setup guidance incorrect")
+        protocolService.chooseSetupProvider("unexpected")
+        if (protocolService.setupProvider !== "custom") throw new Error("Invalid provider accepted")
+        protocolService.chooseSetupProvider("hosted")
+        if (beforeProvider !== [protocolService.relay, protocolService.instanceId, protocolService.generation,
+          protocolService.requestSequence, protocolService.connection, protocolService.category].join("|"))
+          throw new Error("Provider selection mutated connection configuration")
         function frame(kind, instance, generation, state) {
           return JSON.stringify({version: 1, type: kind, instanceId: instance, generation: generation,
             capabilities: ["connection_status"], status: {generation: generation, connection: state,

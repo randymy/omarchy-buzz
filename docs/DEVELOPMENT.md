@@ -91,3 +91,23 @@ need a sandbox that permits their local sockets.
 Outstanding: native production panel visual check, installed systemd activation
 end to end, auth accept/reject/transport conformance, HTTP seam and upstream
 resource limits. The earlier M0/initial M1 evidence above is historical.
+
+## Native activation and authentication transport evidence
+
+The installed plugin at 0.0.2 now displays the production Setup panel, with no
+synthetic rooms. Opening/loading the plugin activates the separately installed
+systemd helper through its socket. Private desktop captures were inspected and
+not committed. Omarchy rescan and disable/re-enable retained old QML after the
+update; `omarchy restart shell` loaded the correct version. Source inspection
+found an optional guarded component-cache clear and stable entry URLs, consistent
+with this observed limitation; the exact Qt cache root cause is not proven.
+
+The Rust suite now has twelve passing tests, including a synthetic loopback WS
+relay verifying signed NIP-42 kind, author, relay/challenge tags, exact matching
+acknowledgment, safe rejection category, and cached-challenge reauthentication.
+These use the production connection function and upstream signing/verification.
+They are transport conformance tests, not a deployed Buzz relay certification.
+
+CI now includes inherited-socket reactivation and isolated real Secret Service
+tests. Remote CI still has not run. HTTP queries, hostile-peer memory bounds,
+heartbeat/reconnect behavior, and messaging remain outstanding.

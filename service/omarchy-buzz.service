@@ -18,6 +18,7 @@ LockPersonality=yes
 MemoryMax=256M
 TasksMax=32
 LimitNOFILE=128
+LimitCORE=0
 
 # The socket owns its runtime directory across normal daemon idle exits.
 # Session D-Bus access is required for the user's Secret Service.
