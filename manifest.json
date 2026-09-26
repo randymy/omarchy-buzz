@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "community.buzz",
   "name": "Buzz for Omarchy",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "author": "Buzz for Omarchy contributors",
   "license": "Apache-2.0",
-  "description": "Native Buzz collaboration panel. Development preview with sample data only.",
+  "description": "Native Buzz connection panel. Development preview; messaging is not yet available.",
   "kinds": ["service", "bar-widget", "panel"],
   "entryPoints": {
     "service": "plugin/Service.qml",
@@ -14,7 +14,7 @@
   },
   "barWidget": {
     "displayName": "Buzz",
-    "description": "Open the Buzz development preview. No relay connection.",
+    "description": "Show Buzz setup and connection status.",
     "category": "Productivity",
     "defaultSection": "right",
     "allowMultiple": false

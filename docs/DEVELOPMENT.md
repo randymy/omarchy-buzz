@@ -68,3 +68,26 @@ not run. QML still uses sample data. Live keyring/enrollment, authenticated rela
 behavior, socket activation, HTTP queries, hostile-relay resource limits, and
 x86_64 execution remain unverified. See `service/README.md` for draft supervision
 and cleanup instructions; those units have not been installed.
+
+## M1 connection preview checkpoint
+
+The production service now uses the helper bridge; sample data requires explicit
+test mode. Nine Rust tests pass, including configuration reload/generation tests.
+`./scripts/preview` passes protocol/UI assertions. The actual bridge test passes:
+
+```bash
+BUZZ_TEST_HELPER=/absolute/path/to/omarchy-buzz ./scripts/preview --bridge
+python3 tests/helper_activation.py /absolute/path/to/omarchy-buzz
+python3 tests/helper_keyring.py /absolute/path/to/omarchy-buzz
+```
+
+The activation test passed real 30-second idle exit and inherited socket reuse.
+The optional keyring test passed enrollment and retrieval with a synthetic key in
+a separate D-Bus/Secret Service session. It requires `dbus-run-session` and
+`gnome-keyring-daemon`; it never uses the user's keyring. It checks an unavailable
+loopback relay, not successful relay authentication. All process/socket tests
+need a sandbox that permits their local sockets.
+
+Outstanding: native production panel visual check, installed systemd activation
+end to end, auth accept/reject/transport conformance, HTTP seam and upstream
+resource limits. The earlier M0/initial M1 evidence above is historical.

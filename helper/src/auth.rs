@@ -34,13 +34,62 @@ fn category(e: &WsClientError) -> &'static str {
         _ => "relay_protocol_error",
     }
 }
-pub async fn run(c: config::Config, tx: watch::Sender<Status>, mut retry: mpsc::Receiver<()>) {
-    if c.relay.is_none() || c.identity.is_none() {
-        update(&tx, "unconfigured", None);
-        while retry.recv().await.is_some() {}
-        return;
+fn apply_loaded_config(
+    tx: &watch::Sender<Status>,
+    loaded: Result<config::Config, &'static str>,
+) -> Result<config::Config, ()> {
+    match loaded {
+        Ok(c) => {
+            tx.send_modify(|s| {
+                if s.relay != c.relay || s.identity != c.identity {
+                    s.relay = c.relay.clone();
+                    s.identity = c.identity.clone();
+                    s.generation = s.generation.saturating_add(1);
+                    s.connection = "unconfigured".into();
+                    s.category = None;
+                }
+            });
+            Ok(c)
+        }
+        Err(error) => {
+            // Invalid disk configuration never falls back to authenticating
+            // with the previously loaded identity/origin.
+            let category = if error == "config_unavailable" {
+                "config_unavailable"
+            } else {
+                "invalid_config"
+            };
+            update(tx, "unavailable", Some(category));
+            Err(())
+        }
     }
+}
+
+pub async fn run(
+    _initial: config::Config,
+    tx: watch::Sender<Status>,
+    mut retry: mpsc::Receiver<()>,
+) {
     loop {
+        // Coalesce retry requests already queued for this attempt. Only this
+        // sequential task owns key lookups, including any pending prompt.
+        while retry.try_recv().is_ok() {}
+        let c = match apply_loaded_config(&tx, config::load()) {
+            Ok(c) => c,
+            Err(()) => {
+                if retry.recv().await.is_none() {
+                    return;
+                }
+                continue;
+            }
+        };
+        if c.relay.is_none() || c.identity.is_none() {
+            update(&tx, "unconfigured", None);
+            if retry.recv().await.is_none() {
+                return;
+            }
+            continue;
+        }
         update(&tx, "connecting", None);
         let cfg = c.clone();
         let mut key_read = tokio::task::spawn_blocking(move || read_keys(&cfg));
@@ -53,6 +102,11 @@ pub async fn run(c: config::Config, tx: watch::Sender<Status>, mut retry: mpsc::
                 key_read.await
             }
         };
+        // Setup may have changed while an unlock prompt was pending. Wait for
+        // its single operation to finish, then reload before any relay auth.
+        if retry.try_recv().is_ok() {
+            continue;
+        }
         let keys = match key_result {
             Ok(Ok(k)) => k,
             Ok(Err(e)) => {
@@ -125,5 +179,52 @@ pub async fn run(c: config::Config, tx: watch::Sender<Status>, mut retry: mpsc::
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod reload_tests {
+    use super::*;
+    fn fixture(relay: Option<&str>, identity: Option<&str>) -> config::Config {
+        config::Config {
+            relay: relay.map(str::to_owned),
+            identity: identity.map(str::to_owned),
+        }
+    }
+    #[test]
+    fn scope_generation_changes_only_with_public_scope() {
+        let initial = fixture(None, None);
+        let (tx, rx) = watch::channel(Status::new(&initial));
+        assert!(apply_loaded_config(&tx, Ok(initial)).is_ok());
+        assert_eq!(rx.borrow().generation, 1);
+        let c = fixture(Some("wss://example.com/"), None);
+        assert!(apply_loaded_config(&tx, Ok(c.clone())).is_ok());
+        assert_eq!(rx.borrow().generation, 2);
+        assert!(apply_loaded_config(&tx, Ok(c)).is_ok());
+        assert_eq!(rx.borrow().generation, 2);
+        assert!(apply_loaded_config(
+            &tx,
+            Ok(fixture(
+                Some("wss://example.com/"),
+                Some("synthetic-public-key")
+            ))
+        )
+        .is_ok());
+        assert_eq!(rx.borrow().generation, 3);
+        assert_eq!(
+            rx.borrow().identity.as_deref(),
+            Some("synthetic-public-key")
+        );
+    }
+    #[test]
+    fn malformed_reload_disables_auth_without_inventing_scope() {
+        let c = fixture(Some("wss://example.com/"), None);
+        let (tx, rx) = watch::channel(Status::new(&c));
+        assert!(apply_loaded_config(&tx, Err("invalid_relay")).is_err());
+        assert_eq!(rx.borrow().generation, 1);
+        assert_eq!(rx.borrow().connection, "unavailable");
+        assert_eq!(rx.borrow().category.as_deref(), Some("invalid_config"));
+        assert!(apply_loaded_config(&tx, Err("config_unavailable")).is_err());
+        assert_eq!(rx.borrow().category.as_deref(), Some("config_unavailable"));
     }
 }

@@ -1,7 +1,7 @@
 # Helper supervision (development)
 
 These user units are under development and are not installed by the QML plugin.
-The UI remains a sample-data preview until bridge integration is complete.
+The UI connects through a bridge and displays connection status; messaging remains unavailable.
 
 The socket activates `%h/.local/bin/omarchy-buzz daemon`. It retains its private
 runtime directory while the daemon exits after its last client disconnects.
@@ -23,8 +23,8 @@ Enrollment requires the user's Secret Service, accessed through session D-Bus.
 The service deliberately does not accept credential environment files. Do not
 enable upstream payload logging in a unit override.
 
-After changing helper configuration, restart an active helper with
-`systemctl --user try-restart omarchy-buzz.service`.
+After changing helper configuration, select Retry in the panel. A service restart
+is an alternative when no UI is connected.
 
 To uninstall, first disable/remove the QML plugin, then:
 

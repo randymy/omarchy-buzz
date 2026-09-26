@@ -2,7 +2,7 @@
 
 Status: **ready for design review, not an implementation or a release claim**.
 
-Implementation note (2026-09-26): M0 has a sample-data QML skeleton and manifest CI. The initial M1 helper builds on ARM64 and passes isolated protocol/process tests. M1 remains incomplete: QML integration, socket activation, live keyring/authentication, HTTP query support, and upstream resource-limit gates remain. The UI still displays sample data. This document remains the architecture proposal; see README.md and docs/DEVELOPMENT.md for the implemented surface and verification limits. No live identity enrollment, relay authentication, or ACP integration has been validated.
+Implementation note (2026-09-26): The M1 connection preview now connects QML to the helper with production setup/status states; sample rooms require explicit test mode. ARM64 unit/process tests, an isolated real Secret Service enrollment/retrieval test, inherited-socket idle reactivation, and actual offscreen QML/helper integration passed. M1 remains incomplete: authenticated relay conformance, installed service/UI lifecycle verification, HTTP query support, and upstream resource-limit gates remain. No production identity enrollment, relay authentication, messaging, or ACP integration has been validated.
 
 Research date: 2026-09-25 America/Chicago (some upstream commits are dated 2026-09-26 UTC). Scope: community plugin first; vPerps as an independent downstream consumer. No upstream, installed desktop, or vPerps implementation files were changed. No relay, authenticated CLI, or agent was started during research.
 

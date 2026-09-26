@@ -61,7 +61,7 @@ FocusScope {
         id: previewLabel
         anchors.fill: parent
         anchors.margins: Style.space(10)
-        text: "DEVELOPMENT PREVIEW · Sample data only\nNo relay connected. Messages and agents below are examples."
+        text: root.service && root.service.sampleMode ? "TEST FIXTURE · Sample data only\nNo relay connected. Messages below are examples." : "CONNECTION PREVIEW · " + (root.service ? root.service.statusLabel : "Service unavailable") + "\nRoom history and messaging are not implemented yet."
         textFormat: Text.PlainText
         wrapMode: Text.WordWrap
         color: Color.foreground
@@ -82,7 +82,7 @@ FocusScope {
         spacing: Style.space(6)
         Text {
           Layout.fillWidth: true
-          text: root.service ? root.service.viewModel.community : "Service unavailable"
+          text: root.service ? (root.service.relay || root.service.viewModel.community) : "Service unavailable"
           textFormat: Text.PlainText
           wrapMode: Text.WordWrap
           color: Color.foreground
@@ -105,7 +105,7 @@ FocusScope {
         Item { Layout.fillHeight: true }
         Text {
           Layout.fillWidth: true
-          text: "Connection\nNot configured"
+          text: "Connection\n" + (root.service ? root.service.statusLabel : "Unavailable")
           textFormat: Text.PlainText
           color: Color.foreground
           opacity: 0.7
@@ -126,7 +126,7 @@ FocusScope {
         spacing: Style.space(10)
         Text {
           Layout.fillWidth: true
-          text: root.service && root.service.selectedRoom ? "# " + root.service.selectedRoom.name : "Buzz is unavailable"
+          text: root.service && root.service.selectedRoom ? "# " + root.service.selectedRoom.name : "Connect Buzz"
           textFormat: Text.PlainText
           elide: Text.ElideRight
           color: Color.foreground
@@ -136,13 +136,20 @@ FocusScope {
         }
         Text {
           Layout.fillWidth: true
-          text: root.service && root.service.selectedRoom ? root.service.selectedRoom.description : "Enable the plugin service and reopen this panel."
+          text: root.service && root.service.selectedRoom ? root.service.selectedRoom.description : (root.service ? root.service.setupInstructions : "Enable the plugin and reopen this panel.")
           textFormat: Text.PlainText
           wrapMode: Text.WordWrap
           color: Color.foreground
           opacity: 0.7
           font.family: Style.font.family
           font.pixelSize: Style.font.body
+        }
+
+        Ui.Button {
+          text: "Retry connection"
+          focusable: true
+          visible: root.service && !root.service.sampleMode
+          onClicked: if (root.service) root.service.retry()
         }
 
         Controls.ScrollView {

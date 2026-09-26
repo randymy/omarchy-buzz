@@ -2,9 +2,9 @@
 
 A community-first, native Omarchy surface for collaboration with people and AI agents through [Block's Buzz](https://github.com/block/buzz).
 
-**Status: M0 development preview (`0.0.1`). Sample data only.** The bar widget opens a native panel with two example rooms. There is no relay connection, identity handling, message sending, notification delivery, or agent execution yet. This is not the messaging MVP.
+**Status: M1 connection preview (`0.0.2`), not the messaging MVP.** The native bar and panel connect to a separate local helper and show setup, authentication, and failure states. Room history, message sending, notifications, and agent execution are not implemented yet. Production UI never displays synthetic rooms or agent activity.
 
-The plugin uses Omarchy theme colors, provides keyboard-focusable room controls, closes with Escape, and shares sample state through one QML service. The bar and panel explicitly identify this as a demo. No credentials, helper process, or Buzz installation are required for this preview.
+The helper owns identity access through Linux Secret Service. Enrollment uses hidden terminal input; QML receives only public connection information. Missing or failed helpers leave the panel usable with setup instructions and Retry. Authentication is not a claim that room synchronization works.
 
 The community plugin will remain generic. vPerps is a downstream integration, described in the design, rather than a separate plugin fork. This project is independently maintained and is not presented as an official Block or Omarchy product.
 
@@ -12,7 +12,7 @@ The community plugin will remain generic. vPerps is a downstream integration, de
 
 Development targets the built-in Omarchy bar and the shell interfaces inspected at [`7b336b1`](https://github.com/omacom/omarchy/tree/7b336b1b0da722e7bb864a7136f91e784ef731bf). Required runtime dependencies are Omarchy's Quickshell, QtQuick/Layouts/Controls, Wayland/Hyprland modules, and `qs.Ui`/`qs.Commons`; these come from the Omarchy installation. Other bar implementations may not expose the service facade. The panel can be summoned separately.
 
-Manifest validation and an offscreen panel render have been checked locally. Full live-shell enable/disable, hot reload, keyboard focus, multi-monitor placement, and removal verification remain pending. Do not infer support for every 4.x snapshot from the package version.
+Manifest validation, a native sample-panel render, ARM64 helper tests, isolated Secret Service enrollment, inherited-socket idle reactivation, and actual QML/helper process integration have passed locally. Full keyboard, multi-monitor, and removal verification remain pending. Do not infer support for every 4.x snapshot from the package version.
 
 ## Try the local development preview
 
@@ -29,7 +29,26 @@ omarchy-shell shell summon community.buzz '{}'
 
 Git refuses to replace an existing destination. Keep any existing plugin of this ID; do not overwrite it. `community.buzz` is a development ID pending marketplace uniqueness review. This repository has not been published or submitted to the marketplace.
 
-Click **Buzz · DEMO** to toggle the panel. Select either sample room, then use **Close** or Escape. The preview cannot send messages; it does not read or write Buzz configuration. No menu entry, shortcut, background service, or credentials are installed. Omarchy's enable command changes only its plugin configuration through the native manager.
+Click **Buzz** to toggle the panel, then use **Close** or Escape. Without the separately installed helper/socket, the panel shows an unavailable state. No menu entry, shortcut, service, or credentials are installed by the plugin itself. Omarchy's enable command changes its plugin configuration through the native manager.
+
+## Install the development helper
+
+Build with Rust 1.95, a C compiler, and pkg-config on Linux:
+
+```bash
+cargo build --release --locked --manifest-path helper/Cargo.toml
+```
+
+Install the resulting `helper/target/release/omarchy-buzz` binary at `~/.local/bin/omarchy-buzz`, and follow [helper supervision](service/README.md) to install and enable its user socket. Review existing files before replacement. There is no automatic binary download. A functioning Linux Secret Service is required for enrollment and authentication.
+
+Configure your relay and enroll your existing human Buzz identity in a terminal:
+
+```bash
+omarchy-buzz setup relay wss://your-relay.example
+omarchy-buzz setup identity enroll
+```
+
+The enrollment prompt hides input; never pass a private key as an argument or paste it into QML. The helper uses its own Secret Service namespace, not Buzz Desktop's shared secret blob. It never generates a replacement identity. Select **Retry connection** after setup; the helper reloads configuration. TLS is required except for loopback development relays. Details and current limits are in [helper documentation](helper/README.md) and [security](docs/SECURITY.md).
 
 This local clone can be updated after committing changes to the source checkout:
 
@@ -46,13 +65,13 @@ omarchy plugin disable community.buzz
 omarchy plugin remove community.buzz
 ```
 
-The native manager unloads the plugin and removes its Git checkout. Commit or save any development changes first. M0 creates no separate service, stored identity, or user data to remove. The source repository is retained.
+The native manager unloads the plugin and removes its Git checkout. Commit or save any development changes first. If you installed the helper separately, follow its [service cleanup instructions](service/README.md) too. Plugin removal does not remove the helper units or identity. Preserve credentials and configuration unless you explicitly choose to delete them. The source repository is retained.
 
 ## Architecture and next work
 
-[DESIGN.md](DESIGN.md) records the inspected interfaces, security boundary, release gates, and milestones. The QML service currently consumes only a bundled synthetic snapshot. The proposed helper protocol is not implemented, and these sample models must not be used to accept arbitrary external JSON.
+[DESIGN.md](DESIGN.md) records the inspected interfaces, security boundary, release gates, and milestones. The QML service consumes a versioned, bounded connection-status protocol through the helper bridge. Synthetic rooms are available only in explicit test mode.
 
-M1 adds a separately supervised helper, secure identity enrollment, and a real relay connection. vPerps-specific behavior remains in downstream configuration and separate integrations.
+M1 still needs authenticated relay conformance tests, bounded upstream transport behavior, and the signed HTTP query seam before M2 messaging. vPerps-specific behavior remains in downstream configuration and separate integrations.
 
 ## License
 

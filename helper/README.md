@@ -24,7 +24,7 @@ malicious processes. A standalone daemon refuses an existing socket; remove a
 stale socket manually only after confirming no daemon owns it. An inherited
 socket must use that exact path and permissions. Without `--keep-running`, the
 daemon exits after 30 seconds without a UI client. Authentication errors require
-an explicit retry. The daemon reads configuration on startup; restart after setup.
+an explicit retry. Retry reloads configuration after setup. A pending keyring operation must finish before a queued reload; repeated Retry does not create duplicate keyring requests.
 
 Protocol version 1 requests are JSON lines with exactly `version`, `id`, `type`;
 allowed types are `get_snapshot`, `subscribe`, `retry_connection`. Request IDs
