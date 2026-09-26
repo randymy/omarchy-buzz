@@ -142,11 +142,11 @@ limits remain mitigation, not proof of strict pre-auth memory bounds.
 
 ## Executable disposable-runner test
 
-The manual `Isolated Buzz relay conformance` GitHub Actions workflow builds the
+The manual `Isolated Buzz messaging conformance` GitHub Actions workflow builds the
 exact pinned upstream relay and compiles the helper's ignored
 `real_relay_messaging_conformance` test. It invokes
 `scripts/relay-conformance-runner` only on a GitHub-hosted Linux runner, with a
-fresh Compose project, fresh PostgreSQL/MinIO volumes, an internal network and
+fresh Compose project, a fresh PostgreSQL volume, an internal network and
 loopback-only published PostgreSQL and relay-main ports. The relay runs in a
 restricted container because upstream health and metrics listeners bind all
 container interfaces; those ports are not published.
@@ -161,7 +161,17 @@ remain follow-up work. No workstation or production stack is accepted.
 
 Run `gh workflow run relay-conformance.yml --repo randymy/omarchy-buzz` after
 pushing the reviewed workflow. The named ignored test must actually pass;
-zero matching tests fails. Six offline mock tests cover isolation and scoped
+zero matching tests fails. Offline mock tests cover isolation and scoped
 cleanup. Only a sanitized summary is uploaded; private synthetic logs stay on
 the disposable runner. Generated fixture secrets do not change the production
 helper's no-secret-argv/environment boundary. See CHECKPOINT.md for run results.
+
+The workflow explicitly selects `--messaging-only`: upstream
+`BUZZ_GIT_CONFORMANCE_PROBE=false` skips the object-store startup probe and no
+MinIO is started. The pinned MinIO image rejected anonymous pulls in run
+36279475453; this mode uses upstream configuration without source patches.
+Readiness still checks PostgreSQL, Redis and the deletion serving catalog.
+Evidence records `validationScope: messaging-only` and `objectStoreProbe: false`.
+This does not certify Git, media, or object-store deployment. The optional runner
+mode without this flag retains the object-store probe when its images are
+accessible; even that probe is not full Git/media conformance.

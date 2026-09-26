@@ -66,13 +66,26 @@ class RunnerTests(unittest.TestCase):
         self.assertIn("real_relay_", command)
         self.assertEqual(command[-3:], ["--", "--ignored", "--test-threads=1"])
 
+    def test_messaging_only_omits_object_storage_and_reports_scope(self):
+        plan = runner.compose_plan("obuzz-test-" + "a" * 24, Path("/tmp/binary"), [43210, 43211], "fixture", "b" * 64, True)
+        self.assertEqual(set(plan["services"]), {"postgres", "redis", "relay"})
+        self.assertEqual(set(plan["volumes"]), {"postgres-data"})
+        environment = plan["services"]["relay"]["environment"]
+        self.assertEqual(environment["BUZZ_GIT_CONFORMANCE_PROBE"], "false")
+        self.assertEqual(environment["BUZZ_S3_ENDPOINT"], "http://127.0.0.1:9")
+        status, summary = self.run_mock(messaging_only=True)
+        self.assertEqual(status, 0)
+        self.assertEqual(summary["validationScope"], "messaging-only")
+        self.assertFalse(summary["objectStoreProbe"])
+        self.assertEqual(set(summary["images"]), {"postgres", "redis", "relay"})
+
     def test_zero_tests_or_wrong_fixture_never_passes(self):
         self.assertEqual(runner.successful_tests(PASSED)["passed"], 1)
         for output in (b"test result: ok. 0 passed; 0 failed; 0 ignored;", PASSED.replace(b" ... ok", b" ... ignored"), PASSED.replace(b"1 passed", b"0 passed")):
             with self.assertRaises(ValueError):
                 runner.successful_tests(output)
 
-    def run_mock(self, fixture_output=PASSED, fail_build=False, collision=False):
+    def run_mock(self, fixture_output=PASSED, fail_build=False, collision=False, messaging_only=False):
         with tempfile.TemporaryDirectory(prefix="runner mock spaces ") as temp:
             base = Path(temp)
             source = base / "buzz"
@@ -103,7 +116,7 @@ class RunnerTests(unittest.TestCase):
                 return b""
             process = SimpleNamespace(poll=lambda: None)
             arguments = SimpleNamespace(buzz_source=source, relay_binary=binary, helper_source=helper,
-                                        helper_target=base / "target", output=base / "output")
+                                        helper_target=base / "target", output=base / "output", messaging_only=messaging_only)
             with patch.dict(os.environ, {"GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "github-hosted", "GH_TOKEN": "must-not-pass"}), \
                     patch.object(runner, "command", command), patch.object(runner.subprocess, "Popen", return_value=process), \
                     patch.object(runner, "reserved_ports", return_value=([SimpleNamespace(close=lambda: None)], [43210, 43211])), \

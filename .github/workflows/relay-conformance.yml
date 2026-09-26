@@ -1,4 +1,4 @@
-name: Isolated Buzz relay conformance
+name: Isolated Buzz messaging conformance
 
 on:
   workflow_dispatch:
@@ -77,15 +77,14 @@ jobs:
       - name: Pull public fixture images before creating any test credentials
         run: |
           python3 - <<'PYCODE'
-          import runpy, subprocess
-          fixture = runpy.run_path('plugin/scripts/relay-conformance-runner')
-          for image in ('postgres:17-alpine', 'redis:7-alpine', fixture['MINIO'], fixture['MC']):
+          import subprocess
+          for image in ('postgres:17-alpine', 'redis:7-alpine'):
               subprocess.run(['docker', 'pull', image], check=True, timeout=180)
           PYCODE
       - name: Exercise the helper against an isolated real relay
         run: |
           export RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}"
-          python3 plugin/scripts/relay-conformance-runner \
+          python3 plugin/scripts/relay-conformance-runner --messaging-only \
             --buzz-source "$GITHUB_WORKSPACE/buzz" \
             --relay-binary "$RUNNER_TEMP/relay-target/debug/buzz-relay" \
             --helper-source "$GITHUB_WORKSPACE/plugin" \
