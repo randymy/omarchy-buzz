@@ -1,0 +1,205 @@
+#!/usr/bin/env python3
+"""Check official Buzz HEAD; prepare explicit source-pin edits without merging."""
+import argparse
+import datetime
+import json
+import hashlib
+import os
+from pathlib import Path
+import re
+import tempfile
+import tomllib
+import urllib.request
+
+API = "https://api.github.com/repos/block/buzz/commits/HEAD"
+SHA = re.compile(r"[0-9a-f]{40}\Z")
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def revision(value):
+    if not SHA.fullmatch(value):
+        raise ValueError("revision must be 40 lowercase hexadecimal characters")
+    return value
+
+
+def pins(root):
+    text = (root / "helper/Cargo.toml").read_text()
+    found = []
+    for name in ("buzz-sdk", "buzz-ws-client"):
+        pattern = rf'(?m)^({re.escape(name)}\s*=\s*\{{[^\n]*git\s*=\s*"https://github.com/block/buzz"[^\n]*rev\s*=\s*")([0-9a-f]{{40}})("[^\n]*\}}\s*)$'
+        matches = list(re.finditer(pattern, text))
+        if len(matches) != 1:
+            raise ValueError(f"expected exactly one pinned official {name} dependency")
+        found.append((pattern, matches[0].group(2)))
+    if found[0][1] != found[1][1]:
+        raise ValueError("Buzz dependency revisions disagree")
+    compatibility = (root / "helper/src/compatibility.rs").read_text()
+    runtime = re.findall(r'pub const BUZZ_REVISION:\s*&str\s*=\s*"([0-9a-f]{40})"\s*;', compatibility)
+    if runtime != [found[0][1]]:
+        raise ValueError("runtime revision disagrees with dependency pins")
+    return text, found
+
+
+def replace_file(path, content, mode):
+    fd, temporary = tempfile.mkstemp(prefix=".upstream-", dir=path.parent)
+    try:
+        os.fchmod(fd, mode)
+        with os.fdopen(fd, "w") as output:
+            output.write(content)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def apply(root, new_revision):
+    revision(new_revision)
+    manifest, dependencies = pins(root)
+    compat_path = root / "helper/src/compatibility.rs"
+    compatibility = compat_path.read_text()
+    pattern = r'(pub const BUZZ_REVISION:\s*&str\s*=\s*")([0-9a-f]{40})("\s*;)'
+    matches = list(re.finditer(pattern, compatibility))
+    if len(matches) != 1 or matches[0].group(2) != dependencies[0][1]:
+        raise ValueError("compatibility revision is missing or disagrees with dependencies")
+    updated = manifest
+    for dependency_pattern, _ in dependencies:
+        updated = re.sub(dependency_pattern, lambda m: m.group(1) + new_revision + m.group(3), updated)
+    compatibility_new = re.sub(pattern, lambda m: m.group(1) + new_revision + m.group(3), compatibility)
+    changes = [(root / "helper/Cargo.toml", manifest, updated), (compat_path, compatibility, compatibility_new)]
+    # Validate every input before any write. Each replacement is atomic; ordinary
+    # errors roll back both files. A process crash between files is not a multi-file
+    # transaction: rerunning the check must refuse mismatched source pins.
+    for path, original, _ in changes:
+        if path.is_symlink() or path.read_text() != original:
+            raise ValueError("source changed during candidate preparation")
+    written = []
+    try:
+        for path, original, content in changes:
+            mode = path.stat().st_mode & 0o777
+            written.append((path, original, mode))
+            replace_file(path, content, mode)
+    except BaseException:
+        for path, original, mode in reversed(written):
+            replace_file(path, original, mode)
+        raise
+    return dependencies[0][1]
+
+
+def upstream():
+    request = urllib.request.Request(API, headers={"Accept": "application/vnd.github.sha", "User-Agent": "omarchy-buzz-upstream-check"})
+    with urllib.request.urlopen(request, timeout=15) as response:
+        if response.geturl() != API:
+            raise ValueError("unexpected upstream API redirect")
+        data = response.read(4097)
+        if len(data) > 4096:
+            raise ValueError("oversized upstream response")
+    return revision(data.decode("ascii").strip())
+
+
+def validate_lock(data, expected_revision):
+    revision(expected_revision)
+    if len(data) > 2 * 1024 * 1024:
+        raise ValueError("oversized Cargo.lock")
+    document = tomllib.loads(data.decode("utf-8"))
+    if document.get("version") not in (3, 4) or not isinstance(document.get("package"), list):
+        raise ValueError("invalid Cargo.lock shape")
+    expected_source = f"git+https://github.com/block/buzz?rev={expected_revision}#{expected_revision}"
+    for name in ("buzz-sdk", "buzz-ws-client", "buzz-core"):
+        entries = [p for p in document["package"] if p.get("name") == name]
+        if len(entries) != 1 or entries[0].get("source") != expected_source:
+            raise ValueError(f"Cargo.lock must contain exactly one official {name} at the candidate revision")
+    return hashlib.sha256(data).hexdigest()
+
+
+def self_test():
+    from unittest.mock import patch
+    old, new = "1" * 40, "2" * 40
+    with tempfile.TemporaryDirectory(prefix="buzz-upstream-fixture-") as temp:
+        root = Path(temp)
+        (root / "helper/src").mkdir(parents=True)
+        manifest = root / "helper/Cargo.toml"
+        compat = root / "helper/src/compatibility.rs"
+        initial = '\n'.join(f'{name} = {{ git = "https://github.com/block/buzz", rev = "{old}" }}' for name in ("buzz-sdk", "buzz-ws-client")) + '\n'
+        baseline = f'pub const BUZZ_REVISION: &str = "{old}";\n'
+        manifest.write_text(initial)
+        compat.write_text(baseline)
+        assert pins(root)[1][0][1] == old
+        apply(root, new)
+        assert pins(root)[1][0][1] == new and new in compat.read_text()
+        before = (manifest.read_bytes(), compat.read_bytes())
+        try:
+            apply(root, "invalid")
+            raise AssertionError("invalid revision accepted")
+        except ValueError:
+            pass
+        assert before == (manifest.read_bytes(), compat.read_bytes())
+        real = replace_file
+        calls = 0
+        def fail_second(*args):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise OSError("synthetic replace failure")
+            real(*args)
+        with patch(__name__ + ".replace_file", side_effect=fail_second):
+            try:
+                apply(root, old)
+                raise AssertionError("injected write failure accepted")
+            except OSError:
+                pass
+        assert before == (manifest.read_bytes(), compat.read_bytes())
+        assert not list((root / "helper").glob(".upstream-*"))
+    source = f"git+https://github.com/block/buzz?rev={new}#{new}"
+    lock = 'version = 4\n' + ''.join(f'[[package]]\nname = "{name}"\nversion = "0.1.0"\nsource = "{source}"\n' for name in ("buzz-sdk", "buzz-ws-client", "buzz-core"))
+    assert validate_lock(lock.encode(), new) == hashlib.sha256(lock.encode()).hexdigest()
+    for invalid in (lock.replace(source, f"git+https://github.com/block/buzz?rev={new}#{old}", 1),
+                    lock.replace('name = "buzz-core"', 'name = "other"'),
+                    lock + f'[[package]]\nname = "buzz-sdk"\nversion = "9.0.0"\nsource = "{source}"\n',
+                    lock.replace('github.com/block/buzz', 'github.com/untrusted/buzz', 1)):
+        try:
+            validate_lock(invalid.encode(), new)
+            raise AssertionError("invalid candidate lock accepted")
+        except ValueError:
+            pass
+    print("PASS: offline pins, revision rejection, atomic rollback, candidate lock identity/digest")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--apply", metavar="REVISION")
+    parser.add_argument("--upstream-revision", help="offline check fixture: do not contact GitHub")
+    parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--validate-lock", metavar="REVISION", help="verify official candidate lock entries and report SHA256")
+    args = parser.parse_args()
+    if args.self_test:
+        self_test()
+        return
+    _, dependencies = pins(ROOT)
+    current = dependencies[0][1]
+    if args.validate_lock:
+        with (ROOT / "helper/Cargo.lock").open("rb") as lock:
+            data = lock.read(2 * 1024 * 1024 + 1)
+        digest = validate_lock(data, args.validate_lock)
+        print(json.dumps({"revision": args.validate_lock, "lock_sha256": digest}))
+        return
+    if args.apply:
+        previous = apply(ROOT, args.apply)
+        print(json.dumps({"previous": previous, "candidate": args.apply, "lockfile_update_required": True}))
+        return
+    latest = revision(args.upstream_revision) if args.upstream_revision else upstream()
+    print(json.dumps({"current": current, "upstream": latest, "update_available": latest != current,
+                      "source": API, "mode": "offline_fixture" if args.upstream_revision else "official_api", "checked_at": datetime.datetime.now(datetime.timezone.utc).isoformat()}))
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (ValueError, OSError, KeyError, json.JSONDecodeError) as error:
+        raise SystemExit("upstream check failed: " + str(error))

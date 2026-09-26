@@ -1,0 +1,196 @@
+name: Track Buzz upstream
+
+on:
+  schedule:
+    - cron: '17 9 * * *'
+  workflow_dispatch:
+    inputs:
+      prepare_candidate:
+        description: Prepare a tested draft update PR when upstream changed
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: buzz-upstream-update
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      changed: ${{ steps.revision.outputs.changed }}
+      revision: ${{ steps.revision.outputs.revision }}
+      current: ${{ steps.revision.outputs.current }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Check official upstream and script fixtures
+        id: revision
+        run: |
+          python3 scripts/check-upstream --self-test
+          python3 scripts/check-upstream > upstream-report.json
+          python3 - <<'PY'
+          import json, os
+          report = json.load(open('upstream-report.json'))
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('changed=' + str(report['update_available']).lower() + '\n')
+              output.write('revision=' + report['upstream'] + '\n')
+              output.write('current=' + report['current'] + '\n')
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as output:
+              output.write('Buzz pin: `' + report['current'] + '`\n\n')
+              output.write('Official default-branch HEAD: `' + report['upstream'] + '`\n\n')
+              output.write('Update available: ' + str(report['update_available']) + '. This comparison does not establish runtime compatibility.\n')
+          PY
+  candidate:
+    needs: check
+    if: needs.check.outputs.changed == 'true' && (github.event_name != 'workflow_dispatch' || inputs.prepare_candidate)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      validation: ${{ steps.validation.outcome }}
+      lock_sha256: ${{ steps.validation.outputs.lock_sha256 }}
+    env:
+      REVISION: ${{ needs.check.outputs.revision }}
+      CARGO_NET_GIT_FETCH_WITH_CLI: true
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Prepare source pin candidate
+        id: apply
+        run: python3 scripts/check-upstream --apply "$REVISION"
+      - name: Resolve and verify candidate without a repository write token
+        id: validation
+        continue-on-error: true
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal --component rustfmt
+          cargo +1.95.0 update --manifest-path helper/Cargo.toml -p buzz-sdk -p buzz-ws-client
+          python3 scripts/check-upstream --validate-lock "$REVISION" > candidate-lock.json
+          digest=$(python3 -c "import json; print(json.load(open('candidate-lock.json'))['lock_sha256'])")
+          echo "lock_sha256=$digest" >> "$GITHUB_OUTPUT"
+          cargo +1.95.0 fmt --manifest-path helper/Cargo.toml --check
+          cargo +1.95.0 test --locked --manifest-path helper/Cargo.toml
+          cargo +1.95.0 build --locked --manifest-path helper/Cargo.toml
+          python3 tests/helper_smoke.py helper/target/debug/omarchy-buzz
+          python3 tests/helper_send_ipc.py helper/target/debug/omarchy-buzz
+          python3 tests/helper_activation.py helper/target/debug/omarchy-buzz
+          sudo apt-get update
+          sudo apt-get install -y dbus gnome-keyring
+          command -v dbus-run-session
+          command -v gnome-keyring-daemon
+          python3 tests/helper_keyring.py helper/target/debug/omarchy-buzz
+          current_digest=$(sha256sum helper/Cargo.lock | cut -d ' ' -f 1)
+          test "$current_digest" = "$digest"
+      - name: Upload candidate files for separate review-only publication
+        if: always() && steps.apply.outcome == 'success' && !cancelled()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: buzz-candidate
+          path: |
+            helper/Cargo.toml
+            helper/Cargo.lock
+            helper/src/compatibility.rs
+          if-no-files-found: error
+          retention-days: 7
+  draft:
+    needs: [check, candidate]
+    if: always() && needs.candidate.result == 'success' && !cancelled()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: write
+      pull-requests: write
+    env:
+      REVISION: ${{ needs.check.outputs.revision }}
+      PREVIOUS_REVISION: ${{ needs.check.outputs.current }}
+      VALIDATION: ${{ needs.candidate.outputs.validation }}
+      EXPECTED_LOCK_SHA256: ${{ needs.candidate.outputs.lock_sha256 }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Download candidate artifact from this exact workflow run
+        run: |
+          artifact=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts" --jq '.artifacts[] | select(.name == "buzz-candidate" and .expired == false) | .id')
+          test -n "$artifact"
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact/zip" > candidate.zip
+      - name: Validate allowed paths and exact pin edits without executing candidate code
+        run: |
+          python3 scripts/check-upstream --apply "$REVISION"
+          python3 - <<'PY'
+          import hashlib, os, pathlib, re, runpy, stat, tomllib, zipfile
+          validate_lock = runpy.run_path("scripts/check-upstream")["validate_lock"]
+          allowed = {'helper/Cargo.toml', 'helper/Cargo.lock', 'helper/src/compatibility.rs'}
+          # upload-artifact strips the common helper/ parent directory.
+          names = {'Cargo.toml': 'helper/Cargo.toml', 'Cargo.lock': 'helper/Cargo.lock', 'src/compatibility.rs': 'helper/src/compatibility.rs'}
+          with zipfile.ZipFile('candidate.zip') as artifact:
+              entries = artifact.infolist()
+              assert len(entries) == 3 and {e.filename for e in entries} == set(names), 'unexpected artifact paths'
+              assert sum(e.file_size for e in entries) <= 2 * 1024 * 1024, 'oversized candidate'
+              for entry in entries:
+                  assert not stat.S_ISLNK(entry.external_attr >> 16), 'artifact symlink'
+                  destination = pathlib.Path(names[entry.filename])
+                  assert str(destination) in allowed
+                  data = artifact.read(entry)
+                  if destination.name == 'Cargo.lock':
+                      document = tomllib.loads(data.decode())
+                      assert document.get('version') in (3, 4) and isinstance(document.get('package'), list), 'invalid Cargo.lock'
+                      if os.environ['VALIDATION'] == 'success':
+                          expected = os.environ['EXPECTED_LOCK_SHA256']
+                          assert re.fullmatch(r'[0-9a-f]{64}', expected), 'missing tested lock digest'
+                          assert validate_lock(data, os.environ['REVISION']) == expected, 'artifact differs from tested lock' 
+                  else:
+                      assert data == destination.read_bytes(), 'candidate changed more than the exact source pins'
+                  destination.write_bytes(data)
+          PY
+      - name: Open draft candidate with explicit verification result
+        run: |
+          branch="deps/buzz-${REVISION:0:12}"
+          count=$(gh pr list --state all --head "$branch" --json number --jq 'length')
+          if [ "$count" -gt 0 ]; then
+            echo 'An existing PR for this revision is retained for review.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$branch" > orphan-ref.json 2> orphan-ref-error.txt; then
+            echo 'Orphan candidate branch retained; inspect and open a draft manually or remove the owned branch before rerun. No branch is overwritten.' >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          elif ! python3 -c 'import pathlib, sys; sys.exit(0 if "(HTTP 404)" in pathlib.Path("orphan-ref-error.txt").read_text() else 1)'; then
+            echo 'Candidate branch existence could not be verified; publication stopped.' >> "$GITHUB_STEP_SUMMARY"
+            cat orphan-ref-error.txt >&2
+            exit 1
+          fi
+          python3 - <<'PY'
+          import os
+          candidate = os.environ['REVISION']
+          previous = os.environ['PREVIOUS_REVISION']
+          passed = os.environ['VALIDATION'] == 'success'
+          status = 'Candidate checks passed' if passed else 'Candidate checks failed or did not complete; dependency/API repair required'
+          body = f"""Updates both pinned Buzz Rust dependencies and the runtime revision constant from `{previous}` to `{candidate}`. Historical inspection evidence remains unchanged.
+
+          Validation: **{status}**. A separate read-only job resolves Cargo.lock and runs formatting, Rust tests, helper build, isolated process/socket activation checks, and private synthetic-keyring enrollment. Execution stops at the first failure. Review the linked run for the failing stage. No live-relay or agent runtime compatibility is claimed.
+
+          This draft is never automatically merged or deployed. GitHub token-created PRs can create approval-required pull_request runs, so this workflow performs candidate checks directly without depending on a follow-up approval. Before merge, require all candidate checks and any changed protocol's appropriate isolated-relay validation.
+
+          [Upstream commit](https://github.com/block/buzz/commit/{candidate}) · [Candidate workflow run](https://github.com/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']})
+          """
+          open('upstream-pr.md', 'w').write(body)
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as output:
+              output.write(status + '\n\nA draft PR is prepared for human review; no automatic merge.\n')
+          PY
+          git switch -c "$branch"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add helper/Cargo.toml helper/Cargo.lock helper/src/compatibility.rs
+          git commit -m "chore: prepare Buzz revision ${REVISION:0:12}"
+          gh auth setup-git
+          git push origin "$branch"
+          gh pr create --draft --head "$branch" --title "chore: review Buzz update ${REVISION:0:12}" --body-file upstream-pr.md
