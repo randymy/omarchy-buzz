@@ -12,7 +12,7 @@ OMARCHY_SOURCE=/path/to/omarchy ./scripts/validate
 
 Without `OMARCHY_SOURCE`, the script uses the sibling `../omarchy` checkout. It requires the exact pinned HEAD and an unchanged `bin/omarchy-plugin-validate`, then runs that upstream validator against this repository. A mismatch fails with a diagnostic; use a separate checkout for a different version rather than changing a working source tree merely to run this check.
 
-The validator checks manifest JSON/schema, required fields, plugin ID restrictions, declared kind entry points, relative existing entry-point paths, default bar section, and disallowed internal symlinks. It does not parse/load QML, certify the scoped service wiring, exercise user interactions, or establish crash isolation. There are no helper build or protocol tests in M0 because the helper is not implemented.
+The validator checks manifest JSON/schema, required fields, plugin ID restrictions, declared kind entry points, relative existing entry-point paths, default bar section, and disallowed internal symlinks. It does not parse/load QML, certify the scoped service wiring, exercise user interactions, or establish crash isolation. M0 itself has no backend; the initial M1 helper now has separate tests described below.
 
 GitHub Actions runs the same command with sibling plugin and Omarchy checkouts. Both checkout actions use the immutable [actions/checkout v4.2.2 commit](https://github.com/actions/checkout/commit/11bd71901bbe5b1630ceea73d27597364c9af683); Omarchy uses its exact tested commit. CI executes the pinned validator without a compositor. Record CI success separately from graphical results.
 
@@ -29,7 +29,7 @@ BUZZ_PREVIEW_OUTPUT="$PWD/artifacts/m0-preview.png" ./scripts/preview
 
 `artifacts/` is ignored by Git. The render uses the installed theme through upstream components. Offscreen window-mask warnings are expected; restricted environments may also reject the test-only Quickshell IPC server. This test does not use that server. The check does not instantiate the Wayland `PanelWindow`, exercise physical keyboard focus, or replace the live-shell smoke procedure below.
 
-Local evidence on 2026-09-26: pinned and installed manifest validators passed; offscreen component assertions passed; an 820×570 sample-panel image was inspected for layout/contrast. QML analysis passed with the native modules available and dynamic-property/unqualified-access/Quickshell platform-type warnings suppressed; that limited analysis is not a clean full-lint or runtime claim. The live desktop shell was not reachable from the sandbox, so the graphical lifecycle checks below remain pending. CI is configured but has not run on GitHub because this repository is still local.
+Local evidence on 2026-09-26: pinned and installed manifest validators passed; offscreen component assertions passed; an 820×570 sample-panel image was inspected for layout/contrast. QML analysis passed with the native modules available and dynamic-property/unqualified-access/Quickshell platform-type warnings suppressed; that limited analysis is not a clean full-lint or runtime claim. Outside the IPC-restricted sandbox, native plugin enable/summon/hide worked and the shell answered `ping` afterward. A live desktop capture confirmed the centered themed panel and bar widget; the private desktop capture is not a repository fixture. Keyboard interaction, multiple monitors, and full removal/reload lifecycle checks remain pending. CI is configured but has not run on GitHub because this repository is still local.
 
 ## Graphical smoke check
 
@@ -46,3 +46,25 @@ Run this in a disposable Omarchy VM/session using the tested source/package comb
 Optional shortcut and menu installation are separate later setup work. M0 smoke checking uses IPC directly and does not change keybindings. Exact Super+B is free in the inspected baseline, but effective bindings must be checked before any opt-in binding is installed.
 
 When a visual change is made, record direct visual verification in addition to the manifest check. Do not claim all of M0's real-shell acceptance evidence from a headless CI run.
+
+## Initial M1 helper evidence
+
+On 2026-09-26, Rust 1.95 on Linux ARM64 built the pinned helper and passed all
+seven configuration/protocol tests. The isolated `tests/helper_smoke.py` passed
+unconfigured status, subscribe/snapshot, malformed and oversized requests,
+bridge EOF, and SIGTERM socket cleanup. The test uses private temporary XDG
+directories without an identity or session D-Bus. No relay authentication occurs.
+A sandbox that denies Unix sockets cannot run this process test.
+
+```bash
+cargo test --locked --manifest-path helper/Cargo.toml
+cargo build --locked --manifest-path helper/Cargo.toml
+python3 tests/helper_smoke.py helper/target/debug/omarchy-buzz
+```
+
+The local build used a temporary target directory because the home filesystem
+had insufficient free space. CI now includes these checks, but remote CI has
+not run. QML still uses sample data. Live keyring/enrollment, authenticated relay
+behavior, socket activation, HTTP queries, hostile-relay resource limits, and
+x86_64 execution remain unverified. See `service/README.md` for draft supervision
+and cleanup instructions; those units have not been installed.

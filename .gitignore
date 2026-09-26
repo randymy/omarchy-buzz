@@ -1,2 +1,4 @@
 /artifacts/
 *.qmlc
+/helper/target/
+__pycache__/
