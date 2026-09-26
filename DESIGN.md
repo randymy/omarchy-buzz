@@ -2,6 +2,8 @@
 
 Status: **ready for design review, not an implementation or a release claim**.
 
+Implementation note (2026-09-26): M0 now has a sample-data QML skeleton and manifest CI. This document remains the architecture proposal; see README.md and docs/DEVELOPMENT.md for the implemented surface and verification limits. No helper, relay connection, or ACP integration is implemented.
+
 Research date: 2026-09-25 America/Chicago (some upstream commits are dated 2026-09-26 UTC). Scope: community plugin first; vPerps as an independent downstream consumer. No upstream, installed desktop, or vPerps implementation files were changed. No relay, authenticated CLI, or agent was started during research.
 
 ## 1. Decision and product boundary

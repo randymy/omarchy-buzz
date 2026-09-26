@@ -1,0 +1,26 @@
+#!/bin/bash
+
+set -euo pipefail
+
+project_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+omarchy_revision=7b336b1b0da722e7bb864a7136f91e784ef731bf
+omarchy_source=${OMARCHY_SOURCE:-"$project_root/../omarchy"}
+validator=bin/omarchy-plugin-validate
+
+fail() {
+  echo "validate: $*" >&2
+  exit 1
+}
+
+for command in git jq bash find; do
+  command -v "$command" >/dev/null || fail "required command unavailable: $command"
+done
+
+[[ -d $omarchy_source ]] || fail "set OMARCHY_SOURCE to an Omarchy checkout at $omarchy_revision"
+actual_revision=$(git -C "$omarchy_source" rev-parse HEAD) || fail "OMARCHY_SOURCE must be a Git checkout"
+[[ $actual_revision == "$omarchy_revision" ]] || fail "Omarchy revision mismatch: expected $omarchy_revision, found $actual_revision"
+[[ -f $omarchy_source/$validator && ! -L $omarchy_source/$validator ]] || fail "upstream validator is missing or symlinked"
+git -C "$omarchy_source" diff --quiet HEAD -- "$validator" || fail "upstream validator differs from the pinned revision"
+
+bash "$omarchy_source/$validator" "$project_root"
+echo "Manifest validation passed against Omarchy $omarchy_revision (no QML runtime check)."

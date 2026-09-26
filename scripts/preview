@@ -1,0 +1,21 @@
+#!/bin/bash
+set -euo pipefail
+
+project_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+omarchy_source=${OMARCHY_SOURCE:-"$project_root/../omarchy"}
+OMARCHY_SOURCE="$omarchy_source" "$project_root/scripts/validate"
+command -v qs >/dev/null || { echo "preview: Quickshell is required" >&2; exit 1; }
+
+# All Quickshell runtime/config files stay in a disposable test directory.
+# Import real Omarchy UI components; this never starts the desktop shell.
+preview_dir=$(mktemp -d "${TMPDIR:-/tmp}/omarchy-buzz-preview.XXXXXXXX")
+trap 'rm -rf -- "$preview_dir"' EXIT
+mkdir -m 700 "$preview_dir/runtime"
+cp -R "$project_root/plugin" "$preview_dir/plugin"
+cp "$project_root/tests/Preview.qml" "$preview_dir/shell.qml"
+ln -s "$omarchy_source/shell/Commons" "$preview_dir/Commons"
+ln -s "$omarchy_source/shell/Ui" "$preview_dir/Ui"
+
+QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software QT_QPA_PLATFORMTHEME=basic \
+  XDG_RUNTIME_DIR="$preview_dir/runtime" \
+  timeout 15s qs -p "$preview_dir" --no-color

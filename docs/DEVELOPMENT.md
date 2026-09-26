@@ -1,0 +1,48 @@
+# Development and validation
+
+M0 is a synthetic presentation skeleton. It does not authenticate, connect to a relay, send messages, launch agents, or install the future helper. Use synthetic data for every check in this milestone.
+
+## Repeatable manifest check
+
+Install Bash, Git, jq, and find. Keep an Omarchy source checkout at the revision recorded in DESIGN.md: `7b336b1b0da722e7bb864a7136f91e784ef731bf`. The check reads that checkout; it does not download dependencies or change its revision.
+
+```bash
+OMARCHY_SOURCE=/path/to/omarchy ./scripts/validate
+```
+
+Without `OMARCHY_SOURCE`, the script uses the sibling `../omarchy` checkout. It requires the exact pinned HEAD and an unchanged `bin/omarchy-plugin-validate`, then runs that upstream validator against this repository. A mismatch fails with a diagnostic; use a separate checkout for a different version rather than changing a working source tree merely to run this check.
+
+The validator checks manifest JSON/schema, required fields, plugin ID restrictions, declared kind entry points, relative existing entry-point paths, default bar section, and disallowed internal symlinks. It does not parse/load QML, certify the scoped service wiring, exercise user interactions, or establish crash isolation. There are no helper build or protocol tests in M0 because the helper is not implemented.
+
+GitHub Actions runs the same command with sibling plugin and Omarchy checkouts. Both checkout actions use the immutable [actions/checkout v4.2.2 commit](https://github.com/actions/checkout/commit/11bd71901bbe5b1630ceea73d27597364c9af683); Omarchy uses its exact tested commit. CI executes the pinned validator without a compositor. Record CI success separately from graphical results.
+
+## Offscreen component check
+
+With Quickshell installed, run `./scripts/preview`. It runs the pinned validator, stages a disposable configuration and runtime directory, loads the actual service/widget/panel-content components, checks scoped widget routing and room selection, then exits. It never enables the plugin, starts Omarchy, or changes the desktop configuration. Its test shell facade is a mock, not proof that the real shell injects it correctly.
+
+To save the rendered sample panel:
+
+```bash
+mkdir -p artifacts
+BUZZ_PREVIEW_OUTPUT="$PWD/artifacts/m0-preview.png" ./scripts/preview
+```
+
+`artifacts/` is ignored by Git. The render uses the installed theme through upstream components. Offscreen window-mask warnings are expected; restricted environments may also reject the test-only Quickshell IPC server. This test does not use that server. The check does not instantiate the Wayland `PanelWindow`, exercise physical keyboard focus, or replace the live-shell smoke procedure below.
+
+Local evidence on 2026-09-26: pinned and installed manifest validators passed; offscreen component assertions passed; an 820×570 sample-panel image was inspected for layout/contrast. QML analysis passed with the native modules available and dynamic-property/unqualified-access/Quickshell platform-type warnings suppressed; that limited analysis is not a clean full-lint or runtime claim. The live desktop shell was not reachable from the sandbox, so the graphical lifecycle checks below remain pending. CI is configured but has not run on GitHub because this repository is still local.
+
+## Graphical smoke check
+
+Run this in a disposable Omarchy VM/session using the tested source/package combination from DESIGN.md. A source version string alone is insufficient to establish compatibility. Do not reset the developer's desktop or modify packaged `/usr/share/omarchy` files. Preserve existing user configuration in the disposable session before installation.
+
+1. Run manifest validation. Copy this repository into `~/.config/omarchy/plugins/community.buzz/` in the disposable session; do not replace an existing plugin directory. Run `omarchy-shell shell rescanPlugins`, then `omarchy plugin enable community.buzz --section right`.
+2. Verify the widget uses native theme colors, has readable horizontal and vertical geometry, and shows only clearly labeled synthetic/unknown state. Check that one shared service supplies all widget instances when multiple monitors are available.
+3. Open the panel using the widget, then `omarchy-shell shell summon community.buzz '{}'`. Check keyboard focus, Escape/close behavior, and `omarchy-shell shell toggle community.buzz '{}'` twice. Record behavior on the focused monitor and other monitors; panel placement is plugin implementation behavior, not an IPC guarantee.
+4. Check the synthetic panel's text and states. Confirm no control claims a live connection, accepted send, real unread count, agent health, or approval. Confirm no helper, relay, or agent process starts.
+5. With the panel open, run `omarchy-shell shell rescanPlugins`. Verify the service and UI reconstruct without duplicate widgets, stale panel state, or shell errors. Save a harmless QML change in the disposable copy to exercise user-plugin hot reload, then undo that change. `keepLoaded` services would retain their code until shell restart; this skeleton uses normal reload lifetimes.
+6. Run `omarchy plugin disable community.buzz`; verify widget/panel disappear and synthetic service activity stops. Re-enable and summon again. Run `omarchy plugin remove community.buzz` and verify the shell remains usable. Native removal does not manage future external helper units.
+7. Inspect `journalctl --user -t omarchy-shell --since '10 minutes ago'` for load/binding errors. Record Omarchy package/source revisions, architecture, commands, monitor/theme observations, failures, and unavailable checks. A skipped graphical check is not a pass.
+
+Optional shortcut and menu installation are separate later setup work. M0 smoke checking uses IPC directly and does not change keybindings. Exact Super+B is free in the inspected baseline, but effective bindings must be checked before any opt-in binding is installed.
+
+When a visual change is made, record direct visual verification in addition to the manifest check. Do not claim all of M0's real-shell acceptance evidence from a headless CI run.

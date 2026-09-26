@@ -1,0 +1,32 @@
+name: Validate manifest
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  manifest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out plugin
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          path: omarchy-buzz
+          persist-credentials: false
+      - name: Check out tested Omarchy source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: omacom/omarchy
+          ref: 7b336b1b0da722e7bb864a7136f91e784ef731bf
+          path: omarchy
+          persist-credentials: false
+      - name: Validate manifest
+        working-directory: omarchy-buzz
+        env:
+          OMARCHY_SOURCE: ${{ github.workspace }}/omarchy
+        run: ./scripts/validate
