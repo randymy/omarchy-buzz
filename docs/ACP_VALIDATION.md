@@ -173,3 +173,13 @@ It builds the four pinned tools, then passes paired `--acp-bin-dir` and
 messaging conformance passes. Evidence records messaging and ACP results
 separately; an ACP failure cannot erase or imply the messaging result.
 No real agent/provider is selected by this option.
+
+The tightened single-trigger fixture passed again at `1f4c22f` in
+[run 36280910334](https://github.com/randymy/omarchy-buzz/actions/runs/36280910334).
+It first observes the supervisor's bounded post-harness-spawn metadata, then
+publishes one positive trigger. Pinned startup replay covers subscription setup;
+only a verified signed room reply proves readiness. This removes queued
+readiness prompts that could copy excluded tokens from later conversation
+history. [Final evidence](evidence/relay-acp-36280910334.json) records both test
+passes and successful cleanup. Bounded negative observations remain limited
+observations, not proof of permanent policy exclusion.

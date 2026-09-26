@@ -154,3 +154,15 @@ exercised. ACP key
 input and permission limitations remain in ACP_VALIDATION.md. The read-only
 upstream tracking workflow completed successfully in run 36279926788; candidate
 updates and scheduled execution remain separately unverified.
+
+Final verification: [run 36280910334](https://github.com/randymy/omarchy-buzz/actions/runs/36280910334)
+passed both messaging and synthetic ACP at `1f4c22f`, with cleanup complete.
+The revised ACP fixture sends one trigger after the supervisor's bounded
+post-spawn handshake, then requires a signed room reply; process startup alone
+is never agent readiness. This avoids queued readiness prompts contaminating
+the bounded excluded-trigger observations. Evidence is saved in
+`docs/evidence/relay-acp-36280910334.json`. Local test compilation and ten runner
+fixtures also passed. Ordinary CI passed at the same revision in run
+36280897277. Production relays and persistent agent identities remain
+unused; deployed compatibility and upstream secure identity/permission handling
+are the next gates.
