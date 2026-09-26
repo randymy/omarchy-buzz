@@ -14,29 +14,37 @@ is enrolled, no relay is configured, and no production messages were sent.
 Hosted setup uses the official buzz.xyz handoff; connecting the community URL
 and existing identity remains manual. Self-hosted relays use the same adapter.
 
-## Shutdown handoff
+## Current handoff
 
-Final delivery-review source changes are saved but are **not installed**. They
-preserve a pending receipt on repeated/busy sends and add a signed request UUID
-tag to distinguish identical intentional submissions in the same second. The
-installed helper remains the previously validated 78-test build. Resume by
-resolving the pending-replay issue below, then
-rebuilding, testing and installing the helper.
+The deferred pending-request issue is fixed and installed. The actor rejects
+changed room/text/mentions/generation under a pending UUID through a correlated
+reply, while preserving the original watched receipt and acknowledgement.
+Identical replay does not re-sign; another pending request is busy. Lost actor
+replies are explicitly unknown, and QML retains rejected drafts without treating
+late receipts as acknowledgement of changed intent.
 
-Known follow-up: a repeated pending UUID with different text/mentions currently
-returns the original receipt. Although it never re-signs or republishes, the
-receipt can be mistaken for acknowledgement of changed intent. Add an explicit
-correlated rejection without replacing the active watched receipt, ideally via
-a typed internal command with a one-shot reply. Retest original acknowledgement
-visibility and changed-intent rejection before installing this source.
+Runtime source is committed in `617bd73`; the installed plugin was updated to
+`1fac562`, which also includes notice packaging and downstream documentation.
+The installed 0.0.3 helper SHA256 is
+`cfaa915036f1cf26b553a34ec93dbc3c0f893b11f9f106cc0e7eb6844054bebf`.
+The prior installed helper is preserved as
+`~/.local/bin/omarchy-buzz.before-617bd73`, in addition to earlier `.previous`
+backups. Native panel summon passed after service and shell restart; service
+inspection reports active/running with core dumps disabled.
 
-Local packaging tooling and three offline tests are saved; no final archive has
-been produced. All publication and production-relay work remains deferred.
+A verified local ARM64 development archive and checksum manifest are saved in
+`artifacts/local-20260926-checked/` (ignored by Git). The archive is 7.7 MB and
+matches the installed binary. It includes a 252-package dependency notice
+inventory, with 19 review flags and no compliance or public-release claim.
+Five cached packages lack notice text; see [DEPENDENCY_NOTICES.md](DEPENDENCY_NOTICES.md).
+All public publication and production-relay work remains deferred.
 
 ## Validation and installed state
 
-The final saved ARM64 Rust suite passed 81 tests (0 failures). The installed
-binary remains the preceding 78-test build. Tests cover
+The installed ARM64 Rust suite passed 85 tests (0 failures). Actual rebuilt
+helper IPC and QML/helper bridge tests pass, as do offscreen QML rejection
+checks and the composer Process fixture. Notice and packaging suites pass six
+offline tests. Tests cover
 synthetic signed HTTP/WS flows, freshness, authentication, membership revocation,
 request/scope fencing, durable-ledger failure/restart behavior, exact recipients,
 and IPC bounds. Actual daemon/bridge and QML composer process tests pass, as do
@@ -72,8 +80,9 @@ do not replace the helper binary. See [UPDATES.md](UPDATES.md).
 1. Validate against an actual isolated Buzz relay, following
    [RELAY_TESTING.md](RELAY_TESTING.md), and resolve upstream WS resource bounds
    described in `helper/WS_UPSTREAM.md`.
-2. Finish third-party license/notice inventory before distributing binaries;
-   current local archives are development previews. See [PACKAGING.md](PACKAGING.md).
+2. Resolve missing third-party notice texts and review the generated dependency
+   inventory before distributing binaries. Current local archives remain
+   development previews. See [PACKAGING.md](PACKAGING.md).
 3. Run remote CI and target-platform checks; verify physical keyboard and
    multi-monitor behavior. Complete local unread and native notifications.
 4. Add separately supervised upstream ACP, truthful agent state and the first

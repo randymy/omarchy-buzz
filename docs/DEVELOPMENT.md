@@ -188,3 +188,23 @@ fresh local clone, enable, helper replacement and shell restart all passed.
 Plugin rescan is asynchronous; wait until listPlugins shows the plugin before
 enabling it. The live setup panel was visually checked after restart. The socket
 is now enabled for future user logins; no relay or identity is configured.
+
+## Pending-request binding and packaging follow-up
+
+The installed ARM64 helper now passes 85 Rust tests. A synthetic relay integration
+proves that changed text or mentions under a pending UUID receive a correlated
+rejection, another UUID receives busy, identical replay retains its receipt,
+and the original event still receives its real acknowledgement. Cancellation
+checks retain unknown outcomes when delivery cannot be established.
+
+The actual helper IPC test checks the executable's version against both the
+plugin manifest and crate, and its backend revision against the source pin.
+It also verifies offline rejection does not replace the shared delivery view.
+QML component and Process fixtures pass correlated rejection, late receipt,
+draft preservation and connection continuity. The rebuilt actual QML/helper
+bridge passed outside the local-socket sandbox. Native summon and active user
+service checks passed after installing the matched build and restarting shell.
+
+Six offline notice/packaging tests pass. The local development archive checksum
+and included binary were verified against the installed helper. Dependency
+notices remain explicitly review-required; this is not release certification.
