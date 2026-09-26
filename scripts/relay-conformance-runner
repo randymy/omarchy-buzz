@@ -145,6 +145,13 @@ class FixtureCommandError(RuntimeError):
         ports = sorted({int(port) for port in endpoints if 0 < int(port) < 65536})
         if ports:
             self.safe["loopbackPorts"] = ports
+        phases = {"owner_auth", "member_auth", "create_room", "catalog", "roster", "freshness_count",
+                  "prepare_send", "send_ack", "history", "persisted_mention", "remove_member",
+                  "revoked_roster", "local_revoked_write", "relay_revoked_write", "complete"}
+        observed = re.findall(rb"(?m)^OMARCHY_CONFORMANCE_STAGE=([a-z_]+)$", diagnostics)
+        allowed = [value.decode("ascii") for value in observed if value.decode("ascii") in phases]
+        if allowed:
+            self.safe["fixturePhase"] = allowed[-1]
         super().__init__(category)
 
 

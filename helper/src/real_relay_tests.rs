@@ -48,12 +48,15 @@ async fn real_relay_messaging_conformance() {
         let owner = Keys::parse("0000000000000000000000000000000000000000000000000000000000000001")
             .unwrap();
         let user = Keys::generate();
+        eprintln!("OMARCHY_CONFORMANCE_STAGE=owner_auth");
         let mut admin = NostrWsConnection::connect_authenticated(&relay, &owner, None)
             .await
             .expect("owner NIP-42");
+        eprintln!("OMARCHY_CONFORMANCE_STAGE=member_auth");
         let mut client = NostrWsConnection::connect_authenticated(&relay, &user, None)
             .await
             .expect("synthetic member NIP-42");
+        eprintln!("OMARCHY_CONFORMANCE_STAGE=create_room");
         let room = Uuid::new_v4();
         publish(
             &mut admin,
@@ -78,6 +81,7 @@ async fn real_relay_messaging_conformance() {
                 .unwrap(),
         )
         .await;
+        eprintln!("OMARCHY_CONFORMANCE_STAGE=catalog");
         let mut discovery_error = "room_not_observed";
         let discovered = timeout(Duration::from_secs(12), async {
             loop {
@@ -91,6 +95,7 @@ async fn real_relay_messaging_conformance() {
         })
         .await
         .unwrap_or_else(|_| panic!("joined-room discovery deadline: {discovery_error}"));
+        eprintln!("OMARCHY_CONFORMANCE_STAGE=roster");
         let roster = recipients::fetch(&relay, &user, discovered.signer, room)
             .await
             .expect("relay-signed roster");
@@ -134,6 +139,7 @@ async fn real_relay_messaging_conformance() {
         let mut sender = Sender::new(Some(Ledger::open(dir.0.join("ledger.json")).unwrap()));
         // Match production freshness: an exact-ID authorized own-profile COUNT,
         // rather than treating TCP or the NIP-42 acknowledgement as liveness.
+        eprintln!("OMARCHY_CONFORMANCE_STAGE=freshness_count");
         let probe = Uuid::new_v4().to_string();
         client
             .send_raw(&json!(["COUNT",probe,{"kinds":[0],"authors":[user.public_key().to_hex()]}]))
@@ -161,6 +167,7 @@ async fn real_relay_messaging_conformance() {
             mentions: vec![mentioned.clone()],
             generation: status.generation,
         };
+        eprintln!("OMARCHY_CONFORMANCE_STAGE=prepare_send");
         let (receipt, event) = sender.prepare(intent, &relay, &user, &status, true, true);
         assert_eq!(receipt.state, "sending");
         let event = event.expect("durably reserved SDK message");
@@ -170,6 +177,7 @@ async fn real_relay_messaging_conformance() {
             .tags
             .iter()
             .any(|t| t.as_slice() == ["p", mentioned.as_str()]));
+        eprintln!("OMARCHY_CONFORMANCE_STAGE=send_ack");
         client.send_raw(&json!(["EVENT", event])).await.unwrap();
         let ack = timeout(Duration::from_secs(15), async {
             loop {
@@ -192,6 +200,7 @@ async fn real_relay_messaging_conformance() {
                 .state,
             "acknowledged"
         );
+        eprintln!("OMARCHY_CONFORMANCE_STAGE=history");
         let mut history_error = "message_not_observed";
         timeout(Duration::from_secs(12), async {
             loop {
@@ -214,6 +223,7 @@ async fn real_relay_messaging_conformance() {
         .await
         .unwrap_or_else(|_| panic!("channel-window history deadline: {history_error}"));
         // Observe exact mention tags from persisted server data, not merely local construction.
+        eprintln!("OMARCHY_CONFORMANCE_STAGE=persisted_mention");
         let sid = Uuid::new_v4().to_string();
         client
             .send_raw(&json!(["REQ",sid,{"ids":[event_id]}]))
@@ -245,6 +255,7 @@ async fn real_relay_messaging_conformance() {
         .await
         .expect("persisted mention query deadline");
         client.send_raw(&json!(["CLOSE", sid])).await.unwrap();
+        eprintln!("OMARCHY_CONFORMANCE_STAGE=remove_member");
         publish(
             &mut admin,
             build_remove_member(room, &user.public_key().to_hex())
@@ -253,6 +264,7 @@ async fn real_relay_messaging_conformance() {
                 .unwrap(),
         )
         .await;
+        eprintln!("OMARCHY_CONFORMANCE_STAGE=revoked_roster");
         timeout(Duration::from_secs(12), async {
             loop {
                 match recipients::fetch(&relay, &user, discovered.signer, room).await {
@@ -267,6 +279,7 @@ async fn real_relay_messaging_conformance() {
             Some(room.to_string()),
             Some("recipients_access_denied"),
         );
+        eprintln!("OMARCHY_CONFORMANCE_STAGE=local_revoked_write");
         let (denied, outgoing) = sender.prepare(
             protocol::SendIntent {
                 request_id: Uuid::new_v4().to_string(),
@@ -284,6 +297,7 @@ async fn real_relay_messaging_conformance() {
         assert_eq!(denied.category.as_deref(), Some("send_access_denied"));
         assert!(outgoing.is_none());
         // Even a previously authenticated socket must lose write authority.
+        eprintln!("OMARCHY_CONFORMANCE_STAGE=relay_revoked_write");
         let rejected = buzz_sdk::builders::build_message(
             room,
             "revoked synthetic write",
@@ -303,6 +317,7 @@ async fn real_relay_messaging_conformance() {
             .unwrap();
         assert_eq!(ok.event_id, id);
         assert!(!ok.accepted, "revoked member write accepted");
+        eprintln!("OMARCHY_CONFORMANCE_STAGE=complete");
         client.disconnect().await.unwrap();
         admin.disconnect().await.unwrap();
     })
