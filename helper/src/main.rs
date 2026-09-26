@@ -8,6 +8,8 @@ mod ipc;
 mod ledger;
 mod protocol;
 mod query;
+#[cfg(test)]
+mod real_relay_tests;
 mod recipients;
 mod sending;
 // Network fixtures share the production concurrency budgets. Serialize fixtures,

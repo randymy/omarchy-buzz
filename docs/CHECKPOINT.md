@@ -77,8 +77,9 @@ remove` when needed; the script retains backups and refuses modified blocks.
 The helper pins official Buzz revision
 `781d39510cf23cfe224e8f521ae06a23377e06de`. The official upstream HEAD check at
 07:52 UTC matched this pin. `scripts/check-upstream` and the daily GitHub workflow
-prepare tested draft updates, never automatic deployment. There is no remote,
-so the scheduled workflow and remote CI are **not active yet**. Plugin/QML updates
+prepare tested draft updates, never automatic deployment. The private remote `randymy/omarchy-buzz` now exists. Initial remote validation
+passed in run 36278075520. The daily update workflow is on the default branch;
+a completed scheduled check or successful draft creation is not yet established. Plugin/QML updates
 do not replace the helper binary. See [UPDATES.md](UPDATES.md).
 
 ## Next release gates
@@ -119,6 +120,10 @@ cd ~/Projects/buzz
 The inspected wrapper supplies Rust 1.95. Keep build targets on a filesystem with
 enough free space. No source depends on these temporary paths. Local Git history
 is the primary checkpoint; a Git bundle under `~/.cache/omarchy-buzz/` provides a
-second local copy, not a remote backup. No public remote or marketplace listing
-exists. No private relay addresses or desktop screenshots are committed.
+second local copy. Committed source is backed up to the private GitHub remote;
+ignored artifacts remain local. No public release or marketplace listing exists. No private relay addresses or desktop screenshots are committed.
 Upstream Buzz, Omarchy and vPerps source files remain unmodified.
+
+Prepared next: manual disposable real-relay workflow and ignored component
+conformance test. Local compilation and six runner tests pass; remote relay
+execution remains pending. ACP limitations are in ACP_VALIDATION.md.

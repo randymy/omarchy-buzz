@@ -1,0 +1,101 @@
+name: Isolated Buzz relay conformance
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: isolated-buzz-relay
+  cancel-in-progress: false
+
+jobs:
+  relay:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    env:
+      CARGO_HOME: ${{ runner.temp }}/buzz-cargo
+      CARGO_BUILD_JOBS: '2'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+    steps:
+      - name: Check out plugin without stored Git credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          path: plugin
+          persist-credentials: false
+      - name: Resolve the exact tested Buzz source pin
+        id: pin
+        working-directory: plugin
+        run: |
+          python3 - <<'PY'
+          import os, re, tomllib
+          from pathlib import Path
+          cargo = tomllib.loads(Path('helper/Cargo.toml').read_text())
+          pins = [cargo['dependencies'][name]['rev'] for name in ('buzz-sdk', 'buzz-ws-client')]
+          assert pins[0] == pins[1] and re.fullmatch('[0-9a-f]{40}', pins[0])
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('revision=' + pins[0] + '\n')
+          PY
+      - name: Check out the exact upstream relay source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: block/buzz
+          ref: ${{ steps.pin.outputs.revision }}
+          path: buzz
+          persist-credentials: false
+      - name: Restore disposable build cache
+        id: cache
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5, pinned by inspected upstream CI
+        with:
+          path: |
+            ${{ runner.temp }}/buzz-cargo
+            ${{ runner.temp }}/relay-target
+            ${{ runner.temp }}/helper-target
+          key: buzz-relay-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.pin.outputs.revision }}-${{ hashFiles('plugin/helper/Cargo.lock') }}
+      - name: Install the tested toolchain and native build dependencies
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal --component rustfmt
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libssl-dev libdbus-1-dev protobuf-compiler
+          docker compose version
+      - name: Check helper and runner fixtures
+        working-directory: plugin
+        run: |
+          cargo +1.95.0 fmt --manifest-path helper/Cargo.toml --check
+          python3 tests/relay_conformance_runner.py
+      - name: Build the pinned upstream relay
+        id: build
+        working-directory: buzz
+        run: cargo +1.95.0 build --locked -p buzz-relay --target-dir "$RUNNER_TEMP/relay-target"
+      - name: Compile the helper conformance tests
+        working-directory: plugin
+        run: cargo +1.95.0 test --locked --no-run --manifest-path helper/Cargo.toml --target-dir "$RUNNER_TEMP/helper-target"
+      - name: Exercise the helper against an isolated real relay
+        run: |
+          export RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}"
+          python3 plugin/scripts/relay-conformance-runner \
+            --buzz-source "$GITHUB_WORKSPACE/buzz" \
+            --relay-binary "$RUNNER_TEMP/relay-target/debug/buzz-relay" \
+            --helper-source "$GITHUB_WORKSPACE/plugin" \
+            --helper-target "$RUNNER_TEMP/helper-target" \
+            --output "$RUNNER_TEMP/relay-evidence"
+      - name: Upload only sanitized test evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: isolated-relay-evidence
+          path: ${{ runner.temp }}/relay-evidence/summary.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Preserve the compiled relay even if conformance finds a mismatch
+        if: always() && !cancelled() && steps.build.outcome == 'success' && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            ${{ runner.temp }}/buzz-cargo
+            ${{ runner.temp }}/relay-target
+            ${{ runner.temp }}/helper-target
+          key: ${{ steps.cache.outputs.cache-primary-key }}

@@ -1,7 +1,7 @@
 # Isolated real-relay validation route
 
-Research only, 2026-09-26. No services started, packages installed, images pulled,
-production configuration read, or real identities used. Source baseline:
+Runner prepared, 2026-09-26. Real runtime conformance is not yet established.
+No local services or production identities are used. Source baseline:
 Buzz `781d39510cf23cfe224e8f521ae06a23377e06de`.
 
 This machine currently has no `docker`, `podman`, `postgres`, `initdb`, `psql`,
@@ -139,3 +139,29 @@ paths. Public `send_raw` or an outer timeout cannot implement this today, and
 copying the private connection into the helper would violate the no-fork
 boundary. See `helper/WS_UPSTREAM.md` for the proposed contract. Process memory
 limits remain mitigation, not proof of strict pre-auth memory bounds.
+
+## Executable disposable-runner test
+
+The manual `Isolated Buzz relay conformance` GitHub Actions workflow builds the
+exact pinned upstream relay and compiles the helper's ignored
+`real_relay_messaging_conformance` test. It invokes
+`scripts/relay-conformance-runner` only on a GitHub-hosted Linux runner, with a
+fresh Compose project, fresh PostgreSQL/MinIO volumes, an internal network and
+loopback-only published PostgreSQL and relay-main ports. The relay runs in a
+restricted container because upstream health and metrics listeners bind all
+container interfaces; those ports are not published.
+
+The fixture uses an explicitly public synthetic owner and an in-memory member
+identity. It checks NIP-42, exact COUNT freshness, signed helper HTTP
+catalog/roster/history queries, durable SDK sending, exact real acknowledgement,
+persisted mentions, membership removal and denied subsequent writes. This is
+helper-component conformance, not the full QML/daemon/ACP acceptance scenario.
+Real edit/delete overlays, reconnect/lost receipts and full daemon coverage
+remain follow-up work. No workstation or production stack is accepted.
+
+Run `gh workflow run relay-conformance.yml --repo randymy/omarchy-buzz` after
+pushing the reviewed workflow. The named ignored test must actually pass;
+zero matching tests fails. Six offline mock tests cover isolation and scoped
+cleanup. Only a sanitized summary is uploaded; private synthetic logs stay on
+the disposable runner. Generated fixture secrets do not change the production
+helper's no-secret-argv/environment boundary. See CHECKPOINT.md for run results.

@@ -1,0 +1,297 @@
+#!/usr/bin/env python3
+"""Disposable GitHub-hosted real-relay fixture; never uses a configured relay."""
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import secrets
+import signal
+import socket
+import subprocess
+import tempfile
+import time
+import urllib.request
+import uuid
+
+REVISION = "781d39510cf23cfe224e8f521ae06a23377e06de"
+OWNER = "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+MINIO = "quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e"
+MC = "quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727"
+RUNTIME_RECIPE = "FROM ubuntu:24.04\nRUN apt-get update && apt-get install -y --no-install-recommends libssl3t64 libdbus-1-3 ca-certificates && rm -rf /var/lib/apt/lists/*\n"
+
+
+def clean_environment(work, inherited):
+    env = {"PATH": inherited.get("PATH", "/usr/bin:/bin"), "LANG": "C.UTF-8"}
+    for name in ("CARGO_HOME", "RUSTUP_HOME"):
+        if name in inherited:
+            env[name] = inherited[name]
+    for name, directory in (("HOME", "home"), ("XDG_CONFIG_HOME", "config"),
+                            ("XDG_DATA_HOME", "data"), ("XDG_STATE_HOME", "state"),
+                            ("XDG_RUNTIME_DIR", "runtime"), ("XDG_CACHE_HOME", "cache"),
+                            ("DOCKER_CONFIG", "docker")):
+        path = Path(work) / directory
+        path.mkdir(mode=0o700)
+        env[name] = str(path)
+    env["CARGO_NET_GIT_FETCH_WITH_CLI"] = "true"
+    env["CARGO_BUILD_JOBS"] = "2"
+    env["CARGO_PROFILE_DEV_DEBUG"] = "0"
+    env["CARGO_PROFILE_TEST_DEBUG"] = "0"
+    return env
+
+
+def reserved_ports(count):
+    sockets = []
+    try:
+        for _ in range(count):
+            connection = socket.socket()
+            connection.bind(("127.0.0.1", 0))
+            connection.listen(1)
+            sockets.append(connection)
+        return sockets, [s.getsockname()[1] for s in sockets]
+    except Exception:
+        for connection in sockets:
+            connection.close()
+        raise
+
+
+def compose_plan(project, binary, ports, password, relay_key):
+    if not re.fullmatch(r"obuzz-test-[0-9a-f]{24}", project):
+        raise ValueError("invalid owned compose project")
+    pg_port, relay_port = ports
+    shared = {"networks": ["fixture"], "restart": "no"}
+    services = {
+        "postgres": {**shared, "image": "postgres:17-alpine",
+                     "environment": {"POSTGRES_USER": "buzz", "POSTGRES_PASSWORD": password, "POSTGRES_DB": "buzz"},
+                     "ports": [f"127.0.0.1:{pg_port}:5432"], "volumes": ["postgres-data:/var/lib/postgresql/data"],
+                     "healthcheck": {"test": ["CMD", "pg_isready", "-U", "buzz"], "interval": "2s", "timeout": "3s", "retries": 60}},
+        "redis": {**shared, "image": "redis:7-alpine",
+                  "command": ["redis-server", "--save", "", "--appendonly", "no"],
+                  "healthcheck": {"test": ["CMD", "redis-cli", "ping"], "interval": "2s", "timeout": "3s", "retries": 60}},
+        "minio": {**shared, "image": MINIO, "command": ["server", "/data", "--console-address", ":9001"],
+                  "environment": {"MINIO_ROOT_USER": "fixture", "MINIO_ROOT_PASSWORD": password},
+                  "volumes": ["minio-data:/data"],
+                  "healthcheck": {"test": ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"], "interval": "2s", "timeout": "3s", "retries": 60}},
+        "minio-init": {**shared, "image": MC, "environment": {"FIXTURE_PASSWORD": password},
+                       "entrypoint": ["/bin/sh", "-ec", 'mc alias set fixture http://minio:9000 fixture "$$FIXTURE_PASSWORD" >/dev/null; mc mb --ignore-existing fixture/buzz-media >/dev/null; mc anonymous set none fixture/buzz-media >/dev/null']},
+        "relay": {**shared, "image": project + "-runtime:local", "init": True, "user": "65532:65532", "read_only": True,
+                  "cap_drop": ["ALL"], "security_opt": ["no-new-privileges:true"],
+                  "tmpfs": ["/tmp:mode=0700,uid=65532,gid=65532"],
+                  "volumes": [{"type": "bind", "source": str(binary), "target": "/opt/buzz-relay", "read_only": True}],
+                  "ports": [f"127.0.0.1:{relay_port}:3000"],
+                  "entrypoint": ["/bin/sh", "-ec", "mkdir -p /tmp/home /tmp/repos /tmp/packs; exec /opt/buzz-relay"],
+                  "environment": {"HOME": "/tmp/home", "DATABASE_URL": f"postgres://buzz:{password}@postgres:5432/buzz",
+                                  "REDIS_URL": "redis://redis:6379", "RELAY_URL": f"ws://127.0.0.1:{relay_port}",
+                                  "BUZZ_BIND_ADDR": "0.0.0.0:3000", "BUZZ_HEALTH_PORT": "8080", "BUZZ_METRICS_PORT": "9102",
+                                  "BUZZ_S3_ENDPOINT": "http://minio:9000", "BUZZ_S3_ACCESS_KEY": "fixture", "BUZZ_S3_SECRET_KEY": password,
+                                  "BUZZ_S3_BUCKET": "buzz-media", "BUZZ_S3_ADDRESSING_STYLE": "path",
+                                  "BUZZ_RELAY_PRIVATE_KEY": relay_key, "RELAY_OWNER_PUBKEY": OWNER,
+                                  "BUZZ_REQUIRE_AUTH_TOKEN": "false", "BUZZ_REQUIRE_RELAY_MEMBERSHIP": "false",
+                                  "BUZZ_AUTO_MIGRATE": "false", "BUZZ_RECONCILE_CHANNELS": "true",
+                                  "BUZZ_GIT_REPO_PATH": "/tmp/repos", "BUZZ_GIT_PACK_CACHE_PATH": "/tmp/packs",
+                                  "BUZZ_PUSH_ENABLED": "false", "BUZZ_AUDIT_ENABLED": "false", "BUZZ_MESH": "false", "RUST_LOG": "warn"}}
+    }
+    return {"name": project, "services": services, "networks": {"fixture": {"internal": True}},
+            "volumes": {"postgres-data": {}, "minio-data": {}}}
+
+
+def stop_group(process):
+    if process is None or process.poll() is not None:
+        return
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    try:
+        process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.wait(timeout=5)
+
+
+def command(args, env, cwd, log, timeout=120, input_data=None, capture=False):
+    with Path(log).open("ab") as stream:
+        process = subprocess.Popen(args, env=env, cwd=cwd, stdin=subprocess.PIPE if input_data is not None else subprocess.DEVNULL,
+                                   stdout=subprocess.PIPE if capture else stream, stderr=stream, start_new_session=True)
+        try:
+            output, _ = process.communicate(input_data, timeout=timeout)
+            if capture and output:
+                stream.write(output[:65536])
+            if process.returncode:
+                raise RuntimeError("fixture command failed")
+            if output is not None and len(output) > 65536:
+                raise RuntimeError("unexpected fixture command output")
+            return output or b""
+        finally:
+            stop_group(process)
+
+
+def helper_command(source, target):
+    return ["cargo", "+1.95.0", "test", "--locked", "--manifest-path", str(Path(source) / "helper/Cargo.toml"),
+            "--target-dir", str(target), "real_relay_", "--", "--ignored", "--test-threads=1"]
+
+
+def successful_tests(output):
+    text = output.decode("utf-8", errors="replace")
+    expected = "real_relay_tests::real_relay_messaging_conformance"
+    if not re.search(r"(?m)^test " + re.escape(expected) + r" \.\.\. ok$", text):
+        raise ValueError("required real relay fixture did not pass")
+    results = re.findall(r"test result: ok\. ([0-9]+) passed; 0 failed; 0 ignored;", text)
+    if sum(map(int, results)) < 1:
+        raise ValueError("no ignored relay conformance tests executed")
+    return {"passed": sum(map(int, results)), "requiredTest": expected}
+
+
+def run(args):
+    if os.environ.get("GITHUB_ACTIONS") != "true" or os.environ.get("RUNNER_ENVIRONMENT") != "github-hosted":
+        raise ValueError("real fixture requires a disposable GitHub-hosted Linux runner")
+    if os.uname().sysname != "Linux":
+        raise ValueError("Linux runner required")
+    source = args.buzz_source.resolve(strict=True)
+    binary = args.relay_binary.resolve(strict=True)
+    helper = args.helper_source.resolve(strict=True)
+    target = args.helper_target.resolve()
+    if not binary.is_file() or not os.access(binary, os.X_OK):
+        raise ValueError("built relay executable required")
+    output = args.output.resolve()
+    output.mkdir(mode=0o700, parents=True, exist_ok=False)
+    os.chmod(output, 0o700)
+    log = output / "private-runner.log"
+    log.touch(mode=0o600)
+    report = {"schemaVersion": 1, "state": "failed", "stage": "preflight", "upstreamRevision": REVISION,
+              "loopbackOnly": True, "productionStateUsed": False, "images": {}, "cleanupComplete": False,
+              "relayBinarySha256": hashlib.sha256(binary.read_bytes()).hexdigest()}
+    report["runtimeRecipeSha256"] = hashlib.sha256(RUNTIME_RECIPE.encode()).hexdigest()
+    report["runtimeBaseReference"] = "ubuntu:24.04"
+    relay = None
+    held = []
+    compose = None
+    env = None
+    started = time.monotonic()
+    with tempfile.TemporaryDirectory(prefix="obuzz-disposable-") as temporary:
+        work = Path(temporary)
+        os.chmod(work, 0o700)
+        env = clean_environment(work, os.environ)
+        try:
+            revision = command(["git", "-C", str(source), "rev-parse", "HEAD"], env, work, log, capture=True).decode().strip()
+            if revision != REVISION:
+                raise ValueError("upstream checkout differs from inspected pin")
+            if command(["git", "-C", str(source), "status", "--porcelain", "--untracked-files=no"], env, work, log, capture=True):
+                raise ValueError("upstream tracked source changes present")
+            command(["docker", "compose", "version"], env, work, log)
+            project = "obuzz-test-" + secrets.token_hex(12)
+            held, ports = reserved_ports(2)
+            password = secrets.token_hex(24)
+            relay_key = secrets.token_hex(32)
+            plan = compose_plan(project, binary, ports, password, relay_key)
+            compose_file = work / "compose.json"
+            compose_file.write_text(json.dumps(plan))
+            os.chmod(compose_file, 0o600)
+            for resource in (["ps", "-aq"], ["volume", "ls", "-q"], ["network", "ls", "-q"]):
+                if command(["docker", *resource, "--filter", "label=com.docker.compose.project=" + project], env, work, log, capture=True):
+                    # Do not run cleanup against anything whose ownership predates this run.
+                    raise ValueError("owned project collision")
+            compose = ["docker", "compose", "--project-name", project, "--file", str(compose_file)]
+            runtime = work / "runtime-build"
+            runtime.mkdir()
+            (runtime / "Dockerfile").write_text(RUNTIME_RECIPE)
+            report["stage"] = "runtime_image"
+            command(["docker", "build", "--tag", project + "-runtime:local", str(runtime)], env, work, log, timeout=600)
+            for connection in held:
+                connection.close()
+            held = []
+            report["stage"] = "backing_services"
+            command(compose + ["up", "-d", "--wait", "--wait-timeout", "120", "postgres", "redis", "minio"], env, work, log, timeout=300)
+            command(compose + ["run", "--rm", "--no-deps", "minio-init"], env, work, log, timeout=120)
+            report["stage"] = "schema"
+            schema_env = {**env, "PGHOST": "127.0.0.1", "PGPORT": str(ports[0]), "PGUSER": "buzz", "PGPASSWORD": password, "PGDATABASE": "buzz",
+                          "PGSCHEMA_PLAN_HOST": "127.0.0.1", "PGSCHEMA_PLAN_PORT": str(ports[0]), "PGSCHEMA_PLAN_USER": "buzz", "PGSCHEMA_PLAN_PASSWORD": password, "PGSCHEMA_PLAN_DB": "buzz"}
+            command([str(source / "bin/pgschema"), "apply", "--file", str(source / "schema/schema.sql"), "--auto-approve"], schema_env, source, log, timeout=300)
+            psql = compose + ["exec", "-T", "postgres", "psql", "-X", "-U", "buzz", "-d", "buzz", "-v", "ON_ERROR_STOP=1"]
+            command(psql, env, work, log, input_data=(source / "scripts/reconcile-schema-after-pgschema.sql").read_bytes())
+            community = str(uuid.uuid4())
+            command(psql, env, work, log, input_data=f"INSERT INTO communities (id,host) VALUES ('{community}','127.0.0.1:{ports[1]}');\n".encode())
+            report["stage"] = "relay_start"
+            relay_stream = log.open("ab")
+            try:
+                relay = subprocess.Popen(compose + ["up", "--no-deps", "--abort-on-container-exit", "--exit-code-from", "relay", "relay"],
+                                         cwd=work, env=env, stdin=subprocess.DEVNULL, stdout=relay_stream, stderr=relay_stream, start_new_session=True)
+            finally:
+                relay_stream.close()
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            deadline = time.monotonic() + 90
+            while True:
+                if relay.poll() is not None:
+                    raise RuntimeError("relay exited before readiness")
+                try:
+                    request = urllib.request.Request(f"http://127.0.0.1:{ports[1]}/info", headers={"Accept": "application/nostr+json"})
+                    with opener.open(request, timeout=2) as response:
+                        info = json.loads(response.read(65537))
+                    if isinstance(info.get("self"), str) and re.fullmatch(r"[0-9a-f]{64}", info["self"]):
+                        with opener.open(f"http://127.0.0.1:{ports[1]}/_readiness", timeout=2) as response:
+                            response.read(65537)
+                            if response.status == 200:
+                                break
+                except (OSError, ValueError, KeyError):
+                    pass
+                if time.monotonic() > deadline:
+                    raise RuntimeError("relay readiness timed out")
+                time.sleep(0.5)
+            report["relaySigner"] = info["self"]
+            report["loopbackPort"] = ports[1]
+            for service in ("postgres", "redis", "minio", "relay"):
+                container = command(compose + ["ps", "-q", service], env, work, log, capture=True).decode().strip()
+                image = command(["docker", "inspect", "--format", "{{.Image}}", container], env, work, log, capture=True).decode().strip()
+                if not re.fullmatch(r"sha256:[0-9a-f]{64}", image):
+                    raise RuntimeError("unexpected runtime image identity")
+                report["images"][service] = image
+            report["stage"] = "helper_conformance"
+            fixture_env = {**env, "OMARCHY_BUZZ_TEST_RELAY_URL": f"ws://127.0.0.1:{ports[1]}"}
+            test_output = command(helper_command(helper, target), fixture_env, helper, log, timeout=600, capture=True)
+            report["tests"] = successful_tests(test_output)
+            report["state"] = "passed"
+            report["stage"] = "complete"
+        except Exception as error:
+            report["errorType"] = type(error).__name__
+            # No command argv, child diagnostics, synthetic credentials or message text in summary.
+        finally:
+            for connection in held:
+                connection.close()
+            stop_group(relay)
+            if compose is not None:
+                try:
+                    command(compose + ["down", "--volumes", "--remove-orphans", "--timeout", "10"], env, work, log, timeout=90)
+                    report["cleanupComplete"] = True
+                except Exception:
+                    report["state"] = "failed"
+                    report["cleanupComplete"] = False
+            else:
+                report["cleanupComplete"] = True
+            report["durationSeconds"] = round(time.monotonic() - started, 2)
+            (output / "summary.json").write_text(json.dumps(report, sort_keys=True, indent=2) + "\n")
+            os.chmod(output / "summary.json", 0o600)
+    print(json.dumps(report, sort_keys=True))
+    return 0 if report["state"] == "passed" and report["cleanupComplete"] else 1
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    for name in ("buzz-source", "relay-binary", "helper-source", "helper-target", "output"):
+        parser.add_argument("--" + name, required=True, type=Path)
+    args = parser.parse_args()
+    def interrupted(_signum, _frame):
+        raise InterruptedError("runner interrupted")
+    signal.signal(signal.SIGTERM, interrupted)
+    signal.signal(signal.SIGINT, interrupted)
+    try:
+        return run(args)
+    except (ValueError, OSError) as error:
+        parser.exit(1, "fixture preflight failed: " + type(error).__name__ + "\n")
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
