@@ -65,7 +65,7 @@ def compose_plan(project, binary, ports, password, relay_key, messaging_only=Fal
         "postgres": {**shared, "image": "postgres:17-alpine",
                      "environment": {"POSTGRES_USER": "buzz", "POSTGRES_PASSWORD": password, "POSTGRES_DB": "buzz"},
                      "ports": [f"127.0.0.1:{pg_port}:5432"], "volumes": ["postgres-data:/var/lib/postgresql/data"],
-                     "healthcheck": {"test": ["CMD", "pg_isready", "-U", "buzz"], "interval": "2s", "timeout": "3s", "retries": 60}},
+                     "healthcheck": {"test": ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "buzz", "-d", "buzz"], "interval": "2s", "timeout": "3s", "retries": 60}},
         "redis": {**shared, "image": "redis:7-alpine",
                   "command": ["redis-server", "--save", "", "--appendonly", "no"],
                   "healthcheck": {"test": ["CMD", "redis-cli", "ping"], "interval": "2s", "timeout": "3s", "retries": 60}},
@@ -141,6 +141,10 @@ class FixtureCommandError(RuntimeError):
                 category = label
                 break
         self.safe = {"tool": tool, "action": action, "exitCode": code, "category": category}
+        endpoints = re.findall(rb"(?:127\.0\.0\.1|localhost|\[::1\]):([0-9]{1,5})", diagnostics)
+        ports = sorted({int(port) for port in endpoints if 0 < int(port) < 65536})
+        if ports:
+            self.safe["loopbackPorts"] = ports
         super().__init__(category)
 
 
@@ -172,14 +176,14 @@ def command(args, env, cwd, log, timeout=120, input_data=None, capture=False):
             stop_group(process)
 
 
-def helper_command(source, target):
+def helper_command(source, target, acp=False):
     return ["cargo", "+1.95.0", "test", "--locked", "--manifest-path", str(Path(source) / "helper/Cargo.toml"),
-            "--target-dir", str(target), "real_relay_", "--", "--ignored", "--test-threads=1"]
+            "--target-dir", str(target), "acp_relay_" if acp else "real_relay_", "--", "--ignored", "--test-threads=1"]
 
 
-def successful_tests(output):
+def successful_tests(output, acp=False):
     text = output.decode("utf-8", errors="replace")
-    expected = "real_relay_tests::real_relay_messaging_conformance"
+    expected = "acp_relay_tests::acp_relay_synthetic_routing" if acp else "real_relay_tests::real_relay_messaging_conformance"
     if not re.search(r"(?m)^test " + re.escape(expected) + r" \.\.\. ok$", text):
         raise ValueError("required real relay fixture did not pass")
     results = re.findall(r"test result: ok\. ([0-9]+) passed; 0 failed; 0 ignored;", text)
@@ -193,6 +197,17 @@ def run(args):
         raise ValueError("real fixture requires a disposable GitHub-hosted Linux runner")
     if os.uname().sysname != "Linux":
         raise ValueError("Linux runner required")
+    acp_binary_input = getattr(args, "acp_bin_dir", None)
+    acp_node_input = getattr(args, "acp_node", None)
+    if (acp_binary_input is None) != (acp_node_input is None):
+        raise ValueError("ACP binary directory and Node executable must be supplied together")
+    acp_binary = acp_node = None
+    if acp_binary_input is not None:
+        acp_binary = acp_binary_input.resolve(strict=True)
+        acp_node = acp_node_input.resolve(strict=True)
+        for executable in (acp_node, *(acp_binary / name for name in ("buzz-acp", "buzz", "git-sign-nostr", "git-credential-nostr"))):
+            if not executable.is_file() or not os.access(executable, os.X_OK):
+                raise ValueError("built synthetic ACP fixture executable required")
     source = args.buzz_source.resolve(strict=True)
     binary = args.relay_binary.resolve(strict=True)
     helper = args.helper_source.resolve(strict=True)
@@ -207,7 +222,9 @@ def run(args):
     report = {"schemaVersion": 1, "state": "failed", "stage": "preflight", "upstreamRevision": REVISION,
               "validationScope": "messaging-only" if args.messaging_only else "messaging-with-object-store-probe",
               "objectStoreProbe": not args.messaging_only, "loopbackOnly": True, "productionStateUsed": False, "images": {}, "cleanupComplete": False,
-              "relayBinarySha256": hashlib.sha256(binary.read_bytes()).hexdigest()}
+              "relayBinarySha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
+              "messaging": {"state": "not_run"},
+              "acp": {"state": "not_run" if acp_binary is not None else "not_requested", "syntheticOnly": True}}
     report["runtimeRecipeSha256"] = hashlib.sha256(RUNTIME_RECIPE.encode()).hexdigest()
     report["runtimeBaseReference"] = "ubuntu:24.04"
     relay = None
@@ -255,7 +272,7 @@ def run(args):
             report["stage"] = "schema"
             schema_env = {**env, "PGHOST": "127.0.0.1", "PGPORT": str(ports[0]), "PGUSER": "buzz", "PGPASSWORD": password, "PGDATABASE": "buzz",
                           "PGSCHEMA_PLAN_HOST": "127.0.0.1", "PGSCHEMA_PLAN_PORT": str(ports[0]), "PGSCHEMA_PLAN_USER": "buzz", "PGSCHEMA_PLAN_PASSWORD": password, "PGSCHEMA_PLAN_DB": "buzz"}
-            command([str(source / "bin/pgschema"), "apply", "--file", str(source / "schema/schema.sql"), "--auto-approve"], schema_env, source, log, timeout=300)
+            command([str(source / "bin/pgschema"), "apply", "--host", "127.0.0.1", "--port", str(ports[0]), "--file", str(source / "schema/schema.sql"), "--auto-approve"], schema_env, source, log, timeout=300)
             psql = compose + ["exec", "-T", "postgres", "psql", "-X", "-U", "buzz", "-d", "buzz", "-v", "ON_ERROR_STOP=1"]
             command(psql, env, work, log, input_data=(source / "scripts/reconcile-schema-after-pgschema.sql").read_bytes())
             community = str(uuid.uuid4())
@@ -296,11 +313,25 @@ def run(args):
                 report["images"][service] = image
             report["stage"] = "helper_conformance"
             fixture_env = {**env, "OMARCHY_BUZZ_TEST_RELAY_URL": f"ws://127.0.0.1:{ports[1]}"}
+            report["messaging"]["state"] = "running"
             test_output = command(helper_command(helper, target), fixture_env, helper, log, timeout=600, capture=True)
             report["tests"] = successful_tests(test_output)
+            report["messaging"] = {"state": "passed", "tests": report["tests"]}
+            if acp_binary is not None:
+                report["stage"] = "synthetic_acp_conformance"
+                report["acp"]["state"] = "running"
+                acp_env = {**fixture_env,
+                           "OMARCHY_BUZZ_TEST_ACP_BUZZ_SOURCE": str(source),
+                           "OMARCHY_BUZZ_TEST_ACP_BIN_DIR": str(acp_binary),
+                           "OMARCHY_BUZZ_TEST_ACP_NODE": str(acp_node)}
+                acp_output = command(helper_command(helper, target, acp=True), acp_env, helper, log, timeout=240, capture=True)
+                report["acp"] = {"state": "passed", "syntheticOnly": True, "tests": successful_tests(acp_output, acp=True)}
             report["state"] = "passed"
             report["stage"] = "complete"
         except Exception as error:
+            for validation in ("messaging", "acp"):
+                if report[validation]["state"] == "running":
+                    report[validation]["state"] = "failed"
             report["errorType"] = type(error).__name__
             if isinstance(error, FixtureCommandError):
                 report["failure"] = error.safe
@@ -330,6 +361,8 @@ def main():
     for name in ("buzz-source", "relay-binary", "helper-source", "helper-target", "output"):
         parser.add_argument("--" + name, required=True, type=Path)
     parser.add_argument("--messaging-only", action="store_true", help="omit object storage and its startup probe; no Git/media conformance")
+    parser.add_argument("--acp-bin-dir", type=Path, help="optional prebuilt synthetic ACP tools; requires --acp-node")
+    parser.add_argument("--acp-node", type=Path, help="optional Node executable for the pinned synthetic peer only")
     args = parser.parse_args()
     def interrupted(_signum, _frame):
         raise InterruptedError("runner interrupted")

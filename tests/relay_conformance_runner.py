@@ -20,6 +20,9 @@ loader.exec_module(runner)
 PASSED = b"test real_relay_tests::real_relay_messaging_conformance ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored; 89 filtered out; finished in 0.1s\n"
 
 
+ACP_PASSED = b"test acp_relay_tests::acp_relay_synthetic_routing ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored; 89 filtered out; finished in 0.1s\n"
+
+
 class Response:
     status = 200
     def __init__(self, content):
@@ -85,7 +88,7 @@ class RunnerTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 runner.successful_tests(output)
 
-    def run_mock(self, fixture_output=PASSED, fail_build=False, collision=False, messaging_only=False):
+    def run_mock(self, fixture_output=PASSED, fail_build=False, collision=False, messaging_only=False, acp=False, acp_output=ACP_PASSED):
         with tempfile.TemporaryDirectory(prefix="runner mock spaces ") as temp:
             base = Path(temp)
             source = base / "buzz"
@@ -97,6 +100,12 @@ class RunnerTests(unittest.TestCase):
             binary = base / "relay binary"
             binary.write_bytes(b"never executed fixture")
             binary.chmod(0o700)
+            acp_bins = base / "acp tools"
+            acp_bins.mkdir()
+            node = base / "node fixture"
+            for executable in (node, *(acp_bins / name for name in ("buzz-acp", "buzz", "git-sign-nostr", "git-credential-nostr"))):
+                executable.write_bytes(b"never executed fixture")
+                executable.chmod(0o700)
             calls = []
             def command(args, env, cwd, log, **kwargs):
                 calls.append(list(args))
@@ -112,11 +121,20 @@ class RunnerTests(unittest.TestCase):
                 if "ps" in args and "-q" in args:
                     return b"fixture-container-id"
                 if args[0] == "cargo":
+                    if "acp_relay_" in args:
+                        self.assertEqual(env["OMARCHY_BUZZ_TEST_ACP_BUZZ_SOURCE"], str(source))
+                        self.assertEqual(env["OMARCHY_BUZZ_TEST_ACP_BIN_DIR"], str(acp_bins))
+                        self.assertEqual(env["OMARCHY_BUZZ_TEST_ACP_NODE"], str(node))
+                        self.assertEqual(env["OMARCHY_BUZZ_TEST_RELAY_URL"], "ws://127.0.0.1:43211")
+                        self.assertEqual(kwargs["timeout"], 240)
+                        self.assertTrue(any("real_relay_" in previous for previous in calls[:-1]))
+                        return acp_output
                     return fixture_output
                 return b""
             process = SimpleNamespace(poll=lambda: None)
             arguments = SimpleNamespace(buzz_source=source, relay_binary=binary, helper_source=helper,
-                                        helper_target=base / "target", output=base / "output", messaging_only=messaging_only)
+                                        helper_target=base / "target", output=base / "output", messaging_only=messaging_only,
+                                        acp_bin_dir=acp_bins if acp else None, acp_node=node if acp else None)
             with patch.dict(os.environ, {"GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "github-hosted", "GH_TOKEN": "must-not-pass"}), \
                     patch.object(runner, "command", command), patch.object(runner.subprocess, "Popen", return_value=process), \
                     patch.object(runner, "reserved_ports", return_value=([SimpleNamespace(close=lambda: None)], [43210, 43211])), \
@@ -134,13 +152,53 @@ class RunnerTests(unittest.TestCase):
                 self.assertNotIn("prune", " ".join(cleanup))
             self.assertNotIn("must-not-pass", json.dumps(summary))
             self.assertNotIn("PRIVATE_KEY", json.dumps(summary))
+            if summary["messaging"]["state"] != "passed":
+                self.assertFalse(any("acp_relay_" in call for call in calls))
             self.assertEqual((arguments.output / "private-runner.log").stat().st_mode & 0o777, 0o600)
             return status, summary
+
+    def test_optional_acp_stage_requires_exact_test_and_prior_messaging(self):
+        self.assertEqual(runner.successful_tests(ACP_PASSED, acp=True)["requiredTest"], "acp_relay_tests::acp_relay_synthetic_routing")
+        for output in (PASSED, ACP_PASSED.replace(b"1 passed", b"0 passed"), ACP_PASSED.replace(b" ... ok", b" ... ignored")):
+            with self.assertRaises(ValueError):
+                runner.successful_tests(output, acp=True)
+        status, report = self.run_mock(acp=True)
+        self.assertEqual(status, 0)
+        self.assertEqual(report["messaging"]["state"], "passed")
+        self.assertEqual(report["acp"]["state"], "passed")
+        self.assertTrue(report["acp"]["syntheticOnly"])
+        status, report = self.run_mock(acp=True, acp_output=b"test result: ok. 0 passed; 0 failed; 0 ignored;")
+        self.assertEqual(status, 1)
+        self.assertEqual(report["messaging"]["state"], "passed")
+        self.assertEqual(report["acp"]["state"], "failed")
+        self.assertEqual(report["stage"], "synthetic_acp_conformance")
+        status, report = self.run_mock(acp=True, fixture_output=b"test result: ok. 0 passed; 0 failed; 0 ignored;")
+        self.assertEqual(status, 1)
+        self.assertEqual(report["messaging"]["state"], "failed")
+        self.assertEqual(report["acp"]["state"], "not_run")
+
+    def test_acp_options_must_be_paired_before_any_operation(self):
+        with patch.dict(os.environ, {"GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "github-hosted"}), patch.object(runner, "command") as command:
+            for options in ({"acp_bin_dir": Path("/fixture/tools")}, {"acp_node": Path("/fixture/node")}):
+                with self.assertRaises(ValueError):
+                    runner.run(SimpleNamespace(**options))
+            command.assert_not_called()
+        with tempfile.TemporaryDirectory() as temporary:
+            binaries = Path(temporary)
+            node = binaries / "node"
+            node.write_bytes(b"not executed")
+            node.chmod(0o700)
+            with patch.dict(os.environ, {"GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "github-hosted"}), patch.object(runner, "command") as command:
+                with self.assertRaises(ValueError):
+                    runner.run(SimpleNamespace(acp_bin_dir=binaries, acp_node=node))
+                command.assert_not_called()
 
     def test_full_mock_pass_and_cleanup(self):
         status, summary = self.run_mock()
         self.assertEqual(status, 0)
         self.assertEqual(summary["tests"]["passed"], 1)
+        self.assertEqual(summary["messaging"]["state"], "passed")
+        self.assertEqual(summary["acp"]["state"], "not_requested")
         self.assertEqual(set(summary["images"]), {"postgres", "redis", "minio", "relay"})
 
     def test_build_failure_and_zero_fixture_still_cleanup(self):
