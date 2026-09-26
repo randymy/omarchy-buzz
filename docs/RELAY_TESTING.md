@@ -1,6 +1,9 @@
 # Isolated real-relay validation route
 
-Runner prepared, 2026-09-26. Real runtime conformance is not yet established.
+Messaging component conformance passed on 2026-09-26 in
+[run 36280427402](https://github.com/randymy/omarchy-buzz/actions/runs/36280427402).
+Evidence: [sanitized summary](evidence/relay-messaging-36280427402.json).
+Full daemon/UI, ACP and Git/media conformance are separate gates.
 No local services or production identities are used. Source baseline:
 Buzz `781d39510cf23cfe224e8f521ae06a23377e06de`.
 
@@ -70,7 +73,7 @@ Do not exercise media or git operations in this variant. PostgreSQL and Redis
 remain required. This skips the object-store startup admission gate in
 `crates/buzz-relay/src/main.rs:603`; it cannot establish full deployment, media,
 or git validation. The default MinIO route above remains the complete startup
-route. This source-derived alternative has not been exercised here.
+route. The messaging-only variant passed in the run linked above.
 
 Use the pinned tests as conformance witnesses before adding helper-specific
 integration:
@@ -106,9 +109,9 @@ upstream test-client sends do not establish that the helper can send, and
 synthetic names are not proof of human or agent identity. Do not invoke an agent
 in these message-delivery tests.
 
-This document is a concrete preparation route, not evidence of successful
-real-relay runtime validation. The helper's existing synthetic HTTP/WS tests
-remain a different verification layer.
+The broader test plan above exceeds the component coverage executed so far.
+The helper's synthetic HTTP/WS tests remain a different verification layer;
+the linked runtime evidence records the smaller real-relay test.
 
 ## WebSocket resource-bound integration seam
 

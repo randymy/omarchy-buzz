@@ -124,6 +124,31 @@ second local copy. Committed source is backed up to the private GitHub remote;
 ignored artifacts remain local. No public release or marketplace listing exists. No private relay addresses or desktop screenshots are committed.
 Upstream Buzz, Omarchy and vPerps source files remain unmodified.
 
-Prepared next: manual disposable real-relay workflow and ignored component
-conformance test. Local compilation and six runner tests pass; remote relay
-execution remains pending. ACP limitations are in ACP_VALIDATION.md.
+## Isolated relay progress, 2026-09-26
+
+The pinned actual relay now builds, starts, and passes readiness on disposable
+GitHub runners. [Run 36280427402](https://github.com/randymy/omarchy-buzz/actions/runs/36280427402)
+passed the actual messaging component test and cleanup completed. Its sanitized
+summary is saved in `docs/evidence/relay-messaging-36280427402.json`. Earlier runs
+found inaccessible MinIO images and unsupported internal-only Docker port
+publication. The fixture now explicitly excludes object storage and uses
+loopback-published ports on a dedicated bridge; relay egress is not blocked.
+No workstation identity or production relay has been used.
+
+Ten runner fixtures pass locally. Source review corrected the revocation test:
+Buzz may filter inaccessible data instead of returning 403. The test checks an
+owner-visible signed roster change plus the removed member's rejected write;
+it does not claim an empty query is an authoritative denial. Fixed protocol
+stage labels support sanitized failure diagnostics. The passing run uses plugin
+commit `f276997` and the exact Buzz pin above. This proves helper components;
+full daemon/QML integration, automatic revocation observation, unread state,
+notifications, edit/delete overlays and reconnect/lost-receipt cases still need
+real-relay coverage. Git/media/object storage were excluded.
+
+Optional synthetic ACP routing is prepared behind the manual workflow's
+`synthetic_acp` input, default false, and executes only after messaging passes.
+ACP run 36280557661 is pending at this checkpoint. No model-backed agent has
+been exercised. ACP key
+input and permission limitations remain in ACP_VALIDATION.md. The read-only
+upstream tracking workflow completed successfully in run 36279926788; candidate
+updates and scheduled execution remain separately unverified.
