@@ -7,6 +7,8 @@ pub struct Request {
     pub id: String,
     #[serde(rename = "type")]
     pub kind: String,
+    #[serde(rename = "roomId")]
+    pub room_id: Option<String>,
 }
 pub fn request(bytes: &[u8]) -> Result<Request, &'static str> {
     if bytes.len() > LIMIT {
@@ -27,11 +29,54 @@ pub fn request(bytes: &[u8]) -> Result<Request, &'static str> {
     }
     if !matches!(
         r.kind.as_str(),
-        "get_snapshot" | "retry_connection" | "subscribe"
+        "get_snapshot" | "retry_connection" | "subscribe" | "fetch_recent"
     ) {
         return Err("unsupported_request");
     }
+    if r.kind == "fetch_recent" {
+        let room = r.room_id.as_deref().ok_or("invalid_request")?;
+        let parsed = uuid::Uuid::parse_str(room).map_err(|_| "invalid_request")?;
+        if parsed.to_string() != room {
+            return Err("invalid_request");
+        }
+    } else if r.room_id.is_some() {
+        return Err("invalid_request");
+    }
     Ok(r)
+}
+pub enum Command {
+    Retry,
+    FetchRecent(String),
+}
+#[derive(Clone, Serialize)]
+pub struct HistoryRow {
+    pub id: String,
+    pub author: String,
+    pub time: u64,
+    pub text: String,
+    pub edited: bool,
+    pub truncated: bool,
+    pub unavailable: bool,
+}
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct History {
+    pub state: String,
+    pub room_id: Option<String>,
+    pub rows: Vec<HistoryRow>,
+    pub has_more: Option<bool>,
+    pub category: Option<String>,
+}
+impl History {
+    pub fn unavailable(room: Option<String>, category: Option<&str>) -> Self {
+        Self {
+            state: "unavailable".into(),
+            room_id: room,
+            rows: Vec::new(),
+            has_more: None,
+            category: category.map(str::to_owned),
+        }
+    }
 }
 #[derive(Clone, Serialize)]
 pub struct Room {
@@ -69,6 +114,7 @@ pub struct Status {
     pub generation: u64,
     pub category: Option<String>,
     pub catalog: Catalog,
+    pub history: History,
 }
 impl Status {
     pub fn new(c: &crate::config::Config) -> Self {
@@ -79,11 +125,12 @@ impl Status {
             generation: 1,
             category: None,
             catalog: Catalog::unavailable(None),
+            history: History::unavailable(None, None),
         }
     }
 }
 pub fn envelope(kind: &str, id: Option<&str>, instance: &str, s: &Status) -> serde_json::Value {
-    serde_json::json!({"version":1,"type":kind,"id":id,"instanceId":instance,"generation":s.generation,"capabilities":["connection_status","room_catalog"],"backendRevision":"781d39510cf23cfe224e8f521ae06a23377e06de","status":s})
+    serde_json::json!({"version":1,"type":kind,"id":id,"instanceId":instance,"generation":s.generation,"capabilities":["connection_status","room_catalog","room_history"],"backendRevision":"781d39510cf23cfe224e8f521ae06a23377e06de","status":s})
 }
 pub async fn read_line<R: tokio::io::AsyncBufRead + Unpin>(
     r: &mut R,
@@ -152,7 +199,7 @@ mod state_tests {
         assert_eq!(v["status"]["connection"], "unconfigured");
         assert_eq!(
             v["capabilities"],
-            serde_json::json!(["connection_status", "room_catalog"])
+            serde_json::json!(["connection_status", "room_catalog", "room_history"])
         );
         assert_eq!(v["status"]["catalog"]["state"], "unavailable");
         assert_eq!(v["status"]["catalog"]["rooms"], serde_json::json!([]));
@@ -163,6 +210,53 @@ mod state_tests {
         assert!(request(br#"{"version":2,"id":"a","type":"subscribe"}"#).is_err());
         assert!(request(br#"{"version":1,"id":"../a","type":"subscribe"}"#).is_err());
         assert!(request(br#"{"version":1,"id":"a","type":"subscribe"}"#).is_ok());
+    }
+    #[test]
+    fn history_requests_require_canonical_room_scope() {
+        let room = "00000000-0000-4000-8000-000000000001";
+        let valid =
+            serde_json::json!({"version":1,"id":"history-1","type":"fetch_recent","roomId":room});
+        assert!(request(&serde_json::to_vec(&valid).unwrap()).is_ok());
+        for value in [
+            serde_json::json!({"version":1,"id":"a","type":"fetch_recent"}),
+            serde_json::json!({"version":1,"id":"a","type":"fetch_recent","roomId":"../room"}),
+            serde_json::json!({"version":1,"id":"a","type":"get_snapshot","roomId":room}),
+        ] {
+            assert!(request(&serde_json::to_vec(&value).unwrap()).is_err());
+        }
+    }
+    #[test]
+    fn maximum_projected_snapshot_fits_ipc_frame() {
+        let mut status = Status::new(&crate::config::Config::default());
+        status.relay = Some("x".repeat(2048));
+        status.identity = Some("a".repeat(64));
+        // Quotes/backslashes expand on JSON encoding. Projection replaces controls.
+        status.catalog.rooms = (0..20)
+            .map(|_| Room {
+                id: "00000000-0000-4000-8000-000000000001".into(),
+                name: "\\".repeat(128),
+                description: "\\".repeat(256),
+            })
+            .collect();
+        status.history.rows = (0..20)
+            .map(|_| HistoryRow {
+                id: "a".repeat(64),
+                author: "b".repeat(64),
+                time: u64::MAX,
+                text: "\\".repeat(768),
+                edited: true,
+                truncated: true,
+                unavailable: false,
+            })
+            .collect();
+        let encoded = serde_json::to_vec(&envelope(
+            "status",
+            Some(&"a".repeat(128)),
+            &"i".repeat(128),
+            &status,
+        ))
+        .unwrap();
+        assert!(encoded.len() + 1 <= LIMIT, "{} byte frame", encoded.len());
     }
     #[tokio::test]
     async fn requires_complete_frames() {

@@ -123,3 +123,23 @@ The hosted/custom selection passed native visual review. No hosted account was
 created and no browser login was initiated. Native plugin disable left the shell
 responsive and the helper inactive after idle grace; re-enable reactivated it.
 Full removal and multi-monitor/keyboard checks remain pending.
+
+## Read-only history checkpoint
+
+The current ARM64 suite passes 44 Rust tests. Integrated synthetic relay tests
+exercise authentication, exact-ID freshness probes, trusted `/info` discovery,
+signed joined-room metadata and NIP-CW history, unauthorized-room rejection,
+and clearing completed/in-flight history on reauthentication. The history
+reducer tests edits, deletions, unresolved authority, signed bounds, scope,
+truncation and whole-page limits. Maximum combined catalog/history serialization
+fits the 64 KiB IPC frame even with escaped display text.
+
+The rebuilt helper passes isolated daemon/bridge smoke tests and the actual
+QML-to-helper process test. Offscreen QML tests cover room selection, stale
+responses, malformed history, busy command queues, and disconnection. A synthetic
+history screenshot was inspected after reducing redundant notices; it is not a
+capture of live conversations. Earlier checkpoint counts above are historical.
+
+These fixtures do not establish compatibility with a deployed Buzz relay.
+Sending, profile classification, unread accounting and live history are not
+implemented. See [sending plan](SENDING.md) for the next stage.

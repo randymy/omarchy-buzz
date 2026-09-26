@@ -1,4 +1,7 @@
-use crate::{config, protocol::Status};
+use crate::{
+    config,
+    protocol::{Command, History, Status},
+};
 use buzz_ws_client::{NostrWsConnection, RelayMessage, WsClientError};
 use tokio::{
     sync::{mpsc, watch},
@@ -26,6 +29,7 @@ fn update(tx: &watch::Sender<Status>, state: &str, category: Option<&str>) {
         s.category = category.map(str::to_owned);
         if state != "authenticated" {
             s.catalog = crate::protocol::Catalog::unavailable(None);
+            s.history = History::unavailable(None, None);
         }
     });
 }
@@ -67,6 +71,7 @@ fn apply_loaded_config(
                     s.connection = "unconfigured".into();
                     s.category = None;
                     s.catalog = crate::protocol::Catalog::unavailable(None);
+                    s.history = History::unavailable(None, None);
                 }
             });
             Ok(c)
@@ -142,18 +147,45 @@ enum ConnectionExit {
     Shutdown,
     Failure(&'static str),
 }
+async fn next_retry(commands: &mut mpsc::Receiver<Command>) -> bool {
+    while let Some(command) = commands.recv().await {
+        if matches!(command, Command::Retry) {
+            return true;
+        }
+    }
+    false
+}
+fn history_category(error: &str) -> &'static str {
+    match error {
+        "history_timeout" | "query_timeout" => "history_timeout",
+        "query_access_denied" => "history_access_denied",
+        e if e.starts_with("history_")
+            || matches!(
+                e,
+                "query_oversized"
+                    | "query_invalid_response"
+                    | "query_invalid_signature"
+                    | "query_invalid_scope"
+                    | "query_redirect_rejected"
+            ) =>
+        {
+            "history_invalid"
+        }
+        _ => "history_unavailable",
+    }
+}
 async fn wait_after_failure(
     error: &str,
     backoff: &mut Backoff,
-    retry: &mut mpsc::Receiver<()>,
+    retry: &mut mpsc::Receiver<Command>,
 ) -> bool {
     if let Some(delay) = backoff.delay(error) {
         tokio::select! {
             _=tokio::time::sleep(delay)=>true,
-            r=retry.recv()=> { if r.is_some() { backoff.reset(); true } else { false } }
+            r=next_retry(retry)=> { if r { backoff.reset(); true } else { false } }
         }
     } else {
-        if retry.recv().await.is_some() {
+        if next_retry(retry).await {
             backoff.reset();
             true
         } else {
@@ -169,7 +201,7 @@ async fn observe_connection(
     relay: &str,
     relay_pin: &mut Option<nostr::PublicKey>,
     tx: &watch::Sender<Status>,
-    retry: &mut mpsc::Receiver<()>,
+    retry: &mut mpsc::Receiver<Command>,
     backoff: &mut Backoff,
     policy: FreshnessPolicy,
 ) -> ConnectionExit {
@@ -179,10 +211,11 @@ async fn observe_connection(
     let mut fresh = false;
     let mut jobs: tokio::task::JoinSet<Result<crate::catalog::Catalog, &'static str>> =
         tokio::task::JoinSet::new();
+    let mut history_jobs = tokio::task::JoinSet::new();
+    let mut history_ticket = 0_u64;
     loop {
         tokio::select! {
             biased;
-            r=retry.recv()=>return if r.is_some() { backoff.reset(); ConnectionExit::Retry } else { ConnectionExit::Shutdown },
             _=tokio::time::sleep_until(due)=> {
                 if pending.is_some() { return ConnectionExit::Failure("relay_timeout"); }
                 let id=format!("omarchy-buzz-liveness-{}",uuid::Uuid::new_v4());
@@ -194,6 +227,40 @@ async fn observe_connection(
                 }
                 pending=Some(id);
                 due=tokio::time::Instant::now()+policy.response;
+            },
+            command=retry.recv()=>match command {
+                Some(Command::Retry)=> {backoff.reset(); update(tx,"connecting",None); return ConnectionExit::Retry;},
+                None=>{update(tx,"disconnected",None);return ConnectionExit::Shutdown;},
+                Some(Command::FetchRecent(room))=> {
+                    history_jobs.abort_all(); history_jobs=tokio::task::JoinSet::new();
+                    history_ticket=history_ticket.wrapping_add(1);
+                    let allowed=fresh && relay_pin.is_some() && tx.borrow().catalog.rooms.iter().any(|r|r.id==room);
+                    let parsed=uuid::Uuid::parse_str(&room).ok().filter(|id|id.to_string()==room);
+                    if !allowed || parsed.is_none() {
+                        tx.send_modify(|s|s.history=History::unavailable(Some(room),Some("history_access_denied")));
+                        continue;
+                    }
+                    tx.send_modify(|s|s.history=History {state:"loading".into(),..History::unavailable(Some(room.clone()),None)});
+                    let ticket=history_ticket; let relay=relay.to_owned(); let keys=keys.clone(); let pin=relay_pin.unwrap(); let id=parsed.unwrap();
+                    history_jobs.spawn(async move {
+                        let result=match timeout(Duration::from_secs(15),crate::history::fetch(&relay,&keys,pin,id)).await {Ok(r)=>r,Err(_)=>Err("history_timeout")};
+                        (ticket,room,result)
+                    });
+                }
+            },
+            result=history_jobs.join_next(), if !history_jobs.is_empty()=> {
+                if matches!(&result,Some(Err(e)) if !e.is_cancelled()) {
+                    history_jobs.abort_all(); history_jobs=tokio::task::JoinSet::new(); history_ticket=history_ticket.wrapping_add(1);
+                    tx.send_modify(|s|s.history=History::unavailable(s.history.room_id.clone(),Some("history_unavailable")));
+                }
+                if let Some(Ok((ticket,room,result)))=result {
+                    if ticket==history_ticket && fresh && tx.borrow().catalog.rooms.iter().any(|r|r.id==room) {
+                        tx.send_modify(|s|s.history=match result {
+                            Ok(h)=>History {state:"snapshot".into(),room_id:Some(h.room),has_more:Some(h.has_more),category:Some(h.category.into()),rows:h.rows.into_iter().map(|r|crate::protocol::HistoryRow {id:r.id,author:r.author_pubkey,time:r.timestamp,text:r.text,edited:r.edited,truncated:r.truncated,unavailable:r.unavailable}).collect()},
+                            Err(error)=>History::unavailable(Some(room),Some(history_category(error))),
+                        });
+                    }
+                }
             },
             result=jobs.join_next(), if !jobs.is_empty()=> {
                 let cancelled=matches!(&result,Some(Err(error)) if error.is_cancelled());
@@ -212,7 +279,8 @@ async fn observe_connection(
                 if !cancelled {catalog_due=tokio::time::Instant::now()+Duration::from_secs(30);}
             },
             _=tokio::time::sleep_until(catalog_due), if fresh && jobs.is_empty()=> {
-                tx.send_modify(|s|s.catalog=crate::protocol::Catalog::loading());
+                history_jobs.abort_all(); history_jobs=tokio::task::JoinSet::new(); history_ticket=history_ticket.wrapping_add(1);
+                tx.send_modify(|s| {s.catalog=crate::protocol::Catalog::loading();s.history=History::unavailable(None,None);});
                 let relay=relay.to_owned();let keys=keys.clone();let pin=*relay_pin;
                 jobs.spawn(async move {
                     match timeout(Duration::from_secs(15),crate::catalog::discover(&relay,&keys,pin)).await {
@@ -233,6 +301,7 @@ async fn observe_connection(
                     if challenge.len()>1024 { return ConnectionExit::Failure("relay_protocol_error"); }
                     fresh=false;
                     jobs.abort_all();
+                    history_jobs.abort_all(); history_jobs=tokio::task::JoinSet::new(); history_ticket=history_ticket.wrapping_add(1);
                     update(tx,"connecting",None);
                     match timeout(Duration::from_secs(25),conn.authenticate(keys,None)).await {
                         Ok(Ok(()))=> { pending=None; due=tokio::time::Instant::now(); },
@@ -250,7 +319,7 @@ async fn observe_connection(
 pub async fn run(
     _initial: config::Config,
     tx: watch::Sender<Status>,
-    mut retry: mpsc::Receiver<()>,
+    mut retry: mpsc::Receiver<Command>,
 ) {
     let mut backoff = Backoff::default();
     let mut pin_origin: Option<String> = None;
@@ -258,13 +327,15 @@ pub async fn run(
     loop {
         // Coalesce retry requests already queued for this attempt. Only this
         // sequential task owns key lookups, including any pending prompt.
-        while retry.try_recv().is_ok() {
-            backoff.reset();
+        while let Ok(command) = retry.try_recv() {
+            if matches!(command, Command::Retry) {
+                backoff.reset();
+            }
         }
         let c = match apply_loaded_config(&tx, config::load()) {
             Ok(c) => c,
             Err(()) => {
-                if retry.recv().await.is_none() {
+                if !next_retry(&mut retry).await {
                     return;
                 }
                 backoff.reset();
@@ -277,7 +348,7 @@ pub async fn run(
         }
         if c.relay.is_none() || c.identity.is_none() {
             update(&tx, "unconfigured", None);
-            if retry.recv().await.is_none() {
+            if !next_retry(&mut retry).await {
                 return;
             }
             backoff.reset();
@@ -297,7 +368,7 @@ pub async fn run(
         };
         // Setup may have changed while an unlock prompt was pending. Wait for
         // its single operation to finish, then reload before any relay auth.
-        if retry.try_recv().is_ok() {
+        if std::iter::from_fn(|| retry.try_recv().ok()).any(|c| matches!(c, Command::Retry)) {
             backoff.reset();
             continue;
         }
@@ -313,7 +384,7 @@ pub async fn run(
                     },
                     Some(e),
                 );
-                if retry.recv().await.is_none() {
+                if !next_retry(&mut retry).await {
                     return;
                 }
                 backoff.reset();
@@ -321,7 +392,7 @@ pub async fn run(
             }
             Err(_) => {
                 update(&tx, "unavailable", Some("identity_unavailable"));
-                if retry.recv().await.is_none() {
+                if !next_retry(&mut retry).await {
                     return;
                 }
                 backoff.reset();
@@ -427,3 +498,7 @@ mod liveness_tests;
 #[cfg(test)]
 #[path = "auth_catalog_tests.rs"]
 mod catalog_integration_tests;
+
+#[cfg(test)]
+#[path = "auth_history_tests.rs"]
+mod history_integration_tests;

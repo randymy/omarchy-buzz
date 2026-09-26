@@ -22,6 +22,7 @@ static IN_FLIGHT: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
 pub enum QueryRequest {
     JoinedRooms { limit: u16 },
     RoomMetadata { rooms: Vec<Uuid> },
+    RoomHistory { room: Uuid, limit: u16 },
 }
 impl QueryRequest {
     fn body(&self, keys: &Keys) -> Result<Vec<u8>, &'static str> {
@@ -31,6 +32,9 @@ impl QueryRequest {
             }
             Self::RoomMetadata { rooms } if !rooms.is_empty() && rooms.len() <= 20 => {
                 serde_json::json!({"kinds":[39000],"#d":rooms.iter().map(Uuid::to_string).collect::<Vec<_>>(),"limit":rooms.len()})
+            }
+            Self::RoomHistory { room, limit } if (1..=20).contains(limit) => {
+                serde_json::json!({"kinds":[9,40002],"#h":[room.to_string()],"limit":limit,"top_level":true,"include_aux":true,"include_summaries":false})
             }
             _ => return Err("invalid_query"),
         };
@@ -42,6 +46,17 @@ impl QueryRequest {
     }
     fn matches(&self, event: &Event, keys: &Keys) -> bool {
         match self {
+            Self::RoomHistory { room, .. } => {
+                let kind = event.kind.as_u16();
+                matches!(kind, 9 | 40002 | 40003 | 5 | 9005 | 7 | 39006)
+                    && (matches!(kind, 5 | 9005)
+                        || event.tags.iter().any(|t| {
+                            t.as_slice().first().map(String::as_str) == Some("h")
+                                && t.as_slice()
+                                    .get(1)
+                                    .is_some_and(|id| *id == room.to_string())
+                        }))
+            }
             Self::JoinedRooms { .. } => {
                 event.kind.as_u16() == 39002
                     && event.tags.iter().any(|t| {

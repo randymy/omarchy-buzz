@@ -1,30 +1,34 @@
 # Development checkpoint — 2026-09-26
 
-Implemented: source-grounded design; native hosted/custom connection setup;
-Rust daemon/bridge with Secret Service enrollment and Retry reload; bounded IPC;
-systemd units; signed HTTP query seam; CI and security documentation. No messaging,
-agent execution, notifications, or approvals yet. No production identity enrolled.
+Implemented: source-grounded design; native hosted/custom setup; Rust daemon/
+bridge with Secret Service enrollment; bounded IPC and systemd units; exact-ID
+connection freshness; signed HTTP room discovery; conservative recent-history
+projection and native room/history panel. Sending, unread, verified human/agent
+badges, notifications, and agent execution remain unfinished. No production
+identity is enrolled.
 
-Passed: pinned manifest validation, twenty Rust tests on ARM64, isolated daemon/
-bridge, inherited socket idle reactivation, private GNOME Secret Service enrollment/
-retrieval, QML protocol/bridge tests, synthetic NIP-42 and NIP-98 transport tests.
-Native setup screen inspected; systemd activation and disable/idle/re-enable passed.
-Hosted setup defaults to the official buzz.xyz handoff; linking community URL and
-existing identity remains manual. No global public relay is assumed.
+Passed: 44 Rust tests on ARM64, including synthetic WS/HTTP room/history flows,
+reauthentication cleanup, stale-result fencing, bounds/signature/scope limits,
+and maximum combined IPC frame size. Rebuilt daemon/bridge smoke and actual
+QML/helper process tests pass. Offscreen history rendering and hostile input
+checks pass. Earlier milestones passed isolated Secret Service enrollment and
+socket idle reactivation. These are not a deployed Buzz relay certification.
 
-Installed plugin has the hosted/custom UI. Installed helper predates the new
-HTTP seam (which is intentionally unwired). The developer socket is started, not
-enabled for future logins. No relay configuration or credentials are installed.
-The shell required `omarchy restart shell` after plugin code updates because
-rescan and disable/re-enable retained old compiled QML on this package.
+The installed plugin/helper are being updated after this source commit; verify
+installed HEAD before assuming the native copy matches source. The developer
+socket is started, not enabled for future logins. No relay configuration or
+credentials are installed. Hosted setup defaults to the official buzz.xyz
+handoff; linking the community URL and existing identity remains manual.
+The tested shell needed `omarchy restart shell` to load changed QML reliably.
 
 Next:
 
-1. Resolve upstream WS buffer/frame bounds and heartbeat/recovery guarantees.
-2. Establish relay signer trust/capability discovery before using the HTTP seam
-   to project membership and room metadata. No generic signing/request IPC.
-3. Validate real isolated Buzz relay behavior, then proceed to M2 messaging.
-4. Complete native keyboard/multi-monitor/removal checks and remote CI.
+1. Validate against an actual isolated Buzz relay; resolve upstream WS buffer
+   bounds before release. See helper/WS_UPSTREAM.md.
+2. Implement the reviewed safe sending path in docs/SENDING.md, then exact
+   mentions/profile classification and local unread accounting.
+3. Complete native keyboard/multi-monitor/removal checks and remote CI.
+4. Integrate ACP as a separate process after messaging works.
 
 Local build artifacts are in `/tmp/omarchy-buzz-build-20260926`. Disk exhaustion
 also required moving the generated Cargo registry to

@@ -14,7 +14,7 @@ ShellRoot {
     Buzz.PanelContent {
       id: content
       anchors.fill: parent
-      service: sampleService
+      service: Quickshell.env("BUZZ_PREVIEW_CATALOG") || Quickshell.env("BUZZ_PREVIEW_HISTORY") ? protocolService : sampleService
     }
   }
 
@@ -114,6 +114,107 @@ ShellRoot {
         var incompatible = JSON.parse(frame("hello", "fixture-1", 1, "unconfigured"))
         incompatible.version = 2
         if (protocolService.acceptFrame(JSON.stringify(incompatible))) throw new Error("Wrong protocol accepted")
+        function catalogFrame(kind, gen, catalog) {
+          var value = JSON.parse(frame(kind, "catalog-fixture", gen, "authenticated"))
+          value.capabilities.push("room_catalog")
+          value.status.catalog = catalog
+          return JSON.stringify(value)
+        }
+        var roomA = {id: "00000000-0000-4000-8000-000000000001", name: "General", description: "Synthetic catalog"}
+        var roomB = {id: "00000000-0000-4000-8000-000000000002", name: "Development", description: "Synthetic catalog"}
+        var partialCatalog = {state: "partial", rooms: [roomA, roomB], category: "room_catalog_partial"}
+        protocolService.beginSession()
+        if (!protocolService.acceptFrame(catalogFrame("hello", 1, partialCatalog))
+            || protocolService.rooms.length !== 2 || protocolService.catalogLabel.indexOf("Partial") === -1
+            || protocolService.messages.length !== 0) throw new Error("Catalog or missing history misrepresented")
+        protocolService.selectRoom(roomB.id)
+        if (!protocolService.acceptFrame(catalogFrame("status", 1, partialCatalog))
+            || protocolService.selectedRoomId !== roomB.id) throw new Error("Same-scope selection lost")
+        if (protocolService.acceptFrame(catalogFrame("status", 0, partialCatalog))) throw new Error("Invalid generation accepted")
+        // Begin a new valid session after the malformed-generation failure.
+        protocolService.beginSession()
+        protocolService.acceptFrame(catalogFrame("hello", 2, partialCatalog))
+        protocolService.selectRoom(roomB.id)
+        if (protocolService.acceptFrame(catalogFrame("status", 1, {state:"ready",rooms:[roomA],category:null}))
+            || protocolService.selectedRoomId !== roomB.id) throw new Error("Stale catalog replaced current selection")
+        if (!protocolService.acceptFrame(catalogFrame("status", 3, partialCatalog))
+            || protocolService.selectedRoomId !== roomA.id) throw new Error("New-scope selection survived")
+        if (protocolService.acceptFrame(catalogFrame("status", 3, {state:"partial",rooms:[roomA,roomA],category:null}))
+            || protocolService.rooms.length !== 0) throw new Error("Duplicate rooms accepted or failure retained rooms")
+        protocolService.beginSession()
+        if (protocolService.acceptFrame(catalogFrame("hello", 1, {state:"ready",rooms:[{id:"not-uuid",name:"bad",description:""}],category:null})))
+          throw new Error("Malformed room accepted")
+        protocolService.beginSession()
+        if (protocolService.acceptFrame(catalogFrame("hello", 1, {state:"partial",rooms:Array(21).fill(roomA),category:null})))
+          throw new Error("Oversized catalog accepted")
+        protocolService.beginSession()
+        protocolService.acceptFrame(catalogFrame("hello", 1, partialCatalog))
+        if (!protocolService.acceptFrame(frame("status", "catalog-fixture", 1, "disconnected"))
+            || protocolService.rooms.length !== 0 || protocolService.catalogState !== "unavailable")
+          throw new Error("Disconnect retained catalog")
+        protocolService.beginSession()
+        if (!protocolService.acceptFrame(frame("hello", "old-helper", 1, "authenticated"))
+            || protocolService.catalogState !== "unavailable") throw new Error("Old helper compatibility broken")
+        if (Quickshell.env("BUZZ_PREVIEW_CATALOG")) {
+          protocolService.beginSession()
+          protocolService.acceptFrame(catalogFrame("hello", 1, partialCatalog))
+          protocolService.selectRoom(roomB.id)
+        }
+        function historyFrame(kind, gen, room, rows) {
+          var value = JSON.parse(catalogFrame(kind, gen, partialCatalog))
+          value.capabilities.push("room_history")
+          value.status.history = {state:"snapshot",roomId:room,rows:rows,hasMore:true,category:"history_completeness_unknown"}
+          return JSON.stringify(value)
+        }
+        var historyRow = {id:"a".repeat(64),author:"b".repeat(64),time:1700000000,text:"Synthetic history",edited:true,truncated:false,unavailable:false}
+        protocolService.beginSession()
+        if (!protocolService.acceptFrame(historyFrame("hello", 1, roomA.id, [historyRow]))
+            || protocolService.messages.length !== 1 || protocolService.historyLabel.indexOf("completeness") === -1)
+          throw new Error("Valid history snapshot rejected or completeness overstated")
+        protocolService.selectRoom(roomB.id)
+        if (protocolService.messages.length !== 0) throw new Error("Room switch retained previous content")
+        if (!protocolService.acceptFrame(historyFrame("status", 1, roomA.id, [historyRow]))
+            || protocolService.messages.length !== 0) throw new Error("Stale room response displayed")
+        if (!protocolService.acceptFrame(historyFrame("status", 1, roomB.id, [historyRow]))
+            || protocolService.messages[0].author !== historyRow.author) throw new Error("Selected-room snapshot rejected")
+        var loadingCatalog = JSON.parse(historyFrame("status", 1, roomB.id, [historyRow]))
+        loadingCatalog.status.catalog = {state:"loading",rooms:[],category:null}
+        loadingCatalog.status.history = {state:"unavailable",roomId:null,rows:[],hasMore:null,category:null}
+        if (!protocolService.acceptFrame(JSON.stringify(loadingCatalog))
+            || protocolService.selectedRoomId !== roomB.id || protocolService.messages.length !== 0)
+          throw new Error("Catalog refresh lost selection or retained history")
+        if (!protocolService.acceptFrame(historyFrame("status", 1, roomB.id, [historyRow]))
+            || protocolService.selectedRoomId !== roomB.id) throw new Error("Catalog refresh failed to restore selection")
+        var unavailableRow = Object.assign({}, historyRow, {unavailable:true,text:"MUST NOT DISPLAY"})
+        if (!protocolService.acceptFrame(historyFrame("status", 1, roomB.id, [unavailableRow]))
+            || protocolService.messages[0].text !== "") throw new Error("Unavailable content leaked")
+        var badHistoryRow = Object.assign({}, historyRow, {author:"not-a-key"})
+        if (protocolService.acceptFrame(historyFrame("status", 1, roomB.id, [badHistoryRow]))
+            || protocolService.messages.length !== 0) throw new Error("Malformed history accepted or retained")
+        protocolService.beginSession()
+        var oversizedTextRow = Object.assign({}, historyRow, {text:"é".repeat(1025)})
+        if (protocolService.acceptFrame(historyFrame("hello", 1, roomA.id, [oversizedTextRow])))
+          throw new Error("Oversized UTF-8 history accepted")
+        protocolService.beginSession()
+        if (!protocolService.acceptFrame(historyFrame("hello", 1, roomA.id, [historyRow]))) throw new Error("History reset failed")
+        if (!protocolService.acceptFrame(frame("status", "catalog-fixture", 1, "disconnected"))
+            || protocolService.messages.length !== 0) throw new Error("Disconnected history retained")
+        protocolService.beginSession()
+        protocolService.acceptFrame(historyFrame("hello", 1, roomA.id, [historyRow]))
+        protocolService.pendingHistoryRequestId = "ui-1"
+        if (!protocolService.acceptFrame(JSON.stringify({version:1,type:"error",category:"request_busy",id:"ui-1",instanceId:"catalog-fixture"}))
+            || protocolService.sessionFailed || protocolService.connection !== "authenticated"
+            || protocolService.messages.length !== 0 || protocolService.historyLabel.indexOf("busy") === -1)
+          throw new Error("Queue rejection killed connection or retained stale history")
+        if (Quickshell.env("BUZZ_PREVIEW_HISTORY")) {
+          protocolService.beginSession()
+          var truncatedRow = Object.assign({}, historyRow, {id:"c".repeat(64),text:"A bounded read-only snapshot with an explicitly truncated body.",edited:false,truncated:true})
+          var hiddenRow = Object.assign({}, historyRow, {id:"d".repeat(64),text:"",edited:false,unavailable:true})
+          protocolService.acceptFrame(historyFrame("hello", 1, roomA.id, [historyRow,truncatedRow,hiddenRow]))
+        } else if (Quickshell.env("BUZZ_PREVIEW_CATALOG")) {
+          protocolService.beginSession()
+          protocolService.acceptFrame(catalogFrame("hello", 1, partialCatalog))
+        }
         capture.start()
       } catch (error) {
         console.error(String(error))

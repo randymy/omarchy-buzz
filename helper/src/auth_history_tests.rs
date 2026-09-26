@@ -1,0 +1,166 @@
+//! Selected-room history through the production observer; synthetic same-origin HTTP/WS.
+use super::*;
+use futures_util::{SinkExt, StreamExt};
+use nostr::{Event, EventBuilder, Keys, Kind, Tag};
+use serde_json::{json, Value};
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc,
+};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::{TcpListener, TcpStream},
+    sync::oneshot,
+};
+use tokio_tungstenite::{accept_async, tungstenite::Message};
+
+struct AbortTask<T>(tokio::task::JoinHandle<T>);
+impl<T> Drop for AbortTask<T> {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+fn event(key: &Keys, kind: u16, content: &str, tags: Vec<Tag>) -> Event {
+    EventBuilder::new(Kind::Custom(kind), content)
+        .tags(tags)
+        .sign_with_keys(key)
+        .unwrap()
+}
+async fn wait_status(rx: &mut watch::Receiver<Status>, test: impl Fn(&Status) -> bool) {
+    timeout(Duration::from_secs(4), async {
+        loop {
+            if test(&rx.borrow()) {
+                break;
+            }
+            rx.changed().await.unwrap();
+        }
+    })
+    .await
+    .expect("status deadline");
+}
+async fn request(stream: &mut TcpStream) -> (String, Option<Value>) {
+    let mut head = Vec::new();
+    loop {
+        let mut byte = [0; 1];
+        assert_eq!(stream.read(&mut byte).await.unwrap(), 1);
+        head.push(byte[0]);
+        assert!(head.len() < 16384);
+        if head.ends_with(b"\r\n\r\n") {
+            break;
+        }
+    }
+    let head = String::from_utf8(head).unwrap().to_ascii_lowercase();
+    let length = head
+        .lines()
+        .find_map(|l| l.strip_prefix("content-length: "))
+        .map(|n| n.trim().parse::<usize>().unwrap())
+        .unwrap_or(0);
+    assert!(length <= 8192);
+    let body = if length > 0 {
+        let mut bytes = vec![0; length];
+        stream.read_exact(&mut bytes).await.unwrap();
+        Some(serde_json::from_slice(&bytes).unwrap())
+    } else {
+        None
+    };
+    (head, body)
+}
+async fn scenario(in_flight: bool) {
+    let _fixture = crate::NETWORK_TEST_LOCK.lock().await;
+    timeout(Duration::from_secs(15),async {
+        let user=Keys::generate();let relay=Keys::generate();let signer=relay.public_key();let public=user.public_key();
+        let room=uuid::Uuid::new_v4().to_string();let unauthorized=uuid::Uuid::new_v4().to_string();
+        let listener=TcpListener::bind("127.0.0.1:0").await.unwrap();let origin=format!("ws://{}/",listener.local_addr().unwrap());
+        let membership=event(&relay,39002,"",vec![Tag::parse(["d",&room]).unwrap(),Tag::parse(["p",&public.to_hex()]).unwrap()]);
+        let metadata=event(&relay,39000,"",vec![Tag::parse(["d",&room]).unwrap(),Tag::parse(["name","Synthetic Room"]).unwrap(),Tag::parse(["t","stream"]).unwrap()]);
+        let row=event(&user,40002,"synthetic recent body",vec![Tag::parse(["h",&room]).unwrap()]);let row_id=row.id.to_hex();
+        let bounds=event(&relay,39006,r#"{"has_more":false,"next_cursor":null}"#,vec![Tag::parse(["h",&room]).unwrap(),Tag::parse(["d",&format!("{room}:head")]).unwrap()]);
+        let page=serde_json::to_string(&vec![row,bounds]).unwrap();
+        let requests=Arc::new(AtomicUsize::new(0));let count=requests.clone();
+        let server_origin=origin.clone();let expected_room=room.clone();
+        let (challenge_send,challenge_wait)=oneshot::channel();let (ack_send,ack_wait)=oneshot::channel();
+        let (finish_send,finish_wait)=oneshot::channel();let (ws_done_send,ws_done_wait)=oneshot::channel();
+        let (held_send,held_wait)=oneshot::channel();let (release_send,release_wait)=oneshot::channel();
+        let (released_send,released_wait)=oneshot::channel();
+        let server=AbortTask(tokio::spawn(async move {
+            let (tcp,_)=listener.accept().await.unwrap();let mut ws=accept_async(tcp).await.unwrap();
+            ws.send(Message::Text(json!(["AUTH","initial"]).to_string().into())).await.unwrap();
+            let Some(Ok(Message::Text(text)))=ws.next().await else {panic!("AUTH expected")};
+            let frame:Value=serde_json::from_str(&text).unwrap();assert_eq!(frame[0],"AUTH");
+            let auth:Event=serde_json::from_value(frame[1].clone()).unwrap();auth.verify().unwrap();assert_eq!(auth.pubkey,public);assert_eq!(auth.kind,Kind::Authentication);
+            assert!(auth.tags.iter().any(|t|t.as_slice()==["relay",server_origin.as_str()]));
+            ws.send(Message::Text(json!(["OK",auth.id.to_hex(),true,""]).to_string().into())).await.unwrap();
+            let websocket=AbortTask(tokio::spawn(async move {
+                let mut challenge_wait=challenge_wait;let mut finish_wait=finish_wait;let mut ack_wait=Some(ack_wait);let mut challenged=false;
+                loop {tokio::select! {
+                    _=&mut finish_wait=>break,
+                    _=&mut challenge_wait,if !challenged=>{challenged=true;ws.send(Message::Text(json!(["AUTH","again"]).to_string().into())).await.unwrap();},
+                    frame=ws.next()=>{
+                        let Some(Ok(Message::Text(text)))=frame else {break;};let value:Value=serde_json::from_str(&text).unwrap();
+                        match value[0].as_str().unwrap() {
+                            "COUNT"=>{assert_eq!(value[2],json!({"kinds":[0],"authors":[public.to_hex()],"limit":1}));ws.send(Message::Text(json!(["COUNT",value[1],{"count":0}]).to_string().into())).await.unwrap();},
+                            "AUTH"=>{assert!(challenged);let event:Event=serde_json::from_value(value[1].clone()).unwrap();event.verify().unwrap();assert_eq!(event.pubkey,public);assert!(event.tags.iter().any(|t|t.as_slice()==["challenge","again"]));timeout(Duration::from_secs(4),ack_wait.take().unwrap()).await.unwrap().unwrap();ws.send(Message::Text(json!(["OK",event.id.to_hex(),true,""]).to_string().into())).await.unwrap();},
+                            other=>panic!("unexpected observer request {other}"),
+                        }
+                    }
+                }}
+                let _=ws_done_send.send(());
+            }));
+            let mut responses=vec![json!({"self":signer.to_hex()}).to_string(),serde_json::to_string(&vec![membership]).unwrap(),serde_json::to_string(&vec![metadata]).unwrap(),page.clone()];
+            if in_flight {responses.push(page);}
+            let mut held_send=Some(held_send);let mut release_wait=Some(release_wait);let mut released_send=Some(released_send);
+            for (index,payload) in responses.into_iter().enumerate() {
+                let (mut stream,_)=listener.accept().await.unwrap();let (head,body)=request(&mut stream).await;count.fetch_add(1,Ordering::SeqCst);
+                if index==0 {assert!(head.starts_with("get /info "));assert!(body.is_none());}
+                else {
+                    assert!(head.starts_with("post /query "));assert!(head.contains("authorization: nostr "));let body=body.unwrap();
+                    if index==1 {assert_eq!(body[0]["kinds"],json!([39002]));}
+                    else if index==2 {assert_eq!(body[0]["kinds"],json!([39000]));}
+                    else {assert_eq!(body,json!([{"kinds":[9,40002],"#h":[expected_room],"limit":20,"top_level":true,"include_aux":true,"include_summaries":false}]));}
+                }
+                if index==4 {held_send.take().unwrap().send(()).unwrap();timeout(Duration::from_secs(4),release_wait.take().unwrap()).await.unwrap().unwrap();}
+                // Aborted stale reads may close before this response is written.
+                let _=stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",payload.len(),payload).as_bytes()).await;
+                if index==4 {let _=released_send.take().unwrap().send(());}
+            }
+            timeout(Duration::from_secs(5),ws_done_wait).await.unwrap().unwrap();drop(websocket);
+        }));
+        let config=config::Config{relay:Some(origin.clone()),identity:Some(public.to_hex())};let (tx,mut status)=watch::channel(Status::new(&config));
+        let (commands,mut command_rx)=mpsc::channel(4);let mut conn=connect_identity(&origin,&user).await.unwrap();
+        let observer=AbortTask(tokio::spawn(async move {
+            let mut pin=None;let mut backoff=Backoff::default();
+            let exit=observe_connection(&mut conn,&user,&origin,&mut pin,&tx,&mut command_rx,&mut backoff,FreshnessPolicy{interval:Duration::from_secs(2),response:Duration::from_secs(1)}).await;
+            assert_eq!(pin,Some(signer));exit
+        }));
+        wait_status(&mut status,|s|s.catalog.rooms.len()==1).await;assert_eq!(requests.load(Ordering::SeqCst),3);
+        commands.send(crate::protocol::Command::FetchRecent(unauthorized.clone())).await.unwrap();
+        wait_status(&mut status,|s|s.history.category.as_deref()==Some("history_access_denied")).await;
+        assert!(status.borrow().history.rows.is_empty());assert_eq!(requests.load(Ordering::SeqCst),3,"arbitrary room caused an HTTP read");
+        commands.send(crate::protocol::Command::FetchRecent(room.clone())).await.unwrap();
+        wait_status(&mut status,|s|s.history.rows.len()==1).await;
+        {let state=status.borrow();assert_eq!(state.history.room_id.as_deref(),Some(room.as_str()));assert_eq!(state.history.state,"snapshot");assert_eq!(state.history.category.as_deref(),Some("history_completeness_unknown"));assert_eq!(state.history.rows[0].id,row_id);assert_eq!(state.history.rows[0].author,public.to_hex());assert_eq!(state.history.rows[0].text,"synthetic recent body");}
+        if in_flight {
+            commands.send(crate::protocol::Command::FetchRecent(room.clone())).await.unwrap();
+            timeout(Duration::from_secs(3),held_wait).await.unwrap().unwrap();
+        }
+        challenge_send.send(()).unwrap();
+        wait_status(&mut status,|s|s.connection=="connecting"&&s.history.rows.is_empty()).await;
+        assert_eq!(status.borrow().history.state,"unavailable");
+        if in_flight {
+            release_send.send(()).unwrap();timeout(Duration::from_secs(3),released_wait).await.unwrap().unwrap();
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            assert!(status.borrow().history.rows.is_empty(),"stale query resurrected history");assert_eq!(status.borrow().connection,"connecting");
+        }
+        commands.send(crate::protocol::Command::Retry).await.unwrap();ack_send.send(()).unwrap();
+        let mut observer=observer;assert!(matches!(timeout(Duration::from_secs(3),&mut observer.0).await.unwrap().unwrap(),ConnectionExit::Retry));
+        let _=finish_send.send(());let mut server=server;timeout(Duration::from_secs(3),&mut server.0).await.unwrap().unwrap();
+    }).await.expect("history observer fixture deadline");
+}
+#[tokio::test]
+async fn selected_room_only_and_completed_history_clears_on_reauthentication() {
+    scenario(false).await;
+}
+#[tokio::test]
+async fn in_flight_history_cannot_reappear_after_reauthentication() {
+    scenario(true).await;
+}

@@ -18,7 +18,8 @@ remain pending; the daemon bounds shutdown and does not duplicate key lookups.
 The bridge and daemon communicate over a private same-UID Unix socket. Messages
 are limited to 64 KiB, the daemon limits clients and write deadlines, and QML
 validates protocol version, helper instance, generation, categories, and public
-fields. Allowed requests currently only read status, subscribe, or retry. There
+fields. Allowed requests read status, subscribe, retry, or fetch a current
+catalog room’s recent history. There
 is no arbitrary command, signing, credential-export, or agent-launch request.
 
 QML launches a local executable using an argv array, never a shell command
@@ -28,9 +29,14 @@ subscriber is installed because upstream debug output can contain signed data.
 
 TLS is required for remote relays. A valid signature proves authorship, not
 truth, completeness, privilege, or permission to execute an action. A compromised
-relay can withhold or replay information. The current status-only helper does
-not ingest room events or grant approvals. Future event projection must verify
-signatures and admission rules using upstream primitives before presentation.
+relay can withhold or replay information. Room metadata must be signed by the
+configured origin’s NIP-11 `self` signer, pinned for the daemon lifetime. History
+requires signed room-scoped bounds and verified events. Direct-author edits and
+deletions are applied; unresolved owner/moderator authority hides affected text.
+Whole-page budgets reject excessive auxiliary data instead of dropping edits.
+Even valid bounds do not prove the relay disclosed every relevant change.
+History is a partial snapshot and is cleared on scope/authentication changes.
+The helper grants no approvals.
 
 ## Release gates
 
@@ -39,8 +45,9 @@ signatures and admission rules using upstream primitives before presentation.
 - Authenticated connection acceptance, rejection, reconnect, and transport
   conformance need an isolated relay test; private keyring retrieval alone does
   not prove these behaviors.
-- No absolute always-current connection claim: an idle broken link may remain
-  undetected until the transport reports failure; heartbeat work is outstanding.
+- Connection freshness uses exact-ID COUNT probes every twenty seconds with a
+  five-second response deadline. This bounds detection of silent failures; it
+  does not certify agent health or live message synchronization.
 - ACP permission defaults and credential handling require separate review before
   integrated agent launch. This plugin currently launches no agents.
 - Future approval controls must defer enforcement to an authoritative backend.

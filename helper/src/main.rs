@@ -2,6 +2,7 @@
 mod auth;
 mod catalog;
 mod config;
+mod history;
 mod ipc;
 mod protocol;
 mod query;

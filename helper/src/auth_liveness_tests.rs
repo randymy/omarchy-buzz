@@ -112,7 +112,7 @@ async fn exact_count_ack_authenticates_and_mismatched_chatter_does_not() {
             .unwrap()
             .unwrap();
         assert_eq!(rx.borrow().connection, "authenticated");
-        send_retry.send(()).await.unwrap();
+        send_retry.send(Command::Retry).await.unwrap();
     });
     assert!(matches!(
         observe_connection(

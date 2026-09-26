@@ -71,7 +71,7 @@ async fn write<W: tokio::io::AsyncWrite + Unpin>(
 async fn client(
     s: UnixStream,
     mut status: watch::Receiver<Status>,
-    retry: mpsc::Sender<()>,
+    retry: mpsc::Sender<protocol::Command>,
     instance: String,
 ) -> Result<(), &'static str> {
     if s.peer_cred().map_err(|_| "peer_unavailable")?.uid() != rustix::process::getuid().as_raw() {
@@ -92,7 +92,12 @@ async fn client(
             line=protocol::read_line_buffered(&mut read, &mut partial_frame)=> {
                 let line=match line? { Some(l)=>l,None=>return Ok(()) };
                 let r=match protocol::request(&line) { Ok(r)=>r,Err(category)=> { write(&mut out,&serde_json::json!({"version":1,"type":"error","category":category,"instanceId":instance})).await?; return Ok(()); } };
-                if r.kind=="retry_connection" { let _=retry.try_send(()); }
+                let command=match r.kind.as_str() {
+                    "retry_connection"=>Some(protocol::Command::Retry),
+                    "fetch_recent"=>Some(protocol::Command::FetchRecent(r.room_id.clone().unwrap())),
+                    _=>None,
+                };
+                if let Some(command)=command {if retry.try_send(command).is_err() {write(&mut out,&serde_json::json!({"version":1,"type":"error","id":r.id,"category":"request_busy","instanceId":instance})).await?;continue;}}
                 if r.kind=="subscribe" { subscribed=true; }
                 let snapshot=status.borrow().clone();
                 write(&mut out,&protocol::envelope("status",Some(&r.id),&instance,&snapshot)).await?;

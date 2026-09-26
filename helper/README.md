@@ -1,8 +1,8 @@
-# M1 helper
+# Buzz integration helper
 
 This Linux Rust helper supplies identity setup, authenticated connection status,
-and bounded local IPC. It does not send chat, query rooms, subscribe to room
-history, launch agents, or implement approvals. `authenticated` means NIP-42
+joined-room discovery, recent stream snapshots, and bounded local IPC. It does
+not send chat, subscribe to live room history, launch agents, or implement approvals. `authenticated` means NIP-42
 accepted the identity; it does not mean room synchronization completed.
 
 Commands:
@@ -26,14 +26,18 @@ socket must use that exact path and permissions. Without `--keep-running`, the
 daemon exits after 30 seconds without a UI client. Authentication errors require
 an explicit retry. Retry reloads configuration after setup. A pending keyring operation must finish before a queued reload; repeated Retry does not create duplicate keyring requests.
 
-Protocol version 1 requests are JSON lines with exactly `version`, `id`, `type`;
-allowed types are `get_snapshot`, `subscribe`, `retry_connection`. Request IDs
+Protocol version 1 requests are JSON lines with `version`, `id`, `type`;
+allowed types are `get_snapshot`, `subscribe`, `retry_connection`, and
+`fetch_recent`. Only `fetch_recent` requires an additional canonical UUID
+`roomId`; it is restricted to the current discovered room catalog. Request IDs
 are 1–128 ASCII alphanumeric, underscore or hyphen. Lines including newline
 are capped at 64 KiB. Eight clients maximum; output writes time out after ten
 seconds. Invalid requests receive a category-only error and the connection closes.
 Hello/status responses expose public identity/origin, helper instance/generation,
-connection category, and capability `connection_status`. No raw relay content,
-errors or credential material is forwarded. UI EOF closes the bridge connection.
+connection category, and capabilities `connection_status`, `room_catalog`,
+`room_history`. At most twenty rooms and twenty projected message rows are
+returned. Message previews are plain text capped at 768 UTF-8 bytes, with
+explicit truncation. No raw events, backend errors or credential material is forwarded. UI EOF closes the bridge connection.
 
 The helper deliberately installs no tracing subscriber: upstream WS debug
 payloads must remain disabled. Adding logging must preserve this requirement.
@@ -49,3 +53,11 @@ only one lookup remains active. Secret Service may itself display an unlock
 prompt and wait indefinitely. Daemon runtime shutdown is bounded to two seconds;
 interactive enrollment still waits for its prompt. No plaintext fallback exists. Compilation, ARM64/runtime Secret Service and
 socket activation must be verified before claiming support.
+
+Room discovery uses signed metadata and the configured relay’s NIP-11 `self`
+identity, pinned for the daemon lifetime. Periodic exact-ID COUNT responses
+bound connection freshness. Recent history uses a signed NIP-CW query with
+whole-page limits and verified bounds, edits and deletions; uncertain authority
+hides affected content. A valid snapshot does not prove relay completeness.
+Room refresh, reauthentication, scope change and disconnection clear history.
+See [history semantics](../docs/MESSAGING_NEXT.md) for limits and source references.

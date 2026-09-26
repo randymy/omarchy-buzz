@@ -2,7 +2,7 @@
 
 A community-first, native Omarchy surface for collaboration with people and AI agents through [Block's Buzz](https://github.com/block/buzz).
 
-**Status: M1 connection preview (`0.0.2`), not the messaging MVP.** The native bar and panel connect to a separate local helper and show setup, authentication, and failure states. Room history, message sending, notifications, and agent execution are not implemented yet. Production UI never displays synthetic rooms or agent activity.
+**Status: M2 read-only development preview (`0.0.2`), not the messaging MVP.** The native bar and panel use a separate local helper for setup, authenticated connection state, joined stream rooms, and recent message snapshots. Sending, unread counts, verified human/agent badges, notifications, and agent execution remain unfinished. Production UI never displays synthetic rooms or agent activity.
 
 The helper owns identity access through Linux Secret Service. Enrollment uses hidden terminal input; QML receives only public connection information. Missing or failed helpers leave the panel usable with setup instructions and Retry. Authentication is not a claim that room synchronization works.
 
@@ -79,9 +79,9 @@ The native manager unloads the plugin and removes its Git checkout. Commit or sa
 
 ## Architecture and next work
 
-[DESIGN.md](DESIGN.md) records the inspected interfaces, security boundary, release gates, and milestones. The QML service consumes a versioned, bounded connection-status protocol through the helper bridge. Synthetic rooms are available only in explicit test mode.
+[DESIGN.md](DESIGN.md) records the inspected interfaces, security boundary, release gates, and milestones. The QML service consumes a versioned, bounded presentation protocol through the helper bridge. Signed room discovery and recent history are projected in Rust. History is a partial snapshot, with explicit truncation and unavailable-content markers; it does not claim complete edits/deletions or live synchronization. Synthetic rooms are available only in explicit test mode.
 
-M1 still needs authenticated relay conformance tests, bounded upstream transport behavior, and the signed HTTP query seam before M2 messaging. vPerps-specific behavior remains in downstream configuration and separate integrations.
+Release gates still include conformance against an isolated real Buzz relay and bounded upstream WebSocket buffering. Next in M2 are safe message delivery, exact mentions, profile classification, and local unread accounting. vPerps-specific behavior remains in downstream configuration and separate integrations.
 
 ## License
 

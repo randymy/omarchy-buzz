@@ -61,7 +61,7 @@ FocusScope {
         id: previewLabel
         anchors.fill: parent
         anchors.margins: Style.space(10)
-        text: root.service && root.service.sampleMode ? "TEST FIXTURE · Sample data only\nNo relay connected. Messages below are examples." : "CONNECTION PREVIEW · " + (root.service ? root.service.statusLabel : "Service unavailable") + "\nRoom history and messaging are not implemented yet."
+        text: root.service && root.service.sampleMode ? "TEST FIXTURE · Sample data only\nNo relay connected. Messages below are examples." : "Read-only preview · " + (root.service ? root.service.statusLabel : "Service unavailable")
         textFormat: Text.PlainText
         wrapMode: Text.WordWrap
         color: Color.foreground
@@ -82,7 +82,7 @@ FocusScope {
         spacing: Style.space(6)
         Text {
           Layout.fillWidth: true
-          text: root.service ? (root.service.relay || root.service.viewModel.community) : "Service unavailable"
+          text: root.service ? (root.service.relay || root.service.viewModel.community) + "\n" + root.service.catalogLabel : "Service unavailable"
           textFormat: Text.PlainText
           wrapMode: Text.WordWrap
           color: Color.foreground
@@ -90,23 +90,33 @@ FocusScope {
           font.family: Style.font.family
           font.pixelSize: Style.font.body
         }
-        Repeater {
-          model: root.service ? root.service.rooms : []
-          delegate: Ui.Button {
-            required property var modelData
-            Layout.fillWidth: true
-            text: "# " + modelData.name
-            leftAlign: true
-            focusable: true
-            selected: root.service && root.service.selectedRoomId === modelData.id
-            onClicked: root.service.selectRoom(modelData.id)
+        Controls.ScrollView {
+          Layout.fillWidth: true
+          Layout.fillHeight: true
+          contentWidth: availableWidth
+          clip: true
+          ColumnLayout {
+            width: parent.width
+            spacing: Style.space(6)
+            Repeater {
+              model: root.service ? root.service.rooms : []
+              delegate: Ui.Button {
+                required property var modelData
+                Layout.fillWidth: true
+                text: "# " + modelData.name
+                leftAlign: true
+                focusable: true
+                selected: root.service && root.service.selectedRoomId === modelData.id
+                onClicked: root.service.selectRoom(modelData.id)
+              }
+            }
           }
         }
-        Item { Layout.fillHeight: true }
         Text {
           Layout.fillWidth: true
           text: "Connection\n" + (root.service ? root.service.statusLabel : "Unavailable")
           textFormat: Text.PlainText
+          wrapMode: Text.WordWrap
           color: Color.foreground
           opacity: 0.7
           font.family: Style.font.family
@@ -159,7 +169,7 @@ FocusScope {
         }
         Text {
           Layout.fillWidth: true
-          text: root.service && root.service.selectedRoom ? root.service.selectedRoom.description : (root.service ? root.service.setupInstructions : "Enable the plugin and reopen this panel.")
+          text: root.service && root.service.selectedRoom ? (root.service.sampleMode ? root.service.selectedRoom.description : root.service.historyLabel) : (root.service ? root.service.setupInstructions : "Enable the plugin and reopen this panel.")
           textFormat: Text.PlainText
           wrapMode: Text.WordWrap
           color: Color.foreground
@@ -168,13 +178,23 @@ FocusScope {
           font.pixelSize: Style.font.body
         }
 
-        Ui.Button {
-          text: "Retry connection"
-          focusable: true
+        RowLayout {
           visible: root.service && !root.service.sampleMode
-          onClicked: if (root.service) root.service.retry()
+            && (root.service.connection !== "authenticated" || (root.service.historySupported && root.service.selectedRoom !== null))
+          spacing: Style.space(8)
+          Ui.Button {
+            text: "Retry connection"
+            focusable: true
+            visible: root.service && root.service.connection !== "authenticated"
+            onClicked: if (root.service) root.service.retry()
+          }
+          Ui.Button {
+            text: "Refresh history"
+            focusable: true
+            visible: root.service && root.service.connection === "authenticated" && root.service.historySupported && root.service.selectedRoom !== null
+            onClicked: if (root.service) root.service.refreshHistory()
+          }
         }
-
         Controls.ScrollView {
           Layout.fillWidth: true
           Layout.fillHeight: true
@@ -182,7 +202,7 @@ FocusScope {
           contentWidth: availableWidth
           Column {
             width: parent.width
-            spacing: Style.space(22)
+            spacing: Style.space(root.service && root.service.sampleMode ? 22 : 10)
             Repeater {
               model: root.service ? root.service.messages : []
               delegate: Column {
@@ -191,7 +211,8 @@ FocusScope {
                 spacing: Style.space(6)
                 Text {
                   width: parent.width
-                  text: modelData.author + " · " + modelData.role + " · " + modelData.time
+                  text: root.service && root.service.sampleMode ? modelData.author + " · " + modelData.role + " · " + modelData.time
+                    : modelData.author.slice(0, 12) + "… · identity unclassified · " + root.service.formatTimestamp(modelData.time)
                   textFormat: Text.PlainText
                   wrapMode: Text.WordWrap
                   color: Color.accent
@@ -201,7 +222,8 @@ FocusScope {
                 }
                 Text {
                   width: parent.width
-                  text: modelData.text
+                  text: root.service && root.service.sampleMode ? modelData.text : (modelData.unavailable ? "Content unavailable" : modelData.text)
+                    + (modelData.edited ? "\n[edited]" : "") + (modelData.truncated ? "\n[truncated]" : "")
                   textFormat: Text.PlainText
                   wrapMode: Text.WordWrap
                   color: Color.foreground
@@ -214,6 +236,7 @@ FocusScope {
         }
 
         Rectangle {
+          visible: root.service && root.service.sampleMode
           Layout.fillWidth: true
           implicitHeight: composerLabel.implicitHeight + Style.space(22)
           color: Qt.rgba(Color.foreground.r, Color.foreground.g, Color.foreground.b, 0.04)

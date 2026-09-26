@@ -143,7 +143,7 @@ async fn authenticated_catalog_is_partial_and_reauthentication_clears_it() {
         wait_status(&mut status,|s|s.connection=="connecting" && s.catalog.rooms.is_empty()).await;
         assert_ne!(status.borrow().catalog.state,"partial");
         ack_send.send(()).unwrap();
-        send_retry.send(()).await.unwrap();
+        send_retry.send(Command::Retry).await.unwrap();
         // Await through mutable handle, retaining abort-on-panic cleanup.
         let mut observer=observer;
         let exit=timeout(Duration::from_secs(3),&mut observer.0).await.unwrap().unwrap();

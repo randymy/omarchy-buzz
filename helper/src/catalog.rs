@@ -232,7 +232,7 @@ pub fn reconcile(
         if name.trim().is_empty() {
             return Err("catalog_invalid_shape");
         }
-        let description = clean(one_tag(event, "about")?.unwrap_or(""), 512);
+        let description = clean(one_tag(event, "about")?.unwrap_or(""), 256);
         rooms.push(Room {
             id: id.to_string(),
             name,

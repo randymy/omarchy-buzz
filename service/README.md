@@ -1,7 +1,8 @@
 # Helper supervision (development)
 
 These user units are under development and are not installed by the QML plugin.
-The UI connects through a bridge and displays connection status; messaging remains unavailable.
+The UI connects through a bridge and displays connection state, rooms and recent
+history snapshots; sending remains unavailable.
 
 The socket activates `%h/.local/bin/omarchy-buzz daemon`. It retains its private
 runtime directory while the daemon exits after its last client disconnects.
