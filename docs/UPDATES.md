@@ -80,3 +80,9 @@ If a previous publication pushed a candidate branch but could not create its PR,
 a later run retains that orphan branch and stops with a clear job summary.
 Inspect it and open a draft manually, or remove that owned candidate branch
 before rerunning. The workflow never force-pushes or overwrites it.
+
+The disposable real-relay runner additionally checks its inspected schema/startup
+revision. A dependency-update candidate that changes Buzz must review and update
+that runner baseline before running real conformance; source compilation alone
+cannot certify changed relay behavior. The manual conformance workflow is not
+automatically included in the daily dependency candidate's pass result.

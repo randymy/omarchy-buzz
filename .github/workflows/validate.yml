@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: validate-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   manifest:
     runs-on: ubuntu-24.04
@@ -31,6 +35,8 @@ jobs:
           python3 tests/desktop_shortcut.py
           python3 tests/package_helper.py
           python3 tests/helper_notices.py
+          python3 tests/relay_conformance_runner.py
+          python3 tests/acp_fixture.py
           python3 scripts/check-upstream --self-test
       - name: Validate manifest
         working-directory: omarchy-buzz

@@ -1,0 +1,79 @@
+#!/usr/bin/env python3
+"""No relay/provider/harness launch: test supervisor's actual process boundary."""
+import importlib.machinery
+import importlib.util
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import time
+
+ROOT = Path(__file__).resolve().parents[1]
+loader = importlib.machinery.SourceFileLoader("fixture", str(ROOT / "scripts/acp-fixture"))
+spec = importlib.util.spec_from_loader(loader.name, loader)
+fixture = importlib.util.module_from_spec(spec)
+loader.exec_module(fixture)
+import json
+valid_tag = json.dumps(["auth", fixture.OWNER, "kind=9", "a" * 128])
+assert json.loads(fixture.auth_tag(valid_tag))[1] == fixture.OWNER
+for tag in ("{}", json.dumps(["auth", fixture.OWNER, "kind=1", "a" * 128]), json.dumps(["auth", "b" * 64, "kind=9", "a" * 128])):
+    try:
+        fixture.auth_tag(tag)
+        raise AssertionError("wrong owner or scope accepted")
+    except ValueError:
+        pass
+for bad in ("wss://127.0.0.1:3000", "ws://example.com:3000", "ws://127.0.0.1", "ws://u:p@127.0.0.1:3000", "ws://127.0.0.1:3000/a", "ws://127.0.0.1:3000?q=1"):
+    try:
+        fixture.origin(bad)
+        raise AssertionError("nonisolated origin accepted")
+    except ValueError:
+        pass
+assert fixture.origin("ws://127.0.0.1:3000/") == "ws://127.0.0.1:3000"
+assert fixture.origin("ws://[::1]:3000") == "ws://[::1]:3000"
+with tempfile.TemporaryDirectory(prefix="buzz-acp-supervisor-test-") as temporary:
+    root = Path(temporary)
+    binaries = root / "bin"
+    binaries.mkdir()
+    os.environ["OPENAI_API_KEY"] = "synthetic-do-not-inherit"
+    os.environ["DBUS_SESSION_BUS_ADDRESS"] = "synthetic-do-not-inherit"
+    env = fixture.environment(root, binaries, Path(sys.executable), "ws://127.0.0.1:12345")
+    assert "OPENAI_API_KEY" not in env and "DBUS_SESSION_BUS_ADDRESS" not in env
+    assert env["BUZZ_PRIVATE_KEY"] == "0" * 63 + "2"
+    assert all((root / name).stat().st_mode & 0o777 == 0o700 for name in ("home", "config", "runtime", "state", "data", "cache", "workspace"))
+    command = fixture.command(binaries, Path(sys.executable), root / "peer.mjs", "11111111-1111-4111-8111-111111111111")
+    assert "--respond-to" in command and command[command.index("--respond-to") + 1] == "owner-only"
+    assert "--private-key" not in command and fixture.PUBLIC_FIXTURE_SCALAR not in command
+    # Fixed mock child, not an ACP or model agent. Assert actual inherited environment.
+    child = subprocess.Popen([sys.executable, "-c", "import os,time; assert 'OPENAI_API_KEY' not in os.environ; assert 'DBUS_SESSION_BUS_ADDRESS' not in os.environ; time.sleep(30)"], env=env, cwd=root / "workspace", start_new_session=True)
+    time.sleep(0.1)
+    fixture.cleanup(child)
+    assert child.poll() is not None
+    # A fixed mock descendant must be stopped with the harness-owned group.
+    descendant_file = root / "descendant.pid"
+    mock = "import pathlib,subprocess,sys,time; child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)'],process_group=0); pathlib.Path(sys.argv[1]).write_text(str(child.pid)); time.sleep(30)"
+    parent = subprocess.Popen([sys.executable, "-c", mock, str(descendant_file)], env=env, start_new_session=True)
+    expires = time.monotonic() + 3
+    while not descendant_file.exists() and time.monotonic() < expires:
+        time.sleep(0.02)
+    assert descendant_file.exists(), "mock descendant did not start"
+    descendant = int(descendant_file.read_text())
+    assert os.getpgid(descendant) == descendant
+    assert os.getsid(descendant) == parent.pid
+    fixture.cleanup(parent)
+    expires = time.monotonic() + 3
+    while time.monotonic() < expires:
+        try:
+            state = Path(f"/proc/{descendant}/stat").read_text().split(") ", 1)[1].split()[0]
+        except FileNotFoundError:
+            break
+        if state == "Z":
+            break  # Not running; the system subreaper owns its final wait.
+        time.sleep(0.02)
+    else:
+        raise AssertionError("owned mock descendant still running")
+    # A child that exits on its own is also safe to clean up.
+    exited = subprocess.Popen([sys.executable, "-c", "pass"], env=env, start_new_session=True)
+    assert exited.wait(timeout=3) == 0
+    fixture.cleanup(exited)
+print("PASS: loopback-only fixture, public disposable identity, clean private environment, fixed owner routing and process cleanup")

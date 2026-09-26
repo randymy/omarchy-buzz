@@ -1,0 +1,204 @@
+#!/usr/bin/env python3
+"""Supervise only the pinned synthetic ACP peer against an explicit loopback relay.
+
+No provider adapter or real key input is accepted. The separate relay driver
+must prepare membership, publish the owner mention, and verify the signed ACK.
+stdin accepts exactly 'stop' after those assertions. Startup is not readiness.
+"""
+import argparse
+import json
+import os
+from pathlib import Path
+import re
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.parse
+import uuid
+
+PIN = "781d39510cf23cfe224e8f521ae06a23377e06de"
+OWNER = "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+AGENT = "c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5"
+PUBLIC_FIXTURE_SCALAR = "0" * 63 + "2"
+PEER = "desktop/tests/e2e/fixtures/fake-acp-agent.mjs"
+
+
+def origin(value):
+    try:
+        parsed = urllib.parse.urlsplit(value)
+        if parsed.scheme != "ws" or parsed.hostname not in ("127.0.0.1", "::1") or not parsed.port:
+            raise ValueError()
+        if parsed.username or parsed.password or parsed.query or parsed.fragment or parsed.path not in ("", "/"):
+            raise ValueError()
+    except ValueError:
+        raise ValueError("explicit loopback ws origin and port required") from None
+    return value.rstrip("/")
+
+
+def auth_tag(value):
+    try:
+        data = json.loads(value)
+        if not isinstance(data, list) or len(data) != 4 or data[:3] != ["auth", OWNER, "kind=9"] or not isinstance(data[3], str) or not re.fullmatch("[a-f0-9]{128}", data[3]):
+            raise ValueError()
+    except (ValueError, TypeError):
+        raise ValueError("exact fixed-owner kind=9 synthetic auth tag required") from None
+    # Upstream verifies the actual signature against the fixed synthetic agent key.
+    return json.dumps(data, separators=(",", ":"))
+
+
+def room(value):
+    try:
+        if str(uuid.UUID(value)) != value:
+            raise ValueError()
+    except ValueError:
+        raise ValueError("canonical room UUID required") from None
+    return value
+
+
+def environment(directory, binaries, node, relay):
+    paths = {}
+    for name in ("home", "config", "runtime", "state", "data", "cache", "workspace"):
+        path = directory / name
+        path.mkdir(mode=0o700)
+        paths[name] = path
+    # Deliberately build from scratch; no auth, keyring/session bus, Git config,
+    # cloud provider, proxy, dynamic loader, or inherited agent configuration.
+    return {"PATH": os.pathsep.join((str(binaries), str(node.parent), "/usr/bin", "/bin")),
+            "HOME": str(paths["home"]), "XDG_CONFIG_HOME": str(paths["config"]),
+            "XDG_RUNTIME_DIR": str(paths["runtime"]), "XDG_STATE_HOME": str(paths["state"]),
+            "XDG_DATA_HOME": str(paths["data"]), "XDG_CACHE_HOME": str(paths["cache"]),
+            "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_TERMINAL_PROMPT": "0", "BUZZ_RELAY_URL": relay,
+            "BUZZ_PRIVATE_KEY": PUBLIC_FIXTURE_SCALAR,
+            "BUZZ_E2E_CLI_BIN": str(binaries / "buzz"), "RUST_LOG": "warn",
+            "LANG": "C.UTF-8"}
+
+
+def command(binaries, node, peer, room_id):
+    return [str(binaries / "buzz-acp"), "--agent-command", str(node), "--agent-args", str(peer),
+            "--agent-owner", OWNER, "--respond-to", "owner-only", "--allowed-respond-to", "owner-only",
+            "--subscribe", "mentions", "--channels", room_id, "--kinds", "9",
+            "--permission-mode", "default", "--mcp-command", "", "--no-memory", "--no-presence",
+            "--no-typing", "--idle-timeout", "10", "--max-turn-duration", "30"]
+
+
+def session_groups(session):
+    groups = {session}
+    # ACP deliberately creates separate process groups for adapters. They remain
+    # in this supervisor-owned session, so killing only the harness group leaks them.
+    for path in Path("/proc").glob("[0-9]*/stat"):
+        try:
+            fields = path.read_text().rsplit(") ", 1)[1].split()
+            if int(fields[3]) == session:
+                groups.add(int(fields[2]))
+        except (OSError, ValueError, IndexError):
+            continue
+    return groups
+
+
+def signal_session(session, number):
+    for group in session_groups(session):
+        try:
+            os.killpg(group, number)
+        except ProcessLookupError:
+            pass
+
+
+def cleanup(process):
+    # Stop all owned-session groups, including the adapter's distinct group.
+    signal_session(process.pid, signal.SIGTERM)
+    try:
+        process.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        pass
+    signal_session(process.pid, signal.SIGKILL)
+    process.wait(timeout=3)
+
+
+def verify_source(source):
+    env = {"PATH": "/usr/bin:/bin", "HOME": "/nonexistent", "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull}
+    revision = subprocess.run(["git", "-C", str(source), "rev-parse", "HEAD"], env=env,
+                              capture_output=True, check=True, timeout=10).stdout.decode().strip()
+    if revision != PIN:
+        raise ValueError("Buzz source is not the inspected pin")
+    expected = subprocess.run(["git", "-C", str(source), "show", PIN + ":" + PEER], env=env,
+                             capture_output=True, check=True, timeout=10).stdout
+    if (source / PEER).read_bytes() != expected:
+        raise ValueError("pinned synthetic ACP peer was modified")
+
+
+def checked_type(validator):
+    def checked(value):
+        try:
+            return validator(value)
+        except ValueError:
+            raise argparse.ArgumentTypeError("invalid fixed synthetic fixture input") from None
+    return checked
+
+
+def main():
+    import selectors
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--buzz-source", required=True, type=Path)
+    parser.add_argument("--buzz-bin-dir", required=True, type=Path)
+    parser.add_argument("--node", required=True, type=Path)
+    parser.add_argument("--relay-url", required=True, type=checked_type(origin))
+    parser.add_argument("--room", required=True, type=checked_type(room))
+    parser.add_argument("--fixture-auth-tag", required=True, type=checked_type(auth_tag))
+    parser.add_argument("--deadline", type=int, default=90)
+    args = parser.parse_args()
+    if not 1 <= args.deadline <= 180:
+        raise ValueError("deadline must be 1..180 seconds")
+    source, binaries, node = args.buzz_source.resolve(), args.buzz_bin_dir.resolve(), args.node.resolve()
+    if "," in str(source):
+        raise ValueError("fixture source path cannot contain the CLI argument delimiter")
+    verify_source(source)
+    for executable in (node, *(binaries / name for name in ("buzz-acp", "buzz", "git-sign-nostr", "git-credential-nostr"))):
+        if not executable.is_file() or not os.access(executable, os.X_OK):
+            raise ValueError("required isolated fixture executable unavailable")
+    # Ctrl-C/SIGTERM enter the same finally-based group cleanup as normal stop.
+    def interrupted(_number, _frame):
+        raise KeyboardInterrupt()
+    signal.signal(signal.SIGTERM, interrupted)
+    with tempfile.TemporaryDirectory(prefix="omarchy-buzz-acp-") as temporary:
+        directory = Path(temporary)
+        env = environment(directory, binaries, node, args.relay_url)
+        env["BUZZ_AUTH_TAG"] = args.fixture_auth_tag
+        with (directory / "private.log").open("wb") as output:
+            os.chmod(directory / "private.log", 0o600)
+            process = subprocess.Popen(command(binaries, node, source / PEER, args.room), env=env,
+                                       cwd=directory / "workspace", stdin=subprocess.DEVNULL,
+                                       stdout=output, stderr=output, start_new_session=True)
+            try:
+                print(json.dumps({"type": "started", "agentKey": AGENT, "ownerKey": OWNER,
+                                  "roomId": args.room, "sourceRevision": PIN}), flush=True)
+                # A distinct driver must establish readiness through relay observations.
+                expires = time.monotonic() + args.deadline
+                with selectors.DefaultSelector() as selector:
+                    selector.register(sys.stdin, selectors.EVENT_READ)
+                    while process.poll() is None:
+                        if time.monotonic() >= expires:
+                            raise ValueError("synthetic ACP deadline exceeded")
+                        if (directory / "private.log").stat().st_size > 4 * 1024 * 1024:
+                            raise ValueError("synthetic ACP diagnostic budget exceeded")
+                        if selector.select(timeout=0.2):
+                            line = sys.stdin.readline(32)
+                            if line != "stop\n":
+                                raise ValueError("driver must explicitly stop after assertions")
+                            break
+                    else:
+                        raise ValueError("synthetic ACP exited before driver completion")
+            finally:
+                cleanup(process)
+            print(json.dumps({"type": "stopped", "claim": "process_cleanup_only"}), flush=True)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (ValueError, OSError, subprocess.SubprocessError, KeyboardInterrupt):
+        # Raw harness diagnostics and process environment never enter evidence output.
+        print("acp-fixture: fixture failed or interrupted; private diagnostics discarded", file=sys.stderr)
+        sys.exit(1)

@@ -141,6 +141,15 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertEqual(summary["stage"], "preflight")
 
+    def test_failure_summary_excludes_arguments_and_raw_diagnostics(self):
+        error = runner.FixtureCommandError(["docker", "compose", "--file", "/private/secret.json", "up"], 1,
+                                          b"manifest unknown: secret-password signed-event-content")
+        self.assertEqual(error.safe, {"tool": "docker", "action": "up", "exitCode": 1, "category": "image_not_found"})
+        self.assertNotIn("secret", json.dumps(error.safe))
+        timeout = runner.FixtureCommandError(["/private/path/pgschema", "private-argument"], None, timed_out=True)
+        self.assertEqual(timeout.safe["category"], "timeout")
+        self.assertEqual(timeout.safe["tool"], "pgschema")
+
     def test_non_disposable_preflight_does_not_touch_docker(self):
         with patch.dict(os.environ, {}, clear=True), patch.object(runner, "command") as command:
             with self.assertRaises(ValueError):

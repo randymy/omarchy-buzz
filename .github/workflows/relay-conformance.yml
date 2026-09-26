@@ -74,6 +74,14 @@ jobs:
       - name: Compile the helper conformance tests
         working-directory: plugin
         run: cargo +1.95.0 test --locked --no-run --manifest-path helper/Cargo.toml --target-dir "$RUNNER_TEMP/helper-target"
+      - name: Pull public fixture images before creating any test credentials
+        run: |
+          python3 - <<'PYCODE'
+          import runpy, subprocess
+          fixture = runpy.run_path('plugin/scripts/relay-conformance-runner')
+          for image in ('postgres:17-alpine', 'redis:7-alpine', fixture['MINIO'], fixture['MC']):
+              subprocess.run(['docker', 'pull', image], check=True, timeout=180)
+          PYCODE
       - name: Exercise the helper against an isolated real relay
         run: |
           export RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}"

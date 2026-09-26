@@ -136,3 +136,28 @@ settings at runtime, and impose explicit resource/cost limits. Until that
 boundary and adapter credentials are prepared, the safe first demo is the
 synthetic peer above. Approval behavior, adapter availability, provider access,
 and agent execution remain separate claims from successful Buzz message delivery.
+
+## Executable fixture preparation
+
+`scripts/acp-fixture` now supplies the bounded supervisor, and the helper has an
+ignored `acp_relay_synthetic_routing` test. The supervisor accepts only the
+fixed public fixture agent, a verified owner-signed fixture auth tag, the pinned
+Node peer, an explicit loopback relay and canonical room. It clears inherited
+credentials and configuration, bounds runtime/log size, and cleans up adapter
+process groups as well as the harness. Its `started` event is process creation,
+not readiness; the Rust driver requires a verified same-room agent ACK.
+
+The driver prepares membership and NIP-OA using upstream SDK builders. It checks
+an exact owner mention followed by bounded no-mention/stranger observations.
+Those quiet intervals are not proof of permanent exclusion. The fake peer can
+see historical trigger tokens, so this fixture must not be interpreted as a
+security proof or a model evaluation. Local compilation and supervisor process
+fixtures passed; no actual ACP harness has run yet. The initial real-relay
+workflow deliberately selects only `real_relay_`, excluding this ACP test.
+
+A later prepared runner must explicitly set `OMARCHY_BUZZ_TEST_ACP_BUZZ_SOURCE`,
+`OMARCHY_BUZZ_TEST_ACP_BIN_DIR`, and `OMARCHY_BUZZ_TEST_ACP_NODE`, alongside its
+disposable `OMARCHY_BUZZ_TEST_RELAY_URL`, then run the ignored `acp_relay_` test.
+Built binaries must include `buzz-acp`, `buzz`, `git-sign-nostr`, and
+`git-credential-nostr`. No production identity or provider credentials are
+accepted by this synthetic supervisor.

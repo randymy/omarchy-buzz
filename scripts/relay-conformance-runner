@@ -113,16 +113,49 @@ def stop_group(process):
         process.wait(timeout=5)
 
 
+class FixtureCommandError(RuntimeError):
+    def __init__(self, args, code, diagnostics=b"", timed_out=False):
+        executable = Path(args[0]).name
+        tool = executable if executable in ("docker", "git", "cargo", "pgschema") else "other"
+        action = "command"
+        if args[:2] == ["docker", "compose"]:
+            action = next((value for value in ("up", "run", "exec", "down", "ps", "version") if value in args[2:]), "compose")
+        text = diagnostics.lower()
+        category = "timeout" if timed_out else "command_failed"
+        for marker, label in ((b"manifest unknown", "image_not_found"), (b"manifest for", "image_not_found"),
+                              (b"unauthorized", "image_auth_required"), (b"denied", "access_denied"),
+                              (b"toomanyrequests", "registry_rate_limit"), (b"unhealthy", "container_unhealthy"),
+                              (b"connection refused", "connection_refused"), (b"no such host", "dns_failure"),
+                              (b"invalid compose", "compose_invalid"), (b"address already in use", "port_busy"),
+                              (b"no space left", "disk_full"), (b"network is unreachable", "network_unreachable")):
+            if marker in text:
+                category = label
+                break
+        self.safe = {"tool": tool, "action": action, "exitCode": code, "category": category}
+        super().__init__(category)
+
+
+def diagnostic_tail(log):
+    with Path(log).open("rb") as source:
+        source.seek(0, 2)
+        source.seek(max(0, source.tell() - 8192))
+        return source.read(8192)
+
+
 def command(args, env, cwd, log, timeout=120, input_data=None, capture=False):
     with Path(log).open("ab") as stream:
         process = subprocess.Popen(args, env=env, cwd=cwd, stdin=subprocess.PIPE if input_data is not None else subprocess.DEVNULL,
                                    stdout=subprocess.PIPE if capture else stream, stderr=stream, start_new_session=True)
         try:
-            output, _ = process.communicate(input_data, timeout=timeout)
+            try:
+                output, _ = process.communicate(input_data, timeout=timeout)
+            except subprocess.TimeoutExpired:
+                raise FixtureCommandError(args, None, timed_out=True) from None
             if capture and output:
                 stream.write(output[:65536])
             if process.returncode:
-                raise RuntimeError("fixture command failed")
+                stream.flush()
+                raise FixtureCommandError(args, process.returncode, diagnostic_tail(log))
             if output is not None and len(output) > 65536:
                 raise RuntimeError("unexpected fixture command output")
             return output or b""
@@ -257,6 +290,8 @@ def run(args):
             report["stage"] = "complete"
         except Exception as error:
             report["errorType"] = type(error).__name__
+            if isinstance(error, FixtureCommandError):
+                report["failure"] = error.safe
             # No command argv, child diagnostics, synthetic credentials or message text in summary.
         finally:
             for connection in held:
