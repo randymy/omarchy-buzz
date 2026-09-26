@@ -34,6 +34,33 @@ pub fn request(bytes: &[u8]) -> Result<Request, &'static str> {
     Ok(r)
 }
 #[derive(Clone, Serialize)]
+pub struct Room {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+}
+#[derive(Clone, Serialize)]
+pub struct Catalog {
+    pub state: String,
+    pub rooms: Vec<Room>,
+    pub category: Option<String>,
+}
+impl Catalog {
+    pub fn unavailable(category: Option<&str>) -> Self {
+        Self {
+            state: "unavailable".into(),
+            rooms: Vec::new(),
+            category: category.map(str::to_owned),
+        }
+    }
+    pub fn loading() -> Self {
+        Self {
+            state: "loading".into(),
+            ..Self::unavailable(None)
+        }
+    }
+}
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Status {
     pub connection: String,
@@ -41,6 +68,7 @@ pub struct Status {
     pub relay: Option<String>,
     pub generation: u64,
     pub category: Option<String>,
+    pub catalog: Catalog,
 }
 impl Status {
     pub fn new(c: &crate::config::Config) -> Self {
@@ -50,11 +78,12 @@ impl Status {
             relay: c.relay.clone(),
             generation: 1,
             category: None,
+            catalog: Catalog::unavailable(None),
         }
     }
 }
 pub fn envelope(kind: &str, id: Option<&str>, instance: &str, s: &Status) -> serde_json::Value {
-    serde_json::json!({"version":1,"type":kind,"id":id,"instanceId":instance,"generation":s.generation,"capabilities":["connection_status"],"backendRevision":"781d39510cf23cfe224e8f521ae06a23377e06de","status":s})
+    serde_json::json!({"version":1,"type":kind,"id":id,"instanceId":instance,"generation":s.generation,"capabilities":["connection_status","room_catalog"],"backendRevision":"781d39510cf23cfe224e8f521ae06a23377e06de","status":s})
 }
 pub async fn read_line<R: tokio::io::AsyncBufRead + Unpin>(
     r: &mut R,
@@ -121,7 +150,12 @@ mod state_tests {
         let status = Status::new(&crate::config::Config::default());
         let v = envelope("hello", None, "fixture-instance", &status);
         assert_eq!(v["status"]["connection"], "unconfigured");
-        assert_eq!(v["capabilities"], serde_json::json!(["connection_status"]));
+        assert_eq!(
+            v["capabilities"],
+            serde_json::json!(["connection_status", "room_catalog"])
+        );
+        assert_eq!(v["status"]["catalog"]["state"], "unavailable");
+        assert_eq!(v["status"]["catalog"]["rooms"], serde_json::json!([]));
         assert!(v.get("privateKey").is_none());
     }
     #[test]

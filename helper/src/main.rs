@@ -1,11 +1,14 @@
 #![forbid(unsafe_code)]
 mod auth;
+mod catalog;
 mod config;
 mod ipc;
 mod protocol;
-// M1 transport seam is intentionally not exposed through UI IPC.
-#[allow(dead_code)]
 mod query;
+// Network fixtures share the production concurrency budgets. Serialize fixtures,
+// while individual tests still exercise multiple simultaneous requests explicitly.
+#[cfg(test)]
+static NETWORK_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 use std::io::IsTerminal;
 fn enroll() -> Result<(), &'static str> {
     if !std::io::stdin().is_terminal() || !std::io::stderr().is_terminal() {

@@ -7,8 +7,6 @@ use tokio::{
     time::timeout,
 };
 
-static TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
 struct Capture {
     auth: String,
     body: Vec<u8>,
@@ -129,7 +127,7 @@ fn endpoint_and_nonce_binding() {
 }
 #[tokio::test]
 async fn exact_bytes_and_auth_reach_fixed_query() {
-    let _guard = TEST_LOCK.lock().await;
+    let _network_fixture = crate::NETWORK_TEST_LOCK.lock().await;
     let keys = Keys::generate();
     let event = membership(&keys);
     let body = serde_json::to_vec(&vec![event.clone()]).unwrap();
@@ -159,7 +157,7 @@ async fn exact_bytes_and_auth_reach_fixed_query() {
 }
 #[tokio::test]
 async fn redirect_contacts_no_target() {
-    let _guard = TEST_LOCK.lock().await;
+    let _network_fixture = crate::NETWORK_TEST_LOCK.lock().await;
     let target = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let location = format!("http://{}/query", target.local_addr().unwrap());
     let wire=format!("HTTP/1.1 307 Temporary Redirect\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").into_bytes();
@@ -180,7 +178,7 @@ async fn redirect_contacts_no_target() {
 }
 #[tokio::test]
 async fn rejects_length_and_chunked_overflow() {
-    let _guard = TEST_LOCK.lock().await;
+    let _network_fixture = crate::NETWORK_TEST_LOCK.lock().await;
     let wire = format!(
         "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         RESPONSE_BYTES + 1
@@ -219,7 +217,7 @@ async fn rejects_length_and_chunked_overflow() {
 }
 #[tokio::test]
 async fn rejects_malformed_signature_and_scope() {
-    let _guard = TEST_LOCK.lock().await;
+    let _network_fixture = crate::NETWORK_TEST_LOCK.lock().await;
     let keys = Keys::generate();
     for body in [b"{}".to_vec(), b"[broken".to_vec()] {
         let (relay, task) = server(response(&body)).await;
@@ -249,7 +247,7 @@ async fn rejects_malformed_signature_and_scope() {
 }
 #[tokio::test]
 async fn response_reason_does_not_escape_category() {
-    let _guard = TEST_LOCK.lock().await;
+    let _network_fixture = crate::NETWORK_TEST_LOCK.lock().await;
     let(relay,task)=server(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 18\r\nConnection: close\r\n\r\nsentinel-sensitive".to_vec()).await;
     assert!(matches!(
         query(
@@ -265,7 +263,7 @@ async fn response_reason_does_not_escape_category() {
 
 #[tokio::test]
 async fn concurrent_capacity_rejects_without_network() {
-    let _guard = TEST_LOCK.lock().await;
+    let _network_fixture = crate::NETWORK_TEST_LOCK.lock().await;
     let _held = IN_FLIGHT.acquire_many(2).await.unwrap();
     assert!(matches!(
         query(

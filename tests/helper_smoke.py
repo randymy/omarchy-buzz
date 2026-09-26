@@ -47,7 +47,9 @@ def status(frame, kind):
     assert frame["status"]["connection"] == "unconfigured", frame
     assert frame["status"]["identity"] is None, frame
     assert frame["status"]["relay"] is None, frame
-    assert frame["capabilities"] == ["connection_status"], frame
+    assert frame["capabilities"] == ["connection_status", "room_catalog"], frame
+    assert frame["status"]["catalog"]["state"] == "unavailable", frame
+    assert frame["status"]["catalog"]["rooms"] == [], frame
     assert frame["instanceId"] and frame["generation"] == 1, frame
 
 

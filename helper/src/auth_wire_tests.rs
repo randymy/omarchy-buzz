@@ -49,6 +49,7 @@ async fn auth_event(
 
 #[tokio::test]
 async fn auth_requires_matching_ack_and_preserves_unrelated_ok() {
+    let _network_fixture = crate::NETWORK_TEST_LOCK.lock().await;
     let (listener, url) = listener().await;
     let keys = Keys::generate();
     let public = keys.public_key();
@@ -94,6 +95,7 @@ async fn auth_requires_matching_ack_and_preserves_unrelated_ok() {
 
 #[tokio::test]
 async fn auth_rejection_returns_only_safe_category() {
+    let _network_fixture = crate::NETWORK_TEST_LOCK.lock().await;
     let (listener, url) = listener().await;
     let keys = Keys::generate();
     let public = keys.public_key();
@@ -118,6 +120,7 @@ async fn auth_rejection_returns_only_safe_category() {
 
 #[tokio::test]
 async fn consumed_auth_notification_is_available_for_reauthentication() {
+    let _network_fixture = crate::NETWORK_TEST_LOCK.lock().await;
     let (listener, url) = listener().await;
     let keys = Keys::generate();
     let public = keys.public_key();

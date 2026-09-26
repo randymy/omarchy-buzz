@@ -24,6 +24,9 @@ fn update(tx: &watch::Sender<Status>, state: &str, category: Option<&str>) {
     tx.send_modify(|s| {
         s.connection = state.into();
         s.category = category.map(str::to_owned);
+        if state != "authenticated" {
+            s.catalog = crate::protocol::Catalog::unavailable(None);
+        }
     });
 }
 fn category(e: &WsClientError) -> &'static str {
@@ -63,6 +66,7 @@ fn apply_loaded_config(
                     s.generation = s.generation.saturating_add(1);
                     s.connection = "unconfigured".into();
                     s.category = None;
+                    s.catalog = crate::protocol::Catalog::unavailable(None);
                 }
             });
             Ok(c)
@@ -81,29 +85,202 @@ fn apply_loaded_config(
     }
 }
 
+fn catalog_category(error: &str) -> &'static str {
+    match error {
+        "relay_identity_changed" => "relay_identity_changed",
+        "discovery_signer_unavailable" => "relay_identity_unavailable",
+        "discovery_timeout" | "query_timeout" => "room_catalog_timeout",
+        "discovery_invalid_info"
+        | "discovery_oversized"
+        | "discovery_redirect_rejected"
+        | "query_oversized"
+        | "query_invalid_response"
+        | "query_invalid_signature"
+        | "query_invalid_scope"
+        | "query_redirect_rejected"
+        | "catalog_invalid_signature"
+        | "catalog_untrusted_author"
+        | "catalog_invalid_shape"
+        | "catalog_conflicting_snapshot"
+        | "catalog_invalid_membership"
+        | "catalog_invalid_scope"
+        | "catalog_oversized" => "room_catalog_invalid",
+        _ => "room_catalog_unavailable",
+    }
+}
+
+// NIP-45 COUNT is supported by the pinned relay's handle_count. It is a
+// narrow own-profile read, not a presence/process-health assertion.
+#[derive(Clone, Copy)]
+struct FreshnessPolicy {
+    interval: Duration,
+    response: Duration,
+}
+const FRESHNESS: FreshnessPolicy = FreshnessPolicy {
+    interval: Duration::from_secs(20),
+    response: Duration::from_secs(5),
+};
+#[derive(Default)]
+struct Backoff {
+    failures: u8,
+}
+impl Backoff {
+    fn reset(&mut self) {
+        self.failures = 0;
+    }
+    fn delay(&mut self, error: &str) -> Option<Duration> {
+        if !matches!(error, "relay_timeout" | "relay_unavailable") || self.failures >= 5 {
+            return None;
+        }
+        let seconds = 1_u64 << self.failures;
+        self.failures += 1;
+        Some(Duration::from_secs(seconds))
+    }
+}
+enum ConnectionExit {
+    Retry,
+    Shutdown,
+    Failure(&'static str),
+}
+async fn wait_after_failure(
+    error: &str,
+    backoff: &mut Backoff,
+    retry: &mut mpsc::Receiver<()>,
+) -> bool {
+    if let Some(delay) = backoff.delay(error) {
+        tokio::select! {
+            _=tokio::time::sleep(delay)=>true,
+            r=retry.recv()=> { if r.is_some() { backoff.reset(); true } else { false } }
+        }
+    } else {
+        if retry.recv().await.is_some() {
+            backoff.reset();
+            true
+        } else {
+            false
+        }
+    }
+}
+// Independent timer deadlines remain effective even when a relay emits unrelated
+// notices/events continuously. Only the exact probe ID refreshes authentication.
+async fn observe_connection(
+    conn: &mut NostrWsConnection,
+    keys: &nostr::Keys,
+    relay: &str,
+    relay_pin: &mut Option<nostr::PublicKey>,
+    tx: &watch::Sender<Status>,
+    retry: &mut mpsc::Receiver<()>,
+    backoff: &mut Backoff,
+    policy: FreshnessPolicy,
+) -> ConnectionExit {
+    let mut pending: Option<String> = None;
+    let mut due = tokio::time::Instant::now();
+    let mut catalog_due = tokio::time::Instant::now();
+    let mut fresh = false;
+    let mut jobs: tokio::task::JoinSet<Result<crate::catalog::Catalog, &'static str>> =
+        tokio::task::JoinSet::new();
+    loop {
+        tokio::select! {
+            biased;
+            r=retry.recv()=>return if r.is_some() { backoff.reset(); ConnectionExit::Retry } else { ConnectionExit::Shutdown },
+            _=tokio::time::sleep_until(due)=> {
+                if pending.is_some() { return ConnectionExit::Failure("relay_timeout"); }
+                let id=format!("omarchy-buzz-liveness-{}",uuid::Uuid::new_v4());
+                let frame=serde_json::json!(["COUNT",id,{"kinds":[0],"authors":[keys.public_key().to_hex()],"limit":1}]);
+                match timeout(policy.response,conn.send_raw(&frame)).await {
+                    Ok(Ok(()))=> {},
+                    Ok(Err(e))=>return ConnectionExit::Failure(category(&e)),
+                    Err(_)=>return ConnectionExit::Failure("relay_timeout"),
+                }
+                pending=Some(id);
+                due=tokio::time::Instant::now()+policy.response;
+            },
+            result=jobs.join_next(), if !jobs.is_empty()=> {
+                let cancelled=matches!(&result,Some(Err(error)) if error.is_cancelled());
+                match result {
+                    Some(Ok(Ok(catalog))) if fresh=> {
+                        *relay_pin=Some(catalog.signer);
+                        tx.send_modify(|s|s.catalog=crate::protocol::Catalog {
+                            state:catalog.state.into(),category:Some(catalog.category.into()),
+                            rooms:catalog.rooms.into_iter().map(|r|crate::protocol::Room {id:r.id,name:r.name,description:r.description}).collect(),
+                        });
+                    },
+                    Some(Ok(Err(error))) if fresh=>tx.send_modify(|s|s.catalog=crate::protocol::Catalog::unavailable(Some(catalog_category(error)))),
+                    Some(Err(error)) if fresh && !error.is_cancelled()=>tx.send_modify(|s|s.catalog=crate::protocol::Catalog::unavailable(Some("room_catalog_unavailable"))),
+                    _=>{},
+                }
+                if !cancelled {catalog_due=tokio::time::Instant::now()+Duration::from_secs(30);}
+            },
+            _=tokio::time::sleep_until(catalog_due), if fresh && jobs.is_empty()=> {
+                tx.send_modify(|s|s.catalog=crate::protocol::Catalog::loading());
+                let relay=relay.to_owned();let keys=keys.clone();let pin=*relay_pin;
+                jobs.spawn(async move {
+                    match timeout(Duration::from_secs(15),crate::catalog::discover(&relay,&keys,pin)).await {
+                        Ok(result)=>result,Err(_)=>Err("discovery_timeout"),
+                    }
+                });
+            },
+            msg=conn.next_event(Duration::from_secs(30))=>match msg {
+                Ok(RelayMessage::Count { subscription_id, .. }) if pending.as_deref()==Some(subscription_id.as_str())=> {
+                    pending=None;
+                    due=tokio::time::Instant::now()+policy.interval;
+                    backoff.reset();
+                    update(tx,"authenticated",None);
+                    if !fresh {fresh=true;catalog_due=tokio::time::Instant::now();}
+                },
+                Ok(RelayMessage::Closed { subscription_id, .. }) if pending.as_deref()==Some(subscription_id.as_str())=>return ConnectionExit::Failure("relay_protocol_error"),
+                Ok(RelayMessage::Auth { challenge })=> {
+                    if challenge.len()>1024 { return ConnectionExit::Failure("relay_protocol_error"); }
+                    fresh=false;
+                    jobs.abort_all();
+                    update(tx,"connecting",None);
+                    match timeout(Duration::from_secs(25),conn.authenticate(keys,None)).await {
+                        Ok(Ok(()))=> { pending=None; due=tokio::time::Instant::now(); },
+                        Ok(Err(e))=>return ConnectionExit::Failure(category(&e)),
+                        Err(_)=>return ConnectionExit::Failure("relay_timeout"),
+                    }
+                },
+                Ok(_)|Err(WsClientError::Timeout)=>{},
+                Err(e)=>return ConnectionExit::Failure(category(&e)),
+            }
+        }
+    }
+}
+
 pub async fn run(
     _initial: config::Config,
     tx: watch::Sender<Status>,
     mut retry: mpsc::Receiver<()>,
 ) {
+    let mut backoff = Backoff::default();
+    let mut pin_origin: Option<String> = None;
+    let mut relay_pin: Option<nostr::PublicKey> = None;
     loop {
         // Coalesce retry requests already queued for this attempt. Only this
         // sequential task owns key lookups, including any pending prompt.
-        while retry.try_recv().is_ok() {}
+        while retry.try_recv().is_ok() {
+            backoff.reset();
+        }
         let c = match apply_loaded_config(&tx, config::load()) {
             Ok(c) => c,
             Err(()) => {
                 if retry.recv().await.is_none() {
                     return;
                 }
+                backoff.reset();
                 continue;
             }
         };
+        if pin_origin != c.relay {
+            pin_origin = c.relay.clone();
+            relay_pin = None;
+        }
         if c.relay.is_none() || c.identity.is_none() {
             update(&tx, "unconfigured", None);
             if retry.recv().await.is_none() {
                 return;
             }
+            backoff.reset();
             continue;
         }
         update(&tx, "connecting", None);
@@ -121,6 +298,7 @@ pub async fn run(
         // Setup may have changed while an unlock prompt was pending. Wait for
         // its single operation to finish, then reload before any relay auth.
         if retry.try_recv().is_ok() {
+            backoff.reset();
             continue;
         }
         let keys = match key_result {
@@ -138,6 +316,7 @@ pub async fn run(
                 if retry.recv().await.is_none() {
                     return;
                 }
+                backoff.reset();
                 continue;
             }
             Err(_) => {
@@ -145,6 +324,7 @@ pub async fn run(
                 if retry.recv().await.is_none() {
                     return;
                 }
+                backoff.reset();
                 continue;
             }
         };
@@ -152,37 +332,37 @@ pub async fn run(
         let relay = c.relay.as_deref().unwrap_or_default();
         let mut conn = match connect_identity(relay, &keys).await {
             Ok(connection) => connection,
-            Err(e) => {
-                update(&tx, "disconnected", Some(e));
-                if retry.recv().await.is_none() {
+            Err(error) => {
+                update(&tx, "disconnected", Some(error));
+                if !wait_after_failure(error, &mut backoff, &mut retry).await {
                     return;
                 }
                 continue;
             }
         };
-        update(&tx, "authenticated", None);
-        loop {
-            tokio::select! {
-                r=retry.recv()=> { if r.is_none() { return; } let _=timeout(Duration::from_secs(3), conn.disconnect()).await; break; },
-                msg=conn.next_event(Duration::from_secs(30))=>match msg {
-                    Ok(RelayMessage::Auth { challenge })=> {
-                        // recv_one stores this challenge for authenticate. Reject the
-                        // oversize path too: pending_challenge bypasses the upstream
-                        // size guard in wait_for_auth_challenge.
-                        if challenge.len() > 1024 {
-                            update(&tx,"disconnected",Some("relay_protocol_error"));
-                            if retry.recv().await.is_none() { return; }
-                            break;
-                        }
-                        update(&tx,"connecting",None);
-                        match timeout(Duration::from_secs(25),conn.authenticate(&keys,None)).await {
-                            Ok(Ok(()))=>update(&tx,"authenticated",None),
-                            Ok(Err(e))=> { update(&tx,"disconnected",Some(category(&e))); if retry.recv().await.is_none() { return; } break; },
-                            Err(_)=> { update(&tx,"disconnected",Some("relay_timeout")); if retry.recv().await.is_none() { return; } break; }
-                        }
-                    },
-                    Ok(_)|Err(WsClientError::Timeout)=>{},
-                    Err(e)=> { update(&tx,"disconnected",Some(category(&e))); if retry.recv().await.is_none() { return; } break; }
+        let exit = observe_connection(
+            &mut conn,
+            &keys,
+            relay,
+            &mut relay_pin,
+            &tx,
+            &mut retry,
+            &mut backoff,
+            FRESHNESS,
+        )
+        .await;
+        // A timed-out socket is dropped before backoff; graceful close is only
+        // attempted for deliberate Retry, under its own short deadline.
+        match exit {
+            ConnectionExit::Retry => {
+                let _ = timeout(Duration::from_secs(3), conn.disconnect()).await;
+            }
+            ConnectionExit::Shutdown => return,
+            ConnectionExit::Failure(error) => {
+                drop(conn);
+                update(&tx, "disconnected", Some(error));
+                if !wait_after_failure(error, &mut backoff, &mut retry).await {
+                    return;
                 }
             }
         }
@@ -239,3 +419,11 @@ mod reload_tests {
 #[cfg(test)]
 #[path = "auth_wire_tests.rs"]
 mod wire_tests;
+
+#[cfg(test)]
+#[path = "auth_liveness_tests.rs"]
+mod liveness_tests;
+
+#[cfg(test)]
+#[path = "auth_catalog_tests.rs"]
+mod catalog_integration_tests;
