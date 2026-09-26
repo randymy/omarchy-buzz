@@ -15,12 +15,13 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 75
     env:
-      CARGO_HOME: ${{ runner.temp }}/buzz-cargo
       CARGO_BUILD_JOBS: '2'
       CARGO_PROFILE_DEV_DEBUG: '0'
       CARGO_PROFILE_TEST_DEBUG: '0'
       CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
     steps:
+      - name: Set disposable Cargo cache
+        run: echo "CARGO_HOME=$RUNNER_TEMP/buzz-cargo" >> "$GITHUB_ENV"
       - name: Check out plugin without stored Git credentials
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
