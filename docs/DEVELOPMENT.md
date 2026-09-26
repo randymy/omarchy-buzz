@@ -143,3 +143,11 @@ capture of live conversations. Earlier checkpoint counts above are historical.
 These fixtures do not establish compatibility with a deployed Buzz relay.
 Sending, profile classification, unread accounting and live history are not
 implemented. See [sending plan](SENDING.md) for the next stage.
+
+Installed development plugin `06850f8` and the rebuilt helper passed a native
+setup-panel visual check after `omarchy restart shell`. The user service is
+running with `LimitCORE=0`; public inspection confirms no relay/identity is
+configured. Native history rendering uses synthetic offscreen fixtures because
+no production identity was enrolled. Actual-relay validation needs the isolated
+environment described in [RELAY_TESTING.md](RELAY_TESTING.md); this machine lacks
+its database/container dependencies and has limited home-disk space.

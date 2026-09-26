@@ -14,8 +14,10 @@ QML/helper process tests pass. Offscreen history rendering and hostile input
 checks pass. Earlier milestones passed isolated Secret Service enrollment and
 socket idle reactivation. These are not a deployed Buzz relay certification.
 
-The installed plugin/helper are being updated after this source commit; verify
-installed HEAD before assuming the native copy matches source. The developer
+Installed plugin HEAD is `06850f8`; the rebuilt helper and service unit are
+installed. The native setup panel was visually verified after shell restart.
+The service is active with `LimitCORE=0`. Previous binary/unit copies are
+preserved beside their installed paths with `.previous` suffixes. The developer
 socket is started, not enabled for future logins. No relay configuration or
 credentials are installed. Hosted setup defaults to the official buzz.xyz
 handoff; linking the community URL and existing identity remains manual.
