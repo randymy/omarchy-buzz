@@ -22,7 +22,8 @@ a process crash between replacements requires inspecting/recovering mismatched
 pins, not assuming a multi-file transaction succeeded.
 
 The candidate workflow resolves dependencies and runs formatting, Rust tests,
-build, isolated helper smoke and socket activation checks, and private synthetic
+build, helper/plugin version and backend-pin diagnostics, isolated helper smoke
+and socket activation checks, and private synthetic
 Secret Service enrollment before opening its draft. If a dependency or API
 change breaks those checks, the draft explicitly identifies failed/incomplete
 validation and remains for repair and review. A failed dependency resolution can

@@ -72,14 +72,16 @@ Item {
     ? "Snapshot · completeness unknown" + (historyHasMore ? " · older history available" : "") : ({request_busy: "Helper busy · refresh again", history_timeout: "History request timed out", history_invalid: "History response could not be validated", history_access_denied: "History unavailable for this room"})[historyCategory] || "History not available yet"
   readonly property string barLabel: sampleMode ? "TEST" : ({unconfigured: "Setup", connecting: "Connecting", authenticated: "Connected", identity_locked: "Locked", disconnected: "Offline", unavailable: "Error"})[connection] || "Error"
   readonly property string barSymbol: sampleMode ? "T" : ({unconfigured: "?", connecting: "…", authenticated: "✓", identity_locked: "!", disconnected: "○", unavailable: "!"})[connection] || "!"
-  readonly property string statusLabel: sampleMode ? "Sample data" : category === "identity_access_pending" ? "Waiting for secret store unlock" : ({
+  readonly property string statusLabel: sampleMode ? "Sample data" : category === "incompatible_response" ? "Incompatible helper" : category === "identity_access_pending" ? "Waiting for secret store unlock" : ({
     unconfigured: "Setup required", connecting: "Connecting", authenticated: historyState === "snapshot" ? "Authenticated · recent snapshot" : historyState === "loading" ? "Authenticated · history loading" : "Authenticated · history unavailable",
     identity_locked: "Identity locked", disconnected: "Disconnected", unavailable: "Helper unavailable"
   })[connection] || "Unavailable"
   readonly property string providerInstructions: setupProvider === "hosted"
     ? "Set up your account and identity binding at buzz.xyz. Create or join a community, then use its assigned URL. There is no single public global relay; invitations and membership still apply."
     : "Use the URL of a relay you already belong to, including one you were invited to. Choosing custom does not require running your own relay."
-  readonly property string setupInstructions: (category === "config_unavailable" || category === "invalid_config")
+  readonly property string setupInstructions: category === "incompatible_response"
+    ? "Install a matching Buzz plugin and helper release, restart the helper service, then Retry. Updating the Omarchy plugin alone does not replace its helper. Your existing identity stays in the secret store."
+    : (category === "config_unavailable" || category === "invalid_config")
     ? "Check your local helper configuration, then Retry. Credentials do not belong in that file."
     : (connection === "identity_locked" || category === "identity_access_pending")
       ? "Unlock your OS secret store, then Retry. Your existing identity is retained."
