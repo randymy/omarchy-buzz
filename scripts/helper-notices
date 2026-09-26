@@ -1,0 +1,154 @@
+#!/usr/bin/env python3
+"""Inventory locked Cargo dependency notices from cached sources, offline."""
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import tomllib
+
+MAX_TOTAL = 8 * 1024 * 1024
+
+
+def digest(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def notice_name(path):
+    name = path.name.lower()
+    return (name.startswith(("license", "licence", "copying", "notice", "copyright"))
+            and path.suffix.lower() not in (".rs", ".c", ".h", ".pm", ".py", ".js", ".html"))
+
+
+def source_root(manifest, source):
+    root = manifest.parent
+    if source and source.startswith("git+"):
+        for parent in (root, *root.parents):
+            if (parent / ".git").exists():
+                return parent
+        raise ValueError("git package checkout root unavailable")
+    return root
+
+
+def inventory(metadata, lock_data, target):
+    if not re.fullmatch(r"(?:aarch64|x86_64)-unknown-linux-gnu", target):
+        raise ValueError("supported target required")
+    lock = tomllib.loads(lock_data.decode())
+    locked = {(p["name"], p["version"], p.get("source")): p for p in lock["package"]}
+    packages = {p["id"]: p for p in metadata["packages"]}
+    nodes = {n["id"]: n for n in metadata["resolve"]["nodes"]}
+    root_id = metadata["resolve"]["root"]
+    if root_id not in nodes or root_id not in packages:
+        raise ValueError("metadata must resolve the helper root")
+    reached, pending = set(), [root_id]
+    while pending:
+        current = pending.pop()
+        if current in reached:
+            continue
+        reached.add(current)
+        for dep in nodes[current]["deps"]:
+            if any(kind.get("kind") != "dev" for kind in dep["dep_kinds"]):
+                pending.append(dep["pkg"])
+    texts, records = {}, []
+    for package_id in sorted(reached - {root_id}):
+        p = packages[package_id]
+        source = p.get("source")
+        key = (p["name"], p["version"], source)
+        if key not in locked:
+            raise ValueError("resolved package missing from lock: " + p["name"])
+        manifest = Path(p["manifest_path"])
+        if manifest.is_symlink() or not manifest.is_file():
+            raise ValueError("cached manifest missing or symlink")
+        root = source_root(manifest, source)
+        issues = []
+        expression = p.get("license")
+        if not expression:
+            issues.append("missing_declared_license")
+        elif " AND " in expression or " WITH " in expression or "/" in expression:
+            issues.append("compound_or_legacy_expression_review")
+        if source is None:
+            issues.append("local_dependency_provenance_review")
+        candidates = []
+        for directory, dirs, files in os.walk(root, followlinks=False):
+            dirs[:] = sorted(d for d in dirs if d not in (".git", "target") and not (Path(directory) / d).is_symlink())
+            for filename in sorted(files):
+                path = Path(directory) / filename
+                if notice_name(path):
+                    candidates.append(path)
+        declared = p.get("license_file")
+        if declared:
+            declared_path = manifest.parent / declared
+            if not declared_path.resolve().is_relative_to(root.resolve()):
+                raise ValueError("declared notice escapes source root")
+            candidates.append(declared_path)
+        files = []
+        for path in sorted(set(candidates)):
+            relative = str(path.relative_to(root))
+            if path.is_symlink() or not path.is_file():
+                issues.append("missing_or_symlink_notice:" + relative)
+                continue
+            if path.stat().st_size > 1024 * 1024:
+                issues.append("oversized_notice:" + relative)
+                continue
+            data = path.read_bytes()
+            if not data or b"\0" in data:
+                issues.append("empty_or_binary_notice:" + relative)
+                continue
+            sha = digest(data)
+            texts[sha] = data
+            if len(texts) > 1024 or sum(map(len, texts.values())) > MAX_TOTAL:
+                raise ValueError("notice inventory exceeds bounded budget")
+            files.append({"sourcePath": relative, "path": "texts/" + sha + ".txt", "sha256": sha, "bytes": len(data)})
+        if not files:
+            issues.append("no_notice_text_found")
+        records.append({"name": p["name"], "version": p["version"], "source": source,
+                        "registryChecksum": locked[key].get("checksum"), "manifestSha256": digest(manifest.read_bytes()),
+                        "declaredLicense": expression, "licenseFiles": files, "reviewFlags": sorted(set(issues))})
+    records.sort(key=lambda p: (p["name"], p["version"], p["source"] or ""))
+    document = {"schemaVersion": 1, "target": target, "lockSha256": digest(lock_data),
+                "scope": "resolved non-dev runtime and build graph; not proof of binary linkage or license compliance",
+                "packages": records, "reviewRequired": True}
+    return document, texts
+
+
+def generate(metadata_path, lock_path, target, output):
+    metadata = json.loads(Path(metadata_path).read_text())
+    document, texts = inventory(metadata, Path(lock_path).read_bytes(), target)
+    output = Path(output)
+    if output.exists():
+        raise ValueError("choose a new notices output directory")
+    output.mkdir(parents=True)
+    (output / "texts").mkdir()
+    for sha, data in sorted(texts.items()):
+        (output / "texts" / (sha + ".txt")).write_bytes(data)
+    (output / "inventory.json").write_text(json.dumps(document, sort_keys=True, indent=2) + "\n")
+    (output / "README.txt").write_text(
+        "Third-party source license and notice inventory (development preview).\n"
+        "Original cached source notice bytes are deduplicated by SHA256.\n"
+        "inventory.json maps packages, source/version/checksum and original paths.\n"
+        "Includes non-dev runtime/build dependencies conservatively; this is not a linked-binary SBOM.\n"
+        "Declared expressions are preserved; no license alternative is selected automatically.\n"
+        "Review flags, vendored components, generated code, toolchain/runtime libraries and distribution obligations require human review.\n"
+        "This inventory gives no legal assurance or public-distribution approval.\n")
+    return document
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("metadata", type=Path)
+    parser.add_argument("--lock", required=True, type=Path)
+    parser.add_argument("--target", required=True)
+    parser.add_argument("--output", required=True, type=Path)
+    args = parser.parse_args()
+    try:
+        result = generate(args.metadata, args.lock, args.target, args.output)
+    except (ValueError, OSError, KeyError, TypeError) as error:
+        parser.exit(1, "notice generation failed: " + str(error) + "\n")
+    flagged = sum(bool(p["reviewFlags"]) for p in result["packages"])
+    print(json.dumps({"packages": len(result["packages"]), "flaggedPackages": flagged,
+                      "lockSha256": result["lockSha256"], "reviewRequired": True}))
+
+
+if __name__ == "__main__":
+    main()

@@ -9,10 +9,13 @@ This machine currently has no `docker`, `podman`, `postgres`, `initdb`, `psql`,
 Docker/Podman socket at the usual inspected locations. PostgreSQL, Redis,
 Docker, and Podman packages were not present in the package query. No relay
 binary was found in the inspected temporary build or upstream target paths.
-At inspection the home filesystem had about 332 MiB free; `/tmp` had about
-2.6 GiB free. The existing helper target and relocated registry alone occupied
-about 945 MiB and 411 MiB of temporary storage. A full relay build/image stack
-has not been sized and cannot be assumed to fit.
+At the follow-up inspection the home filesystem had about 230 MiB free; `/tmp`
+had about 2.1 GiB free. The existing helper target and relocated registry alone
+occupied about 1.5 GiB and 416 MiB of temporary storage. A full relay build/image stack
+has not been sized and cannot be assumed to fit. Hermit package definitions
+for container tooling are cached, but these are not installed executables or
+a running container engine. No local stack will be started on this constrained
+host as part of this preparation.
 
 ## Recommended route
 
@@ -58,6 +61,17 @@ probe performs real object-store operations and fails startup on probe failure
 bypassing that deployment gate. For this source, search is PostgreSQL full-text
 search; no additional search service is needed.
 
+A smaller, explicitly message-only experiment can use the supported
+`BUZZ_GIT_CONFORMANCE_PROBE=false` setting to omit MinIO. The media client
+constructor only configures the S3 client (`crates/buzz-media/src/storage.rs:220`);
+provide fixed synthetic static S3 credentials so the AWS credential chain is
+never consulted, and point the unused endpoint at a private loopback address.
+Do not exercise media or git operations in this variant. PostgreSQL and Redis
+remain required. This skips the object-store startup admission gate in
+`crates/buzz-relay/src/main.rs:603`; it cannot establish full deployment, media,
+or git validation. The default MinIO route above remains the complete startup
+route. This source-derived alternative has not been exercised here.
+
 Use the pinned tests as conformance witnesses before adding helper-specific
 integration:
 
@@ -82,10 +96,46 @@ Then exercise the helper's catalog/history projection against the same real
 relay using only generated fixture keys: trusted `self`, signed 39002/39000
 membership discovery, an author edit, deletion of an edit, deletion of a row,
 member removal, and revoked-access clearing. Confirm the exact request/event
-IDs and bounded state transitions. Sending validation requires a separately
-implemented helper send path; successful upstream test-client sends do not
-establish that the helper can send.
+IDs and bounded state transitions. The helper now implements scope-checked
+sends with durable request binding and exact-key recipient selection. Validate that path too: generated fixture identities, signed kind-0
+self-asserted names, room roster membership, explicit exact mentions, an accepted
+send, a rejected send, an ambiguous lost receipt, and member removal before
+sending. Isolate `XDG_STATE_HOME` as well as config/runtime/keyring directories:
+the helper's metadata ledger must not share the user's state. Successful
+upstream test-client sends do not establish that the helper can send, and
+synthetic names are not proof of human or agent identity. Do not invoke an agent
+in these message-delivery tests.
 
 This document is a concrete preparation route, not evidence of successful
 real-relay runtime validation. The helper's existing synthetic HTTP/WS tests
 remain a different verification layer.
+
+## WebSocket resource-bound integration seam
+
+At the same pinned Buzz revision, `buzz-ws-client` has no supported caller
+options for transport frame/message budgets, replay-buffer budgets, stream
+injection, or active ping/pong probes. `NostrWsConnection` stores its socket and
+`VecDeque` privately (`crates/buzz-ws-client/src/connection.rs:26`);
+`connect_authenticated` delegates to `connect`, which calls `connect_async`
+without a supplied config (lines 37–55). `next_event` receives already-parsed
+messages; a caller's later size check cannot impose pre-parse transport limits.
+
+The underlying pinned Tungstenite 0.29 defaults are finite but large: 16 MiB
+frames and 64 MiB messages. Unrelated parsed messages still accumulate without
+an aggregate budget while awaiting AUTH or a matching OK (lines 205, 257–259).
+The existing wait loops use absolute deadlines; deadlines bound duration but
+not the bytes accumulated during that duration. Replies to incoming Ping are
+implemented (lines 148, 208, 262); no public API exposes a correlated active
+probe. The helper already uses supported exact-ID NIP-45 COUNT for freshness.
+
+The smallest change preserving upstream ownership is an upstream additive
+connection-options API. Its implementation can use the already available
+`tokio_tungstenite::connect_async_with_config`, plus frame-count/serialized-byte
+accounting at every replay-buffer insertion, removal and drain. Keep the
+existing entry points with their current defaults; let the helper opt into
+stricter budgets after pinning the reviewed upstream revision. Include typed
+resource-limit failures and small-frame flood/oversize tests on AUTH and OK
+paths. Public `send_raw` or an outer timeout cannot implement this today, and
+copying the private connection into the helper would violate the no-fork
+boundary. See `helper/WS_UPSTREAM.md` for the proposed contract. Process memory
+limits remain mitigation, not proof of strict pre-auth memory bounds.

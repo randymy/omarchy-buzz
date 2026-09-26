@@ -62,14 +62,74 @@ def encoded(value):
     return (json.dumps(value, sort_keys=True, indent=2) + "\n").encode()
 
 
-def package(binary, output, root=ROOT, metadata_runner=run_metadata):
+def notice_members(directory, root, arch):
+    directory = Path(directory)
+    if directory.is_symlink() or not directory.is_dir():
+        raise ValueError("notices must be a regular directory")
+    inventory_path = directory / "inventory.json"
+    if inventory_path.is_symlink() or inventory_path.stat().st_size > 2 * 1024 * 1024:
+        raise ValueError("invalid notices inventory")
+    inventory_data = inventory_path.read_bytes()
+    document = json.loads(inventory_data)
+    if document.get("schemaVersion") != 1 or document.get("reviewRequired") is not True:
+        raise ValueError("unsupported notices inventory")
+    if document.get("target") != arch + "-unknown-linux-gnu":
+        raise ValueError("notices target differs from binary architecture")
+    lock_data = (Path(root) / "helper/Cargo.lock").read_bytes()
+    if document.get("lockSha256") != hashlib.sha256(lock_data).hexdigest():
+        raise ValueError("notices inventory differs from current lockfile")
+    locked = {(p["name"], p["version"], p.get("source")): p for p in tomllib.loads(lock_data.decode())["package"]}
+    expected = {"inventory.json", "README.txt"}
+    unresolved = 0
+    seen = set()
+    for package in document["packages"]:
+        key = (package["name"], package["version"], package.get("source"))
+        if key in seen or key not in locked or package.get("registryChecksum") != locked[key].get("checksum"):
+            raise ValueError("notice package provenance mismatch")
+        seen.add(key)
+        unresolved += bool(package["reviewFlags"])
+        for notice in package["licenseFiles"]:
+            sha = notice["sha256"]
+            path = notice["path"]
+            if not re.fullmatch(r"[0-9a-f]{64}", sha) or path != "texts/" + sha + ".txt":
+                raise ValueError("unsafe notice path")
+            file = directory / path
+            if file.is_symlink() or not file.is_file() or file.stat().st_size > 1024 * 1024:
+                raise ValueError("invalid notice file")
+            data = file.read_bytes()
+            if len(data) != notice["bytes"] or hashlib.sha256(data).hexdigest() != sha:
+                raise ValueError("notice content checksum mismatch")
+            expected.add(path)
+    if not seen:
+        raise ValueError("empty dependency inventory")
+    members = {}
+    for path in directory.rglob("*"):
+        if path.is_symlink():
+            raise ValueError("notices symlink")
+        if path.is_file():
+            relative = str(path.relative_to(directory))
+            if relative not in expected or path.stat().st_size > 2 * 1024 * 1024:
+                raise ValueError("unexpected notices file")
+            members["third-party/" + relative] = path.read_bytes()
+    if len(members) != len(expected) or len(members) > 1026 or sum(map(len, members.values())) > 8 * 1024 * 1024:
+        raise ValueError("missing or overbudget notices")
+    return members, {"included": True, "reviewRequired": True, "flaggedPackages": unresolved,
+                     "packages": len(seen), "inventorySha256": hashlib.sha256(inventory_data).hexdigest()}
+
+
+def package(binary, output, root=ROOT, metadata_runner=run_metadata, notices=None):
     binary = Path(binary).resolve(strict=True)
     data = binary.read_bytes()
     arch = architecture(data)
     metadata = validated_metadata(Path(root), metadata_runner(binary))
     metadata.update({"os": "linux", "architecture": arch, "developmentPreview": True, "binarySha256": hashlib.sha256(data).hexdigest()})
     stem = f"omarchy-buzz-{metadata['helperVersion']}-linux-{arch}"
-    members = {"bin/omarchy-buzz": data, "version.json": encoded(metadata)}
+    members = {"bin/omarchy-buzz": data}
+    metadata["thirdPartyNotices"] = {"included": False, "reviewRequired": True, "flaggedPackages": None}
+    if notices is not None:
+        additional, metadata["thirdPartyNotices"] = notice_members(notices, root, arch)
+        members.update(additional)
+    members["version.json"] = encoded(metadata)
     for path in ("LICENSE", "service/omarchy-buzz.service", "service/omarchy-buzz.socket", "service/README.md", "helper/README.md"):
         source = Path(root) / path
         if source.is_symlink() or not source.is_file():
@@ -77,7 +137,7 @@ def package(binary, output, root=ROOT, metadata_runner=run_metadata):
         members[path] = source.read_bytes()
     archive = io.BytesIO()
     with gzip.GzipFile(fileobj=archive, mode="wb", filename="", mtime=0) as gz:
-        with tarfile.open(fileobj=gz, mode="w", format=tarfile.USTAR_FORMAT) as tar:
+        with tarfile.open(fileobj=gz, mode="w", format=tarfile.PAX_FORMAT) as tar:
             for path, content in sorted(members.items()):
                 info = tarfile.TarInfo(stem + "/" + path)
                 info.size = len(content)
@@ -112,9 +172,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("binary", type=Path)
     parser.add_argument("output_directory", type=Path)
+    parser.add_argument("--notices", type=Path, help="include a lock- and target-matched helper-notices inventory")
     args = parser.parse_args()
     try:
-        paths = package(args.binary, args.output_directory)
+        paths = package(args.binary, args.output_directory, notices=args.notices)
     except (ValueError, OSError, KeyError, TypeError, subprocess.SubprocessError) as error:
         parser.exit(1, f"packaging failed: {error}\n")
     for path in paths:

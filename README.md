@@ -112,3 +112,5 @@ Release gates still include conformance against an isolated real Buzz relay and 
 ## License
 
 [Apache-2.0](LICENSE). The UI implementation is original; Omarchy components are imported at runtime. Upstream Omarchy and Buzz retain their own licenses and trademarks.
+
+Advanced downstream use: [vPerps integration plan](docs/VPERPS_INTEGRATION.md).
