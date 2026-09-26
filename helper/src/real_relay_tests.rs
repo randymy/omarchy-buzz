@@ -267,14 +267,68 @@ async fn real_relay_messaging_conformance() {
         eprintln!("OMARCHY_CONFORMANCE_STAGE=revoked_roster");
         timeout(Duration::from_secs(12), async {
             loop {
-                match recipients::fetch(&relay, &user, discovered.signer, room).await {
-                    Err("recipients_access_denied" | "query_access_denied") => break,
-                    _ => sleep(Duration::from_millis(100)).await,
+                let events = crate::query::query(
+                    &relay,
+                    &owner,
+                    &crate::query::QueryRequest::RoomMembers { room },
+                )
+                .await
+                .expect("owner roster transport after removal");
+                let current = recipients::roster(
+                    room,
+                    owner.public_key(),
+                    discovered.signer,
+                    &events,
+                    nostr::Timestamp::now().as_secs(),
+                )
+                .expect("fresh relay-signed owner-visible roster after removal");
+                if !current
+                    .entries
+                    .iter()
+                    .any(|r| r.key == user.public_key().to_hex())
+                {
+                    break;
+                }
+                sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await
+        .expect("owner-visible signed roster must exclude removed member");
+        // Buzz skips inaccessible private-channel results rather than promising
+        // HTTP 403. An empty successful read is unavailable evidence, never a
+        // signed membership-denial claim. Transport/malformed failures fail this
+        // test instead of being accepted as evidence of removal.
+        timeout(Duration::from_secs(12), async {
+            loop {
+                match crate::query::query(
+                    &relay,
+                    &user,
+                    &crate::query::QueryRequest::RoomMembers { room },
+                )
+                .await
+                {
+                    Ok(events) if events.is_empty() => break,
+                    Ok(events) => match recipients::roster(
+                        room,
+                        user.public_key(),
+                        discovered.signer,
+                        &events,
+                        nostr::Timestamp::now().as_secs(),
+                    ) {
+                        Err("recipients_access_denied") => break,
+                        Ok(_) => sleep(Duration::from_millis(100)).await,
+                        Err(_) => panic!("malformed member-visible roster after removal"),
+                    },
+                    Err("query_access_denied") => break,
+                    Err(category) => panic!("revoked member roster transport: {category}"),
                 }
             }
         })
         .await
-        .expect("real room revocation becomes authoritative");
+        .expect("removed member must receive no usable roster");
+        // This is a Sender component assertion using explicitly injected status
+        // from the independently owner-verified revocation above. It does not
+        // claim the daemon infers authoritative denial from an empty query.
         status.recipients = protocol::RecipientsView::unavailable(
             Some(room.to_string()),
             Some("recipients_access_denied"),
