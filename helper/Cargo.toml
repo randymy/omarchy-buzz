@@ -18,3 +18,11 @@ rpassword = "7"
 zeroize = "1"
 listenfd = "1"
 rustix = { version = "1", features = ["process"] }
+
+uuid = { version = "1", features = ["v4"] }
+base64 = "0.22"
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "stream"] }
+
+[dev-dependencies]
+tokio-tungstenite = "0.29"
+futures-util = "0.3"

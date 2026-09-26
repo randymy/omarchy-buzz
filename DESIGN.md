@@ -2,7 +2,7 @@
 
 Status: **ready for design review, not an implementation or a release claim**.
 
-Implementation note (2026-09-26): The M1 connection preview now connects QML to the helper with production setup/status states; sample rooms require explicit test mode. ARM64 unit/process tests, an isolated real Secret Service enrollment/retrieval test, inherited-socket idle reactivation, and actual offscreen QML/helper integration passed. M1 remains incomplete: authenticated relay conformance, installed service/UI lifecycle verification, HTTP query support, and upstream resource-limit gates remain. No production identity enrollment, relay authentication, messaging, or ACP integration has been validated.
+Implementation note (2026-09-26): The M1 connection preview runs natively through the installed systemd helper, with hosted/custom setup and no production sample rooms. Twenty ARM64 Rust tests pass, including synthetic NIP-42 authentication and bounded signed HTTP `/query` conformance. Isolated Secret Service enrollment, socket idle reactivation, and QML/helper integration passed. HTTP transport is not yet wired to room discovery or UI. M1 still has upstream WS resource-limit, heartbeat/recovery, relay trust/discovery, and deployed-relay validation gates. No production identity, relay authentication, messaging, or ACP integration has been exercised.
 
 Research date: 2026-09-25 America/Chicago (some upstream commits are dated 2026-09-26 UTC). Scope: community plugin first; vPerps as an independent downstream consumer. No upstream, installed desktop, or vPerps implementation files were changed. No relay, authenticated CLI, or agent was started during research.
 
@@ -180,7 +180,7 @@ Check effective bindings at setup time and offer a different binding if occupied
 
 The **daemon alone owns access to the human Buzz identity used by this integration**. It stores it in a dedicated OS secret-store namespace, using an established Linux keyring/Secret Service library; QML receives only a public key and non-secret state such as locked/configured. Credential setup is a separate local CLI flow with no-echo terminal input or a supported secure upstream handoff. No key in argv, environment, clipboard, temporary file, logs, or IPC. Do not create a plaintext fallback if the keyring is unavailable.
 
-Use an existing human identity only through explicit secure enrollment; do not silently create a second user or read Buzz Desktop's multi-secret blob. If a user chooses a new identity, show that it requires relay membership and is not their existing desktop identity. Shared cross-client identity provisioning is a usability question and an M1 release gate. Locked/unavailable storage reports `identity_locked`, retains public context only, and disables sends.
+Use an existing human identity only through explicit secure enrollment; do not silently create a second user or read Buzz Desktop's multi-secret blob. If a user chooses a new identity, show that it requires relay membership and is not their existing desktop identity. Shared cross-client identity provisioning is a usability question and an M1 release gate. Storage access failures report `identity_unavailable` because the current keyring wrapper cannot reliably distinguish locked from unavailable; a pending lookup is identified separately. Public context is retained and sends remain disabled.
 
 Agent identities and LLM credentials remain with independently configured ACP processes. The base helper never needs exchange keys, wallets, GitHub tokens, cloud credentials, vPerps sessions, or vMachine leases. Detailed owner telemetry requires explicit support and authorization in M4; do not import agent private keys to read it.
 
@@ -260,6 +260,24 @@ Generate the signed event once inside the helper using the upstream builder. Bef
 NIP-CW is the strongest existing interface for correct history, but the reusable WebSocket crate does not implement it and the CLI does not expose its full raw filters. Prefer a small upstream extraction exposing the existing authenticated query client/signing routine (currently private in `crates/buzz-cli/src/client.rs`) through an appropriate client crate. This is an upstream contribution proposal, **not an available API**.
 
 M1 must establish a reusable authenticated HTTP seam before M2. If upstream extraction is not available, a narrowly scoped adapter may compose the existing `nostr` event builder/signing primitives with the verified Buzz NIP-98 request contract and a bounded HTTP client; this implements transport glue, not cryptography or relay behavior. Match payload hashing, nonce/replay handling, canonical URL and redirects against upstream contract tests. Record and review this exception explicitly. Do not copy the private client wholesale, use undocumented desktop IPC, or build a fork to expose it. Reporting unsupported NIP-CW instead of implementing its optional standard-filter downgrade is an intentional v0.1 scope restriction; invalid signed responses must never trigger a downgrade.
+
+### 6.4 Implemented M1 query seam
+
+`helper/src/query.rs` now implements the reviewed narrow adapter exception using
+upstream `nostr::nips::nip98::HttpData`, `EventBuilder::http_auth`, SHA-256 body
+binding, a fresh nonce, and sensitive Authorization headers. The request body is
+serialized once and reused for signing and transport. Reqwest uses fixed `/query`
+on the configured origin, no proxies/redirects/retries/decompression, deadlines,
+a two-request concurrency cap, and bounded incremental response reads. Typed
+requests currently cover only joined-room membership and metadata; no arbitrary
+HTTP or signing API is exposed to QML.
+
+Synthetic tests verify exact signed bytes, nonce uniqueness, body substitution
+rejection, redirect isolation, byte limits, invalid signatures/scopes, and safe
+error categories. Returned signed events still require relay-author trust and
+catalog reconciliation; a valid signature is not membership authority. This seam
+is intentionally unwired until those projection rules are implemented. It is not
+a full NIP-CW timeline implementation or a deployed hosted-relay certification.
 
 ## 7. Failure behavior
 

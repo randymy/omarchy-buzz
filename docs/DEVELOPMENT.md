@@ -111,3 +111,15 @@ They are transport conformance tests, not a deployed Buzz relay certification.
 CI now includes inherited-socket reactivation and isolated real Secret Service
 tests. Remote CI still has not run. HTTP queries, hostile-peer memory bounds,
 heartbeat/reconnect behavior, and messaging remain outstanding.
+
+## Signed HTTP seam and hosted setup
+
+Twenty Rust tests now pass on ARM64. The new fixed-origin `/query` adapter was
+validated with synthetic HTTP responses: exact NIP-98 body binding, unique
+nonces, redirect refusal, length/chunk bounds, signature/scope rejection, and
+concurrency limits. It is not yet wired to room discovery or QML.
+
+The hosted/custom selection passed native visual review. No hosted account was
+created and no browser login was initiated. Native plugin disable left the shell
+responsive and the helper inactive after idle grace; re-enable reactivated it.
+Full removal and multi-monitor/keyboard checks remain pending.

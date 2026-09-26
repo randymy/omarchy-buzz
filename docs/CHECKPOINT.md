@@ -1,37 +1,40 @@
 # Development checkpoint — 2026-09-26
 
-Saved for resuming after the developer disconnects. This is not a release claim.
+Implemented: source-grounded design; native hosted/custom connection setup;
+Rust daemon/bridge with Secret Service enrollment and Retry reload; bounded IPC;
+systemd units; signed HTTP query seam; CI and security documentation. No messaging,
+agent execution, notifications, or approvals yet. No production identity enrolled.
 
-Implemented: source-grounded DESIGN; native plugin; Rust daemon/bridge with
-Secret Service enrollment; status-only QML integration; bounded IPC; Retry
-configuration reload; optional systemd units; tests and security documentation.
-Messaging, agent execution, notifications, and approvals remain unimplemented.
+Passed: pinned manifest validation, twenty Rust tests on ARM64, isolated daemon/
+bridge, inherited socket idle reactivation, private GNOME Secret Service enrollment/
+retrieval, QML protocol/bridge tests, synthetic NIP-42 and NIP-98 transport tests.
+Native setup screen inspected; systemd activation and disable/idle/re-enable passed.
+Hosted setup defaults to the official buzz.xyz handoff; linking community URL and
+existing identity remains manual. No global public relay is assumed.
 
-Passed: pinned manifest validation, nine Rust tests on ARM64, isolated daemon/
-bridge smoke, inherited socket idle reactivation, isolated GNOME Secret Service
-enrollment/retrieval, offscreen sample/protocol assertions, and actual offscreen
-QML-to-helper setup/retry/missing-helper/daemon-exit integration.
+Installed plugin has the hosted/custom UI. Installed helper predates the new
+HTTP seam (which is intentionally unwired). The developer socket is started, not
+enabled for future logins. No relay configuration or credentials are installed.
+The shell required `omarchy restart shell` after plugin code updates because
+rescan and disable/re-enable retained old compiled QML on this package.
 
-Next steps:
+Next:
 
-1. Review and verify installed systemd service/socket end to end. The developer
-   socket was started, not enabled for future logins; no identity is configured.
-2. Update the installed development plugin from this committed source and
-   inspect the production setup panel visually. The installed copy still shows
-   the older sample UI; the installed helper predates Retry configuration reload.
-3. Test reload, disable/remove, and recovery with the actual shell.
-4. Complete isolated authenticated relay tests, transport limits/heartbeat, and
-   the signed HTTP query seam before claiming M1 complete or starting messaging.
-5. Add activation/keyring checks to appropriate CI jobs; CI has not run remotely.
+1. Resolve upstream WS buffer/frame bounds and heartbeat/recovery guarantees.
+2. Establish relay signer trust/capability discovery before using the HTTP seam
+   to project membership and room metadata. No generic signing/request IPC.
+3. Validate real isolated Buzz relay behavior, then proceed to M2 messaging.
+4. Complete native keyboard/multi-monitor/removal checks and remote CI.
 
-Local build artifacts were moved to `/tmp/omarchy-buzz-build-20260926` because
-the home filesystem is almost full. They are disposable and may vanish after
-reboot. Rebuild with Rust 1.95 and the committed lockfile. The inspected Buzz
-checkout's `bin/cargo` wrapper supplies this toolchain; run it from that checkout.
-The successful local build used `--target-dir /tmp/omarchy-buzz-build-20260926`
-and `--config profile.dev.debug=0 --config profile.test.debug=0`.
+Local build artifacts are in `/tmp/omarchy-buzz-build-20260926`. Disk exhaustion
+also required moving the generated Cargo registry to
+`/tmp/omarchy-buzz-cargo-registry`, with a symlink at the inspected Buzz checkout's
+`.hermit/rust/registry`. Both caches are disposable. After a reboot, remove only
+that dangling generated registry symlink and let Cargo recreate its registry on
+a filesystem with enough free space, or restore the cache before reboot.
+Source and lockfile are committed; no source depends on these temporary paths.
+Use Rust 1.95; the inspected Buzz `bin/cargo` wrapper works from its checkout.
+Build target overrides and debug=0 kept artifacts off the nearly full home disk.
 
-No production Buzz identity or private relay configuration has been used or
-committed. No remote repository or marketplace listing exists yet. Keep private
-relay addresses and desktop screenshots out of the public repository. vPerps
-and upstream source trees remain unmodified.
+No public remote/marketplace listing exists. No private relay addresses or desktop
+screenshots are committed. Upstream and vPerps source files remain unmodified.

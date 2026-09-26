@@ -3,6 +3,9 @@ mod auth;
 mod config;
 mod ipc;
 mod protocol;
+// M1 transport seam is intentionally not exposed through UI IPC.
+#[allow(dead_code)]
+mod query;
 use std::io::IsTerminal;
 fn enroll() -> Result<(), &'static str> {
     if !std::io::stdin().is_terminal() || !std::io::stderr().is_terminal() {

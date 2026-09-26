@@ -34,6 +34,22 @@ fn category(e: &WsClientError) -> &'static str {
         _ => "relay_protocol_error",
     }
 }
+async fn connect_identity(
+    relay: &str,
+    keys: &nostr::Keys,
+) -> Result<NostrWsConnection, &'static str> {
+    match timeout(
+        Duration::from_secs(45),
+        NostrWsConnection::connect_authenticated(relay, keys, None),
+    )
+    .await
+    {
+        Ok(Ok(connection)) => Ok(connection),
+        Ok(Err(error)) => Err(category(&error)),
+        Err(_) => Err("relay_timeout"),
+    }
+}
+
 fn apply_loaded_config(
     tx: &watch::Sender<Status>,
     loaded: Result<config::Config, &'static str>,
@@ -134,18 +150,9 @@ pub async fn run(
         };
         update(&tx, "connecting", None);
         let relay = c.relay.as_deref().unwrap_or_default();
-        let result = timeout(
-            Duration::from_secs(45),
-            NostrWsConnection::connect_authenticated(relay, &keys, None),
-        )
-        .await;
-        let mut conn = match result {
-            Ok(Ok(c)) => c,
-            other => {
-                let e = match &other {
-                    Ok(Err(e)) => category(e),
-                    _ => "relay_timeout",
-                };
+        let mut conn = match connect_identity(relay, &keys).await {
+            Ok(connection) => connection,
+            Err(e) => {
                 update(&tx, "disconnected", Some(e));
                 if retry.recv().await.is_none() {
                     return;
@@ -228,3 +235,7 @@ mod reload_tests {
         assert_eq!(rx.borrow().category.as_deref(), Some("config_unavailable"));
     }
 }
+
+#[cfg(test)]
+#[path = "auth_wire_tests.rs"]
+mod wire_tests;

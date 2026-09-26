@@ -117,5 +117,11 @@ mod tests {
             assert!(canonical_relay(s).is_err(), "{s}");
         }
         assert!(canonical_relay("ws://localhost:3000").is_ok());
+        // Hosted communities use the same transport as independently operated
+        // relays; the helper must not require self-hosting or an operator mode.
+        assert_eq!(
+            canonical_relay("wss://example-team.communities.buzz.xyz").unwrap(),
+            "wss://example-team.communities.buzz.xyz/"
+        );
     }
 }
