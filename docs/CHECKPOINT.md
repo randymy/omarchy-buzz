@@ -147,8 +147,10 @@ real-relay coverage. Git/media/object storage were excluded.
 
 Optional synthetic ACP routing is prepared behind the manual workflow's
 `synthetic_acp` input, default false, and executes only after messaging passes.
-ACP run 36280557661 is pending at this checkpoint. No model-backed agent has
-been exercised. ACP key
+[ACP run 36280557661](https://github.com/randymy/omarchy-buzz/actions/runs/36280557661)
+passed messaging and synthetic ACP routing, with cleanup. Evidence is saved in
+`docs/evidence/relay-acp-36280557661.json`. No model-backed agent has been
+exercised. ACP key
 input and permission limitations remain in ACP_VALIDATION.md. The read-only
 upstream tracking workflow completed successfully in run 36279926788; candidate
 updates and scheduled execution remain separately unverified.

@@ -107,7 +107,7 @@ The native manager unloads the plugin and removes its Git checkout. Commit or sa
 
 [DESIGN.md](DESIGN.md) records the inspected interfaces, security boundary, release gates, and milestones. The QML service consumes a versioned, bounded presentation protocol through the helper bridge. Signed room discovery and recent history are projected in Rust. History is a partial snapshot, with explicit truncation and unavailable-content markers; it does not claim complete edits/deletions or live synchronization. Synthetic rooms are available only in explicit test mode.
 
-Release gates still include conformance against an isolated real Buzz relay and bounded upstream WebSocket buffering. Next in M2 are profile classification and local unread accounting. vPerps-specific behavior remains in downstream configuration and separate integrations.
+Real-relay messaging components and synthetic ACP mention routing have passed on disposable CI; see [recorded evidence](docs/CHECKPOINT.md#isolated-relay-progress-2026-09-26). Release gates still include full daemon/UI real-relay coverage, real agent validation, and bounded upstream WebSocket buffering. Next in M2 are profile classification and local unread accounting. vPerps-specific behavior remains in downstream configuration and separate integrations.
 
 ## License
 

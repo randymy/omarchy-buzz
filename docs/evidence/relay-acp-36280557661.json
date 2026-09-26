@@ -1,0 +1,42 @@
+{
+  "acp": {
+    "state": "passed",
+    "syntheticOnly": true,
+    "tests": {
+      "passed": 1,
+      "requiredTest": "acp_relay_tests::acp_relay_synthetic_routing"
+    }
+  },
+  "cleanupComplete": true,
+  "durationSeconds": 35.34,
+  "images": {
+    "postgres": "sha256:79bd7c99e923138f136f8009d6bffa66e21e9d4fda5c0c561b00fc9c90cfe537",
+    "redis": "sha256:f84b0c4678011602b9b98c227a4dcd5468bf8b088b02fdd4165cb7758bad8058",
+    "relay": "sha256:46af6d2e1c8b9c3fc0cd21b95521917ebc4367ac53f28b6661738354c3c89097"
+  },
+  "loopbackOnly": true,
+  "loopbackPort": 57045,
+  "messaging": {
+    "state": "passed",
+    "tests": {
+      "passed": 1,
+      "requiredTest": "real_relay_tests::real_relay_messaging_conformance"
+    }
+  },
+  "objectStoreProbe": false,
+  "productionStateUsed": false,
+  "relayBinarySha256": "a383d7be12451996e142b59a0fb30b3c501c5c5353750e134a3925b33db34635",
+  "relayEgressBlocked": false,
+  "relaySigner": "1b85f52ce3ca405a590648ab68b8f028e18a60f9045d5bec023a3a54548c7984",
+  "runtimeBaseReference": "ubuntu:24.04",
+  "runtimeRecipeSha256": "10bcbef4b99bd5c19accf84953b1433e5e7cfa5c7945ee34f2fb3c2338f47c51",
+  "schemaVersion": 1,
+  "stage": "complete",
+  "state": "passed",
+  "tests": {
+    "passed": 1,
+    "requiredTest": "real_relay_tests::real_relay_messaging_conformance"
+  },
+  "upstreamRevision": "781d39510cf23cfe224e8f521ae06a23377e06de",
+  "validationScope": "messaging-only"
+}

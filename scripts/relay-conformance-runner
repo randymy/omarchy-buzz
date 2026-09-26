@@ -152,6 +152,11 @@ class FixtureCommandError(RuntimeError):
         allowed = [value.decode("ascii") for value in observed if value.decode("ascii") in phases]
         if allowed:
             self.safe["fixturePhase"] = allowed[-1]
+        acp_phases = {"registration", "spawn", "await_ack", "excluded_triggers", "cleanup", "complete"}
+        observed_acp = re.findall(rb"(?m)^OMARCHY_ACP_STAGE=([a-z_]+)$", diagnostics)
+        allowed_acp = [value.decode("ascii") for value in observed_acp if value.decode("ascii") in acp_phases]
+        if allowed_acp:
+            self.safe["acpPhase"] = allowed_acp[-1]
         super().__init__(category)
 
 

@@ -1,7 +1,12 @@
 # Isolated ACP validation before a Codex demo
 
 Read-only research at Buzz commit
-`781d39510cf23cfe224e8f521ae06a23377e06de`. No cloud agent, provider login,
+`781d39510cf23cfe224e8f521ae06a23377e06de`. The pinned synthetic harness passed in
+[run 36280557661](https://github.com/randymy/omarchy-buzz/actions/runs/36280557661)
+against the actual isolated relay at plugin commit `f276997`.
+[Sanitized evidence](evidence/relay-acp-36280557661.json) records both messaging
+and ACP success with cleanup. This is not model-backed agent validation.
+No cloud agent, provider login,
 package installation, or real identity was used. A version-only check found
 `codex-cli 0.155.1` on this `aarch64` Linux host. `codex-acp`, `buzz-acp`, and
 `buzz-agent` were absent from the inspected PATH and helper build directory.
@@ -58,7 +63,7 @@ supports this launch:
   --idle-timeout 10 --max-turn-duration 30
 ```
 
-These are source-verified arguments, not a claim that this process has run.
+These arguments are now runtime-verified with the pinned synthetic peer.
 Own its process group and impose an external overall deadline and cleanup.
 Use the helper's exact recipient picker to send the synthetic owner's
 `AE-ID:SYNTHETIC1` message mentioning the agent key. Verify the correlated ACP
@@ -151,11 +156,11 @@ The driver prepares membership and NIP-OA using upstream SDK builders. It checks
 an exact owner mention followed by bounded no-mention/stranger observations.
 Those quiet intervals are not proof of permanent exclusion. The fake peer can
 see historical trigger tokens, so this fixture must not be interpreted as a
-security proof or a model evaluation. Local compilation and supervisor process
-fixtures passed; no actual ACP harness has run yet. The initial real-relay
-workflow deliberately selects only `real_relay_`, excluding this ACP test.
+security proof or a model evaluation. Local compilation and supervisor process fixtures passed. The actual upstream
+ACP harness also passed the optional stage in run 36280557661. Messaging-only
+runs select `real_relay_`; the opt-in stage separately selects `acp_relay_`.
 
-A later prepared runner must explicitly set `OMARCHY_BUZZ_TEST_ACP_BUZZ_SOURCE`,
+The optional runner stage explicitly sets `OMARCHY_BUZZ_TEST_ACP_BUZZ_SOURCE`,
 `OMARCHY_BUZZ_TEST_ACP_BIN_DIR`, and `OMARCHY_BUZZ_TEST_ACP_NODE`, alongside its
 disposable `OMARCHY_BUZZ_TEST_RELAY_URL`, then run the ignored `acp_relay_` test.
 Built binaries must include `buzz-acp`, `buzz`, `git-sign-nostr`, and

@@ -7,7 +7,7 @@ use buzz_ws_client::{NostrWsConnection, RelayMessage};
 use nostr::{Event, Keys};
 use serde_json::json;
 use std::{
-    io::Write,
+    io::{BufRead, BufReader, Read, Write},
     path::PathBuf,
     process::{Child, Command, Stdio},
     time::{Duration, Instant},
@@ -97,38 +97,53 @@ async fn acp_relay_synthetic_routing() {
         }
         let attestation=nip_oa::compute_auth_tag(&owner,&agent.public_key(),"kind=9").unwrap();
         let tag=nip_oa::parse_auth_tag(&attestation).unwrap();
+        eprintln!("OMARCHY_ACP_STAGE=registration");
         let registration=NostrWsConnection::connect_authenticated(&relay,&agent,Some(&tag)).await.expect("synthetic ownership NIP-OA auth");
         registration.disconnect().await.unwrap();
         let sid=Uuid::new_v4().to_string();
         admin.send_raw(&json!(["REQ",sid,{"kinds":[9],"#h":[room.to_string()],"authors":[agent.public_key().to_hex()]}])).await.unwrap();
         timeout(Duration::from_secs(5),async {loop {if let RelayMessage::Eose{subscription_id}=admin.next_event(Duration::from_secs(5)).await.unwrap(){if subscription_id==sid{break;}}}}).await.unwrap();
         let root=PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf();
+        eprintln!("OMARCHY_ACP_STAGE=spawn");
         let mut supervisor=Supervisor(Command::new("/usr/bin/python3").arg(root.join("scripts/acp-fixture"))
             .arg("--buzz-source").arg(input("OMARCHY_BUZZ_TEST_ACP_BUZZ_SOURCE"))
             .arg("--buzz-bin-dir").arg(input("OMARCHY_BUZZ_TEST_ACP_BIN_DIR"))
             .arg("--node").arg(input("OMARCHY_BUZZ_TEST_ACP_NODE"))
             .args(["--relay-url",&relay,"--room",&room.to_string(),"--fixture-auth-tag",&attestation,"--deadline","100"])
             .env_clear().env("PATH","/usr/bin:/bin").env("HOME","/nonexistent")
-            .stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().expect("spawn isolated synthetic ACP supervisor"));
-        let key=agent.public_key().to_hex();let mut positive=Vec::new();let ready_deadline=Instant::now()+Duration::from_secs(45);
-        let mut next_send=Instant::now();
-        // Process creation is not readiness. Only a verified same-room agent ACK
-        // to an exact-key owner mention establishes the positive route.
+            .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().expect("spawn isolated synthetic ACP supervisor"));
+        // Wait for the supervisor's post-harness-spawn event, not merely Python
+        // creation. Its Git pin checks may take longer than the replay overlap.
+        // Keep the pipe open afterwards so the supervisor can report final cleanup.
+        let stdout=supervisor.0.stdout.take().unwrap();
+        let (stdout,line)=timeout(Duration::from_secs(25),tokio::task::spawn_blocking(move || {
+            let mut reader=BufReader::new(stdout);let mut line=String::new();
+            reader.by_ref().take(4097).read_line(&mut line).unwrap();assert!(line.len()<=4096,"bounded supervisor startup metadata");
+            (reader.into_inner(),line)
+        })).await.expect("supervisor startup deadline").unwrap();
+        supervisor.0.stdout=Some(stdout);
+        let started:serde_json::Value=serde_json::from_str(&line).expect("supervisor startup metadata");
+        assert!(started["type"]=="started"&&started["agentKey"]==agent.public_key().to_hex()&&started["roomId"]==room.to_string(),"supervisor fixture scope");
+        let key=agent.public_key().to_hex();let positive=token();
+        eprintln!("OMARCHY_ACP_STAGE=await_ack");
+        // Pinned harness lib.rs startup_watermark_with_floor and relay.rs
+        // subscribe_since/send_subscribe replay from startup minus five seconds.
+        // Publish once after the harness is spawned; live subscription or replay
+        // receives this same trigger. Repeated fresh prompts could later copy
+        // excluded tokens from history even when author/mention routing is correct.
+        publish(&mut admin,build_message(room,&format!("AE-ID:{positive}"),None,&[&key],false,&[],&[]).unwrap().sign_with_keys(&owner).unwrap()).await;
+        let ready_deadline=Instant::now()+Duration::from_secs(45);
         loop {
             supervisor.alive();assert!(Instant::now()<ready_deadline,"synthetic ACP signed ACK readiness deadline");
-            if Instant::now()>=next_send {
-                let id=token();let content=format!("AE-ID:{id}");positive.push(id);
-                publish(&mut admin,build_message(room,&content,None,&[&key],false,&[],&[]).unwrap().sign_with_keys(&owner).unwrap()).await;
-                next_send=Instant::now()+Duration::from_secs(3);
-            }
             match admin.next_event(Duration::from_millis(200)).await {
                 Ok(RelayMessage::Event{subscription_id,event}) if subscription_id==sid => {
                     event.verify().unwrap();assert_eq!(event.pubkey,agent.public_key());
                     assert!(event.tags.iter().any(|t|t.as_slice()==["h",room.to_string().as_str()]));
-                    if event.content.contains("AE-ACK:")&&positive.iter().any(|t|event.content.contains(t)){break;}
+                    if event.content.contains("AE-ACK:")&&event.content.contains(&positive){break;}
                 },Err(buzz_ws_client::WsClientError::Timeout)=>{},Err(_)=>panic!("synthetic observation transport failed"),_=>{}
             }
         }
+        eprintln!("OMARCHY_ACP_STAGE=excluded_triggers");
         let unmentioned=token();let stranger=token();
         publish(&mut admin,build_message(room,&format!("AE-ID:{unmentioned}"),None,&[],false,&[],&[]).unwrap().sign_with_keys(&owner).unwrap()).await;
         let mut outsider_conn=NostrWsConnection::connect_authenticated(&relay,&outsider,None).await.unwrap();
@@ -146,6 +161,8 @@ async fn acp_relay_synthetic_routing() {
                 },Err(buzz_ws_client::WsClientError::Timeout)=>{},Err(_)=>panic!("negative observation transport failed"),_=>{}
             }
         }
+        eprintln!("OMARCHY_ACP_STAGE=cleanup");
         supervisor.stop().await;outsider_conn.disconnect().await.unwrap();admin.disconnect().await.unwrap();
+        eprintln!("OMARCHY_ACP_STAGE=complete");
     }).await.expect("bounded synthetic ACP routing fixture");
 }

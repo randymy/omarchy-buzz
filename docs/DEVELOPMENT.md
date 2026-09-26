@@ -208,3 +208,13 @@ service checks passed after installing the matched build and restarting shell.
 Six offline notice/packaging tests pass. The local development archive checksum
 and included binary were verified against the installed helper. Dependency
 notices remain explicitly review-required; this is not release certification.
+
+## Real-relay and ACP component evidence, 2026-09-26
+
+Private GitHub CI is now active. Ordinary validation passed at `ee3eb48`
+in run 36280596816. The pinned actual relay passed the helper messaging test
+in run 36280427402; messaging plus upstream synthetic ACP mention routing
+passed in run 36280557661, both at plugin `f276997`. Sanitized summaries are
+committed in `docs/evidence/`. Earlier entries above describe their historical
+checkpoints, not current capabilities. This is not full daemon/UI, media/Git,
+or model-backed agent certification. See CHECKPOINT.md for remaining gates.
