@@ -1,0 +1,151 @@
+#!/usr/bin/env python3
+"""Optional fixed Buzz shortcut; never overrides another effective binding."""
+import contextlib
+import fcntl
+import json
+import os
+from pathlib import Path
+import stat
+import subprocess
+import sys
+import tempfile
+import uuid
+
+COMMAND = "omarchy-shell shell toggle community.buzz '{}'"
+BEGIN = b"-- BEGIN omarchy-buzz shortcut v1"
+END = b"-- END omarchy-buzz shortcut v1"
+BLOCK = (b'\n' + BEGIN + b'\no.bind("SUPER + B", "Buzz", "' + COMMAND.encode() + b'")\n' + END + b'\n')
+
+
+def hyprctl(*args):
+    try:
+        result = subprocess.run(["hyprctl", *args], capture_output=True, text=True, timeout=10, check=True)
+    except (OSError, subprocess.SubprocessError):
+        raise ValueError("hyprctl unavailable or failed; no binding override is allowed") from None
+    return result.stdout
+
+
+def owned(data):
+    if BEGIN not in data and END not in data:
+        return False
+    if data.count(BEGIN) != 1 or data.count(END) != 1 or data.count(BLOCK) != 1:
+        raise ValueError("owned shortcut block was modified; restore or review it manually")
+    return True
+
+
+def effective():
+    try:
+        bindings = json.loads(hyprctl("-j", "binds"))
+    except json.JSONDecodeError:
+        raise ValueError("effective bindings response is invalid") from None
+    if not isinstance(bindings, list):
+        raise ValueError("effective bindings response is invalid")
+    matches = []
+    for binding in bindings:
+        if not isinstance(binding, dict) or type(binding.get("modmask")) is not int or not isinstance(binding.get("key"), str):
+            raise ValueError("effective binding schema is invalid")
+        # Hyprland's SUPER mask is 64; XKB keycode 56 is the physical B key.
+        if binding["modmask"] == 64 and (binding["key"].upper() == "B" or binding.get("keycode") == 56):
+            matches.append(binding)
+    return matches
+
+
+def is_our_binding(binding):
+    if binding.get("description") != "Buzz":
+        return False
+    if binding.get("dispatcher") == "exec":
+        return binding.get("arg") == COMMAND
+    # Omarchy's Lua o.bind wraps hl.dsp.exec_cmd in an opaque Lua dispatcher.
+    # Ownership also requires the exact on-disk block and a unique effective chord.
+    return binding.get("dispatcher") == "__lua" and str(binding.get("arg", "")).isdigit()
+
+
+def atomic_write(path, old, new, mode):
+    if path.is_symlink() or path.read_bytes() != old:
+        raise ValueError("bindings file changed during operation; no edit performed")
+    backup = path.with_name(path.name + ".omarchy-buzz-backup-" + uuid.uuid4().hex)
+    descriptor = os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "wb") as output:
+        output.write(old)
+        output.flush()
+        os.fsync(output.fileno())
+    descriptor, temporary = tempfile.mkstemp(prefix=".omarchy-buzz-", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "wb") as output:
+            os.fchmod(output.fileno(), mode)
+            output.write(new)
+            output.flush()
+            os.fsync(output.fileno())
+        if path.is_symlink() or path.read_bytes() != old:
+            raise ValueError("bindings file changed during operation; backup retained, no edit performed")
+        os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+    return backup
+
+
+def main():
+    if len(sys.argv) != 2 or sys.argv[1] not in ("install", "remove", "status"):
+        raise ValueError("usage: scripts/desktop-shortcut install|remove|status")
+    action = sys.argv[1]
+    config = Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config")))
+    path = config / "hypr" / "bindings.lua"
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("expected existing regular user hypr/bindings.lua; symlinks are not edited")
+    # Serialize this tool's writes; external edits are checked immediately before replacement.
+    lock_context = contextlib.nullcontext(None) if action == "status" else os.fdopen(
+        os.open(path.with_name(".omarchy-buzz-shortcut.lock"), os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600), "a+b")
+    with lock_context as lock:
+        if lock is not None:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+        info = path.stat()
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError("bindings.lua is not a regular file")
+        data = path.read_bytes()
+        installed = owned(data)
+        matches = effective()  # Fail closed before any config mutation.
+        conflict = any(not installed or not is_our_binding(binding) for binding in matches) or len(matches) > 1
+        if action == "status":
+            print("conflict" if conflict else "installed" if installed and matches else "installed but not effective" if installed else "available")
+            return
+        if action == "install":
+            if conflict:
+                raise ValueError("SUPER+B already has an unowned effective binding; no override performed")
+            if installed:
+                print("Shortcut already installed" if matches else "Shortcut block installed but not effective; check Hyprland loading")
+                return
+            new = data + BLOCK
+        else:
+            if not installed:
+                print("Shortcut not installed")
+                return
+            new = data.replace(BLOCK, b"", 1)
+        backup = atomic_write(path, data, new, stat.S_IMODE(info.st_mode))
+        # Native config saves auto-reload; explicitly validate both required interfaces.
+        try:
+            hyprctl("reload")
+            errors = hyprctl("configerrors").strip()
+            if errors and errors.lower() != "ok":
+                raise ValueError("Hyprland reports configuration errors")
+            after = effective()
+            if action == "install" and (len(after) != 1 or not is_our_binding(after[0])):
+                raise ValueError("shortcut not effective after reload")
+            if action == "remove" and any(is_our_binding(binding) for binding in after):
+                raise ValueError("owned shortcut still effective after removal")
+        except ValueError as error:
+            raise ValueError(f"{error}; edit saved, backup at {backup}; review before retrying") from None
+        print(f"Shortcut {action} complete; backup: {backup}")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (ValueError, OSError) as error:
+        print(f"desktop-shortcut: {error}", file=sys.stderr)
+        sys.exit(1)

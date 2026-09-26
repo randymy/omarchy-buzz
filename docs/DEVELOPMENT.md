@@ -151,3 +151,34 @@ configured. Native history rendering uses synthetic offscreen fixtures because
 no production identity was enrolled. Actual-relay validation needs the isolated
 environment described in [RELAY_TESTING.md](RELAY_TESTING.md); this machine lacks
 its database/container dependencies and has limited home-disk space.
+
+## Scoped sending and exact recipients
+
+The current ARM64 Rust suite passes 78 tests. New coverage includes durable
+metadata reservations, file ownership/symlink/hardlink refusal, locked state,
+crash/restart ambiguity, capacity limits, exact acknowledgement matching,
+persistence failure before publication, preserving observed acknowledgement on
+outcome-write failure, 15-second acknowledgement timeout while COUNT remains
+fresh, and reauthentication during delivery. Signed roster/profile fixtures
+exercise exact mention keys, nonmember refusal, fallback names and scope cleanup.
+
+The rebuilt daemon passes IPC instance/generation fences and offline send denial
+without text logging. Isolated activation and private Secret Service tests pass.
+The QML composer process fixture verifies actual JSON requests, double-click
+suppression, exact-key mentions, one post-ack refresh, and lost receipt preserving
+the draft without retry. `./scripts/preview --send-bridge` runs it without a relay.
+Shortcut fixtures cover conflicts, byte preservation, owned-block removal and
+Lua dispatcher visibility. Native Super+B installation has clean configerrors;
+its physical keyboard path remains separate from script/effective-bind checks.
+
+These checks still do not certify the full deployed Buzz relay or ACP runtime.
+The upstream tracker’s offline tests validate pin consistency and candidate lock
+sources; remote GitHub Actions have not run because there is no public remote yet.
+
+Final recipient review added regression coverage for known membership revocation
+blocking plain sends and clearing history, and bidirectional-formatting controls
+in display names. QML preserves per-room recipient intent during refresh and
+blocks delivery until every selected key is revalidated; removed recipients
+require explicit deselection. Native shortcut removal and reinstall both passed
+with clean configuration and unrelated bindings preserved. The official GitHub
+Buzz HEAD check at 07:52 UTC matched the pinned revision.

@@ -25,6 +25,11 @@ jobs:
           ref: 7b336b1b0da722e7bb864a7136f91e784ef731bf
           path: omarchy
           persist-credentials: false
+      - name: Test reversible shortcut and upstream pin tooling
+        working-directory: omarchy-buzz
+        run: |
+          python3 tests/desktop_shortcut.py
+          python3 scripts/check-upstream --self-test
       - name: Validate manifest
         working-directory: omarchy-buzz
         env:
