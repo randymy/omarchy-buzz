@@ -1,6 +1,6 @@
 # Project instructions
 
-- Read DESIGN.md before implementation. M0 is a sample-data UI skeleton; relay connectivity starts in M1. Do not treat proposed interfaces as existing upstream APIs.
+- Read DESIGN.md before implementation and docs/CHECKPOINT.md for current capabilities and remaining gates. Historical milestone evidence is not a claim about the current installed build. Do not treat proposed interfaces as existing upstream APIs.
 - Keep the public plugin generic. Downstream trading, registry, credential, deployment, and authority integrations belong outside the base plugin.
 - Do not fork Buzz or Omarchy, modify their installed sources, or modify vPerps as part of base plugin work.
 - QML is a presentation/control surface. Never put identity keys, bearer tokens, provider credentials, raw agent telemetry, or arbitrary command execution into its data model.

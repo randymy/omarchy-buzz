@@ -14,7 +14,7 @@ ShellRoot {
     Buzz.PanelContent {
       id: content
       anchors.fill: parent
-      service: Quickshell.env("BUZZ_PREVIEW_CATALOG") || Quickshell.env("BUZZ_PREVIEW_HISTORY") ? protocolService : sampleService
+      service: Quickshell.env("BUZZ_PREVIEW_CATALOG") || Quickshell.env("BUZZ_PREVIEW_HISTORY") || Quickshell.env("BUZZ_PREVIEW_SEND") ? protocolService : sampleService
     }
   }
 
@@ -206,6 +206,61 @@ ShellRoot {
             || protocolService.sessionFailed || protocolService.connection !== "authenticated"
             || protocolService.messages.length !== 0 || protocolService.historyLabel.indexOf("busy") === -1)
           throw new Error("Queue rejection killed connection or retained stale history")
+        function deliveryFrame(delivery, gen) {
+          var value = JSON.parse(historyFrame("status", gen || 1, roomA.id, [historyRow]))
+          value.capabilities.push("message_send")
+          value.status.delivery = delivery
+          return JSON.stringify(value)
+        }
+        var idleDelivery = {requestId:null,roomId:null,eventId:null,state:"idle",category:null}
+        protocolService.beginSession()
+        var sendHello = JSON.parse(deliveryFrame(idleDelivery))
+        sendHello.type = "hello"
+        if (!protocolService.acceptFrame(JSON.stringify(sendHello))) throw new Error("Send capability rejected")
+        protocolService.updateDraft("Synthetic draft")
+        var prepared = protocolService.prepareSubmission()
+        if (!prepared || prepared.text !== "Synthetic draft" || prepared.mentions.length !== 0
+            || prepared.generation !== protocolService.generation || prepared.instanceId !== protocolService.instanceId)
+          throw new Error("Send request missing scope or content fences")
+        if (protocolService.prepareSubmission() !== null) throw new Error("Double-click submitted twice")
+        var accepted = {requestId:prepared.id,roomId:roomA.id,eventId:"e".repeat(64),state:"acknowledged",category:null}
+        var wrongId = Object.assign({}, accepted, {requestId:"00000000-0000-4000-8000-000000000099"})
+        protocolService.acceptFrame(deliveryFrame(wrongId))
+        if (protocolService.deliveryState !== "sending" || protocolService.draftText !== "Synthetic draft")
+          throw new Error("Wrong delivery ID cleared draft")
+        protocolService.acceptFrame(deliveryFrame(accepted))
+        if (protocolService.deliveryState !== "acknowledged" || protocolService.draftText !== "")
+          throw new Error("Matching acknowledgment did not clear draft")
+        protocolService.updateDraft("Keep on loss")
+        var lost = protocolService.prepareSubmission()
+        protocolService.losePendingDelivery()
+        if (protocolService.deliveryState !== "unknown" || protocolService.draftText !== "Keep on loss"
+            || protocolService.prepareSubmission() !== null) throw new Error("Lost send retried or lost draft")
+        protocolService.acceptFrame(deliveryFrame(Object.assign({}, accepted, {requestId:lost.id})))
+        if (protocolService.deliveryState !== "unknown" || protocolService.draftText !== "Keep on loss")
+          throw new Error("Late frame silently resolved unknown submission")
+        protocolService.newDraft()
+        protocolService.updateDraft("Rejected draft")
+        var rejected = protocolService.prepareSubmission()
+        protocolService.acceptFrame(deliveryFrame({requestId:rejected.id,roomId:roomA.id,eventId:null,state:"rejected",category:"send_rejected"}))
+        if (protocolService.draftText !== "Rejected draft" || protocolService.deliveryState !== "rejected")
+          throw new Error("Rejected send lost draft")
+        if (protocolService.prepareSubmission() !== null) throw new Error("Rejected receipt silently retried")
+        protocolService.newDraft(true)
+        var repeated = protocolService.prepareSubmission()
+        if (repeated.id === rejected.id || repeated.text !== "Rejected draft") throw new Error("Explicit retry did not preserve draft with fresh request ID")
+        protocolService.acceptFrame(deliveryFrame({requestId:repeated.id,roomId:roomA.id,eventId:null,state:"failed",category:"send_request_reused"}))
+        if (protocolService.prepareSubmission() !== null) throw new Error("Reused request ID silently retried")
+        protocolService.newDraft(true)
+        var fresh = protocolService.prepareSubmission()
+        if (fresh.id === repeated.id) throw new Error("Explicit reused-ID reset retained old ID")
+        protocolService.acceptFrame(deliveryFrame(idleDelivery, 2))
+        if (protocolService.draftText !== "" || protocolService.deliveryState !== "unknown")
+          throw new Error("Scope change retained private draft or claimed delivery")
+        if (Quickshell.env("BUZZ_PREVIEW_SEND")) {
+          protocolService.newDraft()
+          protocolService.updateDraft("A synthetic draft. No helper is running in this screenshot.")
+        }
         if (Quickshell.env("BUZZ_PREVIEW_HISTORY")) {
           protocolService.beginSession()
           var truncatedRow = Object.assign({}, historyRow, {id:"c".repeat(64),text:"A bounded read-only snapshot with an explicitly truncated body.",edited:false,truncated:true})

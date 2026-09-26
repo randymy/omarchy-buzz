@@ -20,6 +20,23 @@ Item {
   property int generation: 0
   property int requestSequence: 0
   property string pendingHistoryRequestId: ""
+  property bool sendSupported: false
+  property var drafts: ({})
+  property string draftScopeKey: ""
+  readonly property string draftText: drafts[selectedRoomId] || ""
+  property string deliveryState: "idle"
+  property string deliveryCategory: ""
+  property string submissionId: ""
+  property string submissionRoom: ""
+  property string submissionText: ""
+  property int submissionGeneration: 0
+  property string submissionInstance: ""
+  property string acknowledgedRefreshId: ""
+  readonly property bool canSend: sendSupported && !sampleMode && !sessionFailed && connection === "authenticated"
+    && selectedRoom !== null && deliveryState !== "sending" && deliveryState !== "unknown" && deliveryState !== "rejected" && deliveryCategory !== "send_request_reused"
+    && draftText.trim().length > 0 && draftText.indexOf("\u0000") === -1 && utf8Size(draftText) <= 4096
+  readonly property string deliveryLabel: deliveryCategory === "send_request_reused" ? "Submission ID cannot be reused. Start a new submission explicitly." : deliveryCategory === "send_ledger_unavailable" ? "Local send ledger unavailable. Check state directory permissions and free space, then retry." : ({idle:"",sending:"Sending…",acknowledged:"Acknowledged by relay",rejected:"Message rejected. Start a new submission explicitly to retry; this receipt will not send again.",failed:"Send failed · draft retained",unknown:"Outcome unknown. Sending again may create a duplicate. Start a new draft explicitly to continue."})[deliveryState] || ""
+
   readonly property var sample: sampleMode ? SampleData.snapshot().payload : null
   readonly property var viewModel: sample || ({ community: "Buzz" })
   property var catalogRooms: []
@@ -51,7 +68,7 @@ Item {
     : (connection === "identity_locked" || category === "identity_access_pending")
       ? "Unlock your OS secret store, then Retry. Your existing identity is retained."
       : connection === "authenticated"
-        ? "Relay authentication succeeded. Choose a joined room to fetch a recent snapshot. Messaging is not available yet."
+        ? "Relay authentication succeeded. Choose a joined room to fetch a recent snapshot. Use the composer to send plain text. Mention routing and agent execution are not available in this panel."
         : providerInstructions + "\nLink manually in a terminal after installing the helper:\nomarchy-buzz setup relay <community-url>\nomarchy-buzz setup identity enroll\nEnroll the same existing Buzz identity using hidden input and your OS secret store, then Retry. Hosted account sign-in stays in your browser. Never enter keys or account tokens in this panel."
 
   function chooseSetupProvider(provider) {
@@ -64,6 +81,94 @@ Item {
       if (selectedRoomId !== roomId) clearHistory()
       selectedRoomId = roomId
       if (!sampleMode) refreshHistory()
+    }
+  }
+  function uuidValue(value) { return typeof value === "string" && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(value) }
+  function utf8Size(value) {
+    try { return encodeURIComponent(value).replace(/%[A-F0-9]{2}/gi, "x").length }
+    catch (_) { return Infinity }
+  }
+  function updateDraft(text) {
+    if (!selectedRoom || typeof text !== "string" || text.length > 4096 || text === draftText) return
+    var copy = Object.assign({}, drafts)
+    copy[selectedRoomId] = text
+    drafts = copy
+    if (deliveryState !== "sending" && deliveryState !== "unknown") {
+      deliveryState = "idle"
+      deliveryCategory = ""
+      submissionId = ""
+    }
+  }
+  function newDraft(preserveText) {
+    if (deliveryState === "sending") return
+    var copy = Object.assign({}, drafts)
+    copy[selectedRoomId] = preserveText === true ? draftText : ""
+    drafts = copy
+    deliveryState = "idle"
+    deliveryCategory = ""
+    submissionId = ""
+    submissionText = ""
+  }
+  function correlationUuid() {
+    // Randomness supplies correlation only; helper scope/identity are the authority.
+    return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, function(c) {
+      var n = Math.floor(Math.random() * 16)
+      return (c === "x" ? n : (n & 3) | 8).toString(16)
+    })
+  }
+  function prepareSubmission() {
+    if (!canSend) return null
+    if (!submissionId || submissionRoom !== selectedRoomId || submissionText !== draftText) submissionId = correlationUuid()
+    submissionRoom = selectedRoomId
+    submissionText = draftText
+    submissionGeneration = generation
+    submissionInstance = instanceId
+    deliveryState = "sending"
+    deliveryCategory = ""
+    return {version:1,id:submissionId,type:"send_message",roomId:submissionRoom,text:submissionText,
+      mentions:[],generation:generation,instanceId:instanceId}
+  }
+  function submitDraft() {
+    if (!bridge.running) return false
+    var request = prepareSubmission()
+    if (!request) return false
+    bridge.write(JSON.stringify(request) + "\n")
+    deliveryTimeout.restart()
+    return true
+  }
+  function losePendingDelivery() {
+    deliveryTimeout.stop()
+    if (deliveryState === "sending") { deliveryState = "unknown"; deliveryCategory = "delivery_unknown" }
+  }
+  function validatedDelivery(delivery) {
+    var categories = ["delivery_unknown","send_rejected","send_unavailable","send_invalid","send_busy","send_access_denied","send_ledger_unavailable","send_request_reused","send_scope_changed"]
+    if (!delivery || ["idle","sending","acknowledged","rejected","unknown","failed"].indexOf(delivery.state) === -1
+        || (delivery.category !== null && categories.indexOf(delivery.category) === -1)
+        || (delivery.eventId !== null && (typeof delivery.eventId !== "string" || !/^[a-f0-9]{64}$/.test(delivery.eventId)))) return null
+    if (delivery.state === "idle") {
+      if (delivery.requestId !== null || delivery.roomId !== null || delivery.eventId !== null) return null
+    } else if (!uuidValue(delivery.requestId) || !uuidValue(delivery.roomId)
+        || (delivery.state === "acknowledged" && delivery.eventId === null)) return null
+    return delivery
+  }
+  function applyDelivery(delivery) {
+    if (!delivery || !submissionId || delivery.requestId !== submissionId || delivery.roomId !== submissionRoom
+        || generation !== submissionGeneration || instanceId !== submissionInstance) return
+    // A late acceptance cannot silently resolve an already ambiguous local outcome.
+    if (deliveryState !== "sending") return
+    deliveryState = delivery.state
+    deliveryCategory = delivery.category || ""
+    if (deliveryState !== "sending") deliveryTimeout.stop()
+    if (deliveryState === "acknowledged") {
+      if (drafts[submissionRoom] === submissionText) {
+        var copy = Object.assign({}, drafts)
+        copy[submissionRoom] = ""
+        drafts = copy
+      }
+      if (acknowledgedRefreshId !== submissionId) {
+        acknowledgedRefreshId = submissionId
+        if (selectedRoomId === submissionRoom) refreshHistory()
+      }
     }
   }
   function clearHistory() {
@@ -88,10 +193,10 @@ Item {
     if (!sampleMode) selectedRoomId = ""
   }
   function validCapabilities(capabilities) {
-    return Array.isArray(capabilities) && capabilities.length >= 1 && capabilities.length <= 3
+    return Array.isArray(capabilities) && capabilities.length >= 1 && capabilities.length <= 4
       && capabilities.indexOf("connection_status") !== -1
       && capabilities.every(function(cap, index) {
-        return ["connection_status", "room_catalog", "room_history"].indexOf(cap) !== -1 && capabilities.indexOf(cap) === index
+        return ["connection_status", "room_catalog", "room_history", "message_send"].indexOf(cap) !== -1 && capabilities.indexOf(cap) === index
       })
   }
   function validatedCatalog(catalog) {
@@ -138,6 +243,8 @@ Item {
     return {state: history.state, roomId: history.roomId, rows: clean, hasMore: history.hasMore, category: history.category || ""}
   }
   function beginSession() {
+    losePendingDelivery()
+    sendSupported = false
     clearCatalog()
     instanceId = ""
     relay = ""
@@ -148,6 +255,8 @@ Item {
     category = ""
   }
   function fail(reason) {
+    losePendingDelivery()
+    sendSupported = false
     handshake.stop()
     clearCatalog()
     sessionFailed = true
@@ -163,9 +272,14 @@ Item {
     if (!boundedString(line, 65536)) { fail("invalid_response"); return false }
     var frame
     try { frame = JSON.parse(line) } catch (_) { fail("invalid_response"); return false }
-    if (frame && frame.version === 1 && frame.type === "error" && frame.category === "request_busy") {
+    if (frame && frame.version === 1 && frame.type === "error" && ["request_busy", "send_scope_changed"].indexOf(frame.category) !== -1) {
       if (instanceId === "" || frame.instanceId !== instanceId) return false
-      if (!boundedString(frame.id, 128) || !/^ui-[0-9]+$/.test(frame.id)) { fail("invalid_response"); return false }
+      if (!boundedString(frame.id, 128) || !/^ui-[0-9]+$/.test(frame.id) && !uuidValue(frame.id)) { fail("invalid_response"); return false }
+      if (frame.id === submissionId && deliveryState === "sending") {
+        deliveryTimeout.stop()
+        deliveryState = frame.category === "send_scope_changed" ? "unknown" : "failed"
+        deliveryCategory = frame.category === "send_scope_changed" ? "send_scope_changed" : "send_busy"
+      }
       if (frame.id === pendingHistoryRequestId) {
         clearHistory()
         historyCategory = "request_busy"
@@ -204,6 +318,17 @@ Item {
       history = validatedHistory(state.history)
       if (!history) { fail("invalid_response"); return false }
     }
+    var supportsSend = frame.capabilities.indexOf("message_send") !== -1
+    var delivery = supportsSend ? validatedDelivery(state.delivery) : null
+    if (supportsSend && !delivery) { fail("invalid_response"); return false }
+    var incomingScope = (state.relay || "") + "|" + (state.identity || "")
+    if (draftScopeKey && (incomingScope !== draftScopeKey || (instanceId !== "" && frame.generation !== generation))) {
+      losePendingDelivery()
+      drafts = ({})
+      submissionText = ""
+    }
+    draftScopeKey = incomingScope
+    if (state.connection !== "authenticated") losePendingDelivery()
     var previousCatalogState = catalogState
     if (state.connection !== "authenticated") catalog = {state: "unavailable", rooms: [], category: ""}
     if (frame.generation !== generation || state.connection !== "authenticated") clearCatalog()
@@ -229,6 +354,8 @@ Item {
     relay = state.relay || ""
     connection = state.connection
     category = state.category || ""
+    sendSupported = supportsSend
+    applyDelivery(delivery)
     handshake.stop()
     if (frame.type === "hello" && bridge.running) send("subscribe")
     // One fetch per first population/catalog refresh completion, never per status echo.
@@ -262,6 +389,11 @@ Item {
     interval: 5000
     onTriggered: root.fail("handshake_timeout")
   }
+  Timer {
+    id: deliveryTimeout
+    interval: 30000
+    onTriggered: root.losePendingDelivery()
+  }
   Process {
     id: bridge
     command: [root.helperExecutable, "ui-bridge"]
@@ -270,6 +402,8 @@ Item {
     // Drain diagnostics without exposing raw helper output or secrets to logs/UI.
     stderr: SplitParser { onRead: function(line) {} }
     onExited: {
+      root.losePendingDelivery()
+      root.sendSupported = false
       handshake.stop()
       root.clearCatalog()
       root.historySupported = false

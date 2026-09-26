@@ -68,6 +68,7 @@ fn apply_loaded_config(
                     s.relay = c.relay.clone();
                     s.identity = c.identity.clone();
                     s.generation = s.generation.saturating_add(1);
+                    s.delivery = crate::protocol::Delivery::default();
                     s.connection = "unconfigured".into();
                     s.category = None;
                     s.catalog = crate::protocol::Catalog::unavailable(None);
@@ -147,8 +148,22 @@ enum ConnectionExit {
     Shutdown,
     Failure(&'static str),
 }
-async fn next_retry(commands: &mut mpsc::Receiver<Command>) -> bool {
+fn offline_command(command: &Command, tx: &watch::Sender<Status>) {
+    if let Command::Send(intent) = command {
+        tx.send_modify(|s| {
+            s.delivery = crate::protocol::Delivery {
+                request_id: Some(intent.request_id.clone()),
+                room_id: Some(intent.room.clone()),
+                event_id: None,
+                state: "failed".into(),
+                category: Some("send_unavailable".into()),
+            }
+        });
+    }
+}
+async fn next_retry(commands: &mut mpsc::Receiver<Command>, tx: &watch::Sender<Status>) -> bool {
     while let Some(command) = commands.recv().await {
+        offline_command(&command, tx);
         if matches!(command, Command::Retry) {
             return true;
         }
@@ -178,14 +193,15 @@ async fn wait_after_failure(
     error: &str,
     backoff: &mut Backoff,
     retry: &mut mpsc::Receiver<Command>,
+    tx: &watch::Sender<Status>,
 ) -> bool {
     if let Some(delay) = backoff.delay(error) {
         tokio::select! {
             _=tokio::time::sleep(delay)=>true,
-            r=next_retry(retry)=> { if r { backoff.reset(); true } else { false } }
+            r=next_retry(retry,tx)=> { if r { backoff.reset(); true } else { false } }
         }
     } else {
-        if next_retry(retry).await {
+        if next_retry(retry, tx).await {
             backoff.reset();
             true
         } else {
@@ -195,6 +211,7 @@ async fn wait_after_failure(
 }
 // Independent timer deadlines remain effective even when a relay emits unrelated
 // notices/events continuously. Only the exact probe ID refreshes authentication.
+#[cfg(test)]
 async fn observe_connection(
     conn: &mut NostrWsConnection,
     keys: &nostr::Keys,
@@ -204,6 +221,50 @@ async fn observe_connection(
     retry: &mut mpsc::Receiver<Command>,
     backoff: &mut Backoff,
     policy: FreshnessPolicy,
+) -> ConnectionExit {
+    observe_sending(
+        conn,
+        keys,
+        relay,
+        relay_pin,
+        tx,
+        retry,
+        backoff,
+        policy,
+        &mut crate::sending::Sender::new(None),
+    )
+    .await
+}
+async fn observe_sending(
+    conn: &mut NostrWsConnection,
+    keys: &nostr::Keys,
+    relay: &str,
+    relay_pin: &mut Option<nostr::PublicKey>,
+    tx: &watch::Sender<Status>,
+    retry: &mut mpsc::Receiver<Command>,
+    backoff: &mut Backoff,
+    policy: FreshnessPolicy,
+    sender: &mut crate::sending::Sender,
+) -> ConnectionExit {
+    let result = observe_inner(
+        conn, keys, relay, relay_pin, tx, retry, backoff, policy, sender,
+    )
+    .await;
+    if let Some(delivery) = sender.unknown() {
+        tx.send_modify(|s| s.delivery = delivery);
+    }
+    result
+}
+async fn observe_inner(
+    conn: &mut NostrWsConnection,
+    keys: &nostr::Keys,
+    relay: &str,
+    relay_pin: &mut Option<nostr::PublicKey>,
+    tx: &watch::Sender<Status>,
+    retry: &mut mpsc::Receiver<Command>,
+    backoff: &mut Backoff,
+    policy: FreshnessPolicy,
+    sender: &mut crate::sending::Sender,
 ) -> ConnectionExit {
     let mut pending: Option<String> = None;
     let mut due = tokio::time::Instant::now();
@@ -228,9 +289,25 @@ async fn observe_connection(
                 pending=Some(id);
                 due=tokio::time::Instant::now()+policy.response;
             },
+            _=tokio::time::sleep_until(sender.deadline()), if sender.is_pending()=> {
+                if let Some(delivery)=sender.unknown() {tx.send_modify(|s|s.delivery=delivery);}
+            },
             command=retry.recv()=>match command {
                 Some(Command::Retry)=> {backoff.reset(); update(tx,"connecting",None); return ConnectionExit::Retry;},
                 None=>{update(tx,"disconnected",None);return ConnectionExit::Shutdown;},
+                Some(Command::Send(intent))=> {
+                    let (delivery,event)=sender.prepare(intent,relay,keys,&tx.borrow(),fresh,relay_pin.is_some());
+                    tx.send_modify(|s|s.delivery=delivery);
+                    if let Some(event)=event {
+                        let frame=serde_json::json!(["EVENT",event]);
+                        // A dropped/timed-out write may already have reached the relay.
+                        match timeout(policy.response,conn.send_raw(&frame)).await {
+                            Ok(Ok(()))=>{},
+                            Ok(Err(e))=>return ConnectionExit::Failure(category(&e)),
+                            Err(_)=>return ConnectionExit::Failure("relay_timeout"),
+                        }
+                    }
+                },
                 Some(Command::FetchRecent(room))=> {
                     history_jobs.abort_all(); history_jobs=tokio::task::JoinSet::new();
                     history_ticket=history_ticket.wrapping_add(1);
@@ -299,6 +376,7 @@ async fn observe_connection(
                 Ok(RelayMessage::Closed { subscription_id, .. }) if pending.as_deref()==Some(subscription_id.as_str())=>return ConnectionExit::Failure("relay_protocol_error"),
                 Ok(RelayMessage::Auth { challenge })=> {
                     if challenge.len()>1024 { return ConnectionExit::Failure("relay_protocol_error"); }
+                    if let Some(delivery)=sender.unknown() {tx.send_modify(|s|s.delivery=delivery);}
                     fresh=false;
                     jobs.abort_all();
                     history_jobs.abort_all(); history_jobs=tokio::task::JoinSet::new(); history_ticket=history_ticket.wrapping_add(1);
@@ -309,6 +387,7 @@ async fn observe_connection(
                         Err(_)=>return ConnectionExit::Failure("relay_timeout"),
                     }
                 },
+                Ok(RelayMessage::Ok(ok))=> {if let Some(delivery)=sender.acknowledge(&ok.event_id,ok.accepted) {tx.send_modify(|s|s.delivery=delivery);}},
                 Ok(_)|Err(WsClientError::Timeout)=>{},
                 Err(e)=>return ConnectionExit::Failure(category(&e)),
             }
@@ -321,13 +400,19 @@ pub async fn run(
     tx: watch::Sender<Status>,
     mut retry: mpsc::Receiver<Command>,
 ) {
+    let ledger = crate::ledger::default_path()
+        .ok()
+        .and_then(|path| crate::ledger::Ledger::open(path).ok());
+    let mut sender = crate::sending::Sender::new(ledger);
     let mut backoff = Backoff::default();
+    let mut sending_scope: Option<(Option<String>, Option<String>)> = None;
     let mut pin_origin: Option<String> = None;
     let mut relay_pin: Option<nostr::PublicKey> = None;
     loop {
         // Coalesce retry requests already queued for this attempt. Only this
         // sequential task owns key lookups, including any pending prompt.
         while let Ok(command) = retry.try_recv() {
+            offline_command(&command, &tx);
             if matches!(command, Command::Retry) {
                 backoff.reset();
             }
@@ -335,20 +420,25 @@ pub async fn run(
         let c = match apply_loaded_config(&tx, config::load()) {
             Ok(c) => c,
             Err(()) => {
-                if !next_retry(&mut retry).await {
+                if !next_retry(&mut retry, &tx).await {
                     return;
                 }
                 backoff.reset();
                 continue;
             }
         };
+        let scope = (c.relay.clone(), c.identity.clone());
+        if sending_scope.as_ref() != Some(&scope) {
+            sender.clear_scope();
+            sending_scope = Some(scope);
+        }
         if pin_origin != c.relay {
             pin_origin = c.relay.clone();
             relay_pin = None;
         }
         if c.relay.is_none() || c.identity.is_none() {
             update(&tx, "unconfigured", None);
-            if !next_retry(&mut retry).await {
+            if !next_retry(&mut retry, &tx).await {
                 return;
             }
             backoff.reset();
@@ -368,7 +458,14 @@ pub async fn run(
         };
         // Setup may have changed while an unlock prompt was pending. Wait for
         // its single operation to finish, then reload before any relay auth.
-        if std::iter::from_fn(|| retry.try_recv().ok()).any(|c| matches!(c, Command::Retry)) {
+        let mut retry_requested = false;
+        while let Ok(command) = retry.try_recv() {
+            offline_command(&command, &tx);
+            if matches!(command, Command::Retry) {
+                retry_requested = true;
+            }
+        }
+        if retry_requested {
             backoff.reset();
             continue;
         }
@@ -384,7 +481,7 @@ pub async fn run(
                     },
                     Some(e),
                 );
-                if !next_retry(&mut retry).await {
+                if !next_retry(&mut retry, &tx).await {
                     return;
                 }
                 backoff.reset();
@@ -392,7 +489,7 @@ pub async fn run(
             }
             Err(_) => {
                 update(&tx, "unavailable", Some("identity_unavailable"));
-                if !next_retry(&mut retry).await {
+                if !next_retry(&mut retry, &tx).await {
                     return;
                 }
                 backoff.reset();
@@ -405,13 +502,13 @@ pub async fn run(
             Ok(connection) => connection,
             Err(error) => {
                 update(&tx, "disconnected", Some(error));
-                if !wait_after_failure(error, &mut backoff, &mut retry).await {
+                if !wait_after_failure(error, &mut backoff, &mut retry, &tx).await {
                     return;
                 }
                 continue;
             }
         };
-        let exit = observe_connection(
+        let exit = observe_sending(
             &mut conn,
             &keys,
             relay,
@@ -420,6 +517,7 @@ pub async fn run(
             &mut retry,
             &mut backoff,
             FRESHNESS,
+            &mut sender,
         )
         .await;
         // A timed-out socket is dropped before backoff; graceful close is only
@@ -432,7 +530,7 @@ pub async fn run(
             ConnectionExit::Failure(error) => {
                 drop(conn);
                 update(&tx, "disconnected", Some(error));
-                if !wait_after_failure(error, &mut backoff, &mut retry).await {
+                if !wait_after_failure(error, &mut backoff, &mut retry, &tx).await {
                     return;
                 }
             }
@@ -455,9 +553,20 @@ mod reload_tests {
         let (tx, rx) = watch::channel(Status::new(&initial));
         assert!(apply_loaded_config(&tx, Ok(initial)).is_ok());
         assert_eq!(rx.borrow().generation, 1);
+        tx.send_modify(|s| {
+            s.delivery = crate::protocol::Delivery {
+                request_id: Some("old-request".into()),
+                room_id: Some("old-room".into()),
+                event_id: Some("old-event".into()),
+                state: "acknowledged".into(),
+                category: None,
+            }
+        });
         let c = fixture(Some("wss://example.com/"), None);
         assert!(apply_loaded_config(&tx, Ok(c.clone())).is_ok());
         assert_eq!(rx.borrow().generation, 2);
+        assert_eq!(rx.borrow().delivery.state, "idle");
+        assert!(rx.borrow().delivery.event_id.is_none());
         assert!(apply_loaded_config(&tx, Ok(c)).is_ok());
         assert_eq!(rx.borrow().generation, 2);
         assert!(apply_loaded_config(
@@ -502,3 +611,11 @@ mod catalog_integration_tests;
 #[cfg(test)]
 #[path = "auth_history_tests.rs"]
 mod history_integration_tests;
+
+#[cfg(test)]
+#[path = "auth_send_tests.rs"]
+mod send_tests;
+
+#[cfg(test)]
+#[path = "auth_send_integration_tests.rs"]
+mod send_integration_tests;

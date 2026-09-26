@@ -92,9 +92,17 @@ async fn client(
             line=protocol::read_line_buffered(&mut read, &mut partial_frame)=> {
                 let line=match line? { Some(l)=>l,None=>return Ok(()) };
                 let r=match protocol::request(&line) { Ok(r)=>r,Err(category)=> { write(&mut out,&serde_json::json!({"version":1,"type":"error","category":category,"instanceId":instance})).await?; return Ok(()); } };
+                if r.kind=="send_message" && (r.instance_id.as_deref()!=Some(instance.as_str()) || r.generation!=Some(status.borrow().generation)) {
+                    write(&mut out,&serde_json::json!({"version":1,"type":"error","id":r.id,"category":"send_scope_changed","instanceId":instance})).await?;
+                    continue;
+                }
                 let command=match r.kind.as_str() {
                     "retry_connection"=>Some(protocol::Command::Retry),
                     "fetch_recent"=>Some(protocol::Command::FetchRecent(r.room_id.clone().unwrap())),
+                    "send_message"=>Some(protocol::Command::Send(protocol::SendIntent {
+                        request_id:r.id.clone(),room:r.room_id.clone().unwrap(),text:r.text.clone().unwrap(),
+                        mentions:r.mentions.clone().unwrap(),generation:r.generation.unwrap(),
+                    })),
                     _=>None,
                 };
                 if let Some(command)=command {if retry.try_send(command).is_err() {write(&mut out,&serde_json::json!({"version":1,"type":"error","id":r.id,"category":"request_busy","instanceId":instance})).await?;continue;}}

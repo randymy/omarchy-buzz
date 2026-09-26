@@ -1,11 +1,14 @@
 #![forbid(unsafe_code)]
 mod auth;
 mod catalog;
+mod compatibility;
 mod config;
 mod history;
 mod ipc;
+mod ledger;
 mod protocol;
 mod query;
+mod sending;
 // Network fixtures share the production concurrency budgets. Serialize fixtures,
 // while individual tests still exercise multiple simultaneous requests explicitly.
 #[cfg(test)]
@@ -43,10 +46,11 @@ async fn run() -> Result<(), &'static str> {
         ["daemon"]=>ipc::daemon(false).await,
         ["daemon","--keep-running"]=>ipc::daemon(true).await,
         ["ui-bridge"]=>ipc::bridge().await,
-        ["inspect"]=>config::load().map(|c|println!("{}",serde_json::json!({"relay":c.relay,"identity":c.identity,"configured":c.relay.is_some()&&c.identity.is_some(),"protocolVersion":1,"backendRevision":"781d39510cf23cfe224e8f521ae06a23377e06de"}))),
+        ["--version"]=>{println!("{}",serde_json::json!({"helperVersion":env!("CARGO_PKG_VERSION"),"protocolVersion":1,"backendRevision":compatibility::BUZZ_REVISION}));Ok(())},
+        ["inspect"]=>config::load().map(|c|println!("{}",serde_json::json!({"relay":c.relay,"identity":c.identity,"configured":c.relay.is_some()&&c.identity.is_some(),"helperVersion":env!("CARGO_PKG_VERSION"),"protocolVersion":1,"backendRevision":compatibility::BUZZ_REVISION}))),
         ["setup","relay",url]=>config::canonical_relay(url).and_then(|relay|{let mut c=config::load()?;if c.relay.as_deref()!=Some(&relay){c.identity=None;}c.relay=Some(relay);config::save(&c)}),
         ["setup","identity","enroll"]=>tokio::task::spawn_blocking(enroll).await.unwrap_or(Err("identity_unavailable")),
-        _=>Err("usage: omarchy-buzz daemon [--keep-running] | ui-bridge | inspect | setup relay URL | setup identity enroll")
+        _=>Err("usage: omarchy-buzz daemon [--keep-running] | ui-bridge | inspect | --version | setup relay URL | setup identity enroll")
     }
 }
 

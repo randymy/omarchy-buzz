@@ -179,7 +179,7 @@ def main():
         env = {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "OMARCHY_BUZZ_TEST_SESSION": "isolated"}
         for variable, name in (("HOME", "home"), ("XDG_CONFIG_HOME", "config"),
                                ("XDG_DATA_HOME", "data"), ("XDG_RUNTIME_DIR", "runtime"),
-                               ("XDG_CACHE_HOME", "cache")):
+                               ("XDG_CACHE_HOME", "cache"), ("XDG_STATE_HOME", "state")):
             path = base / name
             path.mkdir(mode=0o700)
             env[variable] = str(path)

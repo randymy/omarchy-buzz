@@ -2,7 +2,7 @@
 
 These user units are under development and are not installed by the QML plugin.
 The UI connects through a bridge and displays connection state, rooms and recent
-history snapshots; sending remains unavailable.
+history snapshots, and scoped message delivery outcomes.
 
 The socket activates `%h/.local/bin/omarchy-buzz daemon`. It retains its private
 runtime directory while the daemon exits after its last client disconnects.
@@ -44,3 +44,11 @@ public status, and an isolated inherited-socket test passed idle exit/reactivati
 Secret Service enrollment/retrieval passed in a separate private test session.
 Keyring access under every service hardening setting and resource limits under
 hostile relay load still require validation.
+
+The sender owns a private durable ledger under
+`$XDG_STATE_HOME/omarchy-buzz/delivery/ledger.json` (default
+`~/.local/state/omarchy-buzz/delivery/ledger.json`). Preserve it on upgrade and
+ordinary uninstall: it records request/event bindings used to prevent duplicate
+publication. Its lock is released when the helper exits. Ledger failure disables
+sending while read-only connectivity remains available. No message bodies or
+private keys are stored there.

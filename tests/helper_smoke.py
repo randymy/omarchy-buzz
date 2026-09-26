@@ -47,11 +47,14 @@ def status(frame, kind):
     assert frame["status"]["connection"] == "unconfigured", frame
     assert frame["status"]["identity"] is None, frame
     assert frame["status"]["relay"] is None, frame
-    assert frame["capabilities"] == ["connection_status", "room_catalog", "room_history"], frame
+    assert frame["capabilities"] == ["connection_status", "room_catalog", "room_history", "message_send"], frame
     assert frame["status"]["catalog"]["state"] == "unavailable", frame
     assert frame["status"]["catalog"]["rooms"] == [], frame
     assert frame["status"]["history"] == {
         "state": "unavailable", "roomId": None, "rows": [], "hasMore": None, "category": None,
+    }, frame
+    assert frame["status"]["delivery"] == {
+        "state": "idle", "requestId": None, "roomId": None, "eventId": None, "category": None,
     }, frame
     assert frame["instanceId"] and frame["generation"] == 1, frame
 
@@ -77,12 +80,13 @@ def main():
     processes = []
     with tempfile.TemporaryDirectory(prefix="omarchy-buzz-smoke-") as temp:
         base = Path(temp)
-        for name in ("home", "config", "runtime"):
+        for name in ("home", "config", "runtime", "state"):
             (base / name).mkdir(mode=0o700)
         # Do not inherit keyring/session bus, credential, logging, or activation env.
         env = {
             "HOME": str(base / "home"),
             "XDG_CONFIG_HOME": str(base / "config"),
+            "XDG_STATE_HOME": str(base / "state"),
             "XDG_RUNTIME_DIR": str(base / "runtime"),
             "LANG": "C.UTF-8",
         }

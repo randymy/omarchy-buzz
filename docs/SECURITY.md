@@ -18,8 +18,9 @@ remain pending; the daemon bounds shutdown and does not duplicate key lookups.
 The bridge and daemon communicate over a private same-UID Unix socket. Messages
 are limited to 64 KiB, the daemon limits clients and write deadlines, and QML
 validates protocol version, helper instance, generation, categories, and public
-fields. Allowed requests read status, subscribe, retry, or fetch a current
-catalog room’s recent history. There
+fields. Allowed requests read status, subscribe, retry, fetch a current
+catalog room’s history, or submit a bounded plain-text message for that room.
+Sending additionally fences the current helper instance and identity generation. There
 is no arbitrary command, signing, credential-export, or agent-launch request.
 
 QML launches a local executable using an argv array, never a shell command
@@ -37,6 +38,22 @@ Whole-page budgets reject excessive auxiliary data instead of dropping edits.
 Even valid bounds do not prove the relay disclosed every relevant change.
 History is a partial snapshot and is cleared on scope/authentication changes.
 The helper grants no approvals.
+
+Sending signs only the upstream SDK’s fixed kind-9 message shape. The UI cannot
+choose event kinds, headers, relay origins, or signing instructions. A private
+same-UID ledger stores request UUID, origin, public identity, room, event ID and
+outcome before publication; it stores no content, signed event, unkeyed text
+hash, or private key. Files are bounded, symlinks/hardlinks refused, writes use
+atomic replacement plus file/directory fsync, and one daemon holds an exclusive
+lock. Persistence failures prevent new sends. A crash with a pending record
+reopens it as unknown; the same request UUID is never signed again.
+
+Socket write completion is not acceptance. Only a matching positive OK is
+acknowledged. Lost receipts, authentication changes and interrupted writes
+produce unknown delivery, with no automatic retry. Even an acknowledgement does
+not certify exactly-once processing or agent execution. Relay reason strings
+never cross the UI boundary. QML drafts remain in memory and are cleared on an
+identity/community change; same-user access and crash-memory risks still apply.
 
 ## Release gates
 

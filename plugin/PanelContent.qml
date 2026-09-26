@@ -61,7 +61,7 @@ FocusScope {
         id: previewLabel
         anchors.fill: parent
         anchors.margins: Style.space(10)
-        text: root.service && root.service.sampleMode ? "TEST FIXTURE · Sample data only\nNo relay connected. Messages below are examples." : "Read-only preview · " + (root.service ? root.service.statusLabel : "Service unavailable")
+        text: root.service && root.service.sampleMode ? "TEST FIXTURE · Sample data only\nNo relay connected. Messages below are examples." : (root.service && root.service.sendSupported ? "Messaging preview · " : "Read-only preview · ") + (root.service ? root.service.statusLabel : "Service unavailable")
         textFormat: Text.PlainText
         wrapMode: Text.WordWrap
         color: Color.foreground
@@ -231,6 +231,70 @@ FocusScope {
                   font.pixelSize: Style.font.body
                 }
               }
+            }
+          }
+        }
+
+        ColumnLayout {
+          Layout.fillWidth: true
+          visible: root.service && !root.service.sampleMode && (root.service.sendSupported || root.service.deliveryState === "unknown")
+          spacing: Style.space(6)
+          Text {
+            Layout.fillWidth: true
+            visible: root.service && root.service.deliveryState !== "idle"
+            text: root.service ? root.service.deliveryLabel : ""
+            textFormat: Text.PlainText
+            wrapMode: Text.WordWrap
+            color: Color.foreground
+            font.family: Style.font.family
+            font.pixelSize: Style.font.body
+          }
+          Controls.TextArea {
+            id: composer
+            Layout.fillWidth: true
+            Layout.preferredHeight: Style.space(70)
+            visible: root.service && root.service.selectedRoom !== null && root.service.connection === "authenticated"
+            placeholderText: "Plain text · mentions and agent routing unavailable"
+            textFormat: TextEdit.PlainText
+            wrapMode: TextEdit.Wrap
+            text: root.service ? root.service.draftText : ""
+            readOnly: !root.service || root.service.deliveryState === "sending" || root.service.deliveryState === "unknown" || root.service.deliveryState === "rejected" || root.service.deliveryCategory === "send_request_reused"
+            color: Color.foreground
+            font.family: Style.font.family
+            font.pixelSize: Style.font.body
+            background: Rectangle { color: Color.popups.background; border.color: Color.popups.border; radius: Style.cornerRadius }
+            onTextChanged: {
+              if (text.length > 4096) text = text.slice(0, 4096)
+              if (root.service) root.service.updateDraft(text)
+            }
+          }
+          Connections {
+            target: root.service
+            function onDraftTextChanged() {
+              if (composer.text !== root.service.draftText) composer.text = root.service.draftText
+            }
+          }
+          RowLayout {
+            visible: root.service && root.service.selectedRoom !== null && root.service.connection === "authenticated"
+            Ui.Button {
+              text: "Send message"
+              focusable: true
+              enabled: root.service && root.service.canSend
+              onClicked: if (root.service) root.service.submitDraft()
+            }
+            Ui.Button {
+              text: root.service && (root.service.deliveryState === "rejected" || root.service.deliveryCategory === "send_request_reused") ? "Start new submission" : "Start new draft"
+              focusable: true
+              visible: root.service && (root.service.deliveryState === "unknown" || root.service.deliveryState === "rejected" || root.service.deliveryCategory === "send_request_reused")
+              onClicked: if (root.service) root.service.newDraft(root.service.deliveryState === "rejected" || root.service.deliveryCategory === "send_request_reused")
+            }
+            Text {
+              visible: root.service && root.service.deliveryState !== "unknown"
+              text: "4096 bytes maximum"
+              color: Color.foreground
+              opacity: 0.7
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
             }
           }
         }

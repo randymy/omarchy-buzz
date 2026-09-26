@@ -14,6 +14,9 @@ pub struct Config {
 }
 
 pub fn canonical_relay(input: &str) -> Result<String, &'static str> {
+    if input.len() > 2048 {
+        return Err("invalid_relay");
+    }
     let mut u = url::Url::parse(input).map_err(|_| "invalid_relay")?;
     if !u.username().is_empty()
         || u.password().is_some()

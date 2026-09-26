@@ -13,7 +13,13 @@ trap 'rm -rf -- "$preview_dir"' EXIT
 mkdir -m 700 "$preview_dir/runtime"
 mkdir -m 700 "$preview_dir/config"
 cp -R "$project_root/plugin" "$preview_dir/plugin"
-if [[ ${1:-} == --bridge ]]; then
+if [[ ${1:-} == --send-bridge ]]; then
+  cp "$project_root/tests/SendBridge.qml" "$preview_dir/shell.qml"
+  cp "$project_root/tests/send_bridge_fixture.py" "$preview_dir/helper-fixture"
+  export BUZZ_TEST_HELPER="$preview_dir/helper-fixture"
+  export BUZZ_SEND_RECORD="$preview_dir/send-record.json"
+  printf '{"sends":[],"fetches":0}\n' > "$BUZZ_SEND_RECORD"
+elif [[ ${1:-} == --bridge ]]; then
   [[ -x ${BUZZ_TEST_HELPER:-} ]] || { echo "preview: set BUZZ_TEST_HELPER to a built helper" >&2; exit 1; }
   cp "$project_root/tests/Bridge.qml" "$preview_dir/shell.qml"
 else
@@ -25,4 +31,5 @@ ln -s "$omarchy_source/shell/Ui" "$preview_dir/Ui"
 QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software QT_QPA_PLATFORMTHEME=basic \
   XDG_RUNTIME_DIR="$preview_dir/runtime" \
   XDG_CONFIG_HOME="$preview_dir/config" \
+  XDG_STATE_HOME="$preview_dir/state" \
   timeout 15s qs -p "$preview_dir" --no-color

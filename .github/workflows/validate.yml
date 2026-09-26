@@ -50,6 +50,8 @@ jobs:
         run: cargo +1.95.0 build --locked --manifest-path helper/Cargo.toml
       - name: Test daemon and bridge without credentials
         run: python3 tests/helper_smoke.py helper/target/debug/omarchy-buzz
+      - name: Test send scope fences without a relay
+        run: python3 tests/helper_send_ipc.py helper/target/debug/omarchy-buzz
       - name: Test inherited socket idle reactivation
         run: python3 tests/helper_activation.py helper/target/debug/omarchy-buzz
       - name: Install isolated keyring test dependencies

@@ -2,9 +2,9 @@
 
 A community-first, native Omarchy surface for collaboration with people and AI agents through [Block's Buzz](https://github.com/block/buzz).
 
-**Status: M2 read-only development preview (`0.0.2`), not the messaging MVP.** The native bar and panel use a separate local helper for setup, authenticated connection state, joined stream rooms, and recent message snapshots. Sending, unread counts, verified human/agent badges, notifications, and agent execution remain unfinished. Production UI never displays synthetic rooms or agent activity.
+**Status: M2 messaging development preview (`0.0.3`), not yet a community release.** The native bar and panel use a separate local helper for setup, authenticated connection state, joined stream rooms, and recent message snapshots. Plain-text sending has explicit acknowledged, rejected, and unknown outcomes. Exact mention selection, unread counts, verified human/agent badges, notifications, and agent execution remain unfinished. Production UI never displays synthetic rooms or agent activity.
 
-The helper owns identity access through Linux Secret Service. Enrollment uses hidden terminal input; QML receives only public connection information. Missing or failed helpers leave the panel usable with setup instructions and Retry. Authentication is not a claim that room synchronization works.
+The helper owns identity access through Linux Secret Service. Enrollment uses hidden terminal input; QML receives bounded presentation data and never identity keys. Missing or failed helpers leave the panel usable with setup instructions and Retry. Authentication is not a claim that room synchronization works.
 
 The community plugin will remain generic. vPerps is a downstream integration, described in the design, rather than a separate plugin fork. This project is independently maintained and is not presented as an official Block or Omarchy product.
 
@@ -48,7 +48,7 @@ addresses and access rules; there is no shared public default relay. Complete
 upstream account/invitation setup first, then use your community's assigned
 relay URL. See [upstream hosted-community guidance](https://block.github.io/buzz/support.html).
 
-The current connection preview opens upstream hosted setup in your browser;
+The current setup panel opens upstream hosted setup in your browser;
 automatic account/identity handoff is not implemented. It never collects hosted
 account passwords or bearer tokens in QML. Configure either type of community
 and enroll your existing human Buzz identity in a terminal:
@@ -68,6 +68,29 @@ omarchy plugin update community.buzz
 
 For direct UI iteration, edit the installed development copy; Omarchy watches user plugins. An update will refuse conflicting local changes. On the tested package, rescan and disable/re-enable retained old compiled QML after an update. If the UI remains stale, use the supported `omarchy restart shell` command; it restarts the bar/panels, not applications. Do not rename plugin entry points to bypass caching. See [development and validation](docs/DEVELOPMENT.md) for the full smoke procedure and pinned validator.
 
+## Sending in this preview
+
+Choose a discovered room, compose a plain-text message, and select **Send message**.
+The panel reports the relay’s acknowledgement; it does not treat a socket write
+as delivery. If the connection or receipt is lost, the draft remains and the
+outcome is **unknown**. Nothing is resent automatically. A new submission after
+an unknown outcome could duplicate a message already accepted by the relay.
+Rejected messages require an explicit new submission before another attempt.
+
+Drafts stay in memory. The helper stores only bounded request/event identifiers
+and delivery outcomes, never message bodies, in its private state directory.
+Keep that delivery record during updates. Replies, attachments and agent mention
+routing are not available through this composer yet. See [sending semantics](docs/SENDING.md).
+
+## Staying current
+
+Buzz dependencies are pinned and tested together. The [upstream workflow](docs/UPDATES.md)
+checks daily and prepares draft updates for validation; it does not auto-merge.
+Updating the plugin checkout does **not** replace the separate helper binary.
+Install the matching helper build and use `omarchy-buzz --version` to inspect
+its version and Buzz revision. Scheduled checks begin once this repository is
+published and its workflow is enabled on the default branch.
+
 ## Remove
 
 ```bash
@@ -81,7 +104,7 @@ The native manager unloads the plugin and removes its Git checkout. Commit or sa
 
 [DESIGN.md](DESIGN.md) records the inspected interfaces, security boundary, release gates, and milestones. The QML service consumes a versioned, bounded presentation protocol through the helper bridge. Signed room discovery and recent history are projected in Rust. History is a partial snapshot, with explicit truncation and unavailable-content markers; it does not claim complete edits/deletions or live synchronization. Synthetic rooms are available only in explicit test mode.
 
-Release gates still include conformance against an isolated real Buzz relay and bounded upstream WebSocket buffering. Next in M2 are safe message delivery, exact mentions, profile classification, and local unread accounting. vPerps-specific behavior remains in downstream configuration and separate integrations.
+Release gates still include conformance against an isolated real Buzz relay and bounded upstream WebSocket buffering. Next in M2 are exact mentions, profile classification, and local unread accounting. vPerps-specific behavior remains in downstream configuration and separate integrations.
 
 ## License
 

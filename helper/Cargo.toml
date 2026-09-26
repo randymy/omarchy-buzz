@@ -1,11 +1,12 @@
 [package]
 name = "omarchy-buzz"
-version = "0.1.0"
+version = "0.0.3"
 edition = "2021"
 rust-version = "1.95"
 license = "Apache-2.0"
 
 [dependencies]
+buzz-sdk = { git = "https://github.com/block/buzz", rev = "781d39510cf23cfe224e8f521ae06a23377e06de" }
 buzz-ws-client = { git = "https://github.com/block/buzz", rev = "781d39510cf23cfe224e8f521ae06a23377e06de" }
 nostr = { version = "0.44", features = ["nip44", "nip98"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util", "io-std", "signal"] }
@@ -17,7 +18,7 @@ keyring = { version = "=3.6.3", default-features = false, features = ["sync-secr
 rpassword = "7"
 zeroize = "1"
 listenfd = "1"
-rustix = { version = "1", features = ["process"] }
+rustix = { version = "1", features = ["process", "fs"] }
 
 uuid = { version = "1", features = ["v4"] }
 base64 = "0.22"

@@ -2,11 +2,13 @@
 
 This Linux Rust helper supplies identity setup, authenticated connection status,
 joined-room discovery, recent stream snapshots, and bounded local IPC. It does
-not send chat, subscribe to live room history, launch agents, or implement approvals. `authenticated` means NIP-42
+not subscribe to live room history, launch agents, or implement approvals.
+Plain kind-9 sending uses the pinned Buzz SDK and explicit delivery outcomes. `authenticated` means NIP-42
 accepted the identity; it does not mean room synchronization completed.
 
 Commands:
 
+- `omarchy-buzz --version`: helper version, protocol and pinned Buzz revision; no config/keyring access.
 - `omarchy-buzz inspect`: public configuration only.
 - `omarchy-buzz setup relay wss://relay.example`: saves a canonical origin;
   changing origin clears the configured identity reference.
@@ -28,14 +30,17 @@ an explicit retry. Retry reloads configuration after setup. A pending keyring op
 
 Protocol version 1 requests are JSON lines with `version`, `id`, `type`;
 allowed types are `get_snapshot`, `subscribe`, `retry_connection`, and
-`fetch_recent`. Only `fetch_recent` requires an additional canonical UUID
-`roomId`; it is restricted to the current discovered room catalog. Request IDs
+`fetch_recent`, and `send_message`. Room requests require a canonical UUID
+`roomId` from the current discovered catalog. Sending also requires a canonical
+request UUID, current helper `instanceId`/`generation`, text of at most4096 UTF-8
+bytes, and at most20 distinct canonical mention public keys. The native composer
+currently supplies an empty mention list; name resolution is not implemented. Request IDs
 are 1–128 ASCII alphanumeric, underscore or hyphen. Lines including newline
 are capped at 64 KiB. Eight clients maximum; output writes time out after ten
 seconds. Invalid requests receive a category-only error and the connection closes.
 Hello/status responses expose public identity/origin, helper instance/generation,
 connection category, and capabilities `connection_status`, `room_catalog`,
-`room_history`. At most twenty rooms and twenty projected message rows are
+`room_history`, `message_send`. At most twenty rooms and twenty projected message rows are
 returned. Message previews are plain text capped at 768 UTF-8 bytes, with
 explicit truncation. No raw events, backend errors or credential material is forwarded. UI EOF closes the bridge connection.
 
@@ -61,3 +66,15 @@ whole-page limits and verified bounds, edits and deletions; uncertain authority
 hides affected content. A valid snapshot does not prove relay completeness.
 Room refresh, reauthentication, scope change and disconnection clear history.
 See [history semantics](../docs/MESSAGING_NEXT.md) for limits and source references.
+
+Sending reserves an event ID durably before any EVENT write. Only a matching
+positive relay OK produces acknowledged status. Rejection, unknown delivery,
+preflight failure and acknowledgement are distinct. The15-second receipt deadline
+runs beside connection probes. Repeated request IDs never produce a new event;
+after restart, old request IDs are refused because text was not persisted.
+The ledger holds at most1024 records and256KiB; either capacity limit disables
+further reservations. There is no automatic pruning or retransmission. Keep the
+ledger on upgrade; an archive/reconciliation workflow is still a release task.
+Ledger writes use synchronous fsync within the isolated helper: a stalled
+filesystem can delay its event loop despite the byte cap. No UI thread performs
+these writes. See [sending](../docs/SENDING.md) for failure semantics.

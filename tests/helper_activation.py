@@ -87,7 +87,8 @@ def main():
         path = runtime / "omarchy-buzz" / "control.sock"
         # Allowlist the child environment: no inherited identity/provider values.
         env = {"PATH": "/usr/bin:/bin", "HOME": str(home),
-               "XDG_RUNTIME_DIR": str(runtime), "XDG_CONFIG_HOME": str(config)}
+               "XDG_RUNTIME_DIR": str(runtime), "XDG_CONFIG_HOME": str(config),
+               "XDG_STATE_HOME": str(Path(temp) / "state")}
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
             listener.bind(str(path))
             os.chmod(path, 0o600)

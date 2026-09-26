@@ -2,11 +2,15 @@
   "schemaVersion": 1,
   "id": "community.buzz",
   "name": "Buzz for Omarchy",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "author": "Buzz for Omarchy contributors",
   "license": "Apache-2.0",
-  "description": "Native Buzz connection panel. Development preview; messaging is not yet available.",
-  "kinds": ["service", "bar-widget", "panel"],
+  "description": "Native Buzz rooms, recent history and message composition. Development preview.",
+  "kinds": [
+    "service",
+    "bar-widget",
+    "panel"
+  ],
   "entryPoints": {
     "service": "plugin/Service.qml",
     "barWidget": "plugin/BarWidget.qml",

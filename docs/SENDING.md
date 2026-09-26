@@ -1,7 +1,7 @@
 # Sending implementation plan
 
-Sending is not implemented. This plan describes a narrow human-authored kind-9
-sender using Buzz revision `781d39510cf23cfe224e8f521ae06a23377e06de`.
+The development preview implements a narrow human-authored kind-9 sender using
+Buzz revision `781d39510cf23cfe224e8f521ae06a23377e06de`.
 Upstream paths below are relative to the Buzz repository. Source inspection is
 not runtime verification of a deployed relay.
 
@@ -51,10 +51,9 @@ before storage. The duplicate-storage branch at line 3350 returns
 and timestamp validation happen first, so an old retry may be rejected even if
 the event was previously stored.
 
-## Stage 1: typed sender and acknowledgement
+## Implemented sender and acknowledgement
 
-Add a bounded internal sender command to the connection actor, initially with
-one pending send. UI input contains only a stable request UUID, canonical room
+The connection actor accepts a bounded sender command with one pending send. UI input contains only a stable request UUID, canonical room
 UUID, bounded text, and validated selected mention public keys. It cannot supply
 URLs, headers, raw events, arbitrary kinds, or signing instructions. Fence work
 against the current identity/origin generation, fresh connection, trusted relay
@@ -62,18 +61,19 @@ pin, and current joined-room catalog. Do not publish while catalog authorization
 is unavailable.
 
 Sign once, persist the request-to-event-ID association, then transmit the signed
-event. Keep the original event in bounded memory only. A positive exact-ID `OK`
+event. The signed event exists in memory only for transmission; the current preview
+does not retain it for retry. A positive exact-ID `OK`
 means acknowledged; a negative exact-ID `OK` means rejected. Map reason strings
 to static categories instead of forwarding arbitrary relay text. Socket write
 completion alone never means accepted.
 
 Once transmission starts, timeout, cancellation, or disconnect means
-`delivery_unknown`. Retry only the same signed event while it remains in memory;
-never re-sign automatically. Identical-event deduplication does not establish
+`delivery_unknown`. The preview offers no retransmission. Any later retry feature must reuse the
+original event rather than re-sign automatically. Identical-event deduplication does not establish
 exactly-once delivery or agent execution. Preserve COUNT deadlines while waiting
 for acknowledgement, and cancel queued work on scope changes.
 
-## Stage 2: durable request ledger and reconciliation
+## Implemented durable ledger; reconciliation deferred
 
 Before publication, persist only request UUID, canonical origin, human public
 key, room UUID, event ID, and outcome. Store no private key, message text, raw
@@ -84,7 +84,7 @@ file fsync and directory fsync. Persistence failure must prevent transmission.
 
 Never sign again for an existing request UUID. While the intent remains in
 memory, conflicting reuse is rejected. After restart, unresolved entries remain
-unknown and may be reconciled through a narrow authorized exact-event-ID query,
+unknown and a reused request is refused. A future feature may reconcile records through a narrow authorized exact-event-ID query,
 verifying signature, author and room. An absent result is inconclusive. Without
 persisted plaintext the original event cannot be resent after restart; creating
 a new request must be explicit because it may duplicate an earlier accepted
@@ -93,13 +93,11 @@ capacity rather than silently discarding their association.
 
 ## Verification and dependencies
 
-Add `buzz-sdk` at the same exact Git revision; its `buzz-core` dependency must
+`buzz-sdk` is pinned at the same exact Git revision; its `buzz-core` dependency must
 remain at that revision. SDK dependencies are core, nostr, UUID, serde,
 serde_json, and thiserror. Core adds chrono and crypto/encoding dependencies.
-The inspected helper cache already contains the crypto dependencies and
-num-traits, but chrono and iana-time-zone were absent when inspected. Resolve
-the lock and fetch only the host target before claiming offline build support;
-additional platform dependencies are not established by this inspection.
+The resolved lockfile and Linux ARM64 build include those dependencies. Other
+platforms still require their own build and runtime evidence.
 
 Synthetic tests must verify the actual SDK signature and exercise unrelated-ID
 OK, negative OK, lost acknowledgement, unchanged-event retry, scope change,
@@ -119,3 +117,20 @@ replay budgets; private acknowledgement loops can accumulate unrelated messages.
 See [WS_UPSTREAM.md](../helper/WS_UPSTREAM.md). Actor multiplexing avoids the
 publish acknowledgement loop but does not solve upstream frame limits. Do not
 claim these resource limits are fixed by the sender.
+
+## Current operational limits
+
+Input is limited to4096 UTF-8 bytes and20 distinct canonical mention keys; the
+native composer currently sends no mention tags. It has no reply/media inputs.
+Terminal outcomes preserve the draft except for a matching acknowledgement of
+unchanged text. Rejected or reused submissions require an explicit new request;
+unknown outcomes require starting a new draft and may already have been delivered.
+
+The ledger is limited to256KiB and1024 records, whichever is reached first,
+without automatic pruning. It lives under XDG_STATE_HOME (default
+`~/.local/state/omarchy-buzz/delivery`). Capacity/permission failures disable new
+sends. Reconciliation, safe archival and same-event retry are future work.
+Synchronous bounded fsync avoids cancellation between reservation and publication,
+but a stalled filesystem can delay the helper actor. The shell remains separate.
+An acknowledgement whose outcome write fails remains acknowledged in that running
+helper’s memory; after restart, only durable evidence is available.
