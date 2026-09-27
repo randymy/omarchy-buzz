@@ -280,3 +280,18 @@ Next: supported relay admission/channel access for that identity, hidden-termina
 enrollment, restart socket/service, then signed room discovery. Preserve existing
 owner access until the replacement works. No remote membership changes, identity
 deletion, or upgrade yet. See DEPLOYED_COMPATIBILITY.md for the recovery boundary.
+
+## Human identity migration preparation
+
+The operator supplied both hex and npub encodings; checksum-validated decoding
+confirmed they represent the same relay signing identity. No separate existing
+human public key is available yet. The deployed container's `buzz-admin --help`
+confirms `add-member` is available, so supported server-side admission can be
+prepared once a replacement public key exists. No add-member call has run.
+
+Inspected desktop `SignOutSection.tsx`: signing out deletes the local identity,
+agent settings and cached data, with explicit backup and typed-confirmation
+gates. Do not treat this as a harmless account switch. Offered an independent
+macOS user account to preserve the original app state, versus an explicitly
+chosen backup/reset of the existing app. Await that choice before directing
+destructive laptop steps. The helper remains stopped; relay and rooms unchanged.
