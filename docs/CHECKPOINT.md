@@ -263,3 +263,20 @@ cause of the empty snapshot is not established. Do not bypass signed membership
 validation, directly edit production events, or claim discovery now works.
 No messages or agent tasks were sent, and no production mutation was performed
 by the assistant during this diagnosis.
+
+## Identity collision explains empty rosters, 2026-09-27
+
+The helper identity equals the relay's public signing identity. This was checked
+using public metadata/config only, without reading a secret. Deployed discovery
+signing omits `allow_self_tagging`; nostr drops member tags matching the signer.
+Newer inspected Buzz already preserves those tags in its roster writer. This
+supersedes the previous unknown-cause diagnosis and description-edit suggestion.
+The second described stream shows the same issue.
+
+Stopped the local helper and activation socket while separating human identity
+from relay identity; the remote relay is untouched. Asked the operator for only
+their original Buzz human public key to check reuse without abandoning accounts.
+Next: supported relay admission/channel access for that identity, hidden-terminal
+enrollment, restart socket/service, then signed room discovery. Preserve existing
+owner access until the replacement works. No remote membership changes, identity
+deletion, or upgrade yet. See DEPLOYED_COMPATIBILITY.md for the recovery boundary.

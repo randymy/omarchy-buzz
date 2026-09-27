@@ -145,3 +145,33 @@ The native panel summon command succeeded. Authenticated history, message send,
 and real-agent workflows remain unverified on this deployment because there is
 no existing stream room to use. Isolated conformance evidence remains separate
 from these deployed observations.
+
+## Root cause: relay identity enrolled as human, 2026-09-27
+
+Comparison of public values established that the helper's enrolled identity is
+the NIP-11 `self` relay signer. The operator-created development room has that
+identity as creator and canonical member, but its live 39002 event has only a
+`d` tag. A second described stream has the same mismatch. Changing descriptions
+does not address the identity collision.
+
+Deployed revision 8342dfc uses nostr 0.44.7 and signs discovery events without
+opting into self-tagging. The signing library's default drops `p` tags matching
+the signer. Inspected newer upstream revision 781d395 explicitly calls
+`allow_self_tagging()` in `store_group_members_event`, with a comment explaining
+why relay membership must be preserved. The default behavior also exists in
+the helper's resolved nostr 0.44.8 source. This explains the observed empty roster;
+it is not a missing description or a reason to bypass membership verification.
+
+Recovery must separate human and server identities. First compare the operator's
+original human public key with the relay signer. Preserve the existing owner
+session until the human has relay admission, channel membership and any needed
+ownership through supported Buzz operations. Enroll only the human private key
+through the hidden terminal; verify signed discovery and read access before
+removing the mistaken local secret-store entry. Do not delete the original
+profile, reset the desktop identity, edit database memberships directly, or
+rotate the relay signer as an improvised fix. Relay signer rotation needs its
+own upstream-supported migration and trust review.
+
+The local helper and activation socket have been stopped temporarily. The relay
+continues running unchanged. A human public key is pending; no membership
+transfer, identity deletion, secret export or relay upgrade has occurred.
