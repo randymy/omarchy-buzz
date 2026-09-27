@@ -1,4 +1,4 @@
-# Development checkpoint — 2026-09-26
+# Development checkpoint — 2026-09-27
 
 Current version: **0.0.3 messaging development preview**, not a community release.
 Implemented: source-grounded design; native hosted/custom setup; Rust daemon and
@@ -27,7 +27,8 @@ Runtime source is committed in `617bd73`; the installed plugin was updated to
 `17c1cf9`, including notice packaging, downstream documentation and clearer
 incompatible-helper update guidance.
 The installed 0.0.3 helper SHA256 is
-`cfaa915036f1cf26b553a34ec93dbc3c0f893b11f9f106cc0e7eb6844054bebf`.
+`f9d3a577d01e344d2db0ac610ecb1fc53d55b93a60d7e3891cbe20f7c4072049`
+(after the hosted metadata fix described below).
 The prior installed helper is preserved as
 `~/.local/bin/omarchy-buzz.before-617bd73`, in addition to earlier `.previous`
 backups. Native panel summon passed after service and shell restart; service
@@ -43,7 +44,7 @@ verified provenance are separately saved under ignored
 archive inventory. Four Bitcoin packages lack exact source revision metadata,
 so their notice provenance remains unresolved. See
 [DEPENDENCY_NOTICES.md](DEPENDENCY_NOTICES.md).
-All public publication and production-relay work remains deferred.
+Public publication and authenticated production-relay work remain deferred.
 
 ## Validation and installed state
 
@@ -176,3 +177,27 @@ resume automatic triggers or routine CI trial-and-error runs without revisiting
 this preference. Prefer local checks and batch remote validation deliberately.
 This does not change GitHub account notification settings: a manually triggered
 run can still notify its initiating account. Historical test evidence is retained.
+
+## Deployed discovery and hosted metadata fix, 2026-09-27
+
+Read-only checks reached the supplied self-hosted relay on HTTP port 3000:
+`/info` reports Buzz 0.2.0 and a signing identity; `/_readiness` reports ready.
+Standard HTTPS is unavailable. The helper requires remote HTTPS/WSS, so native
+connection is blocked pending a suitable TLS endpoint. No identity, messages,
+rooms or relay settings were changed. A usable Mac mini SSH account/alias is
+needed to inspect the deployment and prepare that change; no private keys or
+passwords should be supplied to the assistant.
+
+The upstream-documented hosted onboarding relay returned valid TLS metadata
+advertising 0.2.1. Its inline icon makes the document 35,782 bytes, exceeding our
+old 32 KiB cap. The helper now allows a bounded 128 KiB document, still returns
+only the signing identity, and retains redirect/timeout/pin checks. Eight catalog
+tests pass, including a larger-icon HTTP fixture and exact-limit rejection.
+The rebuilt helper is installed with rollback at
+`~/.local/bin/omarchy-buzz.before-hosted-metadata-20260927`; service restart passed,
+active/running with LimitCORE=0. It remains unconfigured and unenrolled.
+
+See [DEPLOYED_COMPATIBILITY.md](DEPLOYED_COMPATIBILITY.md) for the source-backed
+HTTPS plan, hosting requirements and limits of these observations. Neither
+deployment's advertised version proves compatibility with all authenticated
+interfaces. GitHub workflows remain manual-only; no remote CI was triggered.

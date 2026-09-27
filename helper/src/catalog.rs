@@ -7,7 +7,9 @@ use serde::Serialize;
 use std::{collections::BTreeMap, time::Duration};
 use uuid::Uuid;
 
-const INFO_BYTES: usize = 32 * 1024;
+// Hosted Buzz can include inline community icons larger than 32 KiB.
+// Bound the entire document; only its signer is returned to the caller.
+const INFO_BYTES: usize = 128 * 1024;
 const LIMIT: u16 = 20;
 static DISCOVERY: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
 

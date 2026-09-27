@@ -65,6 +65,27 @@ fn nip11_self_is_authority_and_rotation_is_refused() {
     );
 }
 #[test]
+fn inline_icon_metadata_is_bounded_and_does_not_change_authority() {
+    let relay = key(1).public_key();
+    let other = key(2).public_key();
+    let mut document = serde_json::json!({"self": relay.to_hex(), "icon": ""});
+    let overhead = serde_json::to_vec(&document).unwrap().len();
+    document["icon"] = serde_json::Value::String("x".repeat(INFO_BYTES - overhead));
+    let bytes = serde_json::to_vec(&document).unwrap();
+    assert_eq!(bytes.len(), INFO_BYTES);
+    assert_eq!(info_signer(&bytes, Some(relay)).unwrap(), relay);
+    assert_eq!(
+        info_signer(&bytes, Some(other)).unwrap_err(),
+        "relay_identity_changed"
+    );
+    document["icon"] = serde_json::Value::String("x".repeat(INFO_BYTES - overhead + 1));
+    assert_eq!(
+        info_signer(&serde_json::to_vec(&document).unwrap(), None).unwrap_err(),
+        "discovery_oversized"
+    );
+}
+
+#[test]
 fn valid_snapshot_partial_missing_metadata_and_unsupported_are_honest() {
     let relay = key(1);
     let member = key(2);
@@ -257,7 +278,8 @@ async fn loopback_info_uses_info_without_credentials_and_rejects_redirect() {
     for redirect in [false, true] {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let origin = format!("ws://{}/", listener.local_addr().unwrap());
-        let payload = serde_json::json!({"self":relay.to_hex()}).to_string();
+        let payload =
+            serde_json::json!({"self":relay.to_hex(), "icon": "x".repeat(36 * 1024)}).to_string();
         let task = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
             let mut head = Vec::new();
