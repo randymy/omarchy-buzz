@@ -243,3 +243,23 @@ consistent with that state. No conversation contents or credentials were read,
 and no production room, membership or message was created. Native panel summon
 succeeded. History/send and actual-agent verification still need an appropriate
 real room and the previously documented agent security prerequisites.
+
+## Room creation exposed a deployed roster mismatch, 2026-09-27
+
+The operator created a development stream on the self-hosted community. Read-only
+checks confirm the room exists, its creator is the helper's enrolled identity,
+and that identity has an active canonical membership. However, its stored live
+kind-39002 event contains only the room's `d` tag and no `p` member tags. The
+helper's authenticated `#p` discovery therefore still returns zero rooms. This
+supersedes the earlier empty-deployment explanation; identity/origin setup is
+correct for the newly created room.
+
+Deployed revision 8342dfc emits discovery events from
+`crates/buzz-relay/src/handlers/side_effects.rs::emit_group_discovery_events`,
+reading `db.get_members` before signing. Its metadata-edit handler also invokes
+this publication path. A normal channel-description edit is a candidate scoped
+repair via upstream behavior; it has not been attempted or verified. The precise
+cause of the empty snapshot is not established. Do not bypass signed membership
+validation, directly edit production events, or claim discovery now works.
+No messages or agent tasks were sent, and no production mutation was performed
+by the assistant during this diagnosis.
