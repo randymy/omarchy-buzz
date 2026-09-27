@@ -7,7 +7,8 @@ SHA response media type so commit patch size does not affect the check. It follo
 custom relay software equally; a new upstream source commit does not prove a
 particular deployed relay upgraded or remains compatible.
 
-The daily GitHub workflow checks at 09:17 UTC and reports the current pin and
+The GitHub workflow is currently manual-only to reduce development notifications.
+Its daily 09:17 UTC schedule is paused by user request. A manual run reports the current pin and
 upstream default-branch HEAD in its job summary. When they differ, it prepares
 a draft dependency-update PR. Manual dispatch can disable candidate preparation
 and perform only the check. Schedules run on the repository's default branch;

@@ -166,3 +166,13 @@ fixtures also passed. Ordinary CI passed at the same revision in run
 36280897277. Production relays and persistent agent identities remain
 unused; deployed compatibility and upstream secure identity/permission handling
 are the next gates.
+
+## Workflow notification preference
+
+Automatic push/PR validation and daily upstream checks are paused at the user's
+request to stop noisy development run notifications. All three workflows remain
+available through `workflow_dispatch`; failures remain real failures. Do not
+resume automatic triggers or routine CI trial-and-error runs without revisiting
+this preference. Prefer local checks and batch remote validation deliberately.
+This does not change GitHub account notification settings: a manually triggered
+run can still notify its initiating account. Historical test evidence is retained.

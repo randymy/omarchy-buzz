@@ -1,8 +1,7 @@
 name: Track Buzz upstream
 
+# Manual-only during development; scheduled checks are paused by user request.
 on:
-  schedule:
-    - cron: '17 9 * * *'
   workflow_dispatch:
     inputs:
       prepare_candidate:

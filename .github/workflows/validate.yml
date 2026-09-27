@@ -1,8 +1,7 @@
 name: Validate plugin and helper
 
+# Manual-only during development to avoid unsolicited workflow notifications.
 on:
-  push:
-  pull_request:
   workflow_dispatch:
 
 permissions:
