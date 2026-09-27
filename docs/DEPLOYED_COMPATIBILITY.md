@@ -74,3 +74,29 @@ changed origin configuration. Avoid a global `tailscale serve reset` that could
 remove unrelated services. Real send and agent workflows require a deliberately
 chosen room and the existing authority boundaries; production conversations
 must never become conformance fixtures.
+
+## SSH deployment inspection follow-up
+
+A dedicated workstation SSH key was authorized by the operator; key-based
+read-only administration now works. The running Docker image and Mac checkout
+both identify Buzz revision `8342dfcc5890b81a269a8ec3db73a8a56f76ce79`.
+Image digest: `sha256:b58c0b1a7f65d00a087ddecfce7a754405db947484936a3c6b90b822a8c592d0`.
+The container is healthy and advertises a `wss://` origin on port 3000 while
+publishing plain HTTP there. Its authentication and membership requirements
+remain enabled. No credentials or environment files were dumped.
+
+Installed Tailscale is 1.102.2 and Docker Compose is 5.3.1. Serve configuration
+was empty and was saved to an owner-only file in the operator's local deployment
+state directory. A tailnet-only staging HTTPS request on port 443 reported that
+Serve is disabled and supplied an account authorization page. It is awaiting
+the operator's authenticated browser action. No relay restart, data migration,
+community mapping edit, identity enrollment or message send has occurred.
+
+The refined plan preserves the relay's existing port-3000 authority: after TLS
+provisioning succeeds, move the backend Docker publication to an unused
+loopback-only port and serve HTTPS on tailnet port 3000. This avoids changing
+community host mappings or signed request origins. Pin the running image during
+any recreation, preserve its environment and volumes, and retain a scoped
+rollback. The temporary port-443 rule must be removed after validation; do not
+reset unrelated Serve configuration. Inspect effective configuration and test
+Host forwarding before considering the native authenticated connection ready.

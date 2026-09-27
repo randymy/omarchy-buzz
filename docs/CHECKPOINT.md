@@ -201,3 +201,14 @@ See [DEPLOYED_COMPATIBILITY.md](DEPLOYED_COMPATIBILITY.md) for the source-backed
 HTTPS plan, hosting requirements and limits of these observations. Neither
 deployment's advertised version proves compatibility with all authenticated
 interfaces. GitHub workflows remain manual-only; no remote CI was triggered.
+
+## SSH access and TLS provisioning follow-up
+
+The operator authorized a dedicated SSH key, and Mac mini access is working.
+Deployment/source inspection found Buzz `8342dfcc5890b81a269a8ec3db73a8a56f76ce79`
+with a configured WSS port-3000 origin but a plain HTTP Docker listener.
+Tailscale Serve is currently disabled at the tailnet level. Provisioning the
+staging HTTPS listener is waiting for the operator to enable Serve through
+Tailscale's authenticated browser page. The relay has not been restarted or
+reconfigured. Details and the refined origin-preserving plan are in
+DEPLOYED_COMPATIBILITY.md. No GitHub workflows were started.
