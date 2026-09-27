@@ -231,3 +231,15 @@ the operator must supply their existing Buzz identity privately. No credentials
 were read by the assistant. Authenticated room access remains the next gate;
 no production messages, subscriptions or agent tasks were sent during probing.
 See DEPLOYED_COMPATIBILITY.md for scoped rollback. GitHub CI remains manual-only.
+
+## Enrollment and authenticated discovery verified, 2026-09-27
+
+The operator completed hidden-terminal enrollment. Restarted the helper and
+observed `authenticated` with no connection error. Catalog discovery reports
+`partial` / `room_catalog_partial`, with zero rooms. A read-only database count
+check found one relay membership for this identity, zero active channel
+memberships, and zero live stream channels on the deployment. The empty view is
+consistent with that state. No conversation contents or credentials were read,
+and no production room, membership or message was created. Native panel summon
+succeeded. History/send and actual-agent verification still need an appropriate
+real room and the previously documented agent security prerequisites.

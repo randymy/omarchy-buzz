@@ -126,3 +126,22 @@ The workstation helper now targets the existing authority using WSS on port
 A hidden local terminal enrollment prompt was opened for the operator's existing
 Buzz identity. Enrollment and authenticated room access remain unverified;
 transport checks alone do not establish application compatibility.
+
+## Authenticated connection verified, 2026-09-27
+
+The operator completed enrollment through the hidden local terminal prompt.
+After restarting the helper, its projected connection state is `authenticated`,
+with no connection error. Authenticated catalog discovery completes with zero
+displayable rooms and the deliberately conservative `partial` state
+(`room_catalog_partial`): bounded discovery does not assert completeness.
+
+A read-only database transaction confirmed that the enrolled identity has one
+relay membership, zero active channel memberships, and that the deployment has
+zero live stream channels. Thus the empty catalog is consistent with deployment
+state; it is not evidence of a failed login. No room names, conversations, private
+keys or tokens were collected. No rooms, memberships or messages were created.
+
+The native panel summon command succeeded. Authenticated history, message send,
+and real-agent workflows remain unverified on this deployment because there is
+no existing stream room to use. Isolated conformance evidence remains separate
+from these deployed observations.
