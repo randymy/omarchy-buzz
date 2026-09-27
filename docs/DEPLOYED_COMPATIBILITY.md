@@ -75,7 +75,7 @@ remove unrelated services. Real send and agent workflows require a deliberately
 chosen room and the existing authority boundaries; production conversations
 must never become conformance fixtures.
 
-## SSH deployment inspection follow-up
+## SSH deployment inspection follow-up (historical provisioning state)
 
 A dedicated workstation SSH key was authorized by the operator; key-based
 read-only administration now works. The running Docker image and Mac checkout
@@ -100,3 +100,29 @@ any recreation, preserve its environment and volumes, and retain a scoped
 rollback. The temporary port-443 rule must be removed after validation; do not
 reset unrelated Serve configuration. Inspect effective configuration and test
 Host forwarding before considering the native authenticated connection ready.
+
+## TLS deployment completed, 2026-09-27
+
+The operator enabled Tailscale Serve. Staging HTTPS on port 443 succeeded;
+subsequently Serve accepted HTTPS on tailnet port 3000 proxying to the existing
+`http://127.0.0.1:3000` backend. This supersedes the proposed Docker port move:
+no container restart, image change, community mapping change or origin change
+was necessary. The running container's start time remained unchanged.
+
+The temporary port-443 rule was removed. Only the scoped port-3000 HTTPS proxy
+remains; no Funnel/public-internet rule was added. Existing Docker publication
+is unchanged, so this is not a claim that plaintext LAN exposure was removed.
+Rollback is `tailscale serve --https=3000 off`, without a global Serve reset.
+The original empty Serve configuration was retained in private deployment state.
+
+HTTPS `/info` and `/_readiness` returned 200 with certificate verification passing.
+The signing identity matches the earlier HTTP metadata. An anonymous WebSocket
+upgrade returned 101 with certificate verification passing; the intentionally
+bounded open connection subsequently timed out. No authentication, subscription,
+message or agent invocation was sent by that probe.
+
+The workstation helper now targets the existing authority using WSS on port
+3000. Its service restarted successfully (active/running, core dumps disabled).
+A hidden local terminal enrollment prompt was opened for the operator's existing
+Buzz identity. Enrollment and authenticated room access remain unverified;
+transport checks alone do not establish application compatibility.

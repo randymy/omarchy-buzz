@@ -212,3 +212,22 @@ staging HTTPS listener is waiting for the operator to enable Serve through
 Tailscale's authenticated browser page. The relay has not been restarted or
 reconfigured. Details and the refined origin-preserving plan are in
 DEPLOYED_COMPATIBILITY.md. No GitHub workflows were started.
+
+## Secure relay transport completed, 2026-09-27
+
+Tailscale Serve authorization succeeded. HTTPS on the existing tailnet port 3000
+now proxies directly to the unchanged loopback HTTP backend. No Docker restart,
+image update, community mapping edit or origin change was needed. The temporary
+443 staging rule was removed; only the port-3000 rule remains. No Funnel was
+enabled. Earlier provisioning/port-move plans above are superseded.
+
+Certificate validation, HTTP 200 metadata/readiness, signer continuity, and an
+anonymous WebSocket 101 upgrade passed. These are transport checks, not proof of
+authenticated compatibility. Existing plaintext Docker publication is unchanged.
+
+Configured the installed helper's relay URL locally and restarted its service:
+active/running, LimitCORE=0. Opened a hidden terminal enrollment prompt on Omarchy;
+the operator must supply their existing Buzz identity privately. No credentials
+were read by the assistant. Authenticated room access remains the next gate;
+no production messages, subscriptions or agent tasks were sent during probing.
+See DEPLOYED_COMPATIBILITY.md for scoped rollback. GitHub CI remains manual-only.
