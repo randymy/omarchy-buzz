@@ -12,7 +12,7 @@ index 4333341..c86fc92 100644
  [dev-dependencies]
  axum = { workspace = true }
 diff --git a/crates/buzz-acp/src/acp.rs b/crates/buzz-acp/src/acp.rs
-index 2feb217..be4e083 100644
+index 2feb217..16651a1 100644
 --- a/crates/buzz-acp/src/acp.rs
 +++ b/crates/buzz-acp/src/acp.rs
 @@ -474,12 +474,32 @@ impl AcpClient {
@@ -124,7 +124,7 @@ index 2feb217..be4e083 100644
 +        for name in names {
 +            script.push_str(&format!("test -z \"${{{name}+present}}\" || exit 2; "));
 +        }
-+        script.push_str("printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"agentInfo\":{\"name\":\"isolated-fixture\",\"version\":\"1\"},\"agentCapabilities\":{}}}'; while IFS= read -r ignored; do :; done");
++        script.push_str("printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":0,\"result\":{\"protocolVersion\":1,\"agentInfo\":{\"name\":\"isolated-fixture\",\"version\":\"1\"},\"agentCapabilities\":{}}}'; while IFS= read -r ignored; do :; done");
 +        let mut client = AcpClient::spawn_with_policy(
 +            "/bin/sh",
 +            &["-c".into(), script],
@@ -274,7 +274,7 @@ index a31e3f2..95c1479 100644
      {
 diff --git a/crates/buzz-acp/src/key_input.rs b/crates/buzz-acp/src/key_input.rs
 new file mode 100644
-index 0000000..a3c3365
+index 0000000..1324812
 --- /dev/null
 +++ b/crates/buzz-acp/src/key_input.rs
 @@ -0,0 +1,206 @@
@@ -284,11 +284,11 @@ index 0000000..a3c3365
 +mod linux {
 +    use nix::errno::Errno;
 +    use nix::libc;
-+    use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
++    use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
 +    use nostr::Keys;
 +    use std::fs::{self, File, OpenOptions};
 +    use std::io::Read;
-+    use std::os::fd::{AsFd, IntoRawFd, OwnedFd};
++    use std::os::fd::AsFd;
 +    use std::os::unix::fs::{FileTypeExt, OpenOptionsExt};
 +    use std::time::{Duration, Instant};
 +    use zeroize::Zeroizing;
@@ -407,7 +407,7 @@ index 0000000..a3c3365
 +    mod tests {
 +        use super::*;
 +        use std::io::Write;
-+        use std::os::fd::AsRawFd;
++        use std::os::fd::{AsRawFd, IntoRawFd, OwnedFd};
 +
 +        fn pipe() -> (OwnedFd, OwnedFd) {
 +            nix::unistd::pipe().unwrap()

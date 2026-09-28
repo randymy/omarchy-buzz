@@ -73,3 +73,27 @@ before any relay or agent startup, including the valid-key case. Parent-env
 markers exercise inherited relay/Git scrubbing in the real-child unit test.
 All tests are synthetic; no persistent identity, provider or production relay
 is used. Compilation/runtime results will be recorded separately once complete.
+
+## Next upstream increment: harness-owned replies
+
+At the pinned base, `acp.rs::handle_session_update` logs
+`agent_message_chunk` text; `pool.rs::run_isolated_prompt` returns only a
+`StopReason`. No automatic conversation reply follows from those chunks.
+The existing `pool.rs::post_failure_notice` demonstrates the supported signing
+path: `buzz_sdk::build_message`, `sign_with_keys`, then
+`relay.rs::RestClient::submit_event`. Reuse those primitives rather than give
+the agent a general signing credential or invent a second relay protocol.
+
+The next proposal should bind a bounded reply accumulator to the active ACP
+session/turn and to the already-authorized incoming room/thread. Accept only
+validated user-facing message text, never thoughts, tool output, stale session
+frames or agent-selected destination metadata. Publish through the harness on
+an explicitly supported completion condition. Cancellation, truncation, protocol
+failure and ambiguous delivery must retain distinct states; retry the same
+signed event only when safe, never silently create a duplicate response.
+
+Tests must cover wrong-session frames, interleaved agents, oversized replies,
+cancel/failure without a success post, threaded destinations, revoked membership,
+and ambiguous acknowledgments against a disposable relay. That work is not
+implemented here. The existing automatic tool-decision/default bypass behavior
+also remains a separate blocker for real-machine tasks.
