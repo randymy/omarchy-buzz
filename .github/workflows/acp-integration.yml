@@ -3,6 +3,11 @@ name: Manual ACP authentication integration
 # Explicit runs only. No push, PR, or scheduled triggers.
 on:
   workflow_dispatch:
+    inputs:
+      vendor_discovery:
+        description: Initialize pinned vendor adapters in an empty offline namespace (no login or prompts)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -75,6 +80,53 @@ jobs:
       - name: Exercise actual ACP client and command with fake stdio peers
         working-directory: plugin
         run: python3 tests/acp_terminal_upstream.py --binary "$RUNNER_TEMP/relay-target/debug/buzz-acp" --output "$RUNNER_TEMP/acp-auth-evidence.json"
+      - name: Validate discovery probe boundaries
+        working-directory: plugin
+        run: python3 -m unittest discover -s tests -p test_vendor_adapter_discovery.py -v
+      - name: Install exact Node runtime for optional vendor discovery
+        if: inputs.vendor_discovery
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22.23.3'
+      - name: Install locked adapter artifacts without lifecycle scripts
+        if: inputs.vendor_discovery
+        working-directory: plugin
+        run: |
+          python3 - <<'PYCODE'
+          import os, pathlib, shutil, subprocess, tempfile
+          with tempfile.TemporaryDirectory(prefix='buzz-npm-', dir=os.environ['RUNNER_TEMP']) as home:
+              root=pathlib.Path(home)
+              for name in ('user.npmrc','global.npmrc'): (root/name).touch()
+              env={'HOME':home,'PATH':os.environ['PATH'],'LANG':'C.UTF-8'}
+              subprocess.run([shutil.which('npm'),'ci','--ignore-scripts','--omit=dev','--no-audit','--no-fund',
+                  '--userconfig='+str(root/'user.npmrc'),'--globalconfig='+str(root/'global.npmrc'),
+                  '--cache='+str(root/'cache')], cwd='tests/vendor-adapters', env=env, check=True, timeout=300)
+          PYCODE
+      - name: Discover vendor auth methods without network or existing accounts
+        if: inputs.vendor_discovery
+        working-directory: plugin
+        run: |
+          probe_uid=$(id -u)
+          probe_gid=$(id -g)
+          probe_node=$(command -v node)
+          outside_netns=$(readlink /proc/self/ns/net)
+          sudo unshare --net --pid --fork --kill-child --mount-proc -- \
+            /usr/bin/setpriv --reuid="$probe_uid" --regid="$probe_gid" --clear-groups --no-new-privs \
+            --bounding-set=-all --inh-caps=-all --ambient-caps=-all \
+            /usr/bin/env -i PATH="$(dirname "$probe_node"):/usr/bin:/bin" LANG=C.UTF-8 \
+            /usr/bin/python3 tests/vendor_adapter_discovery.py \
+            --binary "$RUNNER_TEMP/relay-target/debug/buzz-acp" \
+            --packages "$GITHUB_WORKSPACE/plugin/tests/vendor-adapters" \
+            --node "$probe_node" --outside-netns "$outside_netns" \
+            --output "$RUNNER_TEMP/vendor-adapter-evidence.json"
+      - name: Upload sanitized vendor discovery evidence
+        if: always() && inputs.vendor_discovery
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: vendor-adapter-evidence
+          path: ${{ runner.temp }}/vendor-adapter-evidence.json
+          if-no-files-found: warn
+          retention-days: 7
       - name: Upload sanitized evidence only
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
