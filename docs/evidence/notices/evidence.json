@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "packages": [
+    {
+      "name": "nostr",
+      "version": "0.44.8",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "registryChecksum": "40ff7b77ef428b40aa2834a6acbae38a0e104c98b306208ca4b87a420d579a4b",
+      "manifestSha256": "850d1258125302019b23ba0df594eb4ca99c010d3359e2305723306868d0ce05",
+      "revision": "a86ce27c3b4d0dcab186a707336237653a01b114",
+      "pathInVcs": "crates/nostr",
+      "vcsInfoSha256": "6a77141e72c2c3c81a4618053e53bee62f0c38e1812bfa4272cb224c72c924bd",
+      "sourceUrl": "https://raw.githubusercontent.com/rust-nostr/nostr/a86ce27c3b4d0dcab186a707336237653a01b114/LICENSE",
+      "sourcePath": "LICENSE",
+      "file": "nostr-0.44.8-LICENSE.txt",
+      "sha256": "a333d394b9f31b6ca64d08f3048a8a38125c181d68d3d376c4ddf988cffd12d2",
+      "bytes": 1122
+    }
+  ]
+}

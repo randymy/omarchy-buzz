@@ -3,9 +3,11 @@
 import importlib.machinery
 import importlib.util
 import json
+import hashlib
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -23,6 +25,59 @@ packaging = load("package-helper")
 
 
 class Notices(unittest.TestCase):
+    def test_pinned_supplemental_evidence_and_tampering(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            metadata, lock = self.fixture(base)
+            (base / "dep/LICENSE").unlink()
+            (base / "dep/vendor/NOTICE").unlink()
+            vcs = b'{"git":{"sha1":"' + b"a" * 40 + b'"},"path_in_vcs":"crates/dep"}'
+            (base / "dep/.cargo_vcs_info.json").write_bytes(vcs)
+            supplemental = base / "supplemental"
+            supplemental.mkdir()
+            payload = b"Exact synthetic upstream notice\n"
+            (supplemental / "LICENSE.txt").write_bytes(payload)
+            item = {"name": "dep", "version": "1.0.0", "source": metadata["packages"][1]["source"],
+                    "registryChecksum": "a" * 64,
+                    "manifestSha256": hashlib.sha256((base / "dep/Cargo.toml").read_bytes()).hexdigest(),
+                    "revision": "a" * 40, "pathInVcs": "crates/dep",
+                    "vcsInfoSha256": hashlib.sha256(vcs).hexdigest(),
+                    "sourceUrl": "https://raw.githubusercontent.com/example/dep/" + "a" * 40 + "/LICENSE",
+                    "sourcePath": "LICENSE", "file": "LICENSE.txt",
+                    "sha256": hashlib.sha256(payload).hexdigest(), "bytes": len(payload)}
+            evidence = {"schemaVersion": 1, "packages": [item]}
+            (supplemental / "evidence.json").write_text(json.dumps(evidence))
+            document, texts = notices.inventory(metadata, lock, "aarch64-unknown-linux-gnu", supplemental)
+            package = document["packages"][0]
+            self.assertIn("supplemental_notice_review", package["reviewFlags"])
+            self.assertNotIn("no_notice_text_found", package["reviewFlags"])
+            self.assertEqual(list(texts.values()), [payload])
+            self.assertEqual(package["licenseFiles"][0]["supplementalEvidence"]["revision"], "a" * 40)
+            with patch.object(notices, "MAX_TOTAL", len(payload) - 1):
+                with self.assertRaisesRegex(ValueError, "bounded budget"):
+                    notices.inventory(metadata, lock, "aarch64-unknown-linux-gnu", supplemental)
+            (supplemental / "LICENSE.txt").write_bytes(b"tampered")
+            with self.assertRaises(ValueError):
+                notices.inventory(metadata, lock, "aarch64-unknown-linux-gnu", supplemental)
+            (supplemental / "evidence.json").write_text("[]")
+            with self.assertRaisesRegex(ValueError, "unsupported supplemental evidence"):
+                notices.inventory(metadata, lock, "aarch64-unknown-linux-gnu", supplemental)
+            (supplemental / "LICENSE.txt").write_bytes(payload)
+            item["sourcePath"] = "../LICENSE"
+            (supplemental / "evidence.json").write_text(json.dumps(evidence))
+            with self.assertRaises(ValueError):
+                notices.inventory(metadata, lock, "aarch64-unknown-linux-gnu", supplemental)
+            item["sourcePath"] = "LICENSE"
+            (supplemental / "evidence.json").write_text(json.dumps(evidence))
+            (base / "dep/.cargo_vcs_info.json").write_bytes(b"changed")
+            with self.assertRaises(ValueError):
+                notices.inventory(metadata, lock, "aarch64-unknown-linux-gnu", supplemental)
+            (base / "dep/.cargo_vcs_info.json").write_bytes(vcs)
+            item["registryChecksum"] = "b" * 64
+            (supplemental / "evidence.json").write_text(json.dumps(evidence))
+            with self.assertRaises(ValueError):
+                notices.inventory(metadata, lock, "aarch64-unknown-linux-gnu", supplemental)
+
     def fixture(self, base):
         packages = []
         for name, source in (("helper", None), ("dep", "registry+https://example.invalid/index"), ("dev", "registry+https://example.invalid/index")):
