@@ -193,3 +193,14 @@ nondefault modes and propagates setter errors instead of silently continuing.
 Its four focused tests pass with transport doubles. It does not resolve the
 harness's default bypass mode, automatic tool approval, credential propagation
 or effective-mode verification. No installed ACP behavior changes.
+
+## Reuse and terminal execution follow-through
+
+Buzz Desktop's existing account workflow is now explicitly mapped in
+[ACP_INTERACTIVE_LOGIN.md](upstream/ACP_INTERACTIVE_LOGIN.md). An alternative
+upstream patch adds the missing standalone terminal execution path while
+reusing adapter-native login. Two descriptor tests and twelve real PTY fixture
+cases pass; this is not full-harness or provider-login certification. The
+[Codex source assessment](CODEX_ADAPTER_SOURCE.md) identifies its different
+agent-owned ChatGPT login path. Credentials remain native; no subscription
+support claim is inferred from synthetic tests.

@@ -78,3 +78,12 @@ It does not copy a substitute implementation, execute an adapter, inspect a logi
 store or contact a provider. The capability test checks that goose's unrelated
 notification capability is preserved. The full existing ACP initialize test is
 updated in the patch but is not run by this focused harness.
+
+## Interactive alternative now staged
+
+[ACP_INTERACTIVE_LOGIN.md](ACP_INTERACTIVE_LOGIN.md) describes an alternative
+patch that adds the actual terminal handoff and preserves desktop discovery
+through an explicit capability flag. It reuses the native adapter's existing
+login flow. Apply either proposal to the pinned base, not both. Its real PTY
+fixture is stronger lifecycle evidence, but full Buzz/desktop integration and
+provider account validation remain unverified.

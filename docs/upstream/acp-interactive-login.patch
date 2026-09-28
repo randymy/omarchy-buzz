@@ -1,0 +1,651 @@
+--- a/crates/buzz-acp/src/lib.rs
++++ b/crates/buzz-acp/src/lib.rs
+@@ -18,6 +18,7 @@
+ mod relay;
+ mod run_task;
+ mod runtime;
++mod terminal_auth;
+ use runtime::{AgentRuntime, PoolStartup, SessionMode};
+ mod scope;
+ mod setup_mode;
+@@ -5610,8 +5611,8 @@
+ }
+ 
+ async fn spawn_auth_client(agent: &AuthAgentArgs) -> Result<AcpClient, acp::AcpError> {
+-    let agent_args = config::normalize_agent_args(&agent.agent_command, agent.agent_args.clone());
+-    AcpClient::spawn(&agent.agent_command, &agent_args, &[], false).await
++    // Auth callers freeze normalized argv before resolving the configured program.
++    AcpClient::spawn_for_auth(&agent.agent_command, &agent.agent_args).await
+ }
+ 
+ fn extract_auth_methods(init_result: &serde_json::Value) -> Vec<serde_json::Value> {
+@@ -5623,7 +5624,9 @@
+ }
+ 
+ /// `buzz-acp auth-methods` — spawn an adapter, initialize it, print authMethods.
+-async fn run_auth_methods(args: AuthMethodsArgs) -> Result<()> {
++async fn run_auth_methods(mut args: AuthMethodsArgs) -> Result<()> {
++    args.agent.agent_args =
++        config::normalize_agent_args(&args.agent.agent_command, args.agent.agent_args.clone());
+     let mut client = match spawn_auth_client(&args.agent).await {
+         Ok(c) => c,
+         Err(e) => {
+@@ -5632,7 +5635,12 @@
+         }
+     };
+ 
+-    let init_result = match tokio::time::timeout(MODELS_TIMEOUT, client.initialize()).await {
++    let init_result = match tokio::time::timeout(
++        MODELS_TIMEOUT,
++        client.initialize_for_auth(args.terminal_auth || terminal_auth::available()),
++    )
++    .await
++    {
+         Ok(Ok(result)) => result,
+         Ok(Err(e)) => {
+             client.shutdown().await;
+@@ -5670,59 +5678,78 @@
+     Ok(())
+ }
+ 
+-/// `buzz-acp authenticate` — invoke one adapter-owned auth method.
+-async fn run_authenticate(args: AuthenticateArgs) -> Result<()> {
+-    let mut client = match spawn_auth_client(&args.agent).await {
+-        Ok(c) => c,
+-        Err(e) => {
+-            eprintln!("error: failed to spawn agent: {e}");
+-            std::process::exit(1);
++/// `buzz-acp authenticate` — run the explicitly selected advertised login flow.
++async fn run_authenticate(mut args: AuthenticateArgs) -> Result<()> {
++    // Normalize using the configured name before resolving an npm shim symlink.
++    args.agent.agent_args =
++        config::normalize_agent_args(&args.agent.agent_command, args.agent.agent_args.clone());
++    // Resolve once from operator configuration, never from a method descriptor.
++    let program =
++        terminal_auth::resolve_program(&args.agent.agent_command).map_err(anyhow::Error::msg)?;
++    args.agent.agent_command = program
++        .to_str()
++        .ok_or_else(|| anyhow::anyhow!("auth_program_invalid"))?
++        .to_owned();
++    let mut client = spawn_auth_client(&args.agent)
++        .await
++        .map_err(|_| anyhow::anyhow!("auth_spawn_failed"))?;
++    let initialized = tokio::time::timeout(
++        MODELS_TIMEOUT,
++        client.initialize_for_auth(terminal_auth::available()),
++    )
++    .await;
++    let init = match initialized {
++        Ok(Ok(init)) => init,
++        _ => {
++            client.shutdown().await;
++            return Err(anyhow::anyhow!("auth_initialize_failed"));
+         }
+     };
+-
+-    let init_result = match tokio::time::timeout(MODELS_TIMEOUT, client.initialize()).await {
+-        Ok(Ok(result)) => result,
+-        Ok(Err(e)) => {
++    let plan = terminal_auth::select(&extract_auth_methods(&init), &args.method_id);
++    match plan {
++        Err(category) => {
+             client.shutdown().await;
+-            eprintln!("error: agent initialize failed: {e}");
+-            std::process::exit(1);
+-        }
+-        Err(_) => {
++            Err(anyhow::Error::msg(category))
++        }
++        Ok(terminal_auth::AuthPlan::Agent) => {
++            let result =
++                tokio::time::timeout(AUTHENTICATE_TIMEOUT, client.authenticate(&args.method_id))
++                    .await;
+             client.shutdown().await;
+-            eprintln!("error: agent initialize timed out ({MODELS_TIMEOUT:?})");
+-            std::process::exit(1);
+-        }
+-    };
+-
+-    let supports_method = extract_auth_methods(&init_result)
+-        .iter()
+-        .any(|method| method.get("id").and_then(|id| id.as_str()) == Some(args.method_id.as_str()));
+-    if !supports_method {
+-        client.shutdown().await;
+-        eprintln!(
+-            "error: auth method '{}' is not advertised by this adapter",
+-            args.method_id
+-        );
+-        std::process::exit(1);
+-    }
+-
+-    let result =
+-        tokio::time::timeout(AUTHENTICATE_TIMEOUT, client.authenticate(&args.method_id)).await;
+-
+-    match result {
+-        Ok(Ok(_)) => {
++            match result {
++                Ok(Ok(_)) => Ok(()),
++                _ => Err(anyhow::anyhow!("auth_authenticate_failed")),
++            }
++        }
++        Ok(terminal_auth::AuthPlan::Terminal {
++            args: login_args,
++            interactive_env,
++        }) => {
+             client.shutdown().await;
+-            Ok(())
+-        }
+-        Ok(Err(e)) => {
+-            client.shutdown().await;
+-            eprintln!("error: authenticate failed: {e}");
+-            std::process::exit(1);
+-        }
+-        Err(_) => {
+-            client.shutdown().await;
+-            eprintln!("error: authenticate timed out ({AUTHENTICATE_TIMEOUT:?})");
+-            std::process::exit(1);
++            let base = args.agent.agent_args.clone();
++            terminal_auth::run(
++                &program,
++                &base,
++                &login_args,
++                interactive_env,
++                AUTHENTICATE_TIMEOUT,
++            )
++            .await
++            .map_err(anyhow::Error::msg)?;
++            // Exit zero is the terminal contract, not evidence of effective payer.
++            let mut fresh = spawn_auth_client(&args.agent)
++                .await
++                .map_err(|_| anyhow::anyhow!("auth_reconnect_failed"))?;
++            let result = tokio::time::timeout(
++                MODELS_TIMEOUT,
++                fresh.initialize_for_auth(terminal_auth::available()),
++            )
++            .await;
++            fresh.shutdown().await;
++            match result {
++                Ok(Ok(_)) => Ok(()),
++                _ => Err(anyhow::anyhow!("auth_reinitialize_failed")),
++            }
+         }
+     }
+ }
+--- a/crates/buzz-acp/src/acp.rs
++++ b/crates/buzz-acp/src/acp.rs
+@@ -395,11 +395,10 @@
+ 
+ fn build_client_capabilities() -> serde_json::Value {
+     serde_json::json!({
+-        // Signal to ACP adapters that Buzz can hand users to terminal-native
+-        // auth flows. Adapters decide which auth methods to expose; Buzz does
+-        // not hardcode vendor login commands from this capability.
++        // Ordinary clients cannot perform terminal authentication. The local
++        // authentication command enables this only for a foreground terminal.
+         "auth": {
+-            "terminal": true
++            "terminal": false
+         },
+         // Signal to goose that we handle `_goose/unstable/session/update`
+         // notifications. Without this the custom notification is suppressed
+@@ -407,11 +406,7 @@
+         "_meta": {
+             "goose": {
+                 "customNotifications": true
+-            },
+-            // Non-standard extension used by claude-agent-acp to advertise the
+-            // exact terminal login argv for subscription auth. Unknown `_meta`
+-            // keys are ignored by other adapters.
+-            "terminal-auth": true
++            }
+         }
+     })
+ }
+@@ -472,9 +467,35 @@
+         has_generated_codex_config: bool,
+         launch_env: &[(String, String)],
+     ) -> Result<Self, AcpError> {
++        Self::spawn_with_policy(
++            command,
++            args,
++            extra_env,
++            has_generated_codex_config,
++            launch_env,
++            false,
++        )
++        .await
++    }
++
++    pub(crate) async fn spawn_for_auth(command: &str, args: &[String]) -> Result<Self, AcpError> {
++        Self::spawn_with_policy(command, args, &[], false, &[], true).await
++    }
++
++    async fn spawn_with_policy(
++        command: &str,
++        args: &[String],
++        extra_env: &[(String, String)],
++        has_generated_codex_config: bool,
++        launch_env: &[(String, String)],
++        clean_auth: bool,
++    ) -> Result<Self, AcpError> {
+         use std::process::Stdio;
+ 
+         let mut cmd = tokio::process::Command::new(command);
++        if clean_auth {
++            cmd.env_clear().envs(crate::terminal_auth::environment());
++        }
+         cmd.args(args);
+         if crate::config::normalize_agent_command_identity(command) == BUZZ_PI_ACP_NAME {
+             if !args.iter().any(|arg| arg == "--") {
+@@ -660,9 +681,17 @@
+     /// arm can choose [`ACP_STEER_METHOD`] for adapters that implement it.
+     /// Parsed here rather than at each call site so no caller can forget it.
+     pub async fn initialize(&mut self) -> Result<serde_json::Value, AcpError> {
++        self.initialize_for_auth(false).await
++    }
++
++    pub(crate) async fn initialize_for_auth(
++        &mut self,
++        terminal: bool,
++    ) -> Result<serde_json::Value, AcpError> {
+         // Requesting version 2 is an intentional temporary pin — we are squatting
+         // on ACP v2 ahead of the upstream ACP RFD. Revisit when that RFD merges.
+-        let params = build_initialize_params();
++        let mut params = build_initialize_params();
++        params["clientCapabilities"]["auth"]["terminal"] = terminal.into();
+         let result = self.send_request("initialize", params).await?;
+         self.steering_supported = result
+             .pointer("/_meta/steering/supported")
+@@ -2569,8 +2598,8 @@
+         assert!(msg["params"]["clientCapabilities"].is_object());
+         assert_eq!(
+             msg["params"]["clientCapabilities"]["auth"]["terminal"].as_bool(),
+-            Some(true),
+-            "terminal auth capability must be advertised so adapters can expose terminal login methods"
++            Some(false),
++            "ordinary clients must not advertise terminal authentication"
+         );
+         assert_eq!(
+             msg["params"]["clientCapabilities"]["_meta"]["goose"]["customNotifications"].as_bool(),
+--- a/crates/buzz-acp/src/config.rs
++++ b/crates/buzz-acp/src/config.rs
+@@ -220,6 +220,10 @@
+     /// Output structured JSON instead of human-readable text.
+     #[arg(long)]
+     pub json: bool,
++
++    /// The calling UI provides a terminal-login executor (discovery only).
++    #[arg(long)]
++    pub terminal_auth: bool,
+ }
+ 
+ /// CLI args for `buzz-acp authenticate` — start an adapter-owned login flow.
+--- a/crates/buzz-acp/Cargo.toml
++++ b/crates/buzz-acp/Cargo.toml
+@@ -80,7 +80,7 @@
+ # Process-group kill (safe wrapper around killpg) — Unix-only; kill_process_group
+ # has a #[cfg(not(unix))] fallback in acp.rs.
+ [target.'cfg(unix)'.dependencies]
+-nix = { version = "0.31", default-features = false, features = ["signal", "user"] }
++nix = { version = "0.31", default-features = false, features = ["signal", "user", "term"] }
+ 
+ [dev-dependencies]
+ axum = { workspace = true }
+--- /dev/null
++++ b/crates/buzz-acp/src/terminal_auth.rs
+@@ -0,0 +1,335 @@
++//! Restricted interactive authentication. Never run this from the QML process.
++use serde_json::Value;
++use std::{
++    path::{Path, PathBuf},
++    time::Duration,
++};
++
++pub enum AuthPlan {
++    Agent,
++    Terminal {
++        args: Vec<String>,
++        interactive_env: bool,
++    },
++}
++
++pub fn select(methods: &[Value], id: &str) -> Result<AuthPlan, &'static str> {
++    if methods.len() > 64 || id.is_empty() || id.len() > 128 {
++        return Err("auth_method_invalid");
++    }
++    let mut matches = methods
++        .iter()
++        .filter(|m| m.get("id").and_then(Value::as_str) == Some(id));
++    let method = matches.next().ok_or("auth_method_unavailable")?;
++    if matches.next().is_some() {
++        return Err("auth_method_ambiguous");
++    }
++    match method.get("type") {
++        None => Ok(AuthPlan::Agent),
++        Some(Value::String(kind)) if kind == "agent" => Ok(AuthPlan::Agent),
++        Some(Value::String(kind)) if kind == "terminal" => {
++            if method.get("command").is_some() {
++                return Err("auth_command_forbidden");
++            }
++            let values = method
++                .get("args")
++                .and_then(Value::as_array)
++                .ok_or("auth_args_invalid")?;
++            if values.is_empty() || values.len() > 32 {
++                return Err("auth_args_invalid");
++            }
++            let mut args = Vec::new();
++            let mut bytes = 0;
++            for value in values {
++                let arg = value.as_str().ok_or("auth_args_invalid")?;
++                bytes += arg.len();
++                if arg.len() > 4096 || bytes > 8192 || arg.chars().any(char::is_control) {
++                    return Err("auth_args_invalid");
++                }
++                args.push(arg.to_owned());
++            }
++            // A restricted subset: never allow adapter-controlled PATH, loaders,
++            // provider keys, config overrides or arbitrary executable selection.
++            let interactive_env = match method.get("env") {
++                None => false,
++                Some(Value::Object(env)) if env.is_empty() => false,
++                Some(Value::Object(env))
++                    if env.len() == 1
++                        && env.get("ACP_INTERACTIVE_LOGIN").and_then(Value::as_str)
++                            == Some("1") =>
++                {
++                    true
++                }
++                _ => return Err("auth_env_unsupported"),
++            };
++            Ok(AuthPlan::Terminal {
++                args,
++                interactive_env,
++            })
++        }
++        _ => Err("auth_type_unsupported"),
++    }
++}
++
++// Used for discovery, interactive login and reconnect alike. Provider login
++// stores remain native; filtering environment alone does not prove billing mode.
++pub fn environment() -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
++    const ALLOWED: &[&str] = &[
++        "HOME",
++        "PATH",
++        "LANG",
++        "LC_ALL",
++        "TERM",
++        "COLORTERM",
++        "XDG_CONFIG_HOME",
++        "XDG_DATA_HOME",
++        "XDG_STATE_HOME",
++        "XDG_RUNTIME_DIR",
++        "DBUS_SESSION_BUS_ADDRESS",
++        "DISPLAY",
++        "WAYLAND_DISPLAY",
++    ];
++    ALLOWED
++        .iter()
++        .filter_map(|name| std::env::var_os(name).map(|value| ((*name).into(), value)))
++        .collect()
++}
++
++pub fn resolve_program(command: &str) -> Result<PathBuf, &'static str> {
++    let candidates =
++        if Path::new(command).components().count() > 1 || Path::new(command).is_absolute() {
++            vec![PathBuf::from(command)]
++        } else {
++            std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
++                .map(|p| p.join(command))
++                .collect()
++        };
++    for path in candidates {
++        if let Ok(path) = path.canonicalize() {
++            if path.is_file() {
++                #[cfg(unix)]
++                {
++                    use std::os::unix::fs::PermissionsExt;
++                    if path
++                        .metadata()
++                        .map(|m| m.permissions().mode() & 0o111 != 0)
++                        .unwrap_or(false)
++                    {
++                        return Ok(path);
++                    }
++                }
++            }
++        }
++    }
++    Err("auth_program_unavailable")
++}
++
++#[cfg(unix)]
++mod unix {
++    use super::*;
++    use nix::{
++        sys::{
++            signal::{killpg, pthread_sigmask, SigSet, SigmaskHow, Signal},
++            termios::{tcgetattr, tcsetattr, SetArg, Termios},
++        },
++        unistd::{getpgrp, tcgetpgrp, tcsetpgrp, Pid},
++    };
++    use std::{fs::File, io::IsTerminal, process::Stdio};
++
++    fn foreground(tty: &File, group: Pid) -> Result<(), &'static str> {
++        // Only this synchronous syscall sequence changes the thread signal mask.
++        let mut blocked = SigSet::empty();
++        blocked.add(Signal::SIGTTOU);
++        let mut previous = SigSet::empty();
++        pthread_sigmask(SigmaskHow::SIG_BLOCK, Some(&blocked), Some(&mut previous))
++            .map_err(|_| "auth_terminal_unavailable")?;
++        let result = tcsetpgrp(tty, group);
++        let restored = pthread_sigmask(SigmaskHow::SIG_SETMASK, Some(&previous), None);
++        result
++            .and(restored)
++            .map_err(|_| "auth_terminal_unavailable")
++    }
++    struct Terminal {
++        tty: File,
++        original_group: Pid,
++        original_mode: Termios,
++        child_group: Option<Pid>,
++    }
++    impl Terminal {
++        fn open() -> Result<Self, &'static str> {
++            if !std::io::stdin().is_terminal()
++                || !std::io::stdout().is_terminal()
++                || !std::io::stderr().is_terminal()
++            {
++                return Err("auth_terminal_required");
++            }
++            let tty = File::options()
++                .read(true)
++                .write(true)
++                .open("/dev/tty")
++                .map_err(|_| "auth_terminal_required")?;
++            let original_group = tcgetpgrp(&tty).map_err(|_| "auth_terminal_required")?;
++            if original_group != getpgrp() {
++                return Err("auth_foreground_required");
++            }
++            let original_mode = tcgetattr(&tty).map_err(|_| "auth_terminal_required")?;
++            Ok(Self {
++                tty,
++                original_group,
++                original_mode,
++                child_group: None,
++            })
++        }
++    }
++    impl Drop for Terminal {
++        fn drop(&mut self) {
++            if let Some(group) = self.child_group {
++                let _ = killpg(group, Signal::SIGKILL);
++            }
++            let _ = foreground(&self.tty, self.original_group);
++            let _ = tcsetattr(&self.tty, SetArg::TCSANOW, &self.original_mode);
++        }
++    }
++    pub fn available() -> bool {
++        Terminal::open().is_ok()
++    }
++    pub async fn run(
++        program: &Path,
++        base: &[String],
++        args: &[String],
++        interactive_env: bool,
++        limit: Duration,
++    ) -> Result<(), &'static str> {
++        let mut terminal = Terminal::open()?;
++        let mut terminate =
++            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
++                .map_err(|_| "auth_signal_unavailable")?;
++        let mut hangup = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
++            .map_err(|_| "auth_signal_unavailable")?;
++        let mut command = tokio::process::Command::new(program);
++        command
++            .args(base)
++            .args(args)
++            .env_clear()
++            .envs(environment())
++            .stdin(Stdio::from(
++                terminal
++                    .tty
++                    .try_clone()
++                    .map_err(|_| "auth_terminal_unavailable")?,
++            ))
++            .stdout(Stdio::from(
++                terminal
++                    .tty
++                    .try_clone()
++                    .map_err(|_| "auth_terminal_unavailable")?,
++            ))
++            .stderr(Stdio::from(
++                terminal
++                    .tty
++                    .try_clone()
++                    .map_err(|_| "auth_terminal_unavailable")?,
++            ))
++            .process_group(0)
++            .kill_on_drop(true);
++        if interactive_env {
++            command.env("ACP_INTERACTIVE_LOGIN", "1");
++        }
++        let mut child = command.spawn().map_err(|_| "auth_spawn_failed")?;
++        let group = Pid::from_raw(child.id().ok_or("auth_spawn_failed")? as i32);
++        terminal.child_group = Some(group);
++        if let Err(error) = foreground(&terminal.tty, group) {
++            drop(terminal);
++            let _ = tokio::time::timeout(Duration::from_secs(5), child.wait()).await;
++            return Err(error);
++        }
++        // A child which read stdin before the foreground handoff may be stopped.
++        let _ = killpg(group, Signal::SIGCONT);
++        let result = tokio::select! {
++            result=child.wait()=>match result {
++                Ok(status) if status.success()=>Ok(()),
++                _=>Err("auth_login_failed"),
++            },
++            _=tokio::time::sleep(limit)=>Err("auth_login_timeout"),
++            _=terminate.recv()=>Err("auth_login_cancelled"),
++            _=hangup.recv()=>Err("auth_login_cancelled"),
++            _=tokio::signal::ctrl_c()=>Err("auth_login_cancelled"),
++        };
++        drop(terminal); // Restore terminal and terminate remaining group members.
++        let _ = tokio::time::timeout(Duration::from_secs(5), child.wait()).await;
++        result
++    }
++}
++#[cfg(unix)]
++pub use unix::{available, run};
++#[cfg(not(unix))]
++pub fn available() -> bool {
++    false
++}
++#[cfg(not(unix))]
++pub async fn run(
++    _: &Path,
++    _: &[String],
++    _: &[String],
++    _: bool,
++    _: Duration,
++) -> Result<(), &'static str> {
++    Err("auth_platform_unsupported")
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use serde_json::json;
++    #[test]
++    fn method_types_and_argument_limits_fail_closed() {
++        assert!(matches!(
++            select(&[json!({"id":"x"})], "x"),
++            Ok(AuthPlan::Agent)
++        ));
++        for kind in [json!(null), json!(true), json!("other")] {
++            assert!(select(&[json!({"id":"x","type":kind})], "x").is_err());
++        }
++        for args in [
++            json!([]),
++            json!([null]),
++            json!(["bad\nargument"]),
++            json!(["x".repeat(4097)]),
++            json!(vec!["x"; 33]),
++        ] {
++            assert!(select(&[json!({"id":"x","type":"terminal","args":args})], "x").is_err());
++        }
++        assert!(select(&vec![json!({"id":"x"}); 65], "x").is_err());
++        assert!(select(&[json!({"id":"x"})], "missing").is_err());
++    }
++    #[test]
++    fn descriptor_cannot_choose_program_or_credentials() {
++        for env in [
++            json!({"PATH":"/tmp"}),
++            json!({"OPENAI_API_KEY":"synthetic"}),
++            json!({"ACP_INTERACTIVE_LOGIN":"2"}),
++            json!(null),
++        ] {
++            assert!(select(
++                &[json!({"id":"x","type":"terminal","args":["--login"],"env":env})],
++                "x"
++            )
++            .is_err());
++        }
++        assert!(select(
++            &[json!({"id":"x","type":"terminal","args":["--login"],"command":"sh"})],
++            "x"
++        )
++        .is_err());
++        assert!(matches!(
++            select(
++                &[json!({"id":"x","type":"terminal","args":["--login"]})],
++                "x"
++            ),
++            Ok(AuthPlan::Terminal {
++                interactive_env: false,
++                ..
++            })
++        ));
++    }
++}
+--- a/desktop/src-tauri/src/commands/agent_auth.rs
++++ b/desktop/src-tauri/src/commands/agent_auth.rs
+@@ -68,7 +68,7 @@
+ }
+ 
+ fn discover_acp_auth_methods_blocking(runtime_id: &str) -> Result<AcpAuthMethodsResult, String> {
+-    let output = run_buzz_acp_auth_command(runtime_id, ["auth-methods", "--json"])?;
++    let output = run_buzz_acp_auth_command(runtime_id, ["auth-methods", "--json", "--terminal-auth"])?;
+     if !output.status.success() {
+         return Err(command_error("buzz-acp auth-methods", &output));
+     }
+@@ -540,7 +540,7 @@
+             &acp_path,
+             "claude-agent-acp",
+             &adapter_path,
+-            ["auth-methods", "--json"],
++            ["auth-methods", "--json", "--terminal-auth"],
+             Some(&augmented_path),
+         )
+         .expect("run auth command");

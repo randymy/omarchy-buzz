@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-09-28",
+  "baseRevision": "781d39510cf23cfe224e8f521ae06a23377e06de",
+  "patchSha256": "a92de4a9b0d27a1ecd368371c7ca1ca37c43bb9b724a20e18962892536c4d8c5",
+  "lockSha256": "05f3de9747d55001ea2e9478b66f22996324a9151fb7cf9e1169280022b48215",
+  "tests": {
+    "descriptorUnitTestsPassed": 2,
+    "ptyProcessCasesPassed": 12,
+    "fullBuzzWorkspaceCompiled": false,
+    "realProviderOrAdapterRun": false
+  },
+  "fixtureBoundary": "exact patched run_authenticate and terminal module; ACP client and normalization are test doubles; real disposable PTY child lifecycle",
+  "reviewFixes": [
+    "child stdio attaches to validated controlling tty",
+    "arguments normalized once before resolving configured program"
+  ]
+}

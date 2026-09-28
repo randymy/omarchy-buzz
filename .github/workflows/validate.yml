@@ -105,3 +105,13 @@ jobs:
         run: python3 scripts/prepare-acp-permission-contribution --buzz-source ../buzz --output "$RUNNER_TEMP/buzz-acp-permission-review"
       - name: Test patched permission-mode guard and async setter
         run: cargo +1.95.0 test --locked --manifest-path "$RUNNER_TEMP/buzz-acp-permission-review/policy-test/Cargo.toml"
+      - name: Stage interactive ACP login proposal
+        working-directory: omarchy-buzz
+        run: python3 scripts/prepare-acp-terminal-contribution --buzz-source ../buzz --output "$RUNNER_TEMP/buzz-acp-terminal-review"
+      - name: Test terminal descriptor validation and build auth fixture
+        run: |
+          cargo +1.95.0 test --locked --manifest-path "$RUNNER_TEMP/buzz-acp-terminal-review/policy-test/Cargo.toml"
+          cargo +1.95.0 build --locked --manifest-path "$RUNNER_TEMP/buzz-acp-terminal-review/policy-test/Cargo.toml"
+      - name: Test terminal login with disposable pseudo-terminals
+        working-directory: omarchy-buzz
+        run: python3 tests/acp_terminal.py "$RUNNER_TEMP/buzz-acp-terminal-review/policy-test/target/debug/buzz-acp-terminal-contribution"

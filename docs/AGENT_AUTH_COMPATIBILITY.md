@@ -143,3 +143,17 @@ terminal-login mismatch concrete. It also identifies why asynchronous auth
 status cannot certify the payer for a turn, especially with provider overrides.
 Linux ARM64 SDK artifacts appear in the lockfile; installation and account
 behavior remain unverified. This supplements the earlier overview assessment.
+
+## Reuse existing Buzz authentication
+
+Buzz Desktop already has account-connection routing in
+`desktop/src-tauri/src/commands/agent_auth.rs`, including terminal handling for
+Claude. The earlier terminal mismatch applies to the standalone `buzz-acp`
+command. [The interactive proposal](upstream/ACP_INTERACTIVE_LOGIN.md) explains
+which behavior is reused and why the desktop's command-metadata launcher is
+not copied unchanged into the plugin. Provider credentials remain native.
+
+[CODEX_ADAPTER_SOURCE.md](CODEX_ADAPTER_SOURCE.md) pins the actual Codex adapter
+and confirms agent-owned ChatGPT login via ACP authenticate. This differs from
+Claude's terminal login and still needs effective-payer validation before a
+subscription support claim. No account or login store was inspected.

@@ -1,0 +1,41 @@
+#!/usr/bin/env python3
+"""Stage the interactive-login proposal and its isolated terminal/auth-flow fixture."""
+import argparse
+from pathlib import Path
+import shutil
+import subprocess
+ROOT=Path(__file__).resolve().parents[1]
+BASE='781d39510cf23cfe224e8f521ae06a23377e06de'
+def prepare(source,output):
+    if output.exists() or output.is_symlink(): raise ValueError('choose a new output directory')
+    names=('src/acp.rs','src/lib.rs','src/config.rs','Cargo.toml')
+    files={name:subprocess.check_output(['git','show',BASE+':crates/buzz-acp/'+name],cwd=source) for name in names}
+    output.mkdir(parents=True,mode=0o700)
+    upstream=output/'crates/buzz-acp'
+    (upstream/'src').mkdir(parents=True)
+    for name,data in files.items(): (upstream/name).write_bytes(data)
+    desktop=output/'desktop/src-tauri/src/commands/agent_auth.rs'
+    desktop.parent.mkdir(parents=True)
+    desktop.write_bytes(subprocess.check_output(['git','show',BASE+':desktop/src-tauri/src/commands/agent_auth.rs'],cwd=source))
+    patch=ROOT/'docs/upstream/acp-interactive-login.patch' 
+    subprocess.run(['git','apply','--check',str(patch)],cwd=output,check=True)
+    subprocess.run(['git','apply',str(patch)],cwd=output,check=True)
+    library=(upstream/'src/lib.rs').read_text()
+    flow=library[library.index('async fn run_authenticate('):library.index('/// Flow: spawn → initialize → session/new')]
+    spawn=library[library.index('async fn spawn_auth_client('):library.index('fn extract_auth_methods(')]
+    if flow.count('normalize_agent_args') != 1 or 'normalize_agent_args' in spawn:
+        raise ValueError('auth argv must be normalized only once before program resolution')
+    crate=output/'policy-test' 
+    (crate/'src').mkdir(parents=True)
+    fixture=ROOT/'tests/upstream-acp-terminal'
+    shutil.copyfile(upstream/'src/terminal_auth.rs',crate/'src/terminal_auth.rs')
+    (crate/'src/main.rs').write_text((fixture/'main.rs').read_text().replace('// STAGED_RUN_AUTHENTICATE',flow))
+    for name in ('Cargo.toml','Cargo.lock'): shutil.copyfile(fixture/name,crate/name)
+    print(crate)
+if __name__=='__main__':
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--buzz-source',required=True,type=Path)
+    parser.add_argument('--output',required=True,type=Path)
+    args=parser.parse_args()
+    try: prepare(args.buzz_source.resolve(),args.output.absolute())
+    except (ValueError,OSError,subprocess.CalledProcessError) as error: parser.exit(1,'terminal contribution preparation failed: '+str(error)+'\n')

@@ -575,3 +575,34 @@ Corrected two Rust formatting differences from the prior review fix; formatting
 check now passes. Manual CI now includes the four permission proposal checks;
 no GitHub workflow was triggered. Installed 0.0.6 remains the tested messaging
 preview. Real ACP and public release gates remain open.
+
+## Reusing Buzz authentication, 2026-09-28
+
+Confirmed Buzz Desktop already implements account connection and Claude terminal
+login in `desktop/src-tauri/src/commands/agent_auth.rs`. The earlier missing-flow
+finding concerns the standalone harness. We reuse adapter/native provider login;
+no OAuth implementation or credential copying belongs in the plugin. The
+desktop launcher cannot be copied unchanged because it accepts descriptor-owned
+commands and some paths report launch rather than login completion.
+
+Prepared the alternative [interactive-login proposal](upstream/ACP_INTERACTIVE_LOGIN.md):
+configured executable, one-time argument normalization, restricted environment,
+separate foreground terminal process, bounded timeout/cancellation, terminal
+restoration and fresh ACP initialization after success. Existing desktop method
+discovery remains available via an explicit external-terminal capability flag.
+Apply this patch OR the smaller capability-disable patch, not both. Neither is
+installed or submitted. Full Buzz/Tauri compilation and actual provider login
+remain unverified.
+
+Final reconstructed fixture: two descriptor tests and twelve disposable PTY
+cases passed. It compiles the exact patched auth command and terminal module
+with ACP transport/normalization doubles. Independent review found and prompted
+fixes for controlling-terminal descriptors and repeated argument normalization.
+See [evidence](evidence/acp-interactive-login.json). Manual-only CI now includes
+the fixture; no workflow was triggered.
+
+[Codex adapter inspection](CODEX_ADAPTER_SOURCE.md) confirms ordinary ACP-owned
+ChatGPT login, unlike Claude's terminal flow. Both retain native credentials.
+Effective-payer evidence, safe Buzz key input, permission decisions and full
+upstream integration are still required before real-agent use. No provider
+account, credential store, production relay or installed 0.0.6 binary changed.
