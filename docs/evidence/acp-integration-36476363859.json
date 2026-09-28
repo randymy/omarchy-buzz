@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-09-28",
+  "runId": 36476363859,
+  "runUrl": "https://github.com/randymy/omarchy-buzz/actions/runs/36476363859",
+  "conclusion": "success",
+  "pluginRevision": "a4db938327e8e06268505c3ce28673abadb51558",
+  "upstreamBase": "781d39510cf23cfe224e8f521ae06a23377e06de",
+  "runner": "ubuntu-24.04 Linux x86_64",
+  "toolchain": "1.95.0",
+  "patchSha256": {
+    "ws-resource-limits.patch": "e781a5b984ed3895ddd5ca0f893918f35028753f79b6c0a159d56f88c09bf24c",
+    "acp-permission-mode.patch": "ddf10293ab52bf170fc29e5eb928c0f40b9acf319d8cb9442855f34db5fbc83a",
+    "acp-interactive-login.patch": "a92de4a9b0d27a1ecd368371c7ca1ca37c43bb9b724a20e18962892536c4d8c5"
+  },
+  "completeAcpCrateBuilt": true,
+  "completeAcpUnitTestTargetCompiled": true,
+  "targetedUpstreamUnitTestsPassed": 3,
+  "blackBoxAuthentication": {
+    "errors": 0,
+    "failures": 0,
+    "successful": true,
+    "testsRun": 9
+  },
+  "realProvidersUsed": false,
+  "productionRelayUsed": false,
+  "installedPluginChanged": false,
+  "limits": [
+    "Not a full Tauri/desktop build",
+    "Not the complete upstream test suite",
+    "Fake stdio peers; actual vendor adapters and accounts unverified",
+    "Does not resolve effective billing or safe real-agent execution"
+  ]
+}

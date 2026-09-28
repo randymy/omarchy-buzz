@@ -44,3 +44,12 @@ mode, successful setter invocation, application/transport errors and an
 unanswered setter. The latter cases must return an error without fallback.
 Full upstream workspace and fake-peer integration tests remain required before
 merging upstream or adopting a new production dependency revision.
+
+## Combined build verification
+
+[Run 36476363859](https://github.com/randymy/omarchy-buzz/actions/runs/36476363859)
+built the complete ACP crate and compiled its unit-test target with this proposal,
+the interactive-login proposal and WS bounds applied together. The nine black-box
+authentication tests passed; they do not exercise tool permission enforcement.
+The four focused mode tests above remain the runtime evidence for this patch.
+Full-workspace/desktop and prompt-permission integration remain separate gates.

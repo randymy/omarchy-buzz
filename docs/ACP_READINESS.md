@@ -204,3 +204,13 @@ cases pass; this is not full-harness or provider-login certification. The
 [Codex source assessment](CODEX_ADAPTER_SOURCE.md) identifies its different
 agent-owned ChatGPT login path. Credentials remain native; no subscription
 support claim is inferred from synthetic tests.
+
+## Full harness integration follow-up
+
+The earlier full-ACP compilation gap is now closed by
+[run 36476363859](https://github.com/randymy/omarchy-buzz/actions/runs/36476363859):
+the complete patched ACP crate and unit-test target compile; three targeted unit
+tests and nine actual-client authentication tests pass with synthetic stdio peers.
+This does not certify vendor adapters, provider sign-in, billing choice, complete
+desktop integration, credential propagation or tool permissions. The staged
+patches remain unsubmitted and uninstalled.

@@ -606,3 +606,27 @@ ChatGPT login, unlike Claude's terminal flow. Both retain native credentials.
 Effective-payer evidence, safe Buzz key input, permission decisions and full
 upstream integration are still required before real-agent use. No provider
 account, credential store, production relay or installed 0.0.6 binary changed.
+
+## Complete ACP build and real-client auth conformance, 2026-09-28
+
+A single explicit manual GitHub run
+[36476363859](https://github.com/randymy/omarchy-buzz/actions/runs/36476363859)
+succeeded at plugin revision `a4db938327e8e06268505c3ce28673abadb51558`.
+It restored the previous synthetic build cache and finished in 5m12s. Local
+storage was too constrained for a full Buzz build; no local source/cache was
+deleted and no automatic workflow triggers were enabled.
+
+The complete patched `buzz-acp` crate built and its full unit-test target compiled
+on Ubuntu 24.04 x86_64/Rust 1.95.0. The WS, permission-mode and interactive-login
+proposals apply and compile together. Three targeted upstream unit tests passed.
+Nine real-binary authentication tests passed against a fake stdio peer, covering
+terminal flow, input, cancellation, failures, reconnect, descriptor validation,
+ordinary agent-owned auth and discovery capabilities. This closes the earlier
+ACP compile/real-client integration gap; it is not a full desktop build or the
+complete upstream test suite. See [evidence](evidence/acp-integration-36476363859.json).
+
+No real adapter/provider, native account, credentials or production relay were
+used. Installed 0.0.6 remains unchanged. Next: actual adapter artifact and isolated
+initialization validation, then user-driven subscription sign-in when ready;
+effective-payer and safe execution requirements remain. The local patches are
+still unsubmitted proposals and have not changed the production dependency pin.

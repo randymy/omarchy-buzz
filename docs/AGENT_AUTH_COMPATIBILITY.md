@@ -157,3 +157,12 @@ not copied unchanged into the plugin. Provider credentials remain native.
 and confirms agent-owned ChatGPT login via ACP authenticate. This differs from
 Claude's terminal login and still needs effective-payer validation before a
 subscription support claim. No account or login store was inspected.
+
+## Harness integration verified, vendor login still pending
+
+The combined proposals now compile as the complete upstream ACP crate. Nine
+real-harness tests against fake stdio peers passed in
+[run 36476363859](https://github.com/randymy/omarchy-buzz/actions/runs/36476363859).
+This verifies Buzz's command/transport integration, not Codex or Claude adapter
+installation, account sign-in, subscription reuse or effective payer. Those
+remain the next provider-specific checks.

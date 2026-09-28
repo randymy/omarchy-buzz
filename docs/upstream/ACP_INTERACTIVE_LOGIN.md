@@ -89,8 +89,9 @@ terminal ownership/settings are restored. Two unit tests cover descriptor
 bounds and types. An independent review identified mismatched inherited TTYs;
 attaching the child to the validated controlling terminal fixes that case.
 
-This is Linux ARM64 fixture evidence. It does not compile the full Buzz/Tauri
-workspace or test actual provider sign-in. macOS needs its own PTY checks;
+The original fixture is Linux ARM64 evidence. The full ACP integration follow-up
+below adds Linux x86_64 coverage. Neither builds the whole Buzz/Tauri workspace
+or tests actual provider sign-in. macOS needs its own PTY checks;
 non-Unix terminal execution is unsupported. Existing desktop login execution
 remains upstream's implementation; its command-metadata behavior is not silently
 replaced by this patch. Upstream should consolidate both entry points on a
@@ -102,3 +103,27 @@ Buzz launch transformations and custom adapters need compatibility review.
 Global ACP version negotiation, safe persistent Buzz-key input, automatic tool
 approval, effective-payer verification and provider credentials remain separate
 gates. No real-agent support or public-release readiness is claimed here.
+
+## Full ACP integration follow-up
+
+[Manual run 36476363859](https://github.com/randymy/omarchy-buzz/actions/runs/36476363859)
+passed on Ubuntu 24.04 x86_64, using Rust 1.95.0. It applied this patch together
+with the WS resource-limit and permission-mode proposals to a disposable checkout
+of the immutable base, built the complete `buzz-acp` crate and compiled its full
+unit-test target. Two terminal descriptor tests and the existing initialize
+format test passed; 966 other unit tests were not run (967 and 968 were filtered
+respectively in the two targeted invocations).
+
+Nine black-box tests then exercised the actual `buzz-acp` binary and ACP client
+against `tests/upstream-acp-terminal/fake-stdio-peer.py`. They covered terminal
+success/input, nonzero exit, cancellation, reinitialize failure, rejected method
+descriptors, ordinary ACP authenticate, no-terminal refusal and explicit desktop
+discovery capability. Caller environment contained only synthetic key markers;
+the peer verified those markers were absent from its own environment. These
+tests use no Rust client/normalization double.
+
+The source pins, patch hashes and sanitized test summary are retained in
+[evidence](../evidence/acp-integration-36476363859.json). The workflow
+`.github/workflows/acp-integration.yml` is manual-only. The installed 0.0.6 plugin
+and production relay are unchanged. Actual adapters, provider accounts, billing
+mode, desktop/Tauri integration and real-agent permissions remain unverified.
