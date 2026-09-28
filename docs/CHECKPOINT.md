@@ -541,3 +541,10 @@ publication and optional profile denial incorrectly revoking room membership.
 See [review record](reviews/2026-09-28.md). Final Rust suite: 99 passed, two
 explicit live-relay/ACP skips; rebuilt IPC, packaging, activity and manifest
 checks passed. Upstream pins and manual-only CI remain unchanged.
+
+Installed 0.0.6 helper and plugin implementation `c70d33b`; restarted the user
+helper and native shell. Sanitized verification: authenticated, four joined
+rooms, four activity summaries, idle delivery. Native panel summon returned
+`ok`. The previous 0.0.5 binary is preserved at
+`~/.local/bin/omarchy-buzz.before-0.0.6-20260928`; previous plugin implementation
+is `ed01778`. No relay/identity configuration or production message was changed.
