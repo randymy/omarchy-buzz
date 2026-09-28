@@ -69,13 +69,15 @@ workspace components. Offline mode requires the locked crate sources to already
 be cached. Normal Cargo network policy applies if dependencies must be fetched.
 Tests use disposable loopback sockets and generated synthetic keys only.
 
-All **16 tests pass**, including the three original constant tests and thirteen
+All **21 tests pass** (16 client tests and 5 tests compiling the actual
+upstream test-client library), including the three original constant tests and thirteen
 resource cases: both AUTH queue budgets, both OK-wait queue budgets, oversized
 frames, oversized fragmented messages, bounded outbound serialization, stalled
 handshake, silent auth deadline, ping chatter, successful signed authentication,
 exact buffer accounting and single-use buffered challenges. Test function counts
-combine some related cases. The patch was reconstructed into a second clean
-staging directory and tested there too.
+combine some related cases. The patch was reconstructed into clean staging directories and tested there too.
+The existing test-client error conversion matches the upstream error enum
+exhaustively; the patch updates it for both new variants and tests that mapping.
 
 This establishes the isolated client behavior, not full Buzz workspace, desktop,
 relay or Omarchy compatibility. Before upstream adoption, run its workspace

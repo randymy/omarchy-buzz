@@ -16,7 +16,7 @@ def prepare(source, output):
         raise ValueError('choose a new output directory')
     sources = {}
     for name, expected in evidence['files'].items():
-        if name not in {'crates/buzz-ws-client/src/' + n for n in ('connection.rs', 'error.rs', 'lib.rs', 'message.rs')}:
+        if name not in ({'crates/buzz-ws-client/src/' + n for n in ('connection.rs', 'error.rs', 'lib.rs', 'message.rs')} | {'crates/buzz-test-client/src/lib.rs'}):
             raise ValueError('unexpected source path')
         data = subprocess.check_output(['git', 'show', evidence['baseRevision'] + ':' + name], cwd=source)
         if hashlib.sha256(data).hexdigest() != expected:
@@ -33,6 +33,8 @@ def prepare(source, output):
     crate = output / 'crates/buzz-ws-client'
     for name in ('Cargo.toml', 'Cargo.lock'):
         shutil.copyfile(fixture / name, crate / name)
+    (crate / 'tests').mkdir()
+    shutil.copyfile(fixture / 'consumer.rs', crate / 'tests/consumer.rs')
     print(crate)
 
 if __name__ == '__main__':

@@ -2,6 +2,9 @@
 name = "buzz-ws-client-contribution"
 version = "0.1.0"
 edition = "2021"
+[lib]
+name = "buzz_ws_client"
+
 [dependencies]
 nostr = { version = "0.44", features = ["nip44", "nip98"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util", "signal", "process"] }
