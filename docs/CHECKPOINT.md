@@ -324,3 +324,25 @@ no matches. Database evidence alone does not certify the authenticated HTTP sear
 response or the desktop's active origin/version. Requested the laptop Buzz version
 and a fresh app session on the Mac mini community to narrow that remaining gap.
 No new remote mutations or credential access occurred during these checks.
+
+## Desktop invitation failure traced to the same empty roster
+
+Operator reports desktop 0.5.25 and confirms the Mac mini WSS origin in the
+original owner session. Screenshot shows the private development stream with a
+zero-member count. Inspected 0.5.25 source at 781d395:
+`MembersSidebar.tsx` derives `selfMember` from `useChannelMembersQuery`; the
+`canAddChannelMembers` policy requires a non-null self role for private streams.
+The member search is enabled only when that policy passes. Consequently the
+empty signed roster suppresses invitation search for the creator too. The
+database's searchable human profile does not overcome this UI gate. Earlier
+suggestions to search differently, republish the human profile, or reselect the
+community do not repair it.
+
+Next repair work must address the upstream signed roster while preserving
+canonical membership and relay identity. Inspected newer buzz-admin exposes
+targeted `reconcile-channels --channel`, and newer roster publication preserves
+self-tags. The deployed administrator binary only advertises missing-channel
+reconciliation; do not assume it supports forced targeted repair. Prepare and
+validate a compatible upstream binary/schema path and rollback before production
+changes. Do not use SQL membership/event edits or reopen rooms publicly as a
+workaround. No upgrade, repair, invite or message was executed in this check.
