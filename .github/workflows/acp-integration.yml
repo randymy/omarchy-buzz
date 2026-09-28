@@ -117,6 +117,7 @@ jobs:
         run: |
           python3 -m unittest discover -s tests -p test_vendor_adapter_discovery.py -v
           python3 -m unittest discover -s tests -p test_codex_subscription_probe.py -v
+          python3 -m unittest discover -s tests -p test_codex_adapter_subscription_probe.py -v
       - name: Install exact Node runtime for optional vendor discovery
         if: inputs.vendor_discovery
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -169,12 +170,36 @@ jobs:
             --packages "$GITHUB_WORKSPACE/plugin/tests/vendor-adapters" \
             --node "$probe_node" --outside-netns "$outside_netns" \
             --output "$RUNNER_TEMP/codex-subscription-evidence.json"
+      - name: Verify actual Codex ACP rejects synthetic API authentication
+        if: inputs.vendor_discovery
+        working-directory: plugin
+        run: |
+          probe_uid=$(id -u)
+          probe_gid=$(id -g)
+          probe_node=$(command -v node)
+          outside_netns=$(readlink /proc/self/ns/net)
+          sudo unshare --net --pid --fork --kill-child --mount-proc -- \
+            /usr/bin/setpriv --reuid="$probe_uid" --regid="$probe_gid" --clear-groups --no-new-privs \
+            --bounding-set=-all --inh-caps=-all --ambient-caps=-all \
+            /usr/bin/env -i PATH="$(dirname "$probe_node"):/usr/bin:/bin" LANG=C.UTF-8 \
+            /usr/bin/python3 tests/codex_adapter_subscription_probe.py \
+            --packages "$GITHUB_WORKSPACE/plugin/tests/vendor-adapters" \
+            --node "$probe_node" --outside-netns "$outside_netns" \
+            --output "$RUNNER_TEMP/codex-adapter-subscription-evidence.json"
       - name: Upload sanitized subscription policy evidence
         if: always() && inputs.vendor_discovery
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: codex-subscription-evidence
           path: ${{ runner.temp }}/codex-subscription-evidence.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Upload sanitized adapter subscription evidence
+        if: always() && inputs.vendor_discovery
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: codex-adapter-subscription-evidence
+          path: ${{ runner.temp }}/codex-adapter-subscription-evidence.json
           if-no-files-found: warn
           retention-days: 7
       - name: Upload sanitized vendor discovery evidence
