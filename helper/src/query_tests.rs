@@ -295,3 +295,34 @@ fn metadata_request_is_typed_and_bounded() {
     assert!(QueryRequest::JoinedRooms { limit: 0 }.body(&keys).is_err());
     assert!(QueryRequest::JoinedRooms { limit: 51 }.body(&keys).is_err());
 }
+
+#[test]
+fn agent_profile_request_is_exact_author_and_bounded() {
+    let viewer = Keys::generate();
+    let agent = Keys::generate();
+    let authors = vec![agent.public_key()];
+    let request = QueryRequest::AgentProfiles {
+        authors: authors.clone(),
+    };
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&request.body(&viewer).unwrap()).unwrap(),
+        serde_json::json!([{"kinds":[10100],"authors":[agent.public_key().to_hex()],"limit":1}])
+    );
+    let profile = EventBuilder::new(Kind::Custom(10100), r#"{"name":"Agent"}"#)
+        .sign_with_keys(&agent)
+        .unwrap();
+    assert!(request.matches(&profile, &viewer));
+    assert!(!QueryRequest::AgentProfiles {
+        authors: vec![viewer.public_key()]
+    }
+    .matches(&profile, &viewer));
+    assert!(!QueryRequest::Profiles { authors }.matches(&profile, &viewer));
+    assert!(QueryRequest::AgentProfiles { authors: vec![] }
+        .body(&viewer)
+        .is_err());
+    assert!(QueryRequest::AgentProfiles {
+        authors: vec![agent.public_key(); 21]
+    }
+    .body(&viewer)
+    .is_err());
+}

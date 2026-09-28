@@ -438,3 +438,39 @@ Next: implement truthful local unread state across rooms, persistent notificatio
 preferences, and broader reconnect/access-revocation testing before the ACP
 milestone. ACP permissions/credential propagation and upstream resource limits
 remain release gates; this update does not claim a completed public release.
+
+## 2026-09-28 — 0.0.5 local activity, saved preferences, agent discovery
+
+Source implementation adds bounded background polling of the current joined-room
+catalog (up to 20), selected-room polling unchanged, and memory-only observed
+activity counters. These are not synchronized unread counts. Initial snapshots,
+gaps, reauthentication and failures silently rebaseline. Native alerts now cover
+new observed activity outside the visible conversation; the default-off boolean
+preference persists across shell restarts, independently of identities/secrets.
+
+Signed kind-10100 profiles are queried only for verified room roster authors.
+At most ten sanitized self-described agent hints fit the existing 64 KiB status
+limit; runtime state is explicitly unknown. Profiles cannot invent ownership,
+permissions, process status or authority. Exact-key mentions use the existing
+recipient picker. New capabilities: `room_activity`, `agent_profiles`.
+
+A discovered background-revocation/selection race now aborts corresponding
+history/recipient jobs and clears stale views; selected-history denial likewise
+clears recipients. Synthetic two-room regression tests cover the race and prove
+revoking another room preserves the selected room. No production writes or real
+agent invocations are used for testing.
+
+Real ACP execution remains blocked by inspected upstream credential propagation
+and implicit permission granting. ACP_READINESS.md records exact source evidence,
+implemented discovery, and concrete upstream acceptance criteria. No Buzz fork,
+Omarchy fork, vPerps modification, fake approval mechanism or live agent launch
+was introduced. Full task/branch/PR dashboards require reliable upstream telemetry.
+
+Validation before installation: all 99 Rust tests pass; the two deliberately
+ignored real-relay/ACP tests were not run against production. Worst-case combined
+status remains below 64 KiB. Actual helper IPC smoke/send-scope tests and isolated
+Secret Service enrollment pass. Offscreen component, send bridge, activity,
+multiroom activity and preference persistence checks pass; notifier calls use a
+fake executable. JS observer tests and package tests pass. Manual-only GitHub
+workflow behavior is unchanged. Preflight reports authenticated and acknowledged
+delivery, with no send in progress.

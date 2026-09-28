@@ -227,3 +227,12 @@ passed in run 36280557661, both at plugin `f276997`. Sanitized summaries are
 committed in `docs/evidence/`. Earlier entries above describe their historical
 checkpoints, not current capabilities. This is not full daemon/UI, media/Git,
 or model-backed agent certification. See CHECKPOINT.md for remaining gates.
+
+## Activity and profile validation (0.0.5)
+
+Run `node tests/room_activity.cjs`, `scripts/preview --room-activity`,
+`scripts/preview --notification-preference`, and `scripts/preview --activity`.
+The offscreen notification fixtures shadow the native notifier and assert fixed
+argv without producing a real desktop alert. Rust tests validate signed agent
+profile scope, spoofed identity/status fields, malformed latest profiles,
+access-denied revocation, and bounded activity counters.

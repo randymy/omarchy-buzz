@@ -15,7 +15,7 @@ Enrollment also requires successful bounded relay discovery and refuses a key
 whose public identity equals the relay signer, before writing to the secret store.
 This guard is not proof that any other supplied key is unexposed or human-owned.
 
-Optional session-local desktop alerts use only already validated history rows.
+Optional desktop alerts use only already validated activity projections.
 They send fixed generic text through `omarchy notification send`, with fixed argv,
 no shell interpolation, a five-second process timeout, and a ten-second cooldown.
 No message text, room names, or author names enter notifications. Initial/gap
@@ -87,3 +87,19 @@ Tests use synthetic identities and isolated configuration, sockets, and keyrings
 Never use private conversations, production identities, or trading/deployment
 actions as test fixtures. Report vulnerabilities without including credentials,
 private payloads, or unredacted desktop screenshots.
+
+## Local activity and profile hints (0.0.5)
+
+Background room polling reuses the signature-, membership-, and scope-checked
+history projection. One activity worker is bounded to 20 catalog rooms and 512
+remembered IDs per room; raw bodies are not retained by that tracker. Failed or
+revoked rooms lose activity state. Jobs are cancelled on catalog revalidation
+and reauthentication. UI counters are memory-only and never authorize actions.
+The only new disk preference is a default-off boolean under
+`$XDG_STATE_HOME/omarchy-buzz/notifications.json` (fallback `~/.local/state`).
+It applies across communities and carries no identity or message data.
+
+Agent hints require a verified room roster and a signed kind-10100 profile by
+that exact key. Names remain self-asserted; profile status/owner/permission fields
+are not authority. No process is launched, no approval is granted, and no
+provider credential is requested. Detailed ACP gates are in ACP_READINESS.md.

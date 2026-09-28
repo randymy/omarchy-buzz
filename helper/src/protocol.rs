@@ -147,6 +147,7 @@ pub struct RecipientsView {
     pub state: String,
     pub room_id: Option<String>,
     pub entries: Vec<Recipient>,
+    pub agents: Vec<crate::agents::AgentHint>,
     pub partial: bool,
     pub category: Option<String>,
 }
@@ -156,6 +157,7 @@ impl RecipientsView {
             state: "unavailable".into(),
             room_id: room,
             entries: Vec::new(),
+            agents: Vec::new(),
             partial: true,
             category: category.map(str::to_owned),
         }
@@ -230,6 +232,7 @@ pub struct Status {
     pub history: History,
     pub delivery: Delivery,
     pub recipients: RecipientsView,
+    pub activity: Vec<crate::activity::Summary>,
 }
 impl Status {
     pub fn new(c: &crate::config::Config) -> Self {
@@ -243,11 +246,12 @@ impl Status {
             history: History::unavailable(None, None),
             delivery: Delivery::default(),
             recipients: RecipientsView::unavailable(None, None),
+            activity: Vec::new(),
         }
     }
 }
 pub fn envelope(kind: &str, id: Option<&str>, instance: &str, s: &Status) -> serde_json::Value {
-    serde_json::json!({"version":1,"type":kind,"id":id,"instanceId":instance,"generation":s.generation,"capabilities":["connection_status","room_catalog","room_history","message_send","room_recipients","history_auto_refresh"],"backendRevision":crate::compatibility::BUZZ_REVISION,"status":s})
+    serde_json::json!({"version":1,"type":kind,"id":id,"instanceId":instance,"generation":s.generation,"capabilities":["connection_status","room_catalog","room_history","message_send","room_recipients","history_auto_refresh","room_activity","agent_profiles"],"backendRevision":crate::compatibility::BUZZ_REVISION,"status":s})
 }
 pub async fn read_line<R: tokio::io::AsyncBufRead + Unpin>(
     r: &mut R,
@@ -322,7 +326,9 @@ mod state_tests {
                 "room_history",
                 "message_send",
                 "room_recipients",
-                "history_auto_refresh"
+                "history_auto_refresh",
+                "room_activity",
+                "agent_profiles"
             ])
         );
         assert_eq!(v["status"]["catalog"]["state"], "unavailable");
@@ -415,6 +421,21 @@ mod state_tests {
             .map(|_| Recipient {
                 key: "c".repeat(64),
                 name: "\\".repeat(64),
+            })
+            .collect();
+        status.activity = (0..20)
+            .map(|_| crate::activity::Summary {
+                room_id: "00000000-0000-4000-8000-000000000001".into(),
+                epoch: u64::MAX,
+                observed: 1_000_000_000,
+            })
+            .collect();
+        status.recipients.agents = (0..10)
+            .map(|_| crate::agents::AgentHint {
+                key: "c".repeat(64),
+                name: "\\".repeat(64),
+                profile_event_id: "d".repeat(64),
+                execution_state: "unknown",
             })
             .collect();
         status.delivery = Delivery {

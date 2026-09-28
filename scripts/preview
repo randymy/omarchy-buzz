@@ -26,6 +26,16 @@ elif [[ ${1:-} == --activity ]]; then
   chmod 700 "$preview_dir/fake-bin/omarchy"
   export BUZZ_ACTIVITY_RECORD="$preview_dir/activity-record"
   export PATH="$preview_dir/fake-bin:$PATH"
+elif [[ ${1:-} == --room-activity ]]; then
+  cp "$project_root/tests/RoomActivity.qml" "$preview_dir/shell.qml"
+  mkdir -m 700 "$preview_dir/fake-bin"
+  printf '#!/bin/sh\nprintf "<%%s>\\n" "$@" >> "$BUZZ_ACTIVITY_RECORD"\n' > "$preview_dir/fake-bin/omarchy"
+  chmod 700 "$preview_dir/fake-bin/omarchy"
+  export BUZZ_ACTIVITY_RECORD="$preview_dir/activity-record"
+  export PATH="$preview_dir/fake-bin:$PATH"
+elif [[ ${1:-} == --notification-preference ]]; then
+  cp "$project_root/tests/NotificationPreference.qml" "$preview_dir/shell.qml"
+  export BUZZ_PREFERENCE_PHASE=enable
 elif [[ ${1:-} == --bridge ]]; then
   [[ -x ${BUZZ_TEST_HELPER:-} ]] || { echo "preview: set BUZZ_TEST_HELPER to a built helper" >&2; exit 1; }
   cp "$project_root/tests/Bridge.qml" "$preview_dir/shell.qml"
@@ -44,6 +54,30 @@ if [[ ${1:-} == --activity && -s $BUZZ_ACTIVITY_RECORD ]]; then
   echo "preview: baseline or own message triggered a notification" >&2
   exit 1
 fi
+if [[ ${1:-} == --room-activity ]]; then
+  printf '<%s>\n' notification send --app-name Buzz -u normal -t 5000 Buzz \
+    'New activity in your Buzz rooms.' > "$preview_dir/expected-activity-record"
+  if ! cmp -s "$preview_dir/expected-activity-record" "$BUZZ_ACTIVITY_RECORD"; then
+    echo "preview: expected one fixed-argument room activity notification" >&2
+    exit 1
+  fi
+fi
+if [[ ${1:-} == --notification-preference ]]; then
+  preference_file="$preview_dir/state/omarchy-buzz/notifications.json"
+  [[ $(cat "$preference_file") == '{"version":1,"enabled":true}' ]] || { echo "preview: notification opt-in was not saved" >&2; exit 1; }
+  [[ $(stat -c %a "$preview_dir/state/omarchy-buzz") == 700 ]] || { echo "preview: notification state directory is not private" >&2; exit 1; }
+  export BUZZ_PREFERENCE_PHASE=disable
+  QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software QT_QPA_PLATFORMTHEME=basic \
+    XDG_RUNTIME_DIR="$preview_dir/runtime" XDG_CONFIG_HOME="$preview_dir/config" \
+    XDG_STATE_HOME="$preview_dir/state" timeout 15s qs -p "$preview_dir" --no-color
+  [[ $(cat "$preference_file") == '{"version":1,"enabled":false}' ]] || { echo "preview: notification opt-out was not saved" >&2; exit 1; }
+  printf '{broken\n' > "$preference_file"
+  export BUZZ_PREFERENCE_PHASE=invalid
+  QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software QT_QPA_PLATFORMTHEME=basic \
+    XDG_RUNTIME_DIR="$preview_dir/runtime" XDG_CONFIG_HOME="$preview_dir/config" \
+    XDG_STATE_HOME="$preview_dir/state" timeout 15s qs -p "$preview_dir" --no-color
+  [[ $(cat "$preference_file") == '{broken' ]] || { echo "preview: invalid settings were overwritten without user action" >&2; exit 1; }
+fi
 if [[ ${1:-} == --activity ]]; then
   export BUZZ_ACTIVITY_POSITIVE=1
   QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software QT_QPA_PLATFORMTHEME=basic \
@@ -52,7 +86,7 @@ if [[ ${1:-} == --activity ]]; then
     XDG_STATE_HOME="$preview_dir/state" \
     timeout 15s qs -p "$preview_dir" --no-color
   printf '<%s>\n' notification send --app-name Buzz -u normal -t 5000 Buzz \
-    'New activity in your selected room.' > "$preview_dir/expected-activity-record"
+    'New activity in your Buzz rooms.' > "$preview_dir/expected-activity-record"
   if ! cmp -s "$preview_dir/expected-activity-record" "$BUZZ_ACTIVITY_RECORD"; then
     echo "preview: expected one fixed-argument notification for closed-panel activity" >&2
     exit 1

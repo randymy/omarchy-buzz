@@ -1,6 +1,8 @@
 #![forbid(unsafe_code)]
 #[cfg(test)]
 mod acp_relay_tests;
+mod activity;
+mod agents;
 mod auth;
 mod catalog;
 mod compatibility;

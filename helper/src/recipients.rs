@@ -15,6 +15,7 @@ pub struct Recipients {
     pub room: String,
     pub partial: bool,
     pub entries: Vec<Recipient>,
+    pub agents: Vec<crate::agents::AgentHint>,
 }
 
 pub fn roster(
@@ -77,6 +78,7 @@ pub fn roster(
                 name: String::new(),
             })
             .collect(),
+        agents: Vec::new(),
     })
 }
 fn name(event: &Event) -> String {
@@ -172,8 +174,34 @@ pub async fn fetch(
         .map(|r| PublicKey::from_hex(&r.key).map_err(|_| "recipients_invalid_roster"))
         .collect::<Result<Vec<_>, _>>()?;
     // Profile unavailability never invents names or discards proven roster keys.
-    if let Ok(events) = query(relay, keys, &QueryRequest::Profiles { authors }).await {
-        profiles(&mut recipients, &events, Timestamp::now().as_secs());
+    match query(
+        relay,
+        keys,
+        &QueryRequest::Profiles {
+            authors: authors.clone(),
+        },
+    )
+    .await
+    {
+        Ok(events) => profiles(&mut recipients, &events, Timestamp::now().as_secs()),
+        Err("query_access_denied") => return Err("query_access_denied"),
+        Err(_) => {}
+    }
+    match query(relay, keys, &QueryRequest::AgentProfiles { authors }).await {
+        Ok(events) => {
+            let roster_keys = recipients
+                .entries
+                .iter()
+                .map(|r| r.key.clone())
+                .collect::<Vec<_>>();
+            if let Ok(agents) =
+                crate::agents::project(&roster_keys, &events, Timestamp::now().as_secs())
+            {
+                recipients.agents = agents;
+            }
+        }
+        Err("query_access_denied") => return Err("query_access_denied"),
+        Err(_) => {}
     }
     Ok(recipients)
 }

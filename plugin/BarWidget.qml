@@ -16,13 +16,13 @@ Ui.BarWidget {
   Keys.onReturnPressed: summon()
   Keys.onSpacePressed: summon()
   Accessible.role: Accessible.Button
-  Accessible.name: "Buzz connection"
+  Accessible.name: "Buzz connection and local activity"
   Accessible.onPressAction: summon()
 
   Text {
     id: label
     anchors.centerIn: parent
-    text: root.vertical ? "B\n" + (root.buzzService ? root.buzzService.barSymbol : "!") : "Buzz · " + (root.buzzService ? root.buzzService.barLabel : "Error")
+    text: root.vertical ? "B\n" + (root.buzzService ? root.buzzService.observedActivityCount > 0 ? root.buzzService.observedActivityLabel : root.buzzService.barSymbol : "!") : "Buzz · " + (root.buzzService ? root.buzzService.observedActivityCount > 0 ? root.buzzService.observedActivityLabel + " observed" : root.buzzService.barLabel : "Error")
     textFormat: Text.PlainText
     horizontalAlignment: Text.AlignHCenter
     color: root.bar ? root.bar.barForeground : Color.foreground
@@ -39,7 +39,7 @@ Ui.BarWidget {
     onClicked: root.summon()
     onEntered: {
       if (root.bar) root.bar.showTooltip(root, root.buzzService
-        ? "Buzz · " + root.buzzService.statusLabel + (root.buzzService.relay ? " · " + root.buzzService.relay : "")
+        ? "Buzz · " + root.buzzService.statusLabel + " · activity counts are local observations, not synchronized unread" + (root.buzzService.relay ? " · " + root.buzzService.relay : "")
         : "Buzz preview · widget service unavailable on this bar")
     }
     onExited: if (root.bar) root.bar.hideTooltip(root)

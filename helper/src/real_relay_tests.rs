@@ -120,6 +120,7 @@ async fn real_relay_messaging_conformance() {
             })
             .collect();
         status.recipients = protocol::RecipientsView {
+            agents: roster.agents,
             state: "snapshot".into(),
             room_id: Some(roster.room),
             entries: roster

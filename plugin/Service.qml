@@ -3,6 +3,7 @@ import Quickshell
 import Quickshell.Io
 import "SampleData.js" as SampleData
 import "ActivityObserver.js" as ActivityObserver
+import "RoomActivity.js" as RoomActivity
 
 Item {
   id: root
@@ -12,11 +13,82 @@ Item {
   property bool sampleMode: false
   property bool autoConnect: true
   property string setupProvider: "hosted"
-  // Opt-in for this shell session. No message text or room names leave the panel.
+  // Opt-in across shell restarts. Only this boolean is stored; alert payloads stay generic.
   property bool notificationsEnabled: false
+  readonly property string stateHome: Quickshell.env("XDG_STATE_HOME").startsWith("/")
+    ? Quickshell.env("XDG_STATE_HOME") : Quickshell.env("HOME") + "/.local/state"
+  readonly property string notificationSettingsDir: stateHome + "/omarchy-buzz"
+  readonly property string notificationSettingsPath: notificationSettingsDir + "/notifications.json"
+  property bool notificationSettingsLoaded: false
+  property bool notificationSettingsDirReady: false
+  property bool notificationPreferenceDirty: false
+  property bool hydratingNotificationPreference: false
   property bool panelOpen: false
+  property var roomActivity: RoomActivity.fresh()
+  property bool roomActivitySupported: false
+  readonly property bool activityVisible: !sessionFailed && connection === "authenticated" && ["partial", "ready"].indexOf(catalogState) !== -1
+  readonly property int observedActivityCount: activityVisible ? RoomActivity.total(roomActivity) : 0
+  readonly property string observedActivityLabel: activityVisible ? RoomActivity.totalLabel(roomActivity) : "0"
+  function roomActivityCount(room) { return activityVisible ? Math.min(999, RoomActivity.count(roomActivity, room)) : 0 }
+  onPanelOpenChanged: if (panelOpen && historyState === "snapshot") roomActivity = RoomActivity.markSeen(roomActivity, selectedRoomId)
+  function notifyActivity() {
+    if (notificationsEnabled && !sampleMode && !notificationProcess.running && !notificationCooldown.running) {
+      notificationProcess.running = true
+      notificationCooldown.start()
+    }
+  }
   property var activityObservation: ActivityObserver.fresh()
-  onNotificationsEnabledChanged: activityObservation = ActivityObserver.fresh()
+  onNotificationsEnabledChanged: {
+    activityObservation = ActivityObserver.fresh()
+    if (hydratingNotificationPreference) return
+    notificationPreferenceDirty = true
+    if (notificationSettingsLoaded && notificationSettingsDirReady) notificationSettingsSave.restart()
+  }
+
+  function loadNotificationSettings(raw) {
+    if (notificationSettingsLoaded) return
+    var enabled = false
+    try {
+      var parsed = JSON.parse(raw)
+      if (parsed && parsed.version === 1 && parsed.enabled === true) enabled = true
+    } catch (error) { /* Missing or malformed settings fail closed. */ }
+    if (!notificationPreferenceDirty) {
+      hydratingNotificationPreference = true
+      notificationsEnabled = enabled
+      hydratingNotificationPreference = false
+    }
+    notificationSettingsLoaded = true
+    if (notificationPreferenceDirty && notificationSettingsDirReady) notificationSettingsSave.restart()
+  }
+
+  FileView {
+    id: notificationSettingsFile
+    path: root.notificationSettingsPath
+    watchChanges: false
+    atomicWrites: true
+    printErrors: false
+    onLoaded: root.loadNotificationSettings(text())
+    onLoadFailed: root.loadNotificationSettings("")
+  }
+  Process {
+    id: notificationSettingsDirProcess
+    command: ["mkdir", "-m", "700", "-p", root.notificationSettingsDir]
+    onExited: function(exitCode) {
+      if (exitCode !== 0) return
+      root.notificationSettingsDirReady = true
+      notificationSettingsFile.reload()
+      if (root.notificationSettingsLoaded && root.notificationPreferenceDirty) notificationSettingsSave.restart()
+    }
+  }
+  Timer {
+    id: notificationSettingsSave
+    interval: 200
+    onTriggered: {
+      if (!root.notificationSettingsLoaded || !root.notificationSettingsDirReady) return
+      notificationSettingsFile.setText(JSON.stringify({version: 1, enabled: root.notificationsEnabled}) + "\n")
+      root.notificationPreferenceDirty = false
+    }
+  }
   property string helperExecutable: Quickshell.env("HOME") + "/.local/bin/omarchy-buzz"
   property string connection: "unavailable"
   property string category: "helper_unavailable"
@@ -42,6 +114,7 @@ Item {
   property string recipientsState: "unavailable"
   property string recipientsCategory: ""
   property var recipientEntries: []
+  property var agentProfiles: []
   property var recipientDrafts: ({})
   readonly property var selectedRecipients: recipientDrafts[selectedRoomId] || []
   readonly property var unavailableRecipients: selectedRecipients.filter(function(key) {
@@ -229,6 +302,7 @@ Item {
   function clearRecipients() {
     pendingRecipientsRequestId = ""
     recipientEntries = []
+    agentProfiles = []
     recipientsState = "unavailable"
     recipientsCategory = ""
     recipientsPartial = false
@@ -256,7 +330,29 @@ Item {
     }
     return {state:value.state,roomId:value.roomId,entries:entries,partial:value.partial,category:value.category || ""}
   }
+  function validatedAgents(value, recipients) {
+    if (!Array.isArray(value) || value.length > 10 || !recipients) return null
+    var seen = ({})
+    var result = []
+    for (var i = 0; i < value.length; i++) {
+      var entry = value[i]
+      if (!entry || typeof entry.key !== "string" || seen[entry.key]
+          || !recipients.entries.some(function(r) { return r.key === entry.key })
+          || !boundedString(entry.name, 64) || utf8Size(entry.name) > 64
+          || /[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069\u200e\u200f\u061c]/.test(entry.name)
+          || typeof entry.profileEventId !== "string" || !/^[a-f0-9]{64}$/.test(entry.profileEventId)
+          || entry.executionState !== "unknown") return null
+      seen[entry.key] = true
+      result.push({key:entry.key,name:entry.name,profileEventId:entry.profileEventId,executionState:"unknown"})
+    }
+    return result
+  }
+  function participantLabel(key) {
+    var agent = agentProfiles.find(function(a) { return a.key === key })
+    return agent ? "Self-described agent" : "Participant"
+  }
   function clearCatalog() {
+    roomActivity = RoomActivity.fresh()
     activityObservation = ActivityObserver.fresh()
     clearHistory()
     clearRecipients()
@@ -266,10 +362,10 @@ Item {
     if (!sampleMode) selectedRoomId = ""
   }
   function validCapabilities(capabilities) {
-    return Array.isArray(capabilities) && capabilities.length >= 1 && capabilities.length <= 6
+    return Array.isArray(capabilities) && capabilities.length >= 1 && capabilities.length <= 8
       && capabilities.indexOf("connection_status") !== -1
       && capabilities.every(function(cap, index) {
-        return ["connection_status", "room_catalog", "room_history", "message_send", "room_recipients", "history_auto_refresh"].indexOf(cap) !== -1 && capabilities.indexOf(cap) === index
+        return ["connection_status", "room_catalog", "room_history", "message_send", "room_recipients", "history_auto_refresh", "room_activity", "agent_profiles"].indexOf(cap) !== -1 && capabilities.indexOf(cap) === index
       })
   }
   function validatedCatalog(catalog) {
@@ -400,9 +496,17 @@ Item {
     var supportsRecipients = frame.capabilities.indexOf("room_recipients") !== -1
     var recipients = supportsRecipients ? validatedRecipients(state.recipients) : null
     if (supportsRecipients && !recipients) { fail("invalid_response"); return false }
+    var agents = frame.capabilities.indexOf("agent_profiles") !== -1 ? validatedAgents(state.recipients && state.recipients.agents, recipients) : []
+    if (agents === null) { fail("invalid_response"); return false }
+
     var supportsSend = frame.capabilities.indexOf("message_send") !== -1
     var delivery = supportsSend ? validatedDelivery(state.delivery) : null
     if (supportsSend && !delivery) { fail("invalid_response"); return false }
+    var supportsActivity = frame.capabilities.indexOf("room_activity") !== -1
+    if (supportsActivity && (!Array.isArray(state.activity) || state.activity.length > 20 || state.activity.some(function(a, i) {
+      return !RoomActivity.valid(a) || !uuidValue(a.roomId) || !catalog.rooms.some(function(r) { return r.id === a.roomId })
+        || state.activity.slice(0,i).some(function(b) { return b.roomId === a.roomId })
+    }))) { fail("invalid_response"); return false }
     var incomingScope = (state.relay || "") + "|" + (state.identity || "")
     if (draftScopeKey && (incomingScope !== draftScopeKey || (instanceId !== "" && frame.generation !== generation))) {
       losePendingDelivery()
@@ -437,19 +541,26 @@ Item {
           incomingScope + "|" + frame.instanceId + "|" + frame.generation + "|" + selectedRoomId,
           history.rows, state.identity, Math.floor(Date.now() / 1000))
         activityObservation = observed.state
-        if (observed.notify && notificationsEnabled && !panelOpen && !sampleMode
-            && !notificationProcess.running && !notificationCooldown.running) {
-          notificationProcess.running = true
-          notificationCooldown.start()
-        }
+        if (observed.notify && !supportsActivity && !panelOpen) notifyActivity()
       } else if (history.state === "unavailable") activityObservation = ActivityObserver.fresh()
     }
     if (state.connection !== "authenticated" || !supportsRecipients || ["loading", "unavailable"].indexOf(catalogState) !== -1) clearRecipients()
     else if (recipients && recipients.roomId === selectedRoomId && selectedRoomId !== "") {
       recipientEntries = recipients.entries
+      agentProfiles = agents
       recipientsState = recipients.state
       recipientsCategory = recipients.category
       recipientsPartial = recipients.partial
+    }
+    roomActivitySupported = supportsActivity
+    if (!supportsActivity || state.connection !== "authenticated" || typeof state.identity !== "string" || catalogState === "unavailable") {
+      roomActivity = RoomActivity.fresh()
+    } else if (catalogState !== "loading") {
+      var activityUpdate = RoomActivity.update(roomActivity,
+        incomingScope + "|" + frame.instanceId + "|" + frame.generation, state.activity,
+        panelOpen && historyState === "snapshot" ? selectedRoomId : "")
+      roomActivity = activityUpdate.state
+      if (activityUpdate.notify) notifyActivity()
     }
     recipientsSupported = supportsRecipients
     automaticHistorySupported = frame.capabilities.indexOf("history_auto_refresh") !== -1
@@ -490,7 +601,10 @@ Item {
       handshake.restart()
     }
   }
-  Component.onCompleted: if (autoConnect && !sampleMode) retry()
+  Component.onCompleted: {
+    notificationSettingsDirProcess.running = true
+    if (autoConnect && !sampleMode) retry()
+  }
 
   Timer {
     id: notificationCooldown
@@ -500,7 +614,7 @@ Item {
     id: notificationProcess
     // Fixed argv; no shell, relay content, credentials, or executable supplied by events.
     command: ["timeout", "5s", "omarchy", "notification", "send", "--app-name", "Buzz",
-      "-u", "normal", "-t", "5000", "Buzz", "New activity in your selected room."]
+      "-u", "normal", "-t", "5000", "Buzz", "New activity in your Buzz rooms."]
     stdout: SplitParser { onRead: function(line) {} }
     stderr: SplitParser { onRead: function(line) {} }
   }

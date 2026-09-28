@@ -117,6 +117,7 @@ fn entire_roster_is_validated_before_the_sorted_bounded_subset() {
     assert_eq!(result.entries.len(), 20);
     assert!(result.entries.windows(2).all(|r| r[0].key < r[1].key));
     assert!(result.entries.iter().all(|r| r.name.is_empty()));
+    assert!(result.agents.is_empty());
 }
 #[test]
 fn profiles_are_self_asserted_and_conflicts_or_invalid_names_fall_back() {
@@ -222,12 +223,20 @@ async fn loopback_fetch_uses_fixed_roster_and_profile_queries_and_falls_back_on_
     let relay = key(1);
     let user = key(2);
     let payload = serde_json::to_string(&vec![membership(&relay, &[user.public_key()])]).unwrap();
+    let agent_payload = serde_json::to_string(&vec![event(
+        &user,
+        10100,
+        r#"{"name":"Synthetic agent","status":"online","pubkey":"forged"}"#,
+        vec![],
+        100,
+    )])
+    .unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let origin = format!("ws://{}/", listener.local_addr().unwrap());
     let public = user.public_key();
     let task = tokio::spawn(async move {
         timeout(Duration::from_secs(3), async move {
-            for index in 0..2 {
+            for index in 0..3 {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 let mut head = Vec::new();
                 loop {
@@ -257,8 +266,10 @@ async fn loopback_fetch_uses_fixed_roster_and_profile_queries_and_falls_back_on_
                     body,
                     if index == 0 {
                         serde_json::json!([{"kinds":[39002],"#d":[room().to_string()],"limit":1}])
-                    } else {
+                    } else if index == 1 {
                         serde_json::json!([{"kinds":[0],"authors":[public.to_hex()],"limit":1}])
+                    } else {
+                        serde_json::json!([{"kinds":[10100],"authors":[public.to_hex()],"limit":1}])
                     }
                 );
                 let response = if index == 0 {
@@ -266,6 +277,12 @@ async fn loopback_fetch_uses_fixed_roster_and_profile_queries_and_falls_back_on_
                         "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                         payload.len(),
                         payload
+                    )
+                } else if index == 2 {
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        agent_payload.len(),
+                        agent_payload
                     )
                 } else {
                     "HTTP/1.1 503 Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
@@ -287,6 +304,85 @@ async fn loopback_fetch_uses_fixed_roster_and_profile_queries_and_falls_back_on_
     assert_eq!(result.entries.len(), 1);
     assert_eq!(result.entries[0].key, public.to_hex());
     assert!(result.entries[0].name.is_empty());
+    assert_eq!(result.agents.len(), 1);
+    assert_eq!(result.agents[0].key, public.to_hex());
+    assert_eq!(result.agents[0].name, "Synthetic agent");
+    assert_eq!(result.agents[0].execution_state, "unknown");
     assert!(result.partial);
+    task.await.unwrap();
+}
+
+#[tokio::test]
+async fn agent_profile_access_denial_revokes_the_whole_recipient_fetch() {
+    let _fixture = crate::NETWORK_TEST_LOCK.lock().await;
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+        time::{timeout, Duration},
+    };
+    let relay = key(1);
+    let user = key(2);
+    let roster_body =
+        serde_json::to_string(&vec![membership(&relay, &[user.public_key()])]).unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("ws://{}/", listener.local_addr().unwrap());
+    let task = tokio::spawn(async move {
+        timeout(Duration::from_secs(3), async move {
+            for index in 0..3 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut head = Vec::new();
+                loop {
+                    let mut byte = [0; 1];
+                    assert_eq!(stream.read(&mut byte).await.unwrap(), 1);
+                    head.push(byte[0]);
+                    if head.ends_with(b"\r\n\r\n") {
+                        break;
+                    }
+                    assert!(head.len() < 16384);
+                }
+                let head = String::from_utf8(head).unwrap().to_ascii_lowercase();
+                let length = head
+                    .lines()
+                    .find_map(|line| line.strip_prefix("content-length: "))
+                    .unwrap()
+                    .trim()
+                    .parse::<usize>()
+                    .unwrap();
+                assert!(length < 8192);
+                let mut body = vec![0; length];
+                stream.read_exact(&mut body).await.unwrap();
+                let request: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                assert_eq!(
+                    request[0]["kinds"][0],
+                    serde_json::Value::from([39002, 0, 10100][index])
+                );
+                let reply = match index {
+                    0 => format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        roster_body.len(),
+                        roster_body
+                    ),
+                    1 => {
+                        "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n[]".into()
+                    }
+                    _ => "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                        .into(),
+                };
+                stream.write_all(reply.as_bytes()).await.unwrap();
+            }
+        })
+        .await
+        .unwrap();
+    });
+    assert_eq!(
+        timeout(
+            Duration::from_secs(4),
+            fetch(&origin, &user, relay.public_key(), room())
+        )
+        .await
+        .unwrap()
+        .unwrap_err(),
+        "query_access_denied"
+    );
     task.await.unwrap();
 }

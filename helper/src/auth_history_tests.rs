@@ -85,6 +85,7 @@ async fn scenario(in_flight: bool, automatic: bool, automatic_failure: bool) {
         let (finish_send,finish_wait)=oneshot::channel();let (ws_done_send,ws_done_wait)=oneshot::channel();
         let (held_send,held_wait)=oneshot::channel();let (release_send,release_wait)=oneshot::channel();
         let (released_send,released_wait)=oneshot::channel();
+        let (idle_send,idle_wait)=oneshot::channel();
         let mut held_wait=Some(held_wait);let mut release_send=Some(release_send);let mut released_wait=Some(released_wait);
         let server=AbortTask(tokio::spawn(async move {
             let (tcp,_)=listener.accept().await.unwrap();let mut ws=accept_async(tcp).await.unwrap();
@@ -129,6 +130,10 @@ async fn scenario(in_flight: bool, automatic: bool, automatic_failure: bool) {
                 let _=stream.write_all(response.as_bytes()).await;
                 if index==4 {let _=released_send.take().unwrap().send(());}
             }
+            if automatic_failure {
+                assert!(timeout(Duration::from_millis(5500),listener.accept()).await.is_err(),"denied room was queried again");
+                let _=idle_send.send(());
+            }
             timeout(Duration::from_secs(5),ws_done_wait).await.unwrap().unwrap();drop(websocket);
         }));
         let config=config::Config{relay:Some(origin.clone()),identity:Some(public.to_hex())};let (tx,mut status)=watch::channel(Status::new(&config));
@@ -152,6 +157,15 @@ async fn scenario(in_flight: bool, automatic: bool, automatic_failure: bool) {
             release_send.take().unwrap().send(()).unwrap();timeout(Duration::from_secs(3),released_wait.take().unwrap()).await.unwrap().unwrap();
             if automatic_failure {
                 wait_status(&mut status,|s|s.history.state=="unavailable"&&s.history.rows.is_empty()).await;
+                assert_eq!(status.borrow().history.category.as_deref(),Some("history_access_denied"));
+                assert!(status.borrow().catalog.rooms.iter().all(|r|r.id!=room),"denied room remained selectable");
+                let intent=crate::protocol::SendIntent {request_id:uuid::Uuid::new_v4().to_string(),room:room.clone(),text:"must not send".into(),mentions:vec![],generation:status.borrow().generation};
+                let (reply,received)=oneshot::channel();
+                commands.send(crate::protocol::Command::SendChecked(intent,reply)).await.unwrap();
+                assert_eq!(received.await.unwrap(),Some("send_access_denied"),"revoked room prepared a send");
+                assert_eq!(requests.load(Ordering::SeqCst),5);
+                timeout(Duration::from_secs(7),idle_wait).await.unwrap().unwrap();
+                assert_eq!(requests.load(Ordering::SeqCst),5,"denied room caused another HTTP read");
             } else {
                 wait_status(&mut status,|s|s.history.rows.first().is_some_and(|r|r.id==newer_id)).await;
                 assert_eq!(status.borrow().history.state,"snapshot");

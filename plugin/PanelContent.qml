@@ -96,6 +96,39 @@ FocusScope {
           font.family: Style.font.family
           font.pixelSize: Style.font.body
         }
+        ColumnLayout {
+          visible: root.service && root.service.agentProfiles.length > 0
+          Layout.fillWidth: true
+          Text {
+            text: "Agents in this room · execution unknown"
+            color: Color.foreground
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+          }
+          Controls.ScrollView {
+            Layout.fillWidth: true
+            Layout.preferredHeight: Math.min(Style.space(80), agentList.implicitHeight)
+            contentWidth: availableWidth
+            clip: true
+            Column {
+              id: agentList
+              width: parent.width
+              Repeater {
+                model: root.service ? root.service.agentProfiles : []
+                delegate: Text {
+                  required property var modelData
+                  width: agentList.width
+                  text: (modelData.name || "Agent") + " · " + modelData.key.slice(0, 12) + "…"
+                  textFormat: Text.PlainText
+                  elide: Text.ElideRight
+                  color: Color.foreground
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.caption
+                }
+              }
+            }
+          }
+        }
         Controls.ScrollView {
           Layout.fillWidth: true
           Layout.fillHeight: true
@@ -109,7 +142,7 @@ FocusScope {
               delegate: Ui.Button {
                 required property var modelData
                 Layout.fillWidth: true
-                text: "# " + modelData.name
+                text: "# " + modelData.name + (root.service && root.service.roomActivityCount(modelData.id) > 0 ? " · " + root.service.roomActivityCount(modelData.id) + "+" : "")
                 leftAlign: true
                 focusable: true
                 selected: root.service && root.service.selectedRoomId === modelData.id
@@ -121,7 +154,7 @@ FocusScope {
         Text {
           Layout.fillWidth: true
           text: "Connection\n" + (root.service ? root.service.statusLabel : "Unavailable")
-            + "\nAlerts monitor the selected room while closed, for this session."
+            + "\nActivity is local, sampled, and not synced unread state."
           textFormat: Text.PlainText
           wrapMode: Text.WordWrap
           color: Color.foreground
@@ -225,7 +258,7 @@ FocusScope {
                 delegate: Controls.CheckBox {
                   required property var modelData
                   width: people.width
-                  text: (modelData.name || "Unnamed") + " · " + modelData.key.slice(0, 12) + "…" + modelData.key.slice(-8)
+                  text: (modelData.name || "Unnamed") + " · " + modelData.key.slice(0, 12) + "…" + modelData.key.slice(-8) + " · " + root.service.participantLabel(modelData.key)
                   hoverEnabled: true
                   Controls.ToolTip.visible: hovered
                   Controls.ToolTip.text: modelData.key
@@ -307,7 +340,7 @@ FocusScope {
                 Text {
                   width: parent.width
                   text: root.service && root.service.sampleMode ? modelData.author + " · " + modelData.role + " · " + modelData.time
-                    : modelData.author.slice(0, 12) + "… · identity unclassified · " + root.service.formatTimestamp(modelData.time)
+                    : modelData.author.slice(0, 12) + "… · " + root.service.participantLabel(modelData.author) + " · " + root.service.formatTimestamp(modelData.time)
                   textFormat: Text.PlainText
                   wrapMode: Text.WordWrap
                   color: Color.accent

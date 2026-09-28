@@ -30,6 +30,7 @@ fn update(tx: &watch::Sender<Status>, state: &str, category: Option<&str>) {
         if state != "authenticated" {
             s.catalog = crate::protocol::Catalog::unavailable(None);
             s.history = History::unavailable(None, None);
+            s.activity.clear();
             s.recipients = crate::protocol::RecipientsView::unavailable(None, None);
         }
     });
@@ -74,6 +75,7 @@ fn apply_loaded_config(
                     s.category = None;
                     s.catalog = crate::protocol::Catalog::unavailable(None);
                     s.history = History::unavailable(None, None);
+                    s.activity.clear();
                     s.recipients = crate::protocol::RecipientsView::unavailable(None, None);
                 }
             });
@@ -314,6 +316,10 @@ async fn observe_inner(
     let mut history_ticket = 0_u64;
     let mut selected_history: Option<String> = None;
     let mut history_due = tokio::time::Instant::now();
+    let mut activity = crate::activity::Tracker::default();
+    let mut activity_jobs = tokio::task::JoinSet::new();
+    let mut activity_due = tokio::time::Instant::now() + Duration::from_secs(5);
+    let mut activity_cursor = 0_usize;
     let mut recipient_jobs = tokio::task::JoinSet::new();
     let mut recipient_ticket = 0_u64;
     loop {
@@ -432,16 +438,68 @@ async fn observe_inner(
                                 selected_history=None;
                             }
                             if let Some(delivery)=sender.revoke_room(&room) {tx.send_modify(|s|s.delivery=delivery);}
+                            activity.forget(&room);
                             tx.send_modify(|s| {
                                 s.catalog.rooms.retain(|r|r.id!=room);
+                                s.activity.retain(|r|r.room_id!=room);
                                 if s.history.room_id.as_deref()==Some(room.as_str()) {s.history=History::unavailable(Some(room.clone()),Some("history_access_denied"));}
                             });
                         }
                         tx.send_modify(|s|s.recipients=match result {
-                        Ok(r) if r.room==room=>crate::protocol::RecipientsView {state:"snapshot".into(),room_id:Some(r.room),partial:r.partial,category:None,entries:r.entries.into_iter().map(|r|crate::protocol::Recipient {key:r.key,name:r.name}).collect()},
+                        Ok(r) if r.room==room=>crate::protocol::RecipientsView {state:"snapshot".into(),room_id:Some(r.room),partial:r.partial,category:None,agents:r.agents,entries:r.entries.into_iter().map(|r|crate::protocol::Recipient {key:r.key,name:r.name}).collect()},
                         Ok(_)=>crate::protocol::RecipientsView::unavailable(Some(room),Some("recipients_invalid")),
                         Err(error)=>crate::protocol::RecipientsView::unavailable(Some(room),Some(recipients_category(error))),
                     });}
+                }
+            },
+            _=tokio::time::sleep_until(activity_due), if fresh && activity_jobs.is_empty()=> {
+                activity_due=tokio::time::Instant::now()+Duration::from_secs(5);
+                let status=tx.borrow();
+                let rooms=&status.catalog.rooms;
+                let candidate=if status.catalog.state=="partial" && !rooms.is_empty() {
+                    let room=rooms[activity_cursor % rooms.len()].id.clone();
+                    activity_cursor=activity_cursor.wrapping_add(1);
+                    Some(room).filter(|r|selected_history.as_ref()!=Some(r))
+                } else {None};
+                let generation=status.generation;drop(status);
+                if let (Some(room),Some(pin))=(candidate,*relay_pin) {
+                    let relay=relay.to_owned();let keys=keys.clone();let id=uuid::Uuid::parse_str(&room).expect("catalog canonical room");
+                    activity_jobs.spawn(async move {
+                        let result=match timeout(Duration::from_secs(15),crate::history::fetch(&relay,&keys,pin,id)).await {Ok(r)=>r,Err(_)=>Err("history_timeout")};
+                        (generation,room,result)
+                    });
+                }
+            },
+            result=activity_jobs.join_next(), if !activity_jobs.is_empty()=> {
+                activity_due=tokio::time::Instant::now()+Duration::from_secs(5);
+                if let Some(Ok((generation,room,result)))=result {
+                    let allowed=fresh && generation==tx.borrow().generation && tx.borrow().catalog.state=="partial" && tx.borrow().catalog.rooms.iter().any(|r|r.id==room);
+                    if allowed {
+                        match result {
+                            Ok(h) if h.room==room=>activity.observe(&room,&h.rows,&keys.public_key().to_hex(),nostr::Timestamp::now().as_secs()),
+                            Err("query_access_denied")=>{
+                                activity.forget(&room);
+                                if selected_history.as_deref()==Some(room.as_str()) {
+                                    selected_history=None;
+                                    history_jobs.abort_all();history_jobs=tokio::task::JoinSet::new();history_ticket=history_ticket.wrapping_add(1);
+                                }
+                                if tx.borrow().recipients.room_id.as_deref()==Some(room.as_str()) {
+                                    recipient_jobs.abort_all();recipient_jobs=tokio::task::JoinSet::new();recipient_ticket=recipient_ticket.wrapping_add(1);
+                                }
+                                if let Some(delivery)=sender.revoke_room(&room) {tx.send_modify(|s|s.delivery=delivery);}
+                                tx.send_modify(|s| {
+                                    s.catalog.rooms.retain(|r|r.id!=room);
+                                    if s.history.room_id.as_deref()==Some(room.as_str()) {s.history=History::unavailable(Some(room.clone()),Some("history_access_denied"));}
+                                    if s.recipients.room_id.as_deref()==Some(room.as_str()) {s.recipients=crate::protocol::RecipientsView::unavailable(Some(room.clone()),Some("recipients_access_denied"));}
+                                });
+                            },
+                            _=>activity.forget(&room),
+                        }
+                        tx.send_modify(|s|s.activity=activity.summaries());
+                    }
+                } else {
+                    // A task panic cannot leave a stale activity claim visible.
+                    activity=crate::activity::Tracker::default();tx.send_modify(|s|s.activity.clear());
                 }
             },
             result=history_jobs.join_next(), if !history_jobs.is_empty()=> {
@@ -455,9 +513,20 @@ async fn observe_inner(
                         history_due=tokio::time::Instant::now()+Duration::from_secs(5);
                         if result.as_ref().is_err_and(|error|history_category(error)=="history_access_denied") {
                             selected_history=None;
+                            if tx.borrow().recipients.room_id.as_deref()==Some(room.as_str()) {
+                                recipient_jobs.abort_all();recipient_jobs=tokio::task::JoinSet::new();recipient_ticket=recipient_ticket.wrapping_add(1);
+                            }
                             if let Some(delivery)=sender.revoke_room(&room) {tx.send_modify(|s|s.delivery=delivery);}
-                            tx.send_modify(|s|s.catalog.rooms.retain(|r|r.id!=room));
+                            tx.send_modify(|s| {
+                                s.catalog.rooms.retain(|r|r.id!=room);
+                                if s.recipients.room_id.as_deref()==Some(room.as_str()) {s.recipients=crate::protocol::RecipientsView::unavailable(Some(room.clone()),Some("recipients_access_denied"));}
+                            });
                         }
+                        match &result {
+                            Ok(h) if h.room==room=>activity.observe(&room,&h.rows,&keys.public_key().to_hex(),nostr::Timestamp::now().as_secs()),
+                            _=>activity.forget(&room),
+                        }
+                        tx.send_modify(|s|s.activity=activity.summaries());
                         tx.send_modify(|s|s.history=match result {
                             Ok(h) if h.room==room=>History {state:"snapshot".into(),room_id:Some(h.room),has_more:Some(h.has_more),category:Some(h.category.into()),rows:h.rows.into_iter().map(|r|crate::protocol::HistoryRow {id:r.id,author:r.author_pubkey,time:r.timestamp,text:r.text,edited:r.edited,truncated:r.truncated,unavailable:r.unavailable}).collect()},
                             Ok(_)=>History::unavailable(Some(room),Some("history_invalid")),
@@ -475,6 +544,8 @@ async fn observe_inner(
                             state:catalog.state.into(),category:Some(catalog.category.into()),
                             rooms:catalog.rooms.into_iter().map(|r|crate::protocol::Room {id:r.id,name:r.name,description:r.description}).collect(),
                         });
+                        activity.retain(&tx.borrow().catalog.rooms);
+                        tx.send_modify(|s|s.activity=activity.summaries());
                         if let Some(room)=selected_history.as_ref() {
                             if tx.borrow().catalog.rooms.iter().any(|r|r.id==*room) {
                                 history_due=tokio::time::Instant::now();
@@ -486,10 +557,14 @@ async fn observe_inner(
                     },
                     Some(Ok(Err(error))) if fresh=>{
                         selected_history=None;
+                        activity=crate::activity::Tracker::default();
+                        tx.send_modify(|s|s.activity.clear());
                         tx.send_modify(|s|{s.catalog=crate::protocol::Catalog::unavailable(Some(catalog_category(error)));s.history=History::unavailable(None,None);});
                     },
                     Some(Err(error)) if fresh && !error.is_cancelled()=>{
                         selected_history=None;
+                        activity=crate::activity::Tracker::default();
+                        tx.send_modify(|s|s.activity.clear());
                         tx.send_modify(|s|{s.catalog=crate::protocol::Catalog::unavailable(Some("room_catalog_unavailable"));s.history=History::unavailable(None,None);});
                     },
                     _=>{},
@@ -498,6 +573,8 @@ async fn observe_inner(
             },
             _=tokio::time::sleep_until(catalog_due), if fresh && jobs.is_empty()=> {
                 history_jobs.abort_all(); history_jobs=tokio::task::JoinSet::new(); history_ticket=history_ticket.wrapping_add(1);
+                activity_jobs.abort_all();activity_jobs=tokio::task::JoinSet::new();
+                tx.send_modify(|s|s.activity.clear());
                 recipient_jobs.abort_all();recipient_jobs=tokio::task::JoinSet::new();recipient_ticket=recipient_ticket.wrapping_add(1);
                 tx.send_modify(|s| {s.catalog=crate::protocol::Catalog::loading();s.history=History::unavailable(None,None);s.recipients=crate::protocol::RecipientsView::unavailable(None,None);});
                 let relay=relay.to_owned();let keys=keys.clone();let pin=*relay_pin;
@@ -524,6 +601,8 @@ async fn observe_inner(
                     jobs.abort_all();
                     history_jobs.abort_all(); history_jobs=tokio::task::JoinSet::new(); history_ticket=history_ticket.wrapping_add(1);
                     selected_history=None;
+                    activity_jobs.abort_all();activity_jobs=tokio::task::JoinSet::new();
+                    activity=crate::activity::Tracker::default();
                     update(tx,"connecting",None);
                     match timeout(Duration::from_secs(25),conn.authenticate(keys,None)).await {
                         Ok(Ok(()))=> { pending=None; due=tokio::time::Instant::now(); },
@@ -761,3 +840,7 @@ mod send_tests;
 #[cfg(test)]
 #[path = "auth_send_integration_tests.rs"]
 mod send_integration_tests;
+
+#[cfg(test)]
+#[path = "auth_activity_tests.rs"]
+mod activity_integration_tests;

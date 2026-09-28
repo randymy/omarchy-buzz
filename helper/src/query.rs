@@ -25,6 +25,7 @@ pub enum QueryRequest {
     RoomHistory { room: Uuid, limit: u16 },
     RoomMembers { room: Uuid },
     Profiles { authors: Vec<nostr::PublicKey> },
+    AgentProfiles { authors: Vec<nostr::PublicKey> },
 }
 impl QueryRequest {
     fn body(&self, keys: &Keys) -> Result<Vec<u8>, &'static str> {
@@ -34,6 +35,9 @@ impl QueryRequest {
             }
             Self::Profiles { authors } if !authors.is_empty() && authors.len() <= 20 => {
                 serde_json::json!({"kinds":[0],"authors":authors.iter().map(|p|p.to_hex()).collect::<Vec<_>>(),"limit":authors.len()})
+            }
+            Self::AgentProfiles { authors } if !authors.is_empty() && authors.len() <= 20 => {
+                serde_json::json!({"kinds":[10100],"authors":authors.iter().map(|p|p.to_hex()).collect::<Vec<_>>(),"limit":authors.len()})
             }
             Self::JoinedRooms { limit } if (1..=50).contains(limit) => {
                 serde_json::json!({"kinds":[39002],"#p":[keys.public_key().to_hex()],"limit":limit})
@@ -65,6 +69,9 @@ impl QueryRequest {
             }
             Self::Profiles { authors } => {
                 event.kind.as_u16() == 0 && authors.contains(&event.pubkey)
+            }
+            Self::AgentProfiles { authors } => {
+                event.kind.as_u16() == 10100 && authors.contains(&event.pubkey)
             }
             Self::RoomHistory { room, .. } => {
                 let kind = event.kind.as_u16();

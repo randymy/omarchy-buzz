@@ -59,8 +59,7 @@ must already be independently configured.
   collateral transfer or trade.
 
 These additions should be configuration, upstream contributions or separate
-packages. They must not require a branded fork of the plugin. Preferred-room,
-notification and agent-dashboard configuration remain future work; no
+packages. They must not require a branded fork of the plugin. Preferred-room and detailed agent-dashboard configuration remain future work; notification opt-in is now a generic saved preference. No
 undocumented manifest fields or IPC commands should be assumed.
 
 ## Acceptance sequence
@@ -77,3 +76,12 @@ the authority plane: it owns capability leases, credential access, risk limits,
 attestation and action enforcement. A valid Buzz signature establishes who
 signed an event; it does not replace any of those decisions. See
 [DESIGN.md](../DESIGN.md) for the inspected vPerps source baseline and interfaces.
+
+## Local integration evidence
+
+The same generic plugin and helper operate in the current vPerps Omarchy
+environment against the operator's self-hosted relay. Human enrollment, joined
+room access and operator-confirmed cross-client messaging are recorded in
+CHECKPOINT.md. No vPerps repository change or plugin fork was needed. This
+validates the desktop consumption path; the model-backed ACP acceptance scenario
+remains gated by the upstream issues in ACP_READINESS.md.

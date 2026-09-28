@@ -44,7 +44,7 @@ are capped at 64 KiB. Eight clients maximum; output writes time out after ten
 seconds. Invalid requests receive a category-only error and the connection closes.
 Hello/status responses expose public identity/origin, helper instance/generation,
 connection category, and capabilities `connection_status`, `room_catalog`,
-`room_history`, `message_send`, `room_recipients`, `history_auto_refresh`. At most twenty rooms and twenty projected message rows are
+`room_history`, `message_send`, `room_recipients`, `history_auto_refresh`, `room_activity`, `agent_profiles`. At most twenty rooms and twenty projected message rows are
 returned. Message previews are plain text capped at 768 UTF-8 bytes, with
 explicit truncation. No raw events, backend errors or credential material is forwarded. UI EOF closes the bridge connection.
 
@@ -73,7 +73,7 @@ After selection, background refresh runs five seconds after the previous request
 finishes, with one bounded history fetch at a time. It preserves the current view
 while fetching, but clears it on failure or authorization uncertainty. Catalog
 revalidation still clears history, then refetches authorized selections. This
-monitors only one selected room and makes no global unread/completeness claim.
+keeps the selected conversation current. A separate bounded worker rotates across other catalog rooms, at most one request every five seconds after completion. Per-room summaries contain only a monotonic observed counter and baseline epoch, never message bodies. Baselines and gaps produce no increments; reconnects reset the tracker. This is not global or synchronized unread state.
 See [history semantics](../docs/MESSAGING_NEXT.md) for limits and source references.
 
 Sending reserves an event ID durably before any EVENT write. Only a matching
@@ -92,5 +92,5 @@ Recipient discovery verifies a relay-signed room roster and current identity
 membership, then projects at most 20 keys and optional signed kind-0 display names.
 Names are self-asserted hints of at most 64 UTF-8 bytes. Missing, malformed or
 conflicting profiles fall back to keys. The helper fetches no avatars or NIP05
-URLs and infers no human/agent classification. Room/scope/authentication changes
+URLs. At most ten optional signed kind-10100 profiles label roster identities only as self-described agents with unknown execution state; absence never proves a human identity. Room/scope/authentication changes
 clear the snapshot; the sender validates selected keys against the current one.

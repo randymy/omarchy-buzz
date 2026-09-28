@@ -210,6 +210,7 @@ fn selected_mentions_require_current_room_roster_and_use_exact_key() {
         Some("send_access_denied")
     );
     status.recipients = crate::protocol::RecipientsView {
+        agents: Vec::new(),
         state: "snapshot".into(),
         room_id: Some(uuid::Uuid::new_v4().to_string()),
         partial: false,

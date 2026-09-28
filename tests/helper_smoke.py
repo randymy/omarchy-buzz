@@ -47,7 +47,7 @@ def status(frame, kind):
     assert frame["status"]["connection"] == "unconfigured", frame
     assert frame["status"]["identity"] is None, frame
     assert frame["status"]["relay"] is None, frame
-    assert frame["capabilities"] == ["connection_status", "room_catalog", "room_history", "message_send", "room_recipients", "history_auto_refresh"], frame
+    assert frame["capabilities"] == ["connection_status", "room_catalog", "room_history", "message_send", "room_recipients", "history_auto_refresh", "room_activity", "agent_profiles"], frame
     assert frame["status"]["catalog"]["state"] == "unavailable", frame
     assert frame["status"]["catalog"]["rooms"] == [], frame
     assert frame["status"]["history"] == {
@@ -57,7 +57,7 @@ def status(frame, kind):
         "state": "idle", "requestId": None, "roomId": None, "eventId": None, "category": None,
     }, frame
     assert frame["status"]["recipients"] == {
-        "state": "unavailable", "roomId": None, "entries": [], "partial": True, "category": None,
+        "state": "unavailable", "roomId": None, "entries": [], "agents": [], "partial": True, "category": None,
     }, frame
     assert frame["instanceId"] and frame["generation"] == 1, frame
 

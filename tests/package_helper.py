@@ -28,7 +28,7 @@ class Packaging(unittest.TestCase):
                 data[16:18] = (3).to_bytes(2, "little")
                 data[18:20] = machine.to_bytes(2, "little")
                 binary.write_bytes(data)
-                metadata = {"helperVersion": "0.0.4", "protocolVersion": 1, "backendRevision": "781d39510cf23cfe224e8f521ae06a23377e06de"}
+                metadata = {"helperVersion": "0.0.5", "protocolVersion": 1, "backendRevision": "781d39510cf23cfe224e8f521ae06a23377e06de"}
                 first, digest = module.package(binary, base / (arch + " one"), metadata_runner=lambda _: metadata)
                 second, _ = module.package(binary, base / (arch + " two"), metadata_runner=lambda _: metadata)
                 self.assertEqual(first.read_bytes(), second.read_bytes())
@@ -56,13 +56,13 @@ class Packaging(unittest.TestCase):
         data[18:20] = (40).to_bytes(2, "little")
         with self.assertRaises(ValueError):
             module.architecture(data)
-        good = {"helperVersion": "0.0.4", "protocolVersion": 1, "backendRevision": "781d39510cf23cfe224e8f521ae06a23377e06de"}
+        good = {"helperVersion": "0.0.5", "protocolVersion": 1, "backendRevision": "781d39510cf23cfe224e8f521ae06a23377e06de"}
         for changed in ({"helperVersion": "0.0.2"}, {"backendRevision": "0" * 40}, {"protocolVersion": True}):
             with self.assertRaises(ValueError):
                 module.validated_metadata(ROOT, good | changed)
 
     def test_source_version_and_dependency_pin_mismatch(self):
-        good = {"helperVersion": "0.0.4", "protocolVersion": 1, "backendRevision": "781d39510cf23cfe224e8f521ae06a23377e06de"}
+        good = {"helperVersion": "0.0.5", "protocolVersion": 1, "backendRevision": "781d39510cf23cfe224e8f521ae06a23377e06de"}
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             for name in ("manifest.json", "helper/Cargo.toml", "helper/src/compatibility.rs"):
