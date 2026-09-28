@@ -1,0 +1,46 @@
+#!/usr/bin/env python3
+"""Stage an isolated upstream contribution test crate; never change Buzz or helper pins."""
+import argparse
+import hashlib
+import json
+from pathlib import Path
+import shutil
+import subprocess
+
+ROOT = Path(__file__).resolve().parents[1]
+
+def prepare(source, output):
+    fixture = ROOT / 'tests/upstream-ws'
+    evidence = json.loads((fixture / 'provenance.json').read_text())
+    if output.exists() or output.is_symlink():
+        raise ValueError('choose a new output directory')
+    sources = {}
+    for name, expected in evidence['files'].items():
+        if name not in {'crates/buzz-ws-client/src/' + n for n in ('connection.rs', 'error.rs', 'lib.rs', 'message.rs')}:
+            raise ValueError('unexpected source path')
+        data = subprocess.check_output(['git', 'show', evidence['baseRevision'] + ':' + name], cwd=source)
+        if hashlib.sha256(data).hexdigest() != expected:
+            raise ValueError('source provenance mismatch')
+        sources[name] = data
+    output.mkdir(parents=True, mode=0o700)
+    for name, data in sources.items():
+        target = output / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+    patch = ROOT / 'docs/upstream/ws-resource-limits.patch'
+    subprocess.run(['git', 'apply', '--check', str(patch)], cwd=output, check=True)
+    subprocess.run(['git', 'apply', str(patch)], cwd=output, check=True)
+    crate = output / 'crates/buzz-ws-client'
+    for name in ('Cargo.toml', 'Cargo.lock'):
+        shutil.copyfile(fixture / name, crate / name)
+    print(crate)
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--buzz-source', required=True, type=Path)
+    parser.add_argument('--output', required=True, type=Path)
+    args = parser.parse_args()
+    try:
+        prepare(args.buzz_source.resolve(), args.output.absolute())
+    except (ValueError, OSError, subprocess.CalledProcessError) as error:
+        parser.exit(1, 'contribution preparation failed: ' + str(error) + '\n')

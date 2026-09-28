@@ -72,3 +72,26 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y dbus gnome-keyring
       - name: Test synthetic identity enrollment in a private keyring
         run: python3 tests/helper_keyring.py helper/target/debug/omarchy-buzz
+  upstream-ws-proposal:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out plugin contribution artifacts
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          path: omarchy-buzz
+          persist-credentials: false
+      - name: Check out exact upstream patch base
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: block/buzz
+          ref: 781d39510cf23cfe224e8f521ae06a23377e06de
+          path: buzz
+          persist-credentials: false
+      - name: Stage isolated contribution without changing upstream
+        working-directory: omarchy-buzz
+        run: python3 scripts/prepare-ws-contribution --buzz-source ../buzz --output "$RUNNER_TEMP/buzz-ws-review"
+      - name: Install tested toolchain
+        run: rustup toolchain install 1.95.0 --profile minimal
+      - name: Test proposed client limits against synthetic peers
+        run: cargo +1.95.0 test --locked --manifest-path "$RUNNER_TEMP/buzz-ws-review/crates/buzz-ws-client/Cargo.toml"

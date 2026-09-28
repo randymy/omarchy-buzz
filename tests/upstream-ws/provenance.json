@@ -1,0 +1,10 @@
+{
+  "baseRevision": "781d39510cf23cfe224e8f521ae06a23377e06de",
+  "reviewedHead": "ebe99a46e8802b9ff20fdf6a1028ce93bdefaa43",
+  "files": {
+    "crates/buzz-ws-client/src/connection.rs": "fb5a0d2804f157b3ffc04ebb67f2a7e0cd638bbb0c69e2cfa302de26a9175abc",
+    "crates/buzz-ws-client/src/error.rs": "6a598274728d8598245dcb94d2ede25cb6383624c4822e5f9c6c935af2cfd576",
+    "crates/buzz-ws-client/src/lib.rs": "6c16834909dec44d73ee36426c36dc087c6baebc30579217bbd656eb734fd5dc",
+    "crates/buzz-ws-client/src/message.rs": "7b10de6001ec2bb822c6d1822fbd25c0a8e928d0af95f1ed77154d28f5a9e95a"
+  }
+}

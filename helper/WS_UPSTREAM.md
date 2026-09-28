@@ -38,3 +38,11 @@ matching acknowledgment. Unrelated activity cannot extend this deadline. This
 is neither presence nor process health. Network failures retry five times with
 1/2/4/8/16-second delays; authentication, storage and protocol failures require
 explicit Retry. Successful matched probes reset the network failure budget.
+
+## Prepared contribution, 2026-09-28
+
+A concrete [upstream patch and reproducible test harness](../docs/upstream/WS_RESOURCE_LIMITS.md)
+now implement bounded transport/replay/output and operation deadlines. All 16
+isolated client tests pass. The official current client files are unchanged at
+`ebe99a46e8802b9ff20fdf6a1028ce93bdefaa43`. The patch has not been submitted,
+merged or adopted by the installed helper; this release gate remains open.

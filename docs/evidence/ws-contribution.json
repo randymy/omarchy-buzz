@@ -1,0 +1,16 @@
+{
+  "date": "2026-09-28",
+  "scope": "isolated upstream-client contribution; not installed or adopted",
+  "baseRevision": "781d39510cf23cfe224e8f521ae06a23377e06de",
+  "reviewedUpstreamHead": "ebe99a46e8802b9ff20fdf6a1028ce93bdefaa43",
+  "rustToolchain": "1.95.0",
+  "testsPassed": 16,
+  "testsFailed": 0,
+  "reconstructedPatchTested": true,
+  "productionRelayUsed": false,
+  "sha256": {
+    "docs/upstream/ws-resource-limits.patch": "1f677cb2f873d8ff4f3944a810943348f27deddeee230665ceb6a6a48843694b",
+    "tests/upstream-ws/Cargo.lock": "3aebdd24effc50d5c1bf2dd8b75808067e5531475b1fcc0ce0c2bc9df2530a61",
+    "tests/upstream-ws/provenance.json": "14f50bf9126551023c4eae60b101e8ed039d398ea7bb6473f30e26a46ec12026"
+  }
+}
