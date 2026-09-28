@@ -295,3 +295,19 @@ gates. Do not treat this as a harmless account switch. Offered an independent
 macOS user account to preserve the original app state, versus an explicitly
 chosen backup/reset of the existing app. Await that choice before directing
 destructive laptop steps. The helper remains stopped; relay and rooms unchanged.
+
+## Separate public identity admitted
+
+The operator supplied a distinct human public key and explicitly requested
+continuation after being advised that its associated private key had been posted
+in chat. The assistant did not use or copy that private key. The deployed
+`buzz-admin add-member --pubkey … --role member` command successfully admitted
+the supplied public identity; a read-only check confirmed the regular-member role.
+No administrator or owner privileges were granted. Do not consider this identity
+unexposed or silently reuse the chat private key in subsequent work.
+
+Both requested development streams are private and the new identity is not yet
+a channel member. Existing owner access is preserved; a supported room invitation
+is still needed. Opened the local hidden enrollment prompt for operator input.
+Helper/socket remain stopped until enrollment is verified against the supplied
+public key. No channel membership mutation, message send, or relay restart ran.
