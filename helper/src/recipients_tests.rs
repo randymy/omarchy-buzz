@@ -313,7 +313,7 @@ async fn loopback_fetch_uses_fixed_roster_and_profile_queries_and_falls_back_on_
 }
 
 #[tokio::test]
-async fn agent_profile_access_denial_revokes_the_whole_recipient_fetch() {
+async fn optional_profile_access_denial_preserves_the_verified_roster() {
     let _fixture = crate::NETWORK_TEST_LOCK.lock().await;
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
@@ -324,65 +324,71 @@ async fn agent_profile_access_denial_revokes_the_whole_recipient_fetch() {
     let user = key(2);
     let roster_body =
         serde_json::to_string(&vec![membership(&relay, &[user.public_key()])]).unwrap();
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let origin = format!("ws://{}/", listener.local_addr().unwrap());
-    let task = tokio::spawn(async move {
-        timeout(Duration::from_secs(3), async move {
-            for index in 0..3 {
-                let (mut stream, _) = listener.accept().await.unwrap();
-                let mut head = Vec::new();
-                loop {
-                    let mut byte = [0; 1];
-                    assert_eq!(stream.read(&mut byte).await.unwrap(), 1);
-                    head.push(byte[0]);
-                    if head.ends_with(b"\r\n\r\n") {
-                        break;
+    for denied_kind in [0, 10100] {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("ws://{}/", listener.local_addr().unwrap());
+        let roster_body = roster_body.clone();
+        let task = tokio::spawn(async move {
+            timeout(Duration::from_secs(3), async move {
+                for index in 0..3 {
+                    let (mut stream, _) = listener.accept().await.unwrap();
+                    let mut head = Vec::new();
+                    loop {
+                        let mut byte = [0; 1];
+                        assert_eq!(stream.read(&mut byte).await.unwrap(), 1);
+                        head.push(byte[0]);
+                        if head.ends_with(b"\r\n\r\n") {
+                            break;
+                        }
+                        assert!(head.len() < 16384);
                     }
-                    assert!(head.len() < 16384);
+                    let head = String::from_utf8(head).unwrap().to_ascii_lowercase();
+                    let length = head
+                        .lines()
+                        .find_map(|line| line.strip_prefix("content-length: "))
+                        .unwrap()
+                        .trim()
+                        .parse::<usize>()
+                        .unwrap();
+                    assert!(length < 8192);
+                    let mut body = vec![0; length];
+                    stream.read_exact(&mut body).await.unwrap();
+                    let request: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                    assert_eq!(
+                        request[0]["kinds"][0],
+                        serde_json::Value::from([39002, 0, 10100][index])
+                    );
+                    let reply = if index == 0 {
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            roster_body.len(),
+                            roster_body
+                        )
+                    } else if [39002, 0, 10100][index] == denied_kind {
+                        "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                            .into()
+                    } else {
+                        "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n[]"
+                            .into()
+                    };
+                    stream.write_all(reply.as_bytes()).await.unwrap();
                 }
-                let head = String::from_utf8(head).unwrap().to_ascii_lowercase();
-                let length = head
-                    .lines()
-                    .find_map(|line| line.strip_prefix("content-length: "))
-                    .unwrap()
-                    .trim()
-                    .parse::<usize>()
-                    .unwrap();
-                assert!(length < 8192);
-                let mut body = vec![0; length];
-                stream.read_exact(&mut body).await.unwrap();
-                let request: serde_json::Value = serde_json::from_slice(&body).unwrap();
-                assert_eq!(
-                    request[0]["kinds"][0],
-                    serde_json::Value::from([39002, 0, 10100][index])
-                );
-                let reply = match index {
-                    0 => format!(
-                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                        roster_body.len(),
-                        roster_body
-                    ),
-                    1 => {
-                        "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n[]".into()
-                    }
-                    _ => "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-                        .into(),
-                };
-                stream.write_all(reply.as_bytes()).await.unwrap();
-            }
-        })
-        .await
-        .unwrap();
-    });
-    assert_eq!(
-        timeout(
+            })
+            .await
+            .unwrap();
+        });
+        let result = timeout(
             Duration::from_secs(4),
-            fetch(&origin, &user, relay.public_key(), room())
+            fetch(&origin, &user, relay.public_key(), room()),
         )
         .await
         .unwrap()
-        .unwrap_err(),
-        "query_access_denied"
-    );
-    task.await.unwrap();
+        .unwrap();
+        assert_eq!(result.room, room().to_string());
+        assert_eq!(result.entries.len(), 1);
+        assert_eq!(result.entries[0].key, user.public_key().to_hex());
+        assert!(result.entries[0].name.is_empty());
+        assert!(result.agents.is_empty());
+        task.await.unwrap();
+    }
 }

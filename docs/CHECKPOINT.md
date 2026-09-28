@@ -1,6 +1,6 @@
 # Development checkpoint — 2026-09-28
 
-Current source version: **0.0.5 messaging development preview**, not a community release.
+Current source version: **0.0.6 messaging development preview**, not a community release.
 Implemented: source-grounded design; native hosted/custom setup; Rust daemon and
 QML bridge; Secret Service identity enrollment; bounded local IPC and systemd
 units; exact-ID connection freshness; signed room discovery; conservative recent
@@ -533,3 +533,11 @@ exhaustive error mapping and its tests: 21 pass, including 5 consumer tests.
 Both proposals have reproducible locked staging harnesses; no installed pin
 change or public submission occurred. Notice/package tool tests and upstream
 pin-tool self-tests pass. All GitHub workflow jobs remain manual-only.
+
+## Independent review fixes, 2026-09-28
+
+Version 0.0.6 fixes two independent-review findings: atomic catalog/activity
+publication and optional profile denial incorrectly revoking room membership.
+See [review record](reviews/2026-09-28.md). Final Rust suite: 99 passed, two
+explicit live-relay/ACP skips; rebuilt IPC, packaging, activity and manifest
+checks passed. Upstream pins and manual-only CI remain unchanged.

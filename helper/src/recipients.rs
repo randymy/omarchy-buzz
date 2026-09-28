@@ -184,7 +184,6 @@ pub async fn fetch(
     .await
     {
         Ok(events) => profiles(&mut recipients, &events, Timestamp::now().as_secs()),
-        Err("query_access_denied") => return Err("query_access_denied"),
         Err(_) => {}
     }
     match query(relay, keys, &QueryRequest::AgentProfiles { authors }).await {
@@ -200,7 +199,6 @@ pub async fn fetch(
                 recipients.agents = agents;
             }
         }
-        Err("query_access_denied") => return Err("query_access_denied"),
         Err(_) => {}
     }
     Ok(recipients)
