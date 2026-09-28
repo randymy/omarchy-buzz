@@ -89,3 +89,21 @@ data ([`CodexJsonRpcConnection.ts`](https://github.com/agentclientprotocol/codex
 [`Logger.ts`](https://github.com/agentclientprotocol/codex-acp/blob/2eebebc35441e03cd466003b40a75953b221b886/src/Logger.ts#L7-L46)).
 Keep this log option disabled for any auth test or integration until upstream
 redacts those fields. No secret-bearing diagnostics were generated here.
+
+## Subscription-only enforcement candidate
+
+A further local inspection of the same pinned adapter found generated native
+app-server types `src/app-server/ForcedLoginMethod.ts` (`chatgpt` or `api`),
+`src/app-server/v2/Config.ts::forced_login_method`, and
+`src/app-server/v2/ConfigRequirements.ts::allowedLoginMethods`. The adapter reads
+`CODEX_CONFIG` in `src/index.ts` and passes its config into `thread/start` through
+`CodexAcpClient.ts::createSessionConfig`. It does not itself validate effective
+login restrictions; no non-generated use of those enforcement fields was found.
+
+This is a candidate for enforcing subscription intent, **not yet a verified
+control**. Inspect the matching native Codex 0.158.0 implementation to establish
+whether startup versus thread config accepts the restriction, its precedence,
+and its behavior with a stored API-key login, provider overrides or an expired
+subscription. Test rejection before a paid task. Do not treat the field's
+presence, successful ChatGPT login or informational auth status as proof of the
+effective payer. No native account/configuration was inspected during this check.

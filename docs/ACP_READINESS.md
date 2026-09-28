@@ -146,6 +146,9 @@ support it, reuse the user's existing native signed-in session; otherwise invoke
 the provider's supported browser or terminal login flow. Do not require an API
 key merely because the same agent is being used through Buzz ACP.
 
+The first real-account acceptance demo must use the operator's Pro subscription,
+not an API-billed substitute. An API-only demo does not satisfy this requirement.
+
 This is a required integration outcome, subject to provider entitlements and
 documented adapter support. Verify each mode through the actual ACP adapter;
 successful authentication in a standalone CLI alone is insufficient. If a mode
@@ -224,3 +227,17 @@ All four offline discovery cases pass with fresh profiles. No authentication or
 model task was requested. ARM64 runtime, actual account behavior, effective
 payer and safe relay-key/tool handling remain unverified. Installed 0.0.6 is
 unchanged; this evidence concerns the disposable conformance build.
+
+## Relay-key isolation proposal tested
+
+The [harness-only identity proposal](upstream/ACP_KEY_ISOLATION.md) adds bounded
+Linux pipe input, skips credential-sharing Git bootstrap, rejects secret-dependent
+MCP and removes known relay credentials from adapter environments across launch
+and recovery. Eight new unit tests and eight real-CLI input tests pass on a
+disposable x86_64 build. Subscription login discovery still passes separately.
+
+This is a staged upstream proposal, not a changed installed harness or a sandbox.
+Disabling agent-side signing also removes the current CLI-based room-reply path.
+A harness-owned reply path, tool policy, same-UID/process isolation, native
+subscription validation and effective-payer checks remain necessary. The proposal
+documents the next reply increment using existing Buzz signing/submission APIs.

@@ -72,7 +72,15 @@ validation with public disposable keys. The CLI fixture rejects configuration
 before any relay or agent startup, including the valid-key case. Parent-env
 markers exercise inherited relay/Git scrubbing in the real-child unit test.
 All tests are synthetic; no persistent identity, provider or production relay
-is used. Compilation/runtime results will be recorded separately once complete.
+is used. The complete patched crate and its unit-test target compile in
+[run 36482217831](https://github.com/randymy/omarchy-buzz/actions/runs/36482217831).
+Five pipe-reader and three runtime/child-environment tests pass, followed by
+eight actual CLI input tests. The inherited-variable test covers
+`BUZZ_AUTH_TAG` and `GIT_CONFIG_GLOBAL`; explicit extra/launch overrides cover
+the other listed credential names. Existing nine real-client auth cases and
+four offline vendor discovery cases also pass. This is Linux x86_64 evidence,
+not local ARM64 or real-account validation; see the
+[sanitized record](../evidence/acp-key-isolation-36482217831.json).
 
 ## Next upstream increment: harness-owned replies
 

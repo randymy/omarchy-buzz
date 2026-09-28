@@ -1,0 +1,100 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-09-28",
+  "runId": 36482217831,
+  "runUrl": "https://github.com/randymy/omarchy-buzz/actions/runs/36482217831",
+  "conclusion": "success",
+  "durationSeconds": 253,
+  "pluginRevision": "dae221dbcc2b9e78a9dcda8264f37aea1707f092",
+  "upstreamBase": "781d39510cf23cfe224e8f521ae06a23377e06de",
+  "runner": "ubuntu-24.04 Linux x86_64",
+  "toolchain": "1.95.0",
+  "completeAcpCrateBuilt": true,
+  "completeAcpUnitTestTargetCompiled": true,
+  "newKeyInputUnitTestsPassed": 5,
+  "newRuntimeIsolationUnitTestsPassed": 3,
+  "existingTargetedUpstreamUnitTestsPassed": 3,
+  "discoveryBoundaryTestsPassed": 5,
+  "patchSha256": {
+    "ws-resource-limits.patch": "e781a5b984ed3895ddd5ca0f893918f35028753f79b6c0a159d56f88c09bf24c",
+    "acp-permission-mode.patch": "ddf10293ab52bf170fc29e5eb928c0f40b9acf319d8cb9442855f34db5fbc83a",
+    "acp-interactive-login.patch": "a92de4a9b0d27a1ecd368371c7ca1ca37c43bb9b724a20e18962892536c4d8c5",
+    "acp-key-isolation.patch": "224bcda5bec0dd5f993d4a6b01b9597e999699c62b61ad3b8e18f366fc2a4d6c"
+  },
+  "actualCliKeyInput": {
+    "agentStarted": false,
+    "errors": 0,
+    "failures": 0,
+    "relayUsed": false,
+    "successful": true,
+    "syntheticKeysOnly": true,
+    "testsRun": 8
+  },
+  "syntheticAuthentication": {
+    "errors": 0,
+    "failures": 0,
+    "successful": true,
+    "testsRun": 9
+  },
+  "vendorDiscovery": {
+    "failures": [],
+    "methods": {
+      "claude": {
+        "default": [],
+        "terminalOptIn": [
+          {
+            "id": "claude-ai-login",
+            "type": "terminal"
+          },
+          {
+            "id": "console-login",
+            "type": "terminal"
+          }
+        ]
+      },
+      "codex": {
+        "default": [
+          {
+            "id": "api-key",
+            "type": "agent"
+          },
+          {
+            "id": "chat-gpt",
+            "type": "agent"
+          }
+        ],
+        "terminalOptIn": [
+          {
+            "id": "api-key",
+            "type": "agent"
+          },
+          {
+            "id": "chat-gpt",
+            "type": "agent"
+          }
+        ]
+      }
+    },
+    "networkIsolated": true,
+    "nodeVersion": "v22.23.3",
+    "packages": {
+      "@agentclientprotocol/claude-agent-acp": "0.82.0",
+      "@agentclientprotocol/codex-acp": "2.0.0",
+      "@anthropic-ai/claude-agent-sdk": "0.3.280",
+      "@openai/codex": "0.158.0"
+    },
+    "successful": true
+  },
+  "providerLoginPerformed": false,
+  "modelPromptPerformed": false,
+  "productionRelayUsed": false,
+  "installedPluginChanged": false,
+  "limits": [
+    "Not a full desktop build or complete upstream test suite",
+    "Linux x86_64 only; ARM64 runtime untested for this contribution",
+    "FD mode removes current signed CLI/MCP room-reply path; harness-owned replies still needed",
+    "Known credential handoff prevention, not a same-UID or workspace sandbox",
+    "Tool policy, effective payer and actual Pro sign-in remain unverified",
+    "Local upstream proposals remain unsubmitted and uninstalled"
+  ]
+}

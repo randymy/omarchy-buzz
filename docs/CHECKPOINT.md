@@ -650,3 +650,39 @@ execution remain gates. Independent review reconfirmed there is no current
 key-FD/stdin input in Buzz ACP; adding one alone would not stop mandatory Git
 bootstrap from writing and forwarding the relay key. Address that upstream
 boundary together with child propagation before a persistent-identity demo.
+
+## Harness-only relay identity conformance, 2026-09-28
+
+Prepared [ACP_KEY_ISOLATION.md](upstream/ACP_KEY_ISOLATION.md) and a fourth local
+upstream patch, applied after the WS, permission and interactive-login proposals.
+Linux `--private-key-fd` accepts a bounded anonymous read pipe, keeps relay signing
+in the harness, disables credential-sharing Git/MCP and the incompatible built-in
+CLI prompt, and carries the policy through initial/task/recovery launches.
+Known relay credentials/Git config are removed after every child-env override.
+Legacy launch behavior is unchanged. No installed component or provider account
+was changed and automatic GitHub triggers remain disabled.
+
+The first manual build (36480950556) caught upstream's unsafe-code prohibition;
+the reader was rewritten using safe standard-library/nix APIs and Linux procfs.
+The second run (36481710299) built successfully and passed seven of eight new
+unit tests; a synthetic peer's incorrect response ID caused its handshake timeout.
+That fixture was corrected rather than relaxing the isolation checks.
+
+[Run 36482217831](https://github.com/randymy/omarchy-buzz/actions/runs/36482217831)
+at `dae221dbcc2b9e78a9dcda8264f37aea1707f092` passes the complete ACP build,
+full unit-test target compilation, five pipe tests, three runtime/child-env tests,
+eight real-CLI input cases, three existing targeted upstream tests, nine auth
+integration cases, five discovery-boundary tests and four real-adapter offline
+discovery cases. See [evidence](evidence/acp-key-isolation-36482217831.json).
+
+Important product limit: upstream currently expects the agent's signed Buzz CLI
+calls to post normal room replies. FD mode removes that capability; it is not yet
+a working room agent. The next upstream reply proposal must capture bounded
+user-facing ACP text and sign/publish from the harness to the authorized incoming
+room/thread. Tool auto-approval/default bypass and same-UID isolation remain open.
+
+The user reconfirmed Pro subscription support is required: the first real-account
+demo must use Pro, not an API-billed substitute. Codex's generated native types
+expose `forced_login_method` as a potential enforcement mechanism; matching native
+0.158.0 source/precedence still needs inspection before relying on it. Neither
+provider's real login or effective billing mode has been tested.
