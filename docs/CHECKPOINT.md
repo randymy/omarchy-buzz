@@ -696,6 +696,16 @@ review caught a dropped input batch during session-guard recycling; that path no
 preserves the batch. Review also identified the unresolved open-room membership
 removal race described in the proposal; this remains a release blocker.
 
-Manual CI now includes capture/signing/loopback delivery tests. Results pending;
-no new build or end-to-end success is claimed here. Pro real-login, payer control,
-tool execution policy and full prompt-to-room acceptance remain outstanding.
+[Manual run 36490384302](https://github.com/randymy/omarchy-buzz/actions/runs/36490384302)
+at `50977e68be423cec8d1d6edd96e8fbf69fddc651` passed in 3m17s: complete ACP
+build, compilation of the 991-test unit target, 14 new reply tests (including two
+actual ACP-client stdio tests and seven HTTP cases in one transport test), eight
+key/runtime unit tests, three earlier targeted tests, eight CLI input cases,
+nine synthetic auth cases and five discovery-boundary cases. The entire 991-test
+suite was not run. Vendor discovery was not repeated. The earlier run failed on
+two test-fixture string borrows, now corrected. See [sanitized evidence](evidence/acp-harness-replies-36490384302.json).
+
+No installed plugin, production relay or account changed. Pro real-login, payer
+control, tool policy, the open-room membership fence and full isolated
+prompt-to-room acceptance remain outstanding. The preferred membership fix needs
+relay-side atomic enforcement; a preflight query alone is insufficient.

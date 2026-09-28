@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-09-28",
+  "runId": 36490384302,
+  "runUrl": "https://github.com/randymy/omarchy-buzz/actions/runs/36490384302",
+  "conclusion": "success",
+  "durationSeconds": 197,
+  "pluginRevision": "50977e68be423cec8d1d6edd96e8fbf69fddc651",
+  "upstreamBase": "781d39510cf23cfe224e8f521ae06a23377e06de",
+  "runner": "ubuntu-24.04 Linux x86_64",
+  "toolchain": "1.95.0",
+  "completeAcpCrateBuilt": true,
+  "completeAcpUnitTestTargetCompiled": true,
+  "unitTestTargetCount": 991,
+  "fullUnitSuiteRun": false,
+  "replyCaptureTestsPassed": 7,
+  "actualAcpClientReplyTestsPassed": 2,
+  "signedRoutingAndAcknowledgmentTestsPassed": 4,
+  "httpTransportTestsPassed": 1,
+  "httpTransportCases": [
+    "accepted",
+    "mismatch",
+    "malformed",
+    "oversize",
+    "forbidden",
+    "redirect",
+    "unavailable"
+  ],
+  "keyInputUnitTestsPassed": 5,
+  "runtimeIsolationUnitTestsPassed": 3,
+  "existingTargetedUnitTestsPassed": 3,
+  "actualCliKeyInputTestsPassed": 8,
+  "syntheticAuthenticationTestsPassed": 9,
+  "discoveryBoundaryTestsPassed": 5,
+  "vendorAdapterDiscoveryRun": false,
+  "realProviderLoginTested": false,
+  "subscriptionBillingVerified": false,
+  "productionRelayUsed": false,
+  "installedPluginChanged": false,
+  "fullPromptToRoomAcceptanceTested": false,
+  "releaseGates": [
+    "membership-removal race for open rooms",
+    "safe tool execution policy",
+    "same-UID isolation",
+    "real Pro login and payer enforcement",
+    "full isolated prompt-to-room acceptance"
+  ],
+  "patchSha256": {
+    "ws-resource-limits.patch": "e781a5b984ed3895ddd5ca0f893918f35028753f79b6c0a159d56f88c09bf24c",
+    "acp-permission-mode.patch": "ddf10293ab52bf170fc29e5eb928c0f40b9acf319d8cb9442855f34db5fbc83a",
+    "acp-interactive-login.patch": "a92de4a9b0d27a1ecd368371c7ca1ca37c43bb9b724a20e18962892536c4d8c5",
+    "acp-key-isolation.patch": "224bcda5bec0dd5f993d4a6b01b9597e999699c62b61ad3b8e18f366fc2a4d6c",
+    "acp-harness-replies.patch": "182662141dfde29bf1e116b66ec3bee09aa17129de914c93614dea0e87179d26"
+  },
+  "priorAttempt": {
+    "runId": 36489449104,
+    "result": "test compilation failed on two fixture string borrows; corrected without weakening assertions"
+  }
+}

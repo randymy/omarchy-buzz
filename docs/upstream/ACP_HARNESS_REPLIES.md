@@ -61,3 +61,9 @@ Two additional real ACP-client stdio tests cover session filtering, thought/tool
 exclusion, incomplete turns and rejected session-ID reuse. These are synthetic
 checks, not a real-relay membership proof or a full ACP prompt-to-room acceptance test. Both are still required. Earlier auth
 and key-boundary tests remain in the manual workflow. No automatic triggers.
+
+
+[Manual run 36490384302](https://github.com/randymy/omarchy-buzz/actions/runs/36490384302)
+passed all targeted checks at `50977e68be423cec8d1d6edd96e8fbf69fddc651`.
+See [sanitized evidence](../evidence/acp-harness-replies-36490384302.json) for exact
+counts, patch digests and remaining unverified boundaries.
