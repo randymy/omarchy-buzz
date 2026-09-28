@@ -6,7 +6,7 @@ import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
 BASE = '781d39510cf23cfe224e8f521ae06a23377e06de'
-PATCHES = ('ws-resource-limits', 'acp-permission-mode', 'acp-interactive-login', 'acp-key-isolation', 'acp-harness-replies')
+PATCHES = ('ws-resource-limits', 'acp-permission-mode', 'acp-interactive-login', 'acp-key-isolation', 'acp-harness-replies', 'acp-deny-tool-requests')
 
 
 def prepare(source, output):

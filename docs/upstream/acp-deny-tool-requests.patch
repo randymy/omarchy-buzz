@@ -1,0 +1,474 @@
+diff --git a/crates/buzz-acp/src/acp.rs b/crates/buzz-acp/src/acp.rs
+index 28b0c78..0dac1d7 100644
+--- a/crates/buzz-acp/src/acp.rs
++++ b/crates/buzz-acp/src/acp.rs
+@@ -163,6 +163,7 @@ pub struct AcpClient {
+     /// Guards against double-response if a timeout fires after the allow_once
+     /// response was written but before `pending_permission_id` was cleared.
+     permission_responded: bool,
++    deny_tool_requests: bool,
+     /// The JSON-RPC id of the most recently sent `session/prompt` request.
+     /// Used by [`cancel_with_cleanup`] to drain the correct response.
+     /// Set in [`session_prompt_with_idle_timeout`]; consumed in [`cancel_with_cleanup`].
+@@ -493,8 +494,9 @@ impl AcpClient {
+         extra_env: &[(String, String)],
+         has_generated_codex_config: bool,
+         isolate_relay_identity: bool,
++        deny_tool_requests: bool,
+     ) -> Result<Self, AcpError> {
+-        Self::spawn_with_policy(
++        let mut client = Self::spawn_with_policy(
+             command,
+             args,
+             extra_env,
+@@ -503,7 +505,9 @@ impl AcpClient {
+             false,
+             isolate_relay_identity,
+         )
+-        .await
++        .await?;
++        client.deny_tool_requests = deny_tool_requests;
++        Ok(client)
+     }
+ 
+     async fn spawn_with_policy(
+@@ -663,6 +667,7 @@ impl AcpClient {
+             next_id: 0,
+             pending_permission_id: None,
+             permission_responded: false,
++            deny_tool_requests: false,
+             last_prompt_id: None,
+             current_hard_deadline: None,
+             observer: None,
+@@ -2123,6 +2128,49 @@ impl AcpClient {
+         // Mark as not yet responded — guards against double-response race.
+         self.permission_responded = false;
+ 
++        if self.deny_tool_requests {
++            // Never synthesize an optionId or fall back to an allow option.
++            // Missing/malformed rejection choices use ACP's cancelled outcome.
++            let reject = msg["params"]["options"].as_array().and_then(|options| {
++                if options.len() > 64 {
++                    return None;
++                }
++                options
++                    .iter()
++                    .find_map(|option| {
++                        if option.get("kind").and_then(|kind| kind.as_str()) != Some("reject_once")
++                        {
++                            return None;
++                        }
++                        option
++                            .get("optionId")
++                            .and_then(|id| id.as_str())
++                            .filter(|id| !id.is_empty() && id.len() <= 1024)
++                    })
++                    .filter(|id| {
++                        options
++                            .iter()
++                            .filter(|option| {
++                                option.get("optionId").and_then(|value| value.as_str()) == Some(*id)
++                            })
++                            .count()
++                            == 1
++                    })
++            });
++            let response = match reject {
++                Some(option_id) => permission_response_selected(&id, option_id),
++                None => permission_response_cancelled(&id),
++            };
++            self.write_ndjson(&response).await?;
++            self.permission_responded = true;
++            self.pending_permission_id = None;
++            self.observe(
++                "permission_denied",
++                serde_json::json!({"reason": "deny_tool_requests"}),
++            );
++            return Ok(());
++        }
++
+         let options = msg["params"]["options"]
+             .as_array()
+             .ok_or_else(|| AcpError::Protocol("permission request missing options".into()))?;
+@@ -2503,7 +2551,7 @@ impl Drop for AcpClient {
+ /// syscall — so the crate's `#![deny(unsafe_code)]` policy is preserved.
+ #[cfg(unix)]
+ fn kill_process_group(pid: u32) -> bool {
+-    use nix::sys::signal::{killpg, Signal};
++    use nix::sys::signal::{Signal, killpg};
+     use nix::unistd::Pid;
+ 
+     // pid == pgid because the child was spawned with process_group(0).
+@@ -3205,6 +3253,100 @@ mod tests {
+         );
+     }
+ 
++    #[cfg(unix)]
++    #[tokio::test]
++    async fn deny_tool_policy_rejects_or_cancels_every_wire_request() {
++        use serde_json::json;
++        let cases = [
++            (
++                json!([{"kind":"allow_once","optionId":"allow"},{"kind":"reject_once","optionId":"deny-17"}]),
++                Some("deny-17"),
++            ),
++            (json!([{"kind":"allow_always","optionId":"allow"}]), None),
++            (
++                json!([{"kind":"reject_once","optionId":12},{"kind":"allow_once","optionId":"allow"}]),
++                None,
++            ),
++            (json!([{"kind":"reject_once","optionId":""}]), None),
++            (
++                json!([{"kind":"reject_once","optionId":"same"},{"kind":"allow_once","optionId":"same"}]),
++                None,
++            ),
++            (json!(null), None),
++            (json!([]), None),
++        ];
++        for (options, expected) in cases {
++            let request = json!({"jsonrpc":"2.0","id":"permission-7","method":"session/request_permission", "params":{"sessionId":"s", "options":options}});
++            let script = r#"
++                IFS= read -r req
++                printf '%s\n' '__REQUEST__'
++                IFS= read -r response
++                printf '%s\n' '{"jsonrpc":"2.0","id":0,"result":'"$response"'}'
++                sleep 1
++            "#
++            .replace("__REQUEST__", &request.to_string());
++            let mut client = AcpClient::spawn_for_runtime(
++                "bash",
++                &["-c".into(), script],
++                &[],
++                false,
++                false,
++                true,
++            )
++            .await
++            .unwrap();
++            let response = client.send_request("fixture", json!({})).await.unwrap();
++            assert_eq!(response["id"], "permission-7");
++            match expected {
++                Some(id) => {
++                    assert_eq!(response["result"]["outcome"]["outcome"], "selected");
++                    assert_eq!(response["result"]["outcome"]["optionId"], id);
++                }
++                None => assert_eq!(response["result"]["outcome"]["outcome"], "cancelled"),
++            }
++            assert!(client.pending_permission_id.is_none());
++            client.shutdown().await;
++        }
++    }
++
++    #[cfg(unix)]
++    #[tokio::test]
++    async fn deny_tool_policy_is_applied_in_prompt_reader() {
++        let script = r#"
++            IFS= read -r req
++            echo '{"jsonrpc":"2.0","id":77,"method":"session/request_permission","params":{"sessionId":"s","options":[{"kind":"allow_once","optionId":"allow"}]}}'
++            IFS= read -r response
++            case "$response" in
++                *cancelled*) echo '{"jsonrpc":"2.0","id":0,"result":{"stopReason":"end_turn"}}' ;;
++                *) echo '{"jsonrpc":"2.0","id":0,"error":{"code":-32000,"message":"unexpected permission grant"}}' ;;
++            esac
++            sleep 1
++        "#;
++        let mut client = AcpClient::spawn_for_runtime(
++            "bash",
++            &["-c".into(), script.into()],
++            &[],
++            false,
++            false,
++            true,
++        )
++        .await
++        .unwrap();
++        assert_eq!(
++            client
++                .session_prompt_with_idle_timeout(
++                    "s",
++                    "fixture",
++                    std::time::Duration::from_secs(2),
++                    std::time::Duration::from_secs(5)
++                )
++                .await
++                .unwrap(),
++            StopReason::EndTurn
++        );
++        client.shutdown().await;
++    }
++
+     async fn spawn_script(script: &str) -> AcpClient {
+         AcpClient::spawn("bash", &["-c".into(), script.into()], &[], false)
+             .await
+diff --git a/crates/buzz-acp/src/config.rs b/crates/buzz-acp/src/config.rs
+index 340b7c7..99d2f1e 100644
+--- a/crates/buzz-acp/src/config.rs
++++ b/crates/buzz-acp/src/config.rs
+@@ -492,6 +492,10 @@ pub struct CliArgs {
+     )]
+     pub permission_mode: PermissionMode,
+ 
++    /// Reject every ACP tool permission request. Requires explicit default mode.
++    #[arg(long)]
++    pub deny_tool_requests: bool,
++
+     /// Inbound author gate: which authors' events the harness forwards.
+     /// Modes: owner-only (default), allowlist, anyone, nobody.
+     #[arg(
+@@ -614,6 +618,7 @@ pub struct Config {
+     pub session_title: Option<String>,
+     /// Permission mode to apply after session creation. `Default` = skip.
+     pub permission_mode: PermissionMode,
++    pub deny_tool_requests: bool,
+     /// Inbound author gate mode.
+     pub respond_to: RespondTo,
+     /// Validated allowlist of pubkey hex strings (used when respond_to == Allowlist).
+@@ -974,6 +979,11 @@ impl Config {
+             args.no_base_prompt = true;
+         }
+ 
++        if args.deny_tool_requests && !args.permission_mode.is_default() {
++            return Err(ConfigError::ConfigFile(
++                "deny-tool-requests requires --permission-mode default".into(),
++            ));
++        }
+         if args.harness_replies
+             && (!isolate_relay_identity
+                 || args.session_policy != crate::scope::SessionPolicy::Thread
+@@ -1243,6 +1253,7 @@ impl Config {
+                 .as_deref()
+                 .and_then(sanitize_session_title),
+             permission_mode: args.permission_mode,
++            deny_tool_requests: args.deny_tool_requests,
+             respond_to: args.respond_to,
+             respond_to_allowlist,
+             allowed_respond_to,
+@@ -1619,6 +1630,7 @@ mod tests {
+             effort_level: None,
+             session_title: None,
+             permission_mode: PermissionMode::BypassPermissions,
++            deny_tool_requests: false,
+             respond_to: RespondTo::Anyone,
+             respond_to_allowlist: HashSet::new(),
+             allowed_respond_to: Vec::new(),
+diff --git a/crates/buzz-acp/src/isolated_execution.rs b/crates/buzz-acp/src/isolated_execution.rs
+index 95c1479..8a83efe 100644
+--- a/crates/buzz-acp/src/isolated_execution.rs
++++ b/crates/buzz-acp/src/isolated_execution.rs
+@@ -1,5 +1,5 @@
+ //! One fresh process/session for a local task, with bounded cleanup.
+-use crate::{acp, pool, AcpClient, OwnedAgent, PoolStartup, PromptContext, SessionState};
++use crate::{AcpClient, OwnedAgent, PoolStartup, PromptContext, SessionState, acp, pool};
+ use std::time::Duration;
+ use tokio::sync::oneshot;
+ 
+@@ -27,6 +27,7 @@ pub(crate) async fn execute(
+         &startup.extra_env,
+         startup.has_generated_codex_config,
+         startup.isolate_relay_identity,
++        startup.deny_tool_requests,
+     )
+     .await
+     {
+diff --git a/crates/buzz-acp/src/lib.rs b/crates/buzz-acp/src/lib.rs
+index fe4b639..a453102 100644
+--- a/crates/buzz-acp/src/lib.rs
++++ b/crates/buzz-acp/src/lib.rs
+@@ -3061,6 +3061,7 @@ async fn run_harness(
+                 let env = config.persona_env_vars.clone();
+                 let has_codex = config.has_generated_codex_config;
+                 let isolate_identity = config.isolate_relay_identity;
++                let deny_tool_requests = config.deny_tool_requests;
+                 let observer = observer.clone();
+                 let guard = RespawnGuard::new(idx, respawn_tx.clone());
+                 respawn_tasks.spawn(async move {
+@@ -3070,6 +3071,7 @@ async fn run_harness(
+                         &env,
+                         has_codex,
+                         isolate_identity,
++                        deny_tool_requests,
+                         idx,
+                         observer,
+                     )
+@@ -5278,13 +5280,23 @@ fn recover_panicked_agent(
+     let env = config.persona_env_vars.clone();
+     let has_codex = config.has_generated_codex_config;
+     let isolate_identity = config.isolate_relay_identity;
++    let deny_tool_requests = config.deny_tool_requests;
+     let guard = RespawnGuard::new(i, respawn_tx.clone());
+     respawn_tasks.spawn(async move {
+         if !delay.is_zero() {
+             tokio::time::sleep(delay).await;
+         }
+-        let result =
+-            spawn_and_init(&cmd, &args, &env, has_codex, isolate_identity, i, observer).await;
++        let result = spawn_and_init(
++            &cmd,
++            &args,
++            &env,
++            has_codex,
++            isolate_identity,
++            deny_tool_requests,
++            i,
++            observer,
++        )
++        .await;
+         guard.send(result);
+     });
+ }
+@@ -5524,6 +5536,7 @@ fn spawn_respawn_task(
+     let env = config.persona_env_vars.clone();
+     let has_codex = config.has_generated_codex_config;
+     let isolate_identity = config.isolate_relay_identity;
++    let deny_tool_requests = config.deny_tool_requests;
+     let guard = RespawnGuard::new(index, respawn_tx.clone());
+     respawn_tasks.spawn(async move {
+         // Shutdown old agent (reap child, prevent zombie).
+@@ -5541,6 +5554,7 @@ fn spawn_respawn_task(
+             &env,
+             has_codex,
+             isolate_identity,
++            deny_tool_requests,
+             index,
+             observer,
+         )
+@@ -5596,6 +5610,7 @@ async fn initialize_agent_pool(
+             &startup.extra_env,
+             startup.has_generated_codex_config,
+             startup.isolate_relay_identity,
++            startup.deny_tool_requests,
+         )
+         .await;
+         match spawn_result {
+@@ -5700,6 +5715,7 @@ async fn spawn_and_init(
+     extra_env: &[(String, String)],
+     has_generated_codex_config: bool,
+     isolate_relay_identity: bool,
++    deny_tool_requests: bool,
+     agent_index: usize,
+     observer: Option<observer::ObserverHandle>,
+ ) -> Result<(AcpClient, u32, String)> {
+@@ -5709,6 +5725,7 @@ async fn spawn_and_init(
+         extra_env,
+         has_generated_codex_config,
+         isolate_relay_identity,
++        deny_tool_requests,
+     )
+     .await
+     .map_err(|e| anyhow::anyhow!("failed to spawn agent: {e}"))?;
+@@ -9327,6 +9344,7 @@ mod build_mcp_servers_tests {
+             effort_level: None,
+             session_title: None,
+             permission_mode: config::PermissionMode::BypassPermissions,
++            deny_tool_requests: false,
+             respond_to: config::RespondTo::Anyone,
+             respond_to_allowlist: std::collections::HashSet::new(),
+             allowed_respond_to: vec![],
+@@ -9593,6 +9611,7 @@ mod error_outcome_emission_tests {
+             effort_level: None,
+             session_title: None,
+             permission_mode: config::PermissionMode::BypassPermissions,
++            deny_tool_requests: false,
+             respond_to: config::RespondTo::Anyone,
+             respond_to_allowlist: HashSet::new(),
+             allowed_respond_to: vec![],
+diff --git a/crates/buzz-acp/src/pool.rs b/crates/buzz-acp/src/pool.rs
+index 476d2af..6848643 100644
+--- a/crates/buzz-acp/src/pool.rs
++++ b/crates/buzz-acp/src/pool.rs
+@@ -841,6 +841,7 @@ pub struct PromptContext {
+     pub max_turns_per_session: u32,
+     /// Permission mode to apply after session creation. `Default` = skip.
+     pub permission_mode: PermissionMode,
++    pub deny_tool_requests: bool,
+     /// Agent identity — used to derive the NIP-AE conversation key at
+     /// session creation for core injection.
+     pub agent_keys: nostr::Keys,
+@@ -1743,7 +1744,7 @@ async fn create_session_and_apply_model(
+     );
+ 
+     // An explicitly requested nondefault mode must not silently degrade.
+-    if !ctx.permission_mode.is_default() {
++    if ctx.deny_tool_requests || !ctx.permission_mode.is_default() {
+         require_permission_mode(&resp.raw, ctx.permission_mode.as_wire_str())?;
+         apply_permission_mode(&mut agent.acp, &resp.session_id, &ctx.permission_mode).await?;
+     }
+@@ -10071,6 +10072,7 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
+             context_message_limit: 0,
+             max_turns_per_session: 0,
+             permission_mode: PermissionMode::Default,
++            deny_tool_requests: false,
+             agent_keys: agent_keys.clone(),
+             agent_owner_pubkey: owner_pubkey,
+             memory_enabled: false,
+diff --git a/crates/buzz-acp/src/runtime.rs b/crates/buzz-acp/src/runtime.rs
+index d076988..57fa9a5 100644
+--- a/crates/buzz-acp/src/runtime.rs
++++ b/crates/buzz-acp/src/runtime.rs
+@@ -32,6 +32,10 @@ impl AgentRuntime {
+                     && config.heartbeat_interval_secs == 0),
+             "invalid harness reply configuration"
+         );
++        anyhow::ensure!(
++            !config.deny_tool_requests || config.permission_mode.is_default(),
++            "deny-tool-requests requires default permission mode"
++        );
+         let git_environment = if config.isolate_relay_identity {
+             anyhow::ensure!(
+                 config.mcp_command.is_empty(),
+@@ -76,6 +80,7 @@ pub(crate) struct PoolStartup {
+     pub(crate) extra_env: Vec<(String, String)>,
+     pub(crate) has_generated_codex_config: bool,
+     pub(crate) isolate_relay_identity: bool,
++    pub(crate) deny_tool_requests: bool,
+     pub(crate) model: Option<String>,
+     pub(crate) effort_level: Option<String>,
+     pub(crate) observer: Option<observer::ObserverHandle>,
+@@ -90,6 +95,7 @@ impl PoolStartup {
+             extra_env: config.persona_env_vars.clone(),
+             has_generated_codex_config: config.has_generated_codex_config,
+             isolate_relay_identity: config.isolate_relay_identity,
++            deny_tool_requests: config.deny_tool_requests,
+             model: config.model.clone(),
+             effort_level: config.effort_level.clone(),
+             observer,
+@@ -140,6 +146,7 @@ fn make_prompt_context(
+         context_message_limit: config.context_message_limit,
+         max_turns_per_session: config.max_turns_per_session,
+         permission_mode: config.permission_mode,
++        deny_tool_requests: config.deny_tool_requests,
+         agent_keys: config.keys.clone(),
+         agent_owner_pubkey: resolve_agent_owner(config)
+             .as_deref()
+@@ -179,3 +186,31 @@ mod key_isolation_tests {
+         assert!(AgentRuntime::prepare(config).is_err());
+     }
+ }
++
++#[cfg(test)]
++mod deny_tool_policy_tests {
++    use super::*;
++
++    #[test]
++    fn deny_tool_policy_survives_startup_and_context_and_rejects_bypass() {
++        let mut config = crate::build_mcp_servers_tests::test_config();
++        config.mcp_command.clear();
++        config.isolate_relay_identity = true;
++        config.deny_tool_requests = true;
++        config.permission_mode = crate::config::PermissionMode::Default;
++        let runtime = AgentRuntime::prepare(config.clone()).unwrap();
++        assert!(runtime.startup(None).deny_tool_requests);
++        let rest = relay::RestClient {
++            http: reqwest::Client::new(),
++            base_url: "http://127.0.0.1:1".into(),
++            keys: config.keys.clone(),
++            auth_tag_json: None,
++        };
++        let context = runtime
++            .prompt_context(rest, HashMap::new(), SessionMode::Conversation)
++            .unwrap();
++        assert!(context.deny_tool_requests);
++        config.permission_mode = crate::config::PermissionMode::BypassPermissions;
++        assert!(AgentRuntime::prepare(config).is_err());
++    }
++}
