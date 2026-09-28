@@ -2,6 +2,7 @@ import QtQuick
 import Quickshell
 import Quickshell.Io
 import "SampleData.js" as SampleData
+import "ActivityObserver.js" as ActivityObserver
 
 Item {
   id: root
@@ -11,6 +12,11 @@ Item {
   property bool sampleMode: false
   property bool autoConnect: true
   property string setupProvider: "hosted"
+  // Opt-in for this shell session. No message text or room names leave the panel.
+  property bool notificationsEnabled: false
+  property bool panelOpen: false
+  property var activityObservation: ActivityObserver.fresh()
+  onNotificationsEnabledChanged: activityObservation = ActivityObserver.fresh()
   property string helperExecutable: Quickshell.env("HOME") + "/.local/bin/omarchy-buzz"
   property string connection: "unavailable"
   property string category: "helper_unavailable"
@@ -66,10 +72,11 @@ Item {
   property string historyState: "unavailable"
   property string historyCategory: ""
   property bool historySupported: false
+  property bool automaticHistorySupported: false
   property var historyHasMore: null
   readonly property var messages: sample ? sample.messages.filter(function(message) { return message.roomId === root.selectedRoomId }) : historyRows
   readonly property string historyLabel: historyState === "loading" ? "Loading recent snapshot" : historyState === "snapshot"
-    ? "Snapshot · completeness unknown" + (historyHasMore ? " · older history available" : "") : ({request_busy: "Helper busy · refresh again", history_timeout: "History request timed out", history_invalid: "History response could not be validated", history_access_denied: "History unavailable for this room"})[historyCategory] || "History not available yet"
+    ? (automaticHistorySupported ? "Auto-refreshing snapshot" : "Snapshot") + " · completeness unknown" + (historyHasMore ? " · older history available" : "") : ({request_busy: "Helper busy · refresh again", history_timeout: "History request timed out", history_invalid: "History response could not be validated", history_access_denied: "History unavailable for this room"})[historyCategory] || "History not available yet"
   readonly property string barLabel: sampleMode ? "TEST" : ({unconfigured: "Setup", connecting: "Connecting", authenticated: "Connected", identity_locked: "Locked", disconnected: "Offline", unavailable: "Error"})[connection] || "Error"
   readonly property string barSymbol: sampleMode ? "T" : ({unconfigured: "?", connecting: "…", authenticated: "✓", identity_locked: "!", disconnected: "○", unavailable: "!"})[connection] || "!"
   readonly property string statusLabel: sampleMode ? "Sample data" : category === "incompatible_response" ? "Incompatible helper" : category === "identity_access_pending" ? "Waiting for secret store unlock" : ({
@@ -205,6 +212,7 @@ Item {
     }
   }
   function clearHistory() {
+    activityObservation = ActivityObserver.fresh()
     pendingHistoryRequestId = ""
     historyRows = []
     historyState = "unavailable"
@@ -249,6 +257,7 @@ Item {
     return {state:value.state,roomId:value.roomId,entries:entries,partial:value.partial,category:value.category || ""}
   }
   function clearCatalog() {
+    activityObservation = ActivityObserver.fresh()
     clearHistory()
     clearRecipients()
     catalogRooms = []
@@ -257,10 +266,10 @@ Item {
     if (!sampleMode) selectedRoomId = ""
   }
   function validCapabilities(capabilities) {
-    return Array.isArray(capabilities) && capabilities.length >= 1 && capabilities.length <= 5
+    return Array.isArray(capabilities) && capabilities.length >= 1 && capabilities.length <= 6
       && capabilities.indexOf("connection_status") !== -1
       && capabilities.every(function(cap, index) {
-        return ["connection_status", "room_catalog", "room_history", "message_send", "room_recipients"].indexOf(cap) !== -1 && capabilities.indexOf(cap) === index
+        return ["connection_status", "room_catalog", "room_history", "message_send", "room_recipients", "history_auto_refresh"].indexOf(cap) !== -1 && capabilities.indexOf(cap) === index
       })
   }
   function validatedCatalog(catalog) {
@@ -423,6 +432,17 @@ Item {
       historyState = history.state
       historyCategory = history.category
       historyHasMore = history.hasMore
+      if (history.state === "snapshot" && typeof state.identity === "string") {
+        var observed = ActivityObserver.observe(activityObservation,
+          incomingScope + "|" + frame.instanceId + "|" + frame.generation + "|" + selectedRoomId,
+          history.rows, state.identity, Math.floor(Date.now() / 1000))
+        activityObservation = observed.state
+        if (observed.notify && notificationsEnabled && !panelOpen && !sampleMode
+            && !notificationProcess.running && !notificationCooldown.running) {
+          notificationProcess.running = true
+          notificationCooldown.start()
+        }
+      } else if (history.state === "unavailable") activityObservation = ActivityObserver.fresh()
     }
     if (state.connection !== "authenticated" || !supportsRecipients || ["loading", "unavailable"].indexOf(catalogState) !== -1) clearRecipients()
     else if (recipients && recipients.roomId === selectedRoomId && selectedRoomId !== "") {
@@ -432,6 +452,7 @@ Item {
       recipientsPartial = recipients.partial
     }
     recipientsSupported = supportsRecipients
+    automaticHistorySupported = frame.capabilities.indexOf("history_auto_refresh") !== -1
     instanceId = frame.instanceId
     generation = frame.generation
     relay = state.relay || ""
@@ -471,6 +492,18 @@ Item {
   }
   Component.onCompleted: if (autoConnect && !sampleMode) retry()
 
+  Timer {
+    id: notificationCooldown
+    interval: 10000
+  }
+  Process {
+    id: notificationProcess
+    // Fixed argv; no shell, relay content, credentials, or executable supplied by events.
+    command: ["timeout", "5s", "omarchy", "notification", "send", "--app-name", "Buzz",
+      "-u", "normal", "-t", "5000", "Buzz", "New activity in your selected room."]
+    stdout: SplitParser { onRead: function(line) {} }
+    stderr: SplitParser { onRead: function(line) {} }
+  }
   Timer {
     id: handshake
     interval: 5000

@@ -19,6 +19,13 @@ if [[ ${1:-} == --send-bridge ]]; then
   export BUZZ_TEST_HELPER="$preview_dir/helper-fixture"
   export BUZZ_SEND_RECORD="$preview_dir/send-record.json"
   printf '{"sends":[],"fetches":0}\n' > "$BUZZ_SEND_RECORD"
+elif [[ ${1:-} == --activity ]]; then
+  cp "$project_root/tests/Activity.qml" "$preview_dir/shell.qml"
+  mkdir -m 700 "$preview_dir/fake-bin"
+  printf '#!/bin/sh\nprintf "<%%s>\\n" "$@" >> "$BUZZ_ACTIVITY_RECORD"\n' > "$preview_dir/fake-bin/omarchy"
+  chmod 700 "$preview_dir/fake-bin/omarchy"
+  export BUZZ_ACTIVITY_RECORD="$preview_dir/activity-record"
+  export PATH="$preview_dir/fake-bin:$PATH"
 elif [[ ${1:-} == --bridge ]]; then
   [[ -x ${BUZZ_TEST_HELPER:-} ]] || { echo "preview: set BUZZ_TEST_HELPER to a built helper" >&2; exit 1; }
   cp "$project_root/tests/Bridge.qml" "$preview_dir/shell.qml"
@@ -33,3 +40,21 @@ QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software QT_QPA_PLATFORMTHEME=basic \
   XDG_CONFIG_HOME="$preview_dir/config" \
   XDG_STATE_HOME="$preview_dir/state" \
   timeout 15s qs -p "$preview_dir" --no-color
+if [[ ${1:-} == --activity && -s $BUZZ_ACTIVITY_RECORD ]]; then
+  echo "preview: baseline or own message triggered a notification" >&2
+  exit 1
+fi
+if [[ ${1:-} == --activity ]]; then
+  export BUZZ_ACTIVITY_POSITIVE=1
+  QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software QT_QPA_PLATFORMTHEME=basic \
+    XDG_RUNTIME_DIR="$preview_dir/runtime" \
+    XDG_CONFIG_HOME="$preview_dir/config" \
+    XDG_STATE_HOME="$preview_dir/state" \
+    timeout 15s qs -p "$preview_dir" --no-color
+  printf '<%s>\n' notification send --app-name Buzz -u normal -t 5000 Buzz \
+    'New activity in your selected room.' > "$preview_dir/expected-activity-record"
+  if ! cmp -s "$preview_dir/expected-activity-record" "$BUZZ_ACTIVITY_RECORD"; then
+    echo "preview: expected one fixed-argument notification for closed-panel activity" >&2
+    exit 1
+  fi
+fi

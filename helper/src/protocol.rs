@@ -247,7 +247,7 @@ impl Status {
     }
 }
 pub fn envelope(kind: &str, id: Option<&str>, instance: &str, s: &Status) -> serde_json::Value {
-    serde_json::json!({"version":1,"type":kind,"id":id,"instanceId":instance,"generation":s.generation,"capabilities":["connection_status","room_catalog","room_history","message_send","room_recipients"],"backendRevision":crate::compatibility::BUZZ_REVISION,"status":s})
+    serde_json::json!({"version":1,"type":kind,"id":id,"instanceId":instance,"generation":s.generation,"capabilities":["connection_status","room_catalog","room_history","message_send","room_recipients","history_auto_refresh"],"backendRevision":crate::compatibility::BUZZ_REVISION,"status":s})
 }
 pub async fn read_line<R: tokio::io::AsyncBufRead + Unpin>(
     r: &mut R,
@@ -321,7 +321,8 @@ mod state_tests {
                 "room_catalog",
                 "room_history",
                 "message_send",
-                "room_recipients"
+                "room_recipients",
+                "history_auto_refresh"
             ])
         );
         assert_eq!(v["status"]["catalog"]["state"], "unavailable");

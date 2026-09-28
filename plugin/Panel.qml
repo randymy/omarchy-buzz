@@ -10,6 +10,8 @@ Item {
   property var manifest: null
   property var service: null
   property bool opened: false
+  onOpenedChanged: if (service) service.panelOpen = opened
+  Component.onDestruction: if (service) service.panelOpen = false
 
   function open(payloadJson) {
     // Navigation payloads and external data are not accepted in the preview.

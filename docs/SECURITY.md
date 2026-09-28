@@ -11,6 +11,16 @@ namespace, `omarchy-buzz.identity.v1`, scoped by canonical relay origin and
 public identity. Configuration stores only that origin and public key. Hidden
 terminal enrollment accepts an existing identity; it does not inspect Buzz
 Desktop's secret blob, generate an identity, or fall back to a plaintext file.
+Enrollment also requires successful bounded relay discovery and refuses a key
+whose public identity equals the relay signer, before writing to the secret store.
+This guard is not proof that any other supplied key is unexposed or human-owned.
+
+Optional session-local desktop alerts use only already validated history rows.
+They send fixed generic text through `omarchy notification send`, with fixed argv,
+no shell interpolation, a five-second process timeout, and a ten-second cooldown.
+No message text, room names, or author names enter notifications. Initial/gap
+snapshots establish silent baselines. The bounded in-memory observer stores only
+public event IDs, scope and a timestamp floor; it is not persistent unread state.
 Private keys never enter the UI protocol or command arguments. Secret Service
 encryption and availability depend on the user's OS store. Unlock prompts can
 remain pending; the daemon bounds shutdown and does not duplicate key lookups.

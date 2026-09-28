@@ -5,6 +5,7 @@ mod auth;
 mod catalog;
 mod compatibility;
 mod config;
+mod enrollment;
 mod history;
 mod ipc;
 mod ledger;
@@ -18,33 +19,6 @@ mod sending;
 // while individual tests still exercise multiple simultaneous requests explicitly.
 #[cfg(test)]
 static NETWORK_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-use std::io::IsTerminal;
-fn enroll() -> Result<(), &'static str> {
-    if !std::io::stdin().is_terminal() || !std::io::stderr().is_terminal() {
-        return Err("terminal_required");
-    }
-    let mut c = config::load()?;
-    if c.relay.is_none() {
-        return Err("unconfigured");
-    }
-    eprintln!("Enroll an existing Buzz identity in this helper's own Secret Service namespace.");
-    let secret = zeroize::Zeroizing::new(
-        rpassword::prompt_password("Private key (hidden): ").map_err(|_| "terminal_unavailable")?,
-    );
-    let keys = nostr::Keys::parse(secret.as_str()).map_err(|_| "identity_invalid")?;
-    c.identity = Some(keys.public_key().to_hex());
-    let entry = keyring::Entry::new(auth::SERVICE, &config::account(&c)?)
-        .map_err(|_| "identity_unavailable")?;
-    entry
-        .set_password(secret.as_str())
-        .map_err(|_| "identity_unavailable")?;
-    config::save(&c)?;
-    println!(
-        "{}",
-        serde_json::json!({"identity":c.identity,"relay":c.relay,"status":"enrolled"})
-    );
-    Ok(())
-}
 async fn run() -> Result<(), &'static str> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice(){
@@ -54,7 +28,7 @@ async fn run() -> Result<(), &'static str> {
         ["--version"]=>{println!("{}",serde_json::json!({"helperVersion":env!("CARGO_PKG_VERSION"),"protocolVersion":1,"backendRevision":compatibility::BUZZ_REVISION}));Ok(())},
         ["inspect"]=>config::load().map(|c|println!("{}",serde_json::json!({"relay":c.relay,"identity":c.identity,"configured":c.relay.is_some()&&c.identity.is_some(),"helperVersion":env!("CARGO_PKG_VERSION"),"protocolVersion":1,"backendRevision":compatibility::BUZZ_REVISION}))),
         ["setup","relay",url]=>config::canonical_relay(url).and_then(|relay|{let mut c=config::load()?;if c.relay.as_deref()!=Some(&relay){c.identity=None;}c.relay=Some(relay);config::save(&c)}),
-        ["setup","identity","enroll"]=>tokio::task::spawn_blocking(enroll).await.unwrap_or(Err("identity_unavailable")),
+        ["setup","identity","enroll"]=>enrollment::enroll().await,
         _=>Err("usage: omarchy-buzz daemon [--keep-running] | ui-bridge | inspect | --version | setup relay URL | setup identity enroll")
     }
 }

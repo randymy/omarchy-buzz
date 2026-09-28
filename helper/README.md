@@ -16,6 +16,9 @@ Commands:
   hidden input, no key arguments/environment/files. Stores the submitted key
   in Secret Service `omarchy-buzz.identity.v1`, keyed by origin and public key.
   It never reads Buzz Desktop's namespace or creates a new identity.
+  Before saving, HTTPS discovery must succeed and the submitted key must differ
+  from the relay's signing identity. `identity_is_relay_signer` means a server key
+  was supplied; use a personal identity. Discovery failure leaves enrollment unchanged.
 - `omarchy-buzz daemon [--keep-running]`: standalone or systemd socket-activated.
 - `omarchy-buzz ui-bridge`: bounded newline JSON stdin/stdout proxy.
 
@@ -41,7 +44,7 @@ are capped at 64 KiB. Eight clients maximum; output writes time out after ten
 seconds. Invalid requests receive a category-only error and the connection closes.
 Hello/status responses expose public identity/origin, helper instance/generation,
 connection category, and capabilities `connection_status`, `room_catalog`,
-`room_history`, `message_send`, `room_recipients`. At most twenty rooms and twenty projected message rows are
+`room_history`, `message_send`, `room_recipients`, `history_auto_refresh`. At most twenty rooms and twenty projected message rows are
 returned. Message previews are plain text capped at 768 UTF-8 bytes, with
 explicit truncation. No raw events, backend errors or credential material is forwarded. UI EOF closes the bridge connection.
 
@@ -65,7 +68,12 @@ identity, pinned for the daemon lifetime. Periodic exact-ID COUNT responses
 bound connection freshness. Recent history uses a signed NIP-CW query with
 whole-page limits and verified bounds, edits and deletions; uncertain authority
 hides affected content. A valid snapshot does not prove relay completeness.
-Room refresh, reauthentication, scope change and disconnection clear history.
+Explicit room refresh, reauthentication, scope change and disconnection clear history.
+After selection, background refresh runs five seconds after the previous request
+finishes, with one bounded history fetch at a time. It preserves the current view
+while fetching, but clears it on failure or authorization uncertainty. Catalog
+revalidation still clears history, then refetches authorized selections. This
+monitors only one selected room and makes no global unread/completeness claim.
 See [history semantics](../docs/MESSAGING_NEXT.md) for limits and source references.
 
 Sending reserves an event ID durably before any EVENT write. Only a matching

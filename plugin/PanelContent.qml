@@ -47,6 +47,11 @@ FocusScope {
       }
       Item { Layout.fillWidth: true }
       Ui.Button {
+        text: root.service && root.service.notificationsEnabled ? "Alerts: on" : "Alerts: off"
+        focusable: true
+        onClicked: if (root.service) root.service.notificationsEnabled = !root.service.notificationsEnabled
+      }
+      Ui.Button {
         text: "Close · Esc"
         focusable: true
         onClicked: root.closeRequested()
@@ -116,6 +121,7 @@ FocusScope {
         Text {
           Layout.fillWidth: true
           text: "Connection\n" + (root.service ? root.service.statusLabel : "Unavailable")
+            + "\nAlerts monitor the selected room while closed, for this session."
           textFormat: Text.PlainText
           wrapMode: Text.WordWrap
           color: Color.foreground

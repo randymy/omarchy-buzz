@@ -1,6 +1,6 @@
-# Development checkpoint — 2026-09-27
+# Development checkpoint — 2026-09-28
 
-Current version: **0.0.3 messaging development preview**, not a community release.
+Current source version: **0.0.4 messaging development preview**, not a community release.
 Implemented: source-grounded design; native hosted/custom setup; Rust daemon and
 QML bridge; Secret Service identity enrollment; bounded local IPC and systemd
 units; exact-ID connection freshness; signed room discovery; conservative recent
@@ -8,13 +8,19 @@ history snapshots; plain-text sends with durable metadata-only delivery tracking
 and exact public-key mentions selected from a verified room roster. Optional
 self-asserted names never establish agent classification or authority.
 
-Unread counts, verified human/agent badges, notifications, live conversation
-updates, ACP execution and approvals remain unfinished. No production identity
-is enrolled, no relay is configured, and no production messages were sent.
+Selected-room history now refreshes automatically through bounded validated
+snapshots. Opt-in, content-free native alerts are session-local and best-effort.
+Unread counts, verified human/agent badges, full live synchronization, ACP
+execution and approvals remain unfinished. A separate human identity is enrolled
+on the operator's self-hosted relay; the operator confirmed cross-client sending.
 Hosted setup uses the official buzz.xyz handoff; connecting the community URL
 and existing identity remains manual. Self-hosted relays use the same adapter.
 
 ## Current handoff
+
+The entries below preserve milestone history. See the latest dated entry at the
+end for installation and validation status; old unconfigured/uninstalled claims
+are historical and are superseded by the successful human enrollment.
 
 The deferred pending-request issue is fixed and installed. The actor rejects
 changed room/text/mentions/generation under a pending UUID through a correlated
@@ -395,3 +401,27 @@ cross-client reply remain to be exercised deliberately by the operator.
 The old server-identity Secret Service entry has not been deleted; configuration
 now selects the human identity. The original relay's self-tag omission and the
 previously documented exposed-human-key limitation remain separate follow-ups.
+
+## 2026-09-28 — automatic history and private activity alerts (0.0.4)
+
+Implemented selected-room verified history polling at five-second intervals after
+completion, with one in-flight request, bounded timeouts, and scope/membership
+fences. Added the optional `history_auto_refresh` capability; update plugin and
+helper together. Enrollment now discovers the configured relay signer and refuses
+to store that identity as a human key. Discovery failure leaves enrollment intact.
+
+Panel alerts are opt-in for the current shell session and selected room only.
+Initial snapshots, reconnects, catalog uncertainty, history gaps, own messages,
+edits and panel-open activity do not alert. Notifications use fixed native argv
+and contain no message text or room names. This is not unread synchronization.
+
+Validation: Rust suite 89 passed, two live/ACP tests ignored; six protocol tests
+passed again after capability addition. Isolated keyring/enrollment, helper IPC,
+send IPC, package tests, JS observer tests, manifest validation, full offscreen
+panel and send bridge passed. Two-phase offscreen activity fixture verifies both
+suppression and exactly one generic notifier invocation without desktop alerts.
+No production message or agent invocation was used. GitHub CI remains manual.
+
+Before installation, the existing helper reported disconnected, no catalog rows,
+and an acknowledged delivery (no active send). Recheck connectivity after update;
+do not infer the relay is reachable from earlier successful enrollment.

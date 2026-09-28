@@ -39,7 +39,7 @@ Ui.BarWidget {
     onClicked: root.summon()
     onEntered: {
       if (root.bar) root.bar.showTooltip(root, root.buzzService
-        ? "Buzz · " + root.buzzService.statusLabel + (root.buzzService.relay ? " · " + root.buzzService.relay : "") + " · no messaging yet"
+        ? "Buzz · " + root.buzzService.statusLabel + (root.buzzService.relay ? " · " + root.buzzService.relay : "")
         : "Buzz preview · widget service unavailable on this bar")
     }
     onExited: if (root.bar) root.bar.hideTooltip(root)

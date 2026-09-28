@@ -1488,7 +1488,7 @@ dependencies = [
 
 [[package]]
 name = "omarchy-buzz"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "base64 0.22.1",
  "buzz-sdk",

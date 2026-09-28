@@ -312,6 +312,8 @@ async fn observe_inner(
         tokio::task::JoinSet::new();
     let mut history_jobs = tokio::task::JoinSet::new();
     let mut history_ticket = 0_u64;
+    let mut selected_history: Option<String> = None;
+    let mut history_due = tokio::time::Instant::now();
     let mut recipient_jobs = tokio::task::JoinSet::new();
     let mut recipient_ticket = 0_u64;
     loop {
@@ -385,19 +387,35 @@ async fn observe_inner(
                 Some(Command::FetchRecent(room))=> {
                     history_jobs.abort_all(); history_jobs=tokio::task::JoinSet::new();
                     history_ticket=history_ticket.wrapping_add(1);
+                    selected_history=None;
                     let allowed=fresh && relay_pin.is_some() && tx.borrow().catalog.rooms.iter().any(|r|r.id==room);
                     let parsed=uuid::Uuid::parse_str(&room).ok().filter(|id|id.to_string()==room);
                     if !allowed || parsed.is_none() {
                         tx.send_modify(|s|s.history=History::unavailable(Some(room),Some("history_access_denied")));
                         continue;
                     }
+                    selected_history=Some(room.clone());
+                    history_due=tokio::time::Instant::now()+Duration::from_secs(5);
                     tx.send_modify(|s|s.history=History {state:"loading".into(),..History::unavailable(Some(room.clone()),None)});
-                    let ticket=history_ticket; let relay=relay.to_owned(); let keys=keys.clone(); let pin=relay_pin.unwrap(); let id=parsed.unwrap();
+                    let ticket=history_ticket; let generation=tx.borrow().generation; let relay=relay.to_owned(); let keys=keys.clone(); let pin=relay_pin.unwrap(); let id=parsed.unwrap();
                     history_jobs.spawn(async move {
                         let result=match timeout(Duration::from_secs(15),crate::history::fetch(&relay,&keys,pin,id)).await {Ok(r)=>r,Err(_)=>Err("history_timeout")};
-                        (ticket,room,result)
+                        (ticket,generation,room,result)
                     });
                 }
+            },
+            _=tokio::time::sleep_until(history_due), if selected_history.is_some() && fresh && history_jobs.is_empty()=> {
+                let room=selected_history.as_ref().unwrap().clone();
+                let allowed=relay_pin.is_some() && tx.borrow().catalog.state=="partial" && tx.borrow().catalog.rooms.iter().any(|r|r.id==room);
+                if allowed {
+                    history_ticket=history_ticket.wrapping_add(1);
+                    let ticket=history_ticket;let generation=tx.borrow().generation;let relay=relay.to_owned();let keys=keys.clone();let pin=relay_pin.unwrap();let id=uuid::Uuid::parse_str(&room).expect("selected canonical room");
+                    history_jobs.spawn(async move {
+                        let result=match timeout(Duration::from_secs(15),crate::history::fetch(&relay,&keys,pin,id)).await {Ok(r)=>r,Err(_)=>Err("history_timeout")};
+                        (ticket,generation,room,result)
+                    });
+                }
+                history_due=tokio::time::Instant::now()+Duration::from_secs(5);
             },
             result=recipient_jobs.join_next(), if !recipient_jobs.is_empty()=> {
                 if matches!(&result,Some(Err(e)) if !e.is_cancelled()) {
@@ -411,6 +429,7 @@ async fn observe_inner(
                         if result.as_ref().is_err_and(|error|recipients_category(error)=="recipients_access_denied") {
                             if tx.borrow().history.room_id.as_deref()==Some(room.as_str()) {
                                 history_jobs.abort_all();history_jobs=tokio::task::JoinSet::new();history_ticket=history_ticket.wrapping_add(1);
+                                selected_history=None;
                             }
                             if let Some(delivery)=sender.revoke_room(&room) {tx.send_modify(|s|s.delivery=delivery);}
                             tx.send_modify(|s| {
@@ -430,10 +449,18 @@ async fn observe_inner(
                     history_jobs.abort_all(); history_jobs=tokio::task::JoinSet::new(); history_ticket=history_ticket.wrapping_add(1);
                     tx.send_modify(|s|s.history=History::unavailable(s.history.room_id.clone(),Some("history_unavailable")));
                 }
-                if let Some(Ok((ticket,room,result)))=result {
-                    if ticket==history_ticket && fresh && tx.borrow().catalog.rooms.iter().any(|r|r.id==room) {
+                if let Some(Ok((ticket,generation,room,result)))=result {
+                    let allowed=ticket==history_ticket && generation==tx.borrow().generation && fresh && selected_history.as_deref()==Some(room.as_str()) && tx.borrow().catalog.state=="partial" && tx.borrow().catalog.rooms.iter().any(|r|r.id==room);
+                    if allowed {
+                        history_due=tokio::time::Instant::now()+Duration::from_secs(5);
+                        if result.as_ref().is_err_and(|error|history_category(error)=="history_access_denied") {
+                            selected_history=None;
+                            if let Some(delivery)=sender.revoke_room(&room) {tx.send_modify(|s|s.delivery=delivery);}
+                            tx.send_modify(|s|s.catalog.rooms.retain(|r|r.id!=room));
+                        }
                         tx.send_modify(|s|s.history=match result {
-                            Ok(h)=>History {state:"snapshot".into(),room_id:Some(h.room),has_more:Some(h.has_more),category:Some(h.category.into()),rows:h.rows.into_iter().map(|r|crate::protocol::HistoryRow {id:r.id,author:r.author_pubkey,time:r.timestamp,text:r.text,edited:r.edited,truncated:r.truncated,unavailable:r.unavailable}).collect()},
+                            Ok(h) if h.room==room=>History {state:"snapshot".into(),room_id:Some(h.room),has_more:Some(h.has_more),category:Some(h.category.into()),rows:h.rows.into_iter().map(|r|crate::protocol::HistoryRow {id:r.id,author:r.author_pubkey,time:r.timestamp,text:r.text,edited:r.edited,truncated:r.truncated,unavailable:r.unavailable}).collect()},
+                            Ok(_)=>History::unavailable(Some(room),Some("history_invalid")),
                             Err(error)=>History::unavailable(Some(room),Some(history_category(error))),
                         });
                     }
@@ -448,9 +475,23 @@ async fn observe_inner(
                             state:catalog.state.into(),category:Some(catalog.category.into()),
                             rooms:catalog.rooms.into_iter().map(|r|crate::protocol::Room {id:r.id,name:r.name,description:r.description}).collect(),
                         });
+                        if let Some(room)=selected_history.as_ref() {
+                            if tx.borrow().catalog.rooms.iter().any(|r|r.id==*room) {
+                                history_due=tokio::time::Instant::now();
+                            } else {
+                                let room=room.clone();selected_history=None;
+                                tx.send_modify(|s|s.history=History::unavailable(Some(room),Some("history_access_denied")));
+                            }
+                        }
                     },
-                    Some(Ok(Err(error))) if fresh=>tx.send_modify(|s|s.catalog=crate::protocol::Catalog::unavailable(Some(catalog_category(error)))),
-                    Some(Err(error)) if fresh && !error.is_cancelled()=>tx.send_modify(|s|s.catalog=crate::protocol::Catalog::unavailable(Some("room_catalog_unavailable"))),
+                    Some(Ok(Err(error))) if fresh=>{
+                        selected_history=None;
+                        tx.send_modify(|s|{s.catalog=crate::protocol::Catalog::unavailable(Some(catalog_category(error)));s.history=History::unavailable(None,None);});
+                    },
+                    Some(Err(error)) if fresh && !error.is_cancelled()=>{
+                        selected_history=None;
+                        tx.send_modify(|s|{s.catalog=crate::protocol::Catalog::unavailable(Some("room_catalog_unavailable"));s.history=History::unavailable(None,None);});
+                    },
                     _=>{},
                 }
                 if !cancelled {catalog_due=tokio::time::Instant::now()+Duration::from_secs(30);}
@@ -482,6 +523,7 @@ async fn observe_inner(
                     fresh=false;
                     jobs.abort_all();
                     history_jobs.abort_all(); history_jobs=tokio::task::JoinSet::new(); history_ticket=history_ticket.wrapping_add(1);
+                    selected_history=None;
                     update(tx,"connecting",None);
                     match timeout(Duration::from_secs(25),conn.authenticate(keys,None)).await {
                         Ok(Ok(()))=> { pending=None; due=tokio::time::Instant::now(); },

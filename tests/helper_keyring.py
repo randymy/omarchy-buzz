@@ -6,6 +6,7 @@ Missing system dependencies produce an explicit SKIP. No live relay is used.
 """
 import errno
 import fcntl
+from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
 import os
 from pathlib import Path
@@ -18,6 +19,7 @@ import subprocess
 import sys
 import tempfile
 import termios
+import threading
 import time
 
 from helper_smoke import Frames, request, stop
@@ -25,10 +27,13 @@ from helper_smoke import Frames, request, stop
 # Scalar 1 is public test material, never a production identity.
 SECRET = b"0" * 63 + b"1"
 PUBLIC = "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+RELAY_SECRET = b"0" * 63 + b"2"
+RELAY_PUBLIC = "c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5"
 
 
 def clean_output(data):
     assert SECRET not in data, "synthetic private key leaked into process output"
+    assert RELAY_SECRET not in data, "synthetic relay key leaked into process output"
 
 
 def run(binary, *args):
@@ -38,7 +43,7 @@ def run(binary, *args):
     return result.stdout
 
 
-def enroll(binary):
+def enroll(binary, secret=SECRET, expected_error=None):
     master, slave = pty.openpty()
     process = None
     output = bytearray()
@@ -62,7 +67,7 @@ def enroll(binary):
                 assert remaining > 0, "identity enrollment timed out"
                 if not sent and b"Private key (hidden): " in output:
                     if not termios.tcgetattr(master)[3] & termios.ECHO:
-                        os.write(master, SECRET + b"\n")
+                        os.write(master, secret + b"\n")
                         sent = True
                 if not poll.select(min(remaining, 0.2)):
                     if process.poll() is not None:
@@ -81,12 +86,16 @@ def enroll(binary):
                 if not sent and b"Private key (hidden): " in output:
                     # Wait for the terminal's echo disable, not merely the prompt.
                     if not termios.tcgetattr(master)[3] & termios.ECHO:
-                        os.write(master, SECRET + b"\n")
+                        os.write(master, secret + b"\n")
                         sent = True
             assert sent, "hidden-input prompt was not reached"
-        assert process.wait(timeout=5) == 0, "identity enrollment failed"
+        status = process.wait(timeout=5)
         clean_output(output)
-        assert PUBLIC.encode() in output and b'"enrolled"' in output
+        if expected_error:
+            assert status != 0 and expected_error.encode() in output, output
+        else:
+            assert status == 0, "identity enrollment failed: " + output.decode(errors="replace")
+            assert PUBLIC.encode() in output and b'"enrolled"' in output
     finally:
         if process is not None:
             stop(process)
@@ -107,13 +116,28 @@ def session(binary):
         keyring.stdin.write(b"synthetic-test-keyring-password\n")
         keyring.stdin.close()
         keyring.stdin = None
-        # Reserve a bound, non-listening socket: no other service can claim this port.
-        with socket.socket() as unused:
-            unused.bind(("127.0.0.1", 0))
-            origin = "ws://127.0.0.1:%d/" % unused.getsockname()[1]
+        class NIP11(BaseHTTPRequestHandler):
+            def do_GET(self):
+                assert self.path == "/info", self.path
+                body = json.dumps({"self": RELAY_PUBLIC}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/nostr+json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *_args):
+                pass
+
+        with HTTPServer(("127.0.0.1", 0), NIP11) as relay:
+            relay_thread = threading.Thread(target=relay.serve_forever, daemon=True)
+            relay_thread.start()
+            origin = "ws://127.0.0.1:%d/" % relay.server_port
             run(binary, "setup", "relay", origin)
             # Enrollment exercises Secret Service activation on this private bus.
             enroll(binary)
+            # A later relay-key entry must leave the selected human unchanged.
+            enroll(binary, RELAY_SECRET, "identity_is_relay_signer")
             inspected = json.loads(run(binary, "inspect"))
             assert inspected["identity"] == PUBLIC and inspected["relay"] == origin
             assert inspected["configured"] is True
@@ -122,6 +146,9 @@ def session(binary):
             clean_output(contents)
             assert PUBLIC.encode() in contents and origin.encode() in contents
             assert config.stat().st_mode & 0o777 == 0o600
+            relay.shutdown()
+            relay_thread.join(timeout=5)
+            relay.server_close()
             daemon = subprocess.Popen(
                 [binary, "daemon", "--keep-running"], stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -154,7 +181,7 @@ def session(binary):
             daemon.send_signal(signal.SIGTERM)
             assert daemon.wait(timeout=5) == 0
             assert not endpoint.exists(), "daemon left socket"
-        print("PASS: private Secret Service enrollment, public config, daemon key retrieval, loopback relay unavailable, no key output")
+        print("PASS: NIP-11 guarded enrollment, relay-key collision preserves human identity, private Secret Service, daemon key retrieval, no key output")
     finally:
         for process in (daemon, keyring):
             if process is not None:

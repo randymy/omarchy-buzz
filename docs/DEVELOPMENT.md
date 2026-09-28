@@ -1,6 +1,15 @@
 # Development and validation
 
-M0 is a synthetic presentation skeleton. It does not authenticate, connect to a relay, send messages, launch agents, or install the future helper. Use synthetic data for every check in this milestone.
+The current preview includes authenticated messaging and selected-room automatic
+history refresh. Use synthetic fixtures for automated checks, never production
+rooms as test fixtures. Earlier M0/M1 evidence below is historical.
+
+For 0.0.4, `node tests/activity_observer.cjs` checks the bounded notification
+observer and `./scripts/preview --activity` exercises QML boundaries with a fake
+notification executable. `tests/helper_keyring.py` uses a private Secret Service
+and synthetic NIP-11 endpoint to verify human enrollment and relay-key refusal.
+The Rust suite includes automatic history refresh, failure clearing and reauth
+fencing. GitHub validation remains manual-only.
 
 ## Repeatable manifest check
 
