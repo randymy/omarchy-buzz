@@ -1,0 +1,94 @@
+name: Manual ACP authentication integration
+
+# Explicit runs only. No push, PR, or scheduled triggers.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: acp-authentication-integration
+  cancel-in-progress: false
+
+jobs:
+  integration:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+    steps:
+      - name: Set disposable build locations
+        run: echo "CARGO_HOME=$RUNNER_TEMP/buzz-cargo" >> "$GITHUB_ENV"
+      - name: Check out plugin without stored Git credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          path: plugin
+          persist-credentials: false
+      - name: Check out exact upstream contribution base
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: block/buzz
+          ref: 781d39510cf23cfe224e8f521ae06a23377e06de
+          path: buzz
+          persist-credentials: false
+      - name: Restore disposable compiled dependencies
+        id: cache
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            ${{ runner.temp }}/buzz-cargo
+            ${{ runner.temp }}/relay-target
+            ${{ runner.temp }}/helper-target
+          key: buzz-acp-auth-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('plugin/docs/upstream/acp-interactive-login.patch', 'plugin/docs/upstream/acp-permission-mode.patch', 'plugin/docs/upstream/ws-resource-limits.patch') }}
+          restore-keys: |
+            buzz-acp-auth-v1-${{ runner.os }}-${{ runner.arch }}-
+            buzz-relay-v2-Linux-X64-781d39510cf23cfe224e8f521ae06a23377e06de-7271d12c3707c2c186f2a4f84f2d675dbb173a2484b0ba34be8b9d5575f10bec-acp
+      - name: Install tested compiler and build prerequisites
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal --component rustfmt
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libssl-dev libdbus-1-dev protobuf-compiler
+      - name: Apply contributions only to disposable upstream checkout
+        working-directory: buzz
+        run: |
+          test "$(git rev-parse HEAD)" = 781d39510cf23cfe224e8f521ae06a23377e06de
+          git diff --exit-code
+          git apply --check ../plugin/docs/upstream/ws-resource-limits.patch
+          git apply ../plugin/docs/upstream/ws-resource-limits.patch
+          git apply --check ../plugin/docs/upstream/acp-permission-mode.patch
+          git apply ../plugin/docs/upstream/acp-permission-mode.patch
+          git apply --check ../plugin/docs/upstream/acp-interactive-login.patch
+          git apply ../plugin/docs/upstream/acp-interactive-login.patch
+      - name: Build complete patched upstream ACP crate
+        id: build
+        working-directory: buzz
+        run: cargo +1.95.0 build --locked -p buzz-acp --target-dir "$RUNNER_TEMP/relay-target"
+      - name: Compile upstream unit-test target and run descriptor checks
+        working-directory: buzz
+        run: |
+          cargo +1.95.0 test --locked -p buzz-acp --lib terminal_auth::tests --target-dir "$RUNNER_TEMP/relay-target"
+          cargo +1.95.0 test --locked -p buzz-acp --lib acp::tests::initialize_request_format --target-dir "$RUNNER_TEMP/relay-target" -- --exact
+      - name: Exercise actual ACP client and command with fake stdio peers
+        working-directory: plugin
+        run: python3 tests/acp_terminal_upstream.py --binary "$RUNNER_TEMP/relay-target/debug/buzz-acp" --output "$RUNNER_TEMP/acp-auth-evidence.json"
+      - name: Upload sanitized evidence only
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: acp-authentication-evidence
+          path: ${{ runner.temp }}/acp-auth-evidence.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Preserve successful compilation for follow-up tests
+        if: always() && !cancelled() && steps.build.outcome == 'success' && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            ${{ runner.temp }}/buzz-cargo
+            ${{ runner.temp }}/relay-target
+            ${{ runner.temp }}/helper-target
+          key: ${{ steps.cache.outputs.cache-primary-key }}
