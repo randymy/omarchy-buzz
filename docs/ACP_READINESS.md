@@ -7,7 +7,7 @@ It does not certify a newer Buzz build, an installed adapter, provider login,
 or the deployed relay's ACP behavior.
 Unqualified `src/` references below are within `crates/buzz-acp/`.
 
-## Decision for the next increment
+## Initial presentation increment (implemented in 0.0.5)
 
 Keep agent execution in independently supervised upstream `buzz-acp` processes.
 The next safe plugin increment is **read-only, evidence-labelled agent
@@ -30,11 +30,10 @@ fixtures at the helper boundary. Do not put raw events, observer frames, or
 tool content in QML. A later, separately verified kind `20002` room subscription
 could supply an expiring “typing” hint; silence must not mean idle.
 
-This is an M3/v0.1 presentation increment, not completion of M4. It is
-consistent with `DESIGN.md` §§6 and 9 and `docs/CHECKPOINT.md`'s current 0.0.4
-status: badges, live activity, ACP execution, and approvals are unfinished.
-If local unread work is in progress, this independent model can follow it
-without changing ACP security decisions.
+This is an M3/v0.1 presentation increment, not completion of M4. The design
+above is retained as implementation context; see the 0.0.5 follow-through below
+and `docs/CHECKPOINT.md` for current 0.0.6 messaging/activity behavior. ACP
+execution and approvals remain unfinished.
 
 ## What is established
 
@@ -186,3 +185,11 @@ capability mismatch in the Buzz harness. Source refresh to official Buzz
 `ebe99a46e8802b9ff20fdf6a1028ce93bdefaa43` did not change these ACP paths.
 Subscription support is still required; no real subscription/paid agent was
 launched to establish it in this pass.
+
+## Explicit permission-mode follow-up
+
+A [staged upstream proposal](upstream/ACP_PERMISSION_MODE.md) rejects unsupported
+nondefault modes and propagates setter errors instead of silently continuing.
+Its four focused tests pass with transport doubles. It does not resolve the
+harness's default bypass mode, automatic tool approval, credential propagation
+or effective-mode verification. No installed ACP behavior changes.

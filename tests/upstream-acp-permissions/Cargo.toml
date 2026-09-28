@@ -1,0 +1,8 @@
+[package]
+name = "buzz-acp-permission-contribution"
+version = "0.1.0"
+edition = "2021"
+[dependencies]
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt", "time"] }
+thiserror = "2"

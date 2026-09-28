@@ -548,3 +548,30 @@ rooms, four activity summaries, idle delivery. Native panel summon returned
 `ok`. The previous 0.0.5 binary is preserved at
 `~/.local/bin/omarchy-buzz.before-0.0.6-20260928`; previous plugin implementation
 is `ed01778`. No relay/identity configuration or production message was changed.
+
+## ACP permission and adapter follow-up, 2026-09-28
+
+Prepared a third isolated upstream proposal: reject unadvertised nondefault
+permission modes and propagate mode-setter rejection instead of silently
+running under defaults. Four focused tests pass from the exact staged functions;
+a second agent reviewed caller propagation. See
+[proposal](upstream/ACP_PERMISSION_MODE.md) and
+[evidence](evidence/acp-permission-mode.json). This does not fix default bypass,
+automatic tool approval, secret propagation or prove effective permissions.
+No production Buzz dependency or installed binary changed.
+
+Pinned Claude adapter source inspection confirms subscription and Console
+terminal-login choices, the bundled native CLI, ARM64 package entries, and
+why its asynchronous auth status cannot establish a turn's effective payer.
+See [assessment](CLAUDE_ADAPTER_SOURCE.md). No adapter/account/model was run.
+
+Regenerated the ARM64 notice inventory against the 0.0.6 lock: 252 packages,
+19 review flags unchanged. Four Bitcoin crates' checksum-matched archives
+lack full notices and VCS markers; no unsupported substitute was added. The
+new inventory is locally at `/tmp/omarchy-buzz-notices-006`; packaging must
+always regenerate rather than reuse older lock evidence.
+
+Corrected two Rust formatting differences from the prior review fix; formatting
+check now passes. Manual CI now includes the four permission proposal checks;
+no GitHub workflow was triggered. Installed 0.0.6 remains the tested messaging
+preview. Real ACP and public release gates remain open.

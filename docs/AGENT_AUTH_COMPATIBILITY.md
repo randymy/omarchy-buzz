@@ -133,3 +133,13 @@ absent locally, and a fake server could test only Buzz's ACP framing, not real
 subscription reuse or billing choice. The sequence above is the acceptance
 contract for the upstream authentication work and a later adapter-by-adapter
 compatibility fixture.
+
+## Pinned Claude adapter follow-up
+
+[CLAUDE_ADAPTER_SOURCE.md](CLAUDE_ADAPTER_SOURCE.md) inspects adapter commit
+`18de37624071b48e95aed9ec5382823e2d72cd39` (source package 0.82.0). It confirms
+separate subscription and Console terminal-login choices, making Buzz's
+terminal-login mismatch concrete. It also identifies why asynchronous auth
+status cannot certify the payer for a turn, especially with provider overrides.
+Linux ARM64 SDK artifacts appear in the lockfile; installation and account
+behavior remain unverified. This supplements the earlier overview assessment.

@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-09-28",
+  "baseRevision": "781d39510cf23cfe224e8f521ae06a23377e06de",
+  "patchSha256": "ddf10293ab52bf170fc29e5eb928c0f40b9acf319d8cb9442855f34db5fbc83a",
+  "lockSha256": "57f2256f0a23061a29e7cbaae873f66183d108ebf7b41bf7d468219ad1867779",
+  "tests": {
+    "passed": 4,
+    "scope": "exact patched guard and async setter with transport doubles",
+    "fullHarnessCompiled": false,
+    "realAgentsRun": false
+  },
+  "independentCallerReview": "channel, heartbeat and isolated callers stop on preparation failure; source review only"
+}

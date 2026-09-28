@@ -100,3 +100,8 @@ jobs:
         run: python3 scripts/prepare-acp-auth-contribution --buzz-source ../buzz --output "$RUNNER_TEMP/buzz-acp-auth-review"
       - name: Test exact pure ACP authentication policy functions
         run: cargo +1.95.0 test --locked --manifest-path "$RUNNER_TEMP/buzz-acp-auth-review/policy-test/Cargo.toml"
+      - name: Stage ACP permission-mode proposal
+        working-directory: omarchy-buzz
+        run: python3 scripts/prepare-acp-permission-contribution --buzz-source ../buzz --output "$RUNNER_TEMP/buzz-acp-permission-review"
+      - name: Test patched permission-mode guard and async setter
+        run: cargo +1.95.0 test --locked --manifest-path "$RUNNER_TEMP/buzz-acp-permission-review/policy-test/Cargo.toml"
