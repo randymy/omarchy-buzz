@@ -48,7 +48,7 @@ jobs:
             ${{ runner.temp }}/buzz-cargo
             ${{ runner.temp }}/relay-target
             ${{ runner.temp }}/helper-target
-          key: buzz-acp-auth-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('plugin/docs/upstream/acp-interactive-login.patch', 'plugin/docs/upstream/acp-permission-mode.patch', 'plugin/docs/upstream/ws-resource-limits.patch') }}
+          key: buzz-acp-auth-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('plugin/docs/upstream/acp-interactive-login.patch', 'plugin/docs/upstream/acp-permission-mode.patch', 'plugin/docs/upstream/ws-resource-limits.patch', 'plugin/docs/upstream/acp-key-isolation.patch') }}
           restore-keys: |
             buzz-acp-auth-v1-${{ runner.os }}-${{ runner.arch }}-
             buzz-relay-v2-Linux-X64-781d39510cf23cfe224e8f521ae06a23377e06de-7271d12c3707c2c186f2a4f84f2d675dbb173a2484b0ba34be8b9d5575f10bec-acp
@@ -68,6 +68,8 @@ jobs:
           git apply ../plugin/docs/upstream/acp-permission-mode.patch
           git apply --check ../plugin/docs/upstream/acp-interactive-login.patch
           git apply ../plugin/docs/upstream/acp-interactive-login.patch
+          git apply --check ../plugin/docs/upstream/acp-key-isolation.patch
+          git apply ../plugin/docs/upstream/acp-key-isolation.patch
       - name: Build complete patched upstream ACP crate
         id: build
         working-directory: buzz
@@ -77,6 +79,22 @@ jobs:
         run: |
           cargo +1.95.0 test --locked -p buzz-acp --lib terminal_auth::tests --target-dir "$RUNNER_TEMP/relay-target"
           cargo +1.95.0 test --locked -p buzz-acp --lib acp::tests::initialize_request_format --target-dir "$RUNNER_TEMP/relay-target" -- --exact
+      - name: Test relay key input and runtime isolation
+        working-directory: buzz
+        run: |
+          cargo +1.95.0 test --locked -p buzz-acp --lib key_input:: --target-dir "$RUNNER_TEMP/relay-target"
+          BUZZ_AUTH_TAG=synthetic-parent-marker GIT_CONFIG_GLOBAL=/nonexistent-fixture cargo +1.95.0 test --locked -p buzz-acp --lib key_isolation_tests:: --target-dir "$RUNNER_TEMP/relay-target"
+      - name: Exercise actual key input without relay or agent startup
+        working-directory: plugin
+        run: python3 tests/acp_key_isolation_upstream.py --binary "$RUNNER_TEMP/relay-target/debug/buzz-acp" --output "$RUNNER_TEMP/acp-key-evidence.json"
+      - name: Upload sanitized key input evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: acp-key-isolation-evidence
+          path: ${{ runner.temp }}/acp-key-evidence.json
+          if-no-files-found: warn
+          retention-days: 7
       - name: Exercise actual ACP client and command with fake stdio peers
         working-directory: plugin
         run: python3 tests/acp_terminal_upstream.py --binary "$RUNNER_TEMP/relay-target/debug/buzz-acp" --output "$RUNNER_TEMP/acp-auth-evidence.json"

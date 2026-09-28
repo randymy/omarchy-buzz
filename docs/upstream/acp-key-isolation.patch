@@ -1,0 +1,681 @@
+diff --git a/crates/buzz-acp/src/acp.rs b/crates/buzz-acp/src/acp.rs
+index 2feb217..be4e083 100644
+--- a/crates/buzz-acp/src/acp.rs
++++ b/crates/buzz-acp/src/acp.rs
+@@ -474,12 +474,32 @@ impl AcpClient {
+             has_generated_codex_config,
+             launch_env,
+             false,
++            false,
+         )
+         .await
+     }
+ 
+     pub(crate) async fn spawn_for_auth(command: &str, args: &[String]) -> Result<Self, AcpError> {
+-        Self::spawn_with_policy(command, args, &[], false, &[], true).await
++        Self::spawn_with_policy(command, args, &[], false, &[], true, false).await
++    }
++
++    pub(crate) async fn spawn_for_runtime(
++        command: &str,
++        args: &[String],
++        extra_env: &[(String, String)],
++        has_generated_codex_config: bool,
++        isolate_relay_identity: bool,
++    ) -> Result<Self, AcpError> {
++        Self::spawn_with_policy(
++            command,
++            args,
++            extra_env,
++            has_generated_codex_config,
++            &[],
++            false,
++            isolate_relay_identity,
++        )
++        .await
+     }
+ 
+     async fn spawn_with_policy(
+@@ -489,6 +509,7 @@ impl AcpClient {
+         has_generated_codex_config: bool,
+         launch_env: &[(String, String)],
+         clean_auth: bool,
++        isolate_relay_identity: bool,
+     ) -> Result<Self, AcpError> {
+         use std::process::Stdio;
+ 
+@@ -606,6 +627,20 @@ impl AcpClient {
+                 _ => None,
+             };
+         cmd.envs(launch_env.iter().cloned());
++        if isolate_relay_identity {
++            // Apply last so neither inherited nor explicit overrides restore keys.
++            // Git config is disabled here: it can point to a signing keyfile or helper.
++            for (name, _) in std::env::vars_os() {
++                if name.to_str().is_some_and(is_relay_credential_env) {
++                    cmd.env_remove(name);
++                }
++            }
++            for (name, _) in extra_env.iter().chain(launch_env) {
++                if is_relay_credential_env(name) {
++                    cmd.env_remove(name);
++                }
++            }
++        }
+         let mut child = cmd.spawn()?;
+ 
+         let stdin = child
+@@ -4999,3 +5034,66 @@ mod tests {
+         );
+     }
+ }
++
++/// Known relay credentials and Git configuration are not delegated in FD mode.
++fn is_relay_credential_env(name: &str) -> bool {
++    name.starts_with("GIT_CONFIG")
++        || matches!(
++            name,
++            "BUZZ_PRIVATE_KEY"
++                | "BUZZ_ACP_PRIVATE_KEY"
++                | "NOSTR_PRIVATE_KEY"
++                | "BUZZ_API_TOKEN"
++                | "BUZZ_ACP_API_TOKEN"
++                | "BUZZ_AUTH_TAG"
++        )
++}
++
++#[cfg(all(test, unix))]
++mod key_isolation_tests {
++    use super::*;
++
++    #[tokio::test]
++    async fn removes_credentials_after_all_launch_overrides() {
++        let names = [
++            "BUZZ_PRIVATE_KEY",
++            "BUZZ_ACP_PRIVATE_KEY",
++            "NOSTR_PRIVATE_KEY",
++            "BUZZ_API_TOKEN",
++            "BUZZ_ACP_API_TOKEN",
++            "BUZZ_AUTH_TAG",
++            "GIT_CONFIG_COUNT",
++            "GIT_CONFIG_KEY_0",
++            "GIT_CONFIG_VALUE_0",
++            "GIT_CONFIG_GLOBAL",
++            "GIT_CONFIG_PARAMETERS",
++        ];
++        let extra = names
++            .iter()
++            .map(|name| (name.to_string(), "synthetic-marker".into()))
++            .collect::<Vec<_>>();
++        let mut script = String::from("IFS= read -r request || exit 1; ");
++        for name in names {
++            script.push_str(&format!("test -z \"${{{name}+present}}\" || exit 2; "));
++        }
++        script.push_str("printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"agentInfo\":{\"name\":\"isolated-fixture\",\"version\":\"1\"},\"agentCapabilities\":{}}}'; while IFS= read -r ignored; do :; done");
++        let mut client = AcpClient::spawn_with_policy(
++            "/bin/sh",
++            &["-c".into(), script],
++            &extra,
++            false,
++            &extra,
++            false,
++            true,
++        )
++        .await
++        .unwrap();
++        let result =
++            tokio::time::timeout(std::time::Duration::from_secs(3), client.initialize()).await;
++        client.shutdown().await;
++        assert_eq!(
++            result.unwrap().unwrap()["agentInfo"]["name"],
++            "isolated-fixture"
++        );
++    }
++}
+diff --git a/crates/buzz-acp/src/config.rs b/crates/buzz-acp/src/config.rs
+index 71539f9..ab7ae34 100644
+--- a/crates/buzz-acp/src/config.rs
++++ b/crates/buzz-acp/src/config.rs
+@@ -251,8 +251,20 @@ pub struct CliArgs {
+     #[arg(long, env = "BUZZ_RELAY_URL", default_value = "ws://localhost:3000")]
+     pub relay_url: String,
+ 
+-    #[arg(long, env = "BUZZ_PRIVATE_KEY", hide_env_values = true)]
+-    pub private_key: String,
++    #[arg(
++        long,
++        env = "BUZZ_PRIVATE_KEY",
++        hide_env_values = true,
++        required_unless_present = "private_key_fd",
++        conflicts_with = "private_key_fd"
++    )]
++    pub private_key: Option<String>,
++
++    /// Linux: consume a bounded inherited pipe containing the relay key.
++    /// Keeps this identity in the harness: disables credential-sharing Git/MCP,
++    /// the built-in CLI-oriented base prompt, and automatic Codex network widening.
++    #[arg(long, conflicts_with = "private_key", value_parser = clap::value_parser!(i32).range(3..))]
++    pub private_key_fd: Option<i32>,
+ 
+     /// Agent owner pubkey (64-char hex). Used for --respond-to=owner-only gate.
+     #[arg(long, env = "BUZZ_ACP_AGENT_OWNER")]
+@@ -544,6 +556,8 @@ pub struct ChannelFilter {
+ #[derive(Debug)]
+ pub struct Config {
+     pub keys: Keys,
++    /// FD-fed identities stay in the harness; this is not an agent sandbox.
++    pub isolate_relay_identity: bool,
+     pub relay_url: String,
+     pub agent_command: String,
+     pub agent_args: Vec<String>,
+@@ -935,13 +949,28 @@ impl Config {
+     /// tests can construct `CliArgs` via `CliArgs::try_parse_from` and exercise the full
+     /// validation path without going through process args.
+     pub fn from_args(mut args: CliArgs) -> Result<Self, ConfigError> {
+-        let keys = Keys::parse(&args.private_key)?;
+-        // Best-effort zeroize: overwrite the raw private key string to reduce
+-        // exposure via core dumps or heap inspection (#41). Without the `zeroize`
+-        // crate we can only clear the String — the allocator may retain copies.
+-        args.private_key
+-            .replace_range(.., &"0".repeat(args.private_key.len()));
+-        args.private_key.clear();
++        let isolate_relay_identity = args.private_key_fd.is_some();
++        let keys = match (args.private_key.take(), args.private_key_fd) {
++            (None, Some(fd)) => crate::key_input::read_private_key(fd)
++                .map_err(|category| ConfigError::ConfigFile(category.into()))?,
++            (Some(raw), None) => Keys::parse(zeroize::Zeroizing::new(raw).as_str())?,
++            _ => {
++                return Err(ConfigError::ConfigFile(
++                    "exactly one relay key input is required".into(),
++                ))
++            }
++        };
++        if isolate_relay_identity
++            && (!args.mcp_command.is_empty() || args.base_prompt_file.is_some())
++        {
++            return Err(ConfigError::ConfigFile(
++                "private-key-fd cannot share relay credentials through MCP or a custom base prompt"
++                    .into(),
++            ));
++        }
++        if isolate_relay_identity {
++            args.no_base_prompt = true;
++        }
+ 
+         let system_prompt = if let Some(text) = args.system_prompt {
+             Some(text)
+@@ -1145,18 +1174,21 @@ impl Config {
+         // Inject CODEX_CONFIG so the @agentclientprotocol/codex-acp adapter (1.x)
+         // opens the Seatbelt network sandbox for buzz-cli (an MCP subprocess). No-op
+         // for non-Codex agents or unparseable relay URLs.
+-        let has_generated_codex_config =
+-            if let Some(network_env) = codex_network_env(&agent_command, &args.relay_url) {
+-                persona_env_vars.push(network_env);
+-                true
+-            } else {
+-                false
+-            };
++        let has_generated_codex_config = if let Some(network_env) = (!isolate_relay_identity)
++            .then(|| codex_network_env(&agent_command, &args.relay_url))
++            .flatten()
++        {
++            persona_env_vars.push(network_env);
++            true
++        } else {
++            false
++        };
+ 
+         validate_multiple_event_handling(args.multiple_event_handling, args.dedup)?;
+ 
+         let config = Config {
+             keys,
++            isolate_relay_identity,
+             relay_url: args.relay_url,
+             agent_command,
+             agent_args,
+@@ -1576,6 +1608,7 @@ mod tests {
+             respond_to_allowlist: HashSet::new(),
+             allowed_respond_to: Vec::new(),
+             persona_env_vars: vec![],
++            isolate_relay_identity: false,
+             has_generated_codex_config: false,
+             relay_observer: false,
+             exit_after_inactivity_secs: 0,
+diff --git a/crates/buzz-acp/src/isolated_execution.rs b/crates/buzz-acp/src/isolated_execution.rs
+index a31e3f2..95c1479 100644
+--- a/crates/buzz-acp/src/isolated_execution.rs
++++ b/crates/buzz-acp/src/isolated_execution.rs
+@@ -21,11 +21,12 @@ pub(crate) async fn execute(
+         return Outcome::Cancelled;
+     }
+     let deadline = tokio::time::Instant::now() + duration;
+-    let mut acp = match AcpClient::spawn(
++    let mut acp = match AcpClient::spawn_for_runtime(
+         &startup.command,
+         &startup.args,
+         &startup.extra_env,
+         startup.has_generated_codex_config,
++        startup.isolate_relay_identity,
+     )
+     .await
+     {
+diff --git a/crates/buzz-acp/src/key_input.rs b/crates/buzz-acp/src/key_input.rs
+new file mode 100644
+index 0000000..cae632a
+--- /dev/null
++++ b/crates/buzz-acp/src/key_input.rs
+@@ -0,0 +1,196 @@
++//! Bounded, one-shot relay key input from an inherited Linux pipe.
++
++#[cfg(target_os = "linux")]
++mod linux {
++    use nix::libc;
++    use nostr::Keys;
++    use std::os::fd::{FromRawFd, OwnedFd};
++    use std::time::{Duration, Instant};
++    use zeroize::Zeroizing;
++
++    const MAX_KEY_BYTES: usize = 128;
++    const INPUT_DEADLINE: Duration = Duration::from_secs(3);
++
++    /// Consume a pipe descriptor. The descriptor is closed on success and on error.
++    pub(crate) fn read_private_key(fd: i32) -> Result<Keys, &'static str> {
++        read_with_deadline(fd, INPUT_DEADLINE)
++    }
++
++    fn read_with_deadline(fd: i32, limit: Duration) -> Result<Keys, &'static str> {
++        // Never take ownership of stdin, stdout or stderr, even on an invalid call.
++        if fd < 3 {
++            return Err("private_key_fd_invalid");
++        }
++        // Do not construct OwnedFd for an invalid number: its destructor
++        // assumes it owns an open descriptor. The caller must give us
++        // exclusive ownership of a valid fd until this function consumes it.
++        let descriptor_flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
++        if descriptor_flags < 0 {
++            return Err("private_key_fd_invalid");
++        }
++        // SAFETY: ownership of this caller-provided descriptor is the API contract.
++        let _owned = unsafe { OwnedFd::from_raw_fd(fd) };
++        let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
++        // SAFETY: stat points to writable storage and fd stays owned above.
++        if unsafe { libc::fstat(fd, stat.as_mut_ptr()) } != 0 {
++            return Err("private_key_fd_invalid");
++        }
++        // SAFETY: successful fstat initialized stat.
++        let stat = unsafe { stat.assume_init() };
++        if stat.st_mode & libc::S_IFMT != libc::S_IFIFO {
++            return Err("private_key_fd_not_pipe");
++        }
++        // SAFETY: fcntl operates on the owned descriptor; flags are plain integers.
++        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
++        if flags < 0 || flags & libc::O_ACCMODE != libc::O_RDONLY {
++            return Err("private_key_fd_not_read_end");
++        }
++        // Mark the consumed descriptor close-on-exec immediately, even if the
++        // caller failed to set it before handoff. Nonblocking reads keep the
++        // deadline effective when the writer stalls without closing the pipe.
++        if unsafe { libc::fcntl(fd, libc::F_SETFD, descriptor_flags | libc::FD_CLOEXEC) } < 0
++            || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0
++        {
++            return Err("private_key_fd_invalid");
++        }
++
++        let deadline = Instant::now() + limit;
++        let mut input = Zeroizing::new([0u8; MAX_KEY_BYTES + 1]);
++        let mut length = 0usize;
++        loop {
++            if Instant::now() >= deadline {
++                return Err("private_key_fd_timeout");
++            }
++            let remaining = deadline.saturating_duration_since(Instant::now());
++            let timeout_ms = remaining.as_millis().clamp(1, i32::MAX as u128) as i32;
++            let mut pollfd = libc::pollfd {
++                fd,
++                events: libc::POLLIN | libc::POLLHUP,
++                revents: 0,
++            };
++            // SAFETY: pollfd is initialized and remains valid for this call.
++            let ready = unsafe { libc::poll(&mut pollfd, 1, timeout_ms) };
++            if ready < 0 {
++                if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
++                    continue;
++                }
++                return Err("private_key_fd_read_failed");
++            }
++            if ready == 0 {
++                return Err("private_key_fd_timeout");
++            }
++            if pollfd.revents & (libc::POLLERR | libc::POLLNVAL) != 0 {
++                return Err("private_key_fd_read_failed");
++            }
++            // The extra byte distinguishes a full 128-byte input from overflow.
++            // SAFETY: the destination slice is valid and its length is bounded.
++            let count = unsafe {
++                libc::read(
++                    fd,
++                    input[length..].as_mut_ptr().cast(),
++                    input.len() - length,
++                )
++            };
++            if count == 0 {
++                let text = std::str::from_utf8(&input[..length])
++                    .map_err(|_| "private_key_fd_invalid_key")?;
++                return Keys::parse(text.trim()).map_err(|_| "private_key_fd_invalid_key");
++            }
++            if count < 0 {
++                match std::io::Error::last_os_error().kind() {
++                    std::io::ErrorKind::Interrupted | std::io::ErrorKind::WouldBlock => continue,
++                    _ => return Err("private_key_fd_read_failed"),
++                }
++            }
++            length += count as usize;
++            if length > MAX_KEY_BYTES {
++                return Err("private_key_fd_too_large");
++            }
++        }
++    }
++
++    #[cfg(test)]
++    mod tests {
++        use super::*;
++        use std::io::Write;
++        use std::os::fd::{AsRawFd, IntoRawFd};
++
++        fn pipe() -> (OwnedFd, OwnedFd) {
++            let mut fds = [-1; 2];
++            // SAFETY: fds has two writable integer slots.
++            assert_eq!(unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) }, 0);
++            // SAFETY: pipe2 returned two fresh descriptors.
++            unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) }
++        }
++
++        fn send(writer: OwnedFd, bytes: &[u8]) {
++            let mut file = std::fs::File::from(writer);
++            file.write_all(bytes).unwrap();
++        }
++
++        #[test]
++        fn valid_pipe_key_is_consumed() {
++            let (read, write) = pipe();
++            let expected = Keys::generate();
++            send(
++                write,
++                format!("  {}\n", expected.secret_key().to_secret_hex()).as_bytes(),
++            );
++            let actual = read_private_key(read.into_raw_fd()).unwrap();
++            assert_eq!(actual.public_key(), expected.public_key());
++        }
++
++        #[test]
++        fn invalid_key_and_oversize_are_rejected() {
++            for (bytes, error) in [
++                (b"invalid".as_slice(), "private_key_fd_invalid_key"),
++                (&[b'x'; 129][..], "private_key_fd_too_large"),
++            ] {
++                let (read, write) = pipe();
++                send(write, bytes);
++                assert_eq!(read_private_key(read.into_raw_fd()).err(), Some(error));
++            }
++        }
++
++        #[test]
++        fn invalid_descriptors_are_rejected() {
++            assert_eq!(read_private_key(0).err(), Some("private_key_fd_invalid"));
++            assert_eq!(
++                read_private_key(i32::MAX).err(),
++                Some("private_key_fd_invalid")
++            );
++            let (_read, write) = pipe();
++            assert_eq!(
++                read_private_key(write.into_raw_fd()).err(),
++                Some("private_key_fd_not_read_end")
++            );
++        }
++
++        #[test]
++        fn regular_file_is_rejected() {
++            let file = tempfile::tempfile().unwrap();
++            assert!(file.as_raw_fd() >= 3);
++            assert_eq!(
++                read_private_key(file.into_raw_fd()).err(),
++                Some("private_key_fd_not_pipe")
++            );
++        }
++
++        #[test]
++        fn writer_without_eof_times_out() {
++            let (read, _write) = pipe();
++            assert_eq!(
++                read_with_deadline(read.into_raw_fd(), Duration::from_millis(30)).err(),
++                Some("private_key_fd_timeout")
++            );
++        }
++    }
++}
++
++#[cfg(target_os = "linux")]
++pub(crate) use linux::read_private_key;
++
++#[cfg(not(target_os = "linux"))]
++pub(crate) fn read_private_key(_fd: i32) -> Result<nostr::Keys, &'static str> {
++    Err("private_key_fd_unsupported")
++}
+diff --git a/crates/buzz-acp/src/lib.rs b/crates/buzz-acp/src/lib.rs
+index 71d69be..8461ef6 100644
+--- a/crates/buzz-acp/src/lib.rs
++++ b/crates/buzz-acp/src/lib.rs
+@@ -3,6 +3,7 @@
+ mod git;
+ #[cfg(all(test, unix))]
+ mod git_runtime_tests;
++mod key_input;
+ 
+ mod acp;
+ mod config;
+@@ -3057,10 +3058,20 @@ async fn run_harness(
+                 let args = config.agent_args.clone();
+                 let env = config.persona_env_vars.clone();
+                 let has_codex = config.has_generated_codex_config;
++                let isolate_identity = config.isolate_relay_identity;
+                 let observer = observer.clone();
+                 let guard = RespawnGuard::new(idx, respawn_tx.clone());
+                 respawn_tasks.spawn(async move {
+-                    let result = spawn_and_init(&cmd, &args, &env, has_codex, idx, observer).await;
++                    let result = spawn_and_init(
++                        &cmd,
++                        &args,
++                        &env,
++                        has_codex,
++                        isolate_identity,
++                        idx,
++                        observer,
++                    )
++                    .await;
+                     guard.send(result);
+                 });
+             }
+@@ -5172,12 +5183,14 @@ fn recover_panicked_agent(
+     let args = config.agent_args.clone();
+     let env = config.persona_env_vars.clone();
+     let has_codex = config.has_generated_codex_config;
++    let isolate_identity = config.isolate_relay_identity;
+     let guard = RespawnGuard::new(i, respawn_tx.clone());
+     respawn_tasks.spawn(async move {
+         if !delay.is_zero() {
+             tokio::time::sleep(delay).await;
+         }
+-        let result = spawn_and_init(&cmd, &args, &env, has_codex, i, observer).await;
++        let result =
++            spawn_and_init(&cmd, &args, &env, has_codex, isolate_identity, i, observer).await;
+         guard.send(result);
+     });
+ }
+@@ -5413,6 +5426,7 @@ fn spawn_respawn_task(
+     let args = config.agent_args.clone();
+     let env = config.persona_env_vars.clone();
+     let has_codex = config.has_generated_codex_config;
++    let isolate_identity = config.isolate_relay_identity;
+     let guard = RespawnGuard::new(index, respawn_tx.clone());
+     respawn_tasks.spawn(async move {
+         // Shutdown old agent (reap child, prevent zombie).
+@@ -5424,7 +5438,16 @@ fn spawn_respawn_task(
+             tokio::time::sleep(delay).await;
+         }
+ 
+-        let result = spawn_and_init(&cmd, &args, &env, has_codex, index, observer).await;
++        let result = spawn_and_init(
++            &cmd,
++            &args,
++            &env,
++            has_codex,
++            isolate_identity,
++            index,
++            observer,
++        )
++        .await;
+         guard.send(result);
+     });
+ 
+@@ -5470,11 +5493,12 @@ async fn initialize_agent_pool(
+     // Attempt each spawn under a 60-second timeout; a partial pool is valid.
+     let mut agent_slots: Vec<Option<OwnedAgent>> = Vec::with_capacity(startup.agents as usize);
+     for i in 0..startup.agents as usize {
+-        let spawn_result = AcpClient::spawn(
++        let spawn_result = AcpClient::spawn_for_runtime(
+             &startup.command,
+             &startup.args,
+             &startup.extra_env,
+             startup.has_generated_codex_config,
++            startup.isolate_relay_identity,
+         )
+         .await;
+         match spawn_result {
+@@ -5578,12 +5602,19 @@ async fn spawn_and_init(
+     args: &[String],
+     extra_env: &[(String, String)],
+     has_generated_codex_config: bool,
++    isolate_relay_identity: bool,
+     agent_index: usize,
+     observer: Option<observer::ObserverHandle>,
+ ) -> Result<(AcpClient, u32, String)> {
+-    let mut acp = AcpClient::spawn(command, args, extra_env, has_generated_codex_config)
+-        .await
+-        .map_err(|e| anyhow::anyhow!("failed to spawn agent: {e}"))?;
++    let mut acp = AcpClient::spawn_for_runtime(
++        command,
++        args,
++        extra_env,
++        has_generated_codex_config,
++        isolate_relay_identity,
++    )
++    .await
++    .map_err(|e| anyhow::anyhow!("failed to spawn agent: {e}"))?;
+     acp.set_observer(observer, agent_index);
+ 
+     match acp.initialize().await {
+@@ -5890,7 +5921,7 @@ async fn run_models(args: ModelsArgs) -> Result<()> {
+ }
+ 
+ fn build_mcp_servers(config: &Config) -> Vec<McpServer> {
+-    if config.mcp_command.is_empty() {
++    if config.isolate_relay_identity || config.mcp_command.is_empty() {
+         return vec![];
+     }
+     vec![McpServer {
+@@ -9195,6 +9226,7 @@ mod build_mcp_servers_tests {
+             respond_to_allowlist: std::collections::HashSet::new(),
+             allowed_respond_to: vec![],
+             persona_env_vars: vec![],
++            isolate_relay_identity: false,
+             has_generated_codex_config: false,
+             relay_observer: false,
+             exit_after_inactivity_secs: 0,
+@@ -9459,6 +9491,7 @@ mod error_outcome_emission_tests {
+             respond_to_allowlist: HashSet::new(),
+             allowed_respond_to: vec![],
+             persona_env_vars: vec![],
++            isolate_relay_identity: false,
+             has_generated_codex_config: false,
+             relay_observer: false,
+             exit_after_inactivity_secs: 0,
+diff --git a/crates/buzz-acp/src/runtime.rs b/crates/buzz-acp/src/runtime.rs
+index e6745b6..6fd67b3 100644
+--- a/crates/buzz-acp/src/runtime.rs
++++ b/crates/buzz-acp/src/runtime.rs
+@@ -17,12 +17,23 @@ pub(crate) enum SessionMode {
+ /// Add new runtime capabilities here, not separately to the CLI entry points.
+ pub(crate) struct AgentRuntime {
+     config: Config,
+-    _git_environment: git::GitEnvironment,
++    _git_environment: Option<git::GitEnvironment>,
+ }
+ 
+ impl AgentRuntime {
+     pub(crate) fn prepare(mut config: Config) -> Result<Self> {
+-        let git_environment = git::GitEnvironment::for_config(&mut config)?;
++        let git_environment = if config.isolate_relay_identity {
++            anyhow::ensure!(
++                config.mcp_command.is_empty(),
++                "isolated relay identity cannot be shared with MCP"
++            );
++            config.no_base_prompt = true;
++            config.base_prompt_content = None;
++            config.has_generated_codex_config = false;
++            None
++        } else {
++            Some(git::GitEnvironment::for_config(&mut config)?)
++        };
+         Ok(Self {
+             config,
+             _git_environment: git_environment,
+@@ -54,6 +65,7 @@ pub(crate) struct PoolStartup {
+     pub(crate) args: Vec<String>,
+     pub(crate) extra_env: Vec<(String, String)>,
+     pub(crate) has_generated_codex_config: bool,
++    pub(crate) isolate_relay_identity: bool,
+     pub(crate) model: Option<String>,
+     pub(crate) effort_level: Option<String>,
+     pub(crate) observer: Option<observer::ObserverHandle>,
+@@ -67,6 +79,7 @@ impl PoolStartup {
+             args: config.agent_args.clone(),
+             extra_env: config.persona_env_vars.clone(),
+             has_generated_codex_config: config.has_generated_codex_config,
++            isolate_relay_identity: config.isolate_relay_identity,
+             model: config.model.clone(),
+             effort_level: config.effort_level.clone(),
+             observer,
+@@ -123,3 +136,33 @@ fn make_prompt_context(
+         relay_url: config.relay_url.clone(),
+     })
+ }
++
++#[cfg(test)]
++mod key_isolation_tests {
++    use super::*;
++
++    #[test]
++    fn isolated_identity_skips_git_and_mcp_bootstrap() {
++        let mut config = crate::build_mcp_servers_tests::test_config();
++        let public_key = config.keys.public_key();
++        config.isolate_relay_identity = true;
++        config.mcp_command.clear();
++        let runtime = AgentRuntime::prepare(config).unwrap();
++        assert!(runtime._git_environment.is_none());
++        assert!(runtime.config.no_base_prompt);
++        assert_eq!(runtime.config.keys.public_key(), public_key);
++        assert!(runtime.config.persona_env_vars.is_empty());
++        assert!(build_mcp_servers(&runtime.config).is_empty());
++        let startup = runtime.startup(None);
++        assert!(startup.isolate_relay_identity);
++        assert!(!startup.has_generated_codex_config);
++    }
++
++    #[test]
++    fn isolated_identity_rejects_secret_dependent_mcp() {
++        let mut config = crate::build_mcp_servers_tests::test_config();
++        config.isolate_relay_identity = true;
++        assert!(build_mcp_servers(&config).is_empty());
++        assert!(AgentRuntime::prepare(config).is_err());
++    }
++}
