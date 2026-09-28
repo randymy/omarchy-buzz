@@ -94,11 +94,10 @@ Replies and attachments are not available through this composer yet. See [sendin
 ## Staying current
 
 Buzz dependencies are pinned and tested together. The [upstream workflow](docs/UPDATES.md)
-checks daily and prepares draft updates for validation; it does not auto-merge.
+is currently manual-only and can prepare draft updates for validation; it does not auto-merge.
 Updating the plugin checkout does **not** replace the separate helper binary.
 Install the matching helper build and use `omarchy-buzz --version` to inspect
-its version and Buzz revision. Scheduled checks begin once this repository is
-published and its workflow is enabled on the default branch.
+its version and Buzz revision. Scheduled checks remain paused by user request.
 
 ## Remove
 
@@ -113,7 +112,13 @@ The native manager unloads the plugin and removes its Git checkout. Commit or sa
 
 [DESIGN.md](DESIGN.md) records the inspected interfaces, security boundary, release gates, and milestones. The QML service consumes a versioned, bounded presentation protocol through the helper bridge. Signed room discovery and recent history are projected in Rust. History is a partial snapshot, with explicit truncation and unavailable-content markers; it does not claim complete edits/deletions or live synchronization. Synthetic rooms are available only in explicit test mode.
 
-Real-relay messaging components and synthetic ACP mention routing have passed on disposable CI; see [recorded evidence](docs/CHECKPOINT.md#isolated-relay-progress-2026-09-26). Release gates still include full daemon/UI real-relay coverage, real agent validation, and bounded upstream WebSocket buffering. Next in M2 are profile classification and local unread accounting. vPerps-specific behavior remains in downstream configuration and separate integrations.
+Real-relay messaging components and synthetic ACP mention routing have passed on disposable CI; see [recorded evidence](docs/CHECKPOINT.md#isolated-relay-progress-2026-09-26). Release gates still include full daemon/UI real-relay coverage, real agent validation, and bounded upstream WebSocket buffering. Local observed activity and self-described agent profiles are implemented; neither proves synchronized unread state or agent execution. vPerps-specific behavior remains in downstream configuration and separate integrations.
+
+Upstream review artifacts are ready for the [WebSocket resource limits](docs/upstream/WS_RESOURCE_LIMITS.md)
+and [ACP authentication correction](docs/upstream/ACP_TERMINAL_AUTH.md).
+They are isolated proposals, not installed dependency patches. Subscription support
+is a first-class requirement; the [authentication matrix](docs/AGENT_AUTH_COMPATIBILITY.md)
+separates native product support from actual ACP verification.
 
 ## License
 

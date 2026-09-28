@@ -1,17 +1,18 @@
 # Development checkpoint — 2026-09-28
 
-Current source version: **0.0.4 messaging development preview**, not a community release.
+Current source version: **0.0.5 messaging development preview**, not a community release.
 Implemented: source-grounded design; native hosted/custom setup; Rust daemon and
 QML bridge; Secret Service identity enrollment; bounded local IPC and systemd
 units; exact-ID connection freshness; signed room discovery; conservative recent
 history snapshots; plain-text sends with durable metadata-only delivery tracking;
-and exact public-key mentions selected from a verified room roster. Optional
-self-asserted names never establish agent classification or authority.
+and exact public-key mentions selected from a verified room roster. Optional self-asserted names never establish authority. Signed kind-10100
+profiles identify only self-described agents with unknown execution state.
 
-Selected-room history now refreshes automatically through bounded validated
-snapshots. Opt-in, content-free native alerts are session-local and best-effort.
-Unread counts, verified human/agent badges, full live synchronization, ACP
-execution and approvals remain unfinished. A separate human identity is enrolled
+Selected-room history refreshes automatically; bounded background polling
+provides local activity badges across the shown joined rooms. Content-free
+notifications are opt-in with a saved preference. Counts are session-only
+observations, not synchronized unread state. Full live synchronization, ACP
+execution and authoritative approvals remain unfinished. A separate human identity is enrolled
 on the operator's self-hosted relay; the operator confirmed cross-client sending.
 Hosted setup uses the official buzz.xyz handoff; connecting the community URL
 and existing identity remains manual. Self-hosted relays use the same adapter.
@@ -44,10 +45,11 @@ A verified local ARM64 development archive and checksum manifest are saved in
 `artifacts/local-20260926-checked/` (ignored by Git). The archive is 7.7 MB and
 matches the installed binary. It includes a 252-package dependency notice
 inventory, with 19 review flags and no compliance or public-release claim.
-Five cached packages lack notice text. An exact-commit nostr notice and its
-verified provenance are separately saved under ignored
-`artifacts/supplemental-notices/`; it has not yet been integrated into the
-archive inventory. Four Bitcoin packages lack exact source revision metadata,
+Five cached packages lack notice text in that archive. An exact-commit nostr
+notice and its pinned provenance are now tracked under `docs/evidence/notices/`;
+the generator can include them explicitly with `--supplemental`, while retaining
+a review flag. The existing archive predates that option and was not rebuilt.
+Four Bitcoin packages lack exact source revision metadata,
 so their notice provenance remains unresolved. See
 [DEPENDENCY_NOTICES.md](DEPENDENCY_NOTICES.md).
 Public publication and authenticated production-relay work remain deferred.
@@ -495,3 +497,39 @@ dependency-notice/provenance review and broader desktop compatibility checks.
 Current local activity is deliberately sampled, session-only and distinct from
 Buzz synchronized unread state. Native messaging and the generic vPerps desktop
 consumption path are operational without a fork. GitHub workflows stay manual.
+
+## Upstream readiness work, 2026-09-28
+
+Refreshed official Buzz refs to `ebe99a46e8802b9ff20fdf6a1028ce93bdefaa43`.
+Client/ACP/managed-agent paths are unchanged; installed production pin remains
+781d395. Prepared `docs/upstream/ws-resource-limits.patch` with an isolated
+locked harness and source-hash-checked staging tool. All 21 client/consumer tests pass
+from both the development staging tree and reconstructed patch. No upstream
+checkout, installed binary, relay, identity or production conversation changed.
+The contribution is ready for upstream review but has not been submitted; a
+local patch is not treated as closing the release gate.
+
+`AGENT_AUTH_COMPATIBILITY.md` records provider subscription support separately
+from ACP verification. Actual adapters are absent from the inspected PATH.
+Found an additional upstream terminal-auth mismatch: Buzz advertises terminal
+auth capability but its authenticate subcommand does not implement that flow.
+Account login and paid runs remain deferred; no provider credentials inspected.
+
+Supplemental notice tooling now preserves exact pinned nostr license evidence,
+checks hashes/locked package provenance and retains explicit review flags.
+The inventory still has 19 flagged packages, including four Bitcoin packages
+without full notice text; source SPDX headers are evidence, not legal clearance.
+No public release, issue/PR posting or automatic GitHub workflow was performed.
+
+Added a second upstream proposal correcting unsupported ACP terminal-auth
+advertising. Review against the official draft preserves its legacy default:
+absent method type means agent-driven authentication; explicit terminal/unknown
+or malformed types are rejected until implemented. Two tests compile the exact
+pure policy/capability functions extracted from the staged patch. The full ACP
+harness and real subscription flows are not certified by those tests.
+
+The WebSocket contribution now includes the actual upstream test-client's
+exhaustive error mapping and its tests: 21 pass, including 5 consumer tests.
+Both proposals have reproducible locked staging harnesses; no installed pin
+change or public submission occurred. Notice/package tool tests and upstream
+pin-tool self-tests pass. All GitHub workflow jobs remain manual-only.

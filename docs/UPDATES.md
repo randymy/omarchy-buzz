@@ -11,8 +11,7 @@ The GitHub workflow is currently manual-only to reduce development notifications
 Its daily 09:17 UTC schedule is paused by user request. A manual run reports the current pin and
 upstream default-branch HEAD in its job summary. When they differ, it prepares
 a draft dependency-update PR. Manual dispatch can disable candidate preparation
-and perform only the check. Schedules run on the repository's default branch;
-this automation starts after the workflow is merged and enabled there.
+and perform only the check. Scheduled execution will remain disabled unless explicitly re-enabled.
 
 Candidate preparation changes only `buzz-sdk` and `buzz-ws-client` revisions,
 `compatibility::BUZZ_REVISION`, and the resolved Cargo.lock. Historical design
@@ -86,4 +85,4 @@ The disposable real-relay runner additionally checks its inspected schema/startu
 revision. A dependency-update candidate that changes Buzz must review and update
 that runner baseline before running real conformance; source compilation alone
 cannot certify changed relay behavior. The manual conformance workflow is not
-automatically included in the daily dependency candidate's pass result.
+automatically included in the dependency candidate's pass result.
