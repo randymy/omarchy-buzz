@@ -14,13 +14,15 @@ are explicit upstream capabilities, but conflict with this project's requirement
 that relay signing stay outside agent processes and the QML interface.
 
 The proposal adds Linux `--private-key-fd <number>`. The parent supplies one
-inherited read-only pipe containing a key, closes the write end, and passes only
+inherited read-only anonymous pipe containing a key, closes the write end, and passes only
 the descriptor number in argv. The harness accepts at most 128 bytes and requires
 EOF within three seconds. It rejects stdio descriptors, invalid descriptors,
 non-pipes, write ends, malformed keys and oversized/stalled input. It sets
 close-on-exec/nonblocking flags, consumes/closes the descriptor, zeroizes its
 input buffer, and reports fixed error categories without echoing key material.
-Non-Linux use fails as unsupported. The caller must own the descriptor and not
+The Linux implementation uses `/proc/self/fdinfo` and `/proc/self/fd` with
+safe standard-library/nix APIs; it requires a normal procfs mount. Named FIFOs
+are rejected. Non-Linux use fails as unsupported. The caller must own the descriptor and not
 reuse/close it concurrently or pass duplicate copies into children.
 
 FD input conflicts with legacy argv/environment key input, including the legacy

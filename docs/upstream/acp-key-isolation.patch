@@ -1,3 +1,16 @@
+diff --git a/crates/buzz-acp/Cargo.toml b/crates/buzz-acp/Cargo.toml
+index 4333341..c86fc92 100644
+--- a/crates/buzz-acp/Cargo.toml
++++ b/crates/buzz-acp/Cargo.toml
+@@ -80,7 +80,7 @@ evalexpr = { workspace = true }
+ # Process-group kill (safe wrapper around killpg) — Unix-only; kill_process_group
+ # has a #[cfg(not(unix))] fallback in acp.rs.
+ [target.'cfg(unix)'.dependencies]
+-nix = { version = "0.31", default-features = false, features = ["signal", "user", "term"] }
++nix = { version = "0.31", default-features = false, features = ["signal", "user", "term", "poll"] }
+ 
+ [dev-dependencies]
+ axum = { workspace = true }
 diff --git a/crates/buzz-acp/src/acp.rs b/crates/buzz-acp/src/acp.rs
 index 2feb217..be4e083 100644
 --- a/crates/buzz-acp/src/acp.rs
@@ -261,65 +274,89 @@ index a31e3f2..95c1479 100644
      {
 diff --git a/crates/buzz-acp/src/key_input.rs b/crates/buzz-acp/src/key_input.rs
 new file mode 100644
-index 0000000..cae632a
+index 0000000..a3c3365
 --- /dev/null
 +++ b/crates/buzz-acp/src/key_input.rs
-@@ -0,0 +1,196 @@
+@@ -0,0 +1,206 @@
 +//! Bounded, one-shot relay key input from an inherited Linux pipe.
 +
 +#[cfg(target_os = "linux")]
 +mod linux {
++    use nix::errno::Errno;
 +    use nix::libc;
++    use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
 +    use nostr::Keys;
-+    use std::os::fd::{FromRawFd, OwnedFd};
++    use std::fs::{self, File, OpenOptions};
++    use std::io::Read;
++    use std::os::fd::{AsFd, IntoRawFd, OwnedFd};
++    use std::os::unix::fs::{FileTypeExt, OpenOptionsExt};
 +    use std::time::{Duration, Instant};
 +    use zeroize::Zeroizing;
 +
 +    const MAX_KEY_BYTES: usize = 128;
 +    const INPUT_DEADLINE: Duration = Duration::from_secs(3);
 +
-+    /// Consume a pipe descriptor. The descriptor is closed on success and on error.
++    // The caller transfers exclusive ownership of a raw descriptor. Keep the
++    // original closed on every path, including failures before opening a File.
++    struct CloseOriginal(Option<i32>);
++
++    impl Drop for CloseOriginal {
++        fn drop(&mut self) {
++            if let Some(fd) = self.0.take() {
++                let _ = nix::unistd::close(fd);
++            }
++        }
++    }
++
++    /// Consume a Linux anonymous pipe descriptor. It is closed on every exit.
 +    pub(crate) fn read_private_key(fd: i32) -> Result<Keys, &'static str> {
 +        read_with_deadline(fd, INPUT_DEADLINE)
 +    }
 +
 +    fn read_with_deadline(fd: i32, limit: Duration) -> Result<Keys, &'static str> {
-+        // Never take ownership of stdin, stdout or stderr, even on an invalid call.
++        // Never close stdin, stdout or stderr even if a caller passes one.
 +        if fd < 3 {
 +            return Err("private_key_fd_invalid");
 +        }
-+        // Do not construct OwnedFd for an invalid number: its destructor
-+        // assumes it owns an open descriptor. The caller must give us
-+        // exclusive ownership of a valid fd until this function consumes it.
-+        let descriptor_flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
-+        if descriptor_flags < 0 {
-+            return Err("private_key_fd_invalid");
-+        }
-+        // SAFETY: ownership of this caller-provided descriptor is the API contract.
-+        let _owned = unsafe { OwnedFd::from_raw_fd(fd) };
-+        let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
-+        // SAFETY: stat points to writable storage and fd stays owned above.
-+        if unsafe { libc::fstat(fd, stat.as_mut_ptr()) } != 0 {
-+            return Err("private_key_fd_invalid");
-+        }
-+        // SAFETY: successful fstat initialized stat.
-+        let stat = unsafe { stat.assume_init() };
-+        if stat.st_mode & libc::S_IFMT != libc::S_IFIFO {
++        let original = CloseOriginal(Some(fd));
++        let path = format!("/proc/self/fd/{fd}");
++        let target = fs::read_link(&path).map_err(|_| "private_key_fd_invalid")?;
++        if !target.to_string_lossy().starts_with("pipe:[") {
 +            return Err("private_key_fd_not_pipe");
 +        }
-+        // SAFETY: fcntl operates on the owned descriptor; flags are plain integers.
-+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
-+        if flags < 0 || flags & libc::O_ACCMODE != libc::O_RDONLY {
-+            return Err("private_key_fd_not_read_end");
-+        }
-+        // Mark the consumed descriptor close-on-exec immediately, even if the
-+        // caller failed to set it before handoff. Nonblocking reads keep the
-+        // deadline effective when the writer stalls without closing the pipe.
-+        if unsafe { libc::fcntl(fd, libc::F_SETFD, descriptor_flags | libc::FD_CLOEXEC) } < 0
-+            || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0
-+        {
++        let mut info = String::new();
++        File::open(format!("/proc/self/fdinfo/{fd}"))
++            .map_err(|_| "private_key_fd_invalid")?
++            .take(4097)
++            .read_to_string(&mut info)
++            .map_err(|_| "private_key_fd_invalid")?;
++        if info.len() > 4096 {
 +            return Err("private_key_fd_invalid");
 +        }
++        let flags = info
++            .lines()
++            .find_map(|line| line.strip_prefix("flags:").map(str::trim))
++            .and_then(|value| i32::from_str_radix(value, 8).ok())
++            .ok_or("private_key_fd_invalid")?;
++        if flags & libc::O_ACCMODE != libc::O_RDONLY {
++            return Err("private_key_fd_not_read_end");
++        }
++        // Opening the proc descriptor produces a new owned File. O_NONBLOCK
++        // makes the deadline effective when the pipe writer stalls.
++        let mut input_file = OpenOptions::new()
++            .read(true)
++            .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC)
++            .open(&path)
++            .map_err(|_| "private_key_fd_invalid")?;
++        if !input_file
++            .metadata()
++            .map_err(|_| "private_key_fd_invalid")?
++            .file_type()
++            .is_fifo()
++        {
++            return Err("private_key_fd_not_pipe");
++        }
++        drop(original);
 +
 +        let deadline = Instant::now() + limit;
 +        let mut input = Zeroizing::new([0u8; MAX_KEY_BYTES + 1]);
@@ -330,48 +367,38 @@ index 0000000..cae632a
 +            }
 +            let remaining = deadline.saturating_duration_since(Instant::now());
 +            let timeout_ms = remaining.as_millis().clamp(1, i32::MAX as u128) as i32;
-+            let mut pollfd = libc::pollfd {
-+                fd,
-+                events: libc::POLLIN | libc::POLLHUP,
-+                revents: 0,
-+            };
-+            // SAFETY: pollfd is initialized and remains valid for this call.
-+            let ready = unsafe { libc::poll(&mut pollfd, 1, timeout_ms) };
-+            if ready < 0 {
-+                if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
-+                    continue;
-+                }
-+                return Err("private_key_fd_read_failed");
++            let mut fds = [PollFd::new(
++                input_file.as_fd(),
++                PollFlags::POLLIN | PollFlags::POLLHUP,
++            )];
++            let timeout =
++                PollTimeout::try_from(timeout_ms).map_err(|_| "private_key_fd_read_failed")?;
++            match poll(&mut fds, timeout) {
++                Ok(0) => return Err("private_key_fd_timeout"),
++                Ok(_) => {}
++                Err(Errno::EINTR) => continue,
++                Err(_) => return Err("private_key_fd_read_failed"),
 +            }
-+            if ready == 0 {
-+                return Err("private_key_fd_timeout");
-+            }
-+            if pollfd.revents & (libc::POLLERR | libc::POLLNVAL) != 0 {
++            let events = fds[0].revents().ok_or("private_key_fd_read_failed")?;
++            if events.intersects(PollFlags::POLLERR | PollFlags::POLLNVAL) {
 +                return Err("private_key_fd_read_failed");
 +            }
 +            // The extra byte distinguishes a full 128-byte input from overflow.
-+            // SAFETY: the destination slice is valid and its length is bounded.
-+            let count = unsafe {
-+                libc::read(
-+                    fd,
-+                    input[length..].as_mut_ptr().cast(),
-+                    input.len() - length,
-+                )
-+            };
-+            if count == 0 {
-+                let text = std::str::from_utf8(&input[..length])
-+                    .map_err(|_| "private_key_fd_invalid_key")?;
-+                return Keys::parse(text.trim()).map_err(|_| "private_key_fd_invalid_key");
-+            }
-+            if count < 0 {
-+                match std::io::Error::last_os_error().kind() {
-+                    std::io::ErrorKind::Interrupted | std::io::ErrorKind::WouldBlock => continue,
-+                    _ => return Err("private_key_fd_read_failed"),
++            match input_file.read(&mut input[length..]) {
++                Ok(0) => {
++                    let text = std::str::from_utf8(&input[..length])
++                        .map_err(|_| "private_key_fd_invalid_key")?;
++                    return Keys::parse(text.trim()).map_err(|_| "private_key_fd_invalid_key");
 +                }
-+            }
-+            length += count as usize;
-+            if length > MAX_KEY_BYTES {
-+                return Err("private_key_fd_too_large");
++                Ok(count) => {
++                    length += count;
++                    if length > MAX_KEY_BYTES {
++                        return Err("private_key_fd_too_large");
++                    }
++                }
++                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
++                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => continue,
++                Err(_) => return Err("private_key_fd_read_failed"),
 +            }
 +        }
 +    }
@@ -380,18 +407,14 @@ index 0000000..cae632a
 +    mod tests {
 +        use super::*;
 +        use std::io::Write;
-+        use std::os::fd::{AsRawFd, IntoRawFd};
++        use std::os::fd::AsRawFd;
 +
 +        fn pipe() -> (OwnedFd, OwnedFd) {
-+            let mut fds = [-1; 2];
-+            // SAFETY: fds has two writable integer slots.
-+            assert_eq!(unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) }, 0);
-+            // SAFETY: pipe2 returned two fresh descriptors.
-+            unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) }
++            nix::unistd::pipe().unwrap()
 +        }
 +
 +        fn send(writer: OwnedFd, bytes: &[u8]) {
-+            let mut file = std::fs::File::from(writer);
++            let mut file = File::from(writer);
 +            file.write_all(bytes).unwrap();
 +        }
 +
