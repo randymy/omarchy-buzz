@@ -107,3 +107,9 @@ and its behavior with a stored API-key login, provider overrides or an expired
 subscription. Test rejection before a paid task. Do not treat the field's
 presence, successful ChatGPT login or informational auth status as proof of the
 effective payer. No native account/configuration was inspected during this check.
+
+
+Follow-up: the [pinned native source assessment and offline conformance](CODEX_SUBSCRIPTION_ENFORCEMENT.md)
+now establish startup API-login rejection. Thread-level `CODEX_CONFIG` is too
+late to set the shared native login policy. Provider/endpoint constraints and
+real Pro-account verification remain separate gates.

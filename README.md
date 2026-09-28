@@ -2,7 +2,7 @@
 
 A community-first, native Omarchy surface for collaboration with people and AI agents through [Block's Buzz](https://github.com/block/buzz).
 
-**Status: messaging development preview (`0.0.5`), not yet a community release.** The native bar and panel provide authenticated room discovery, recent messages, plain-text sending, and exact public-key mentions. Local activity badges cover the monitored joined rooms. A verified signed profile can identify a participant as a *self-described agent*; execution state remains unknown. Production UI never displays synthetic activity.
+**Status: messaging development preview (`0.0.6`), not yet a community release.** The native bar and panel provide authenticated room discovery, recent messages, plain-text sending, and exact public-key mentions. Local activity badges cover the monitored joined rooms. A verified signed profile can identify a participant as a *self-described agent*; execution state remains unknown. Production UI never displays synthetic activity.
 
 Selected-room history refreshes about five seconds after a request finishes. A separate bounded worker checks other rooms in rotation, one every five seconds after completion, up to the catalog's 20-room limit. Slow requests and catalog refreshes increase that interval. Badges count newly observed messages since the local baseline, **not Buzz-synchronized unread messages**. Opening a room's snapshot clears its local badge. Counts are session-only and reset on gaps, failures, or reconnects; missed activity is possible.
 
@@ -115,10 +115,13 @@ The native manager unloads the plugin and removes its Git checkout. Commit or sa
 Real-relay messaging components and synthetic ACP mention routing have passed on disposable CI; see [recorded evidence](docs/CHECKPOINT.md#isolated-relay-progress-2026-09-26). Release gates still include full daemon/UI real-relay coverage, real agent validation, and bounded upstream WebSocket buffering. Local observed activity and self-described agent profiles are implemented; neither proves synchronized unread state or agent execution. vPerps-specific behavior remains in downstream configuration and separate integrations.
 
 Upstream review artifacts are ready for the [WebSocket resource limits](docs/upstream/WS_RESOURCE_LIMITS.md)
-and [ACP authentication correction](docs/upstream/ACP_TERMINAL_AUTH.md).
+and [ACP interactive authentication](docs/upstream/ACP_INTERACTIVE_LOGIN.md).
 They are isolated proposals, not installed dependency patches. Subscription support
 is a first-class requirement; the [authentication matrix](docs/AGENT_AUTH_COMPATIBILITY.md)
-separates native product support from actual ACP verification.
+separates native product support from actual ACP verification. The current
+[checkpoint](docs/CHECKPOINT.md) tracks harness-owned replies, tool-request denial,
+and membership-bound publication proposals. [Codex subscription enforcement](docs/CODEX_SUBSCRIPTION_ENFORCEMENT.md)
+distinguishes startup login restrictions from actual Pro-account and billing verification.
 
 ## License
 

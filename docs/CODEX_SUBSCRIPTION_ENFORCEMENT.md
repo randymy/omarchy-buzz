@@ -81,3 +81,15 @@ The account-free check can establish API-login rejection and routing guard
 behavior. Only a separately authorized real-account check could establish
 ChatGPT login, Pro entitlement, and the effective billing path; none was done
 for this assessment.
+
+
+## Offline native result
+
+[Run 36492581585](https://github.com/randymy/omarchy-buzz/actions/runs/36492581585)
+passed with the actual package and binary both verified as Codex 0.158.0, Node
+22.23.3, an empty profile and an isolated network namespace. The native app-server
+rejected synthetic API login with `-32600` under the startup ChatGPT policy.
+No thread or model task was started. Four synthetic probe-boundary tests also
+passed. See [evidence](evidence/acp-policy-subscription-36492581585.json).
+This closes the narrow startup API-login rejection check, not provider routing,
+real Pro login/entitlement, or per-turn billing verification.

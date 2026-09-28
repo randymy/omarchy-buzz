@@ -709,3 +709,31 @@ No installed plugin, production relay or account changed. Pro real-login, payer
 control, tool policy, the open-room membership fence and full isolated
 prompt-to-room acceptance remain outstanding. The preferred membership fix needs
 relay-side atomic enforcement; a preflight query alone is insufficient.
+
+## Permission denial, membership fence and subscription startup (2026-09-28)
+
+Two focused source reviewers helped prepare the next proposals. Changes are
+saved at `d86847d` and remain unsubmitted/uninstalled:
+
+- [ACP deny policy](upstream/ACP_DENY_TOOL_REQUESTS.md): explicit request rejection,
+  propagation through all launch/recovery paths, advertised mode and returned
+  mode confirmation. Codex uses `read-only`; `default` is not in its mode catalog.
+- [Member-bound replies](upstream/MEMBER_BOUND_EVENTS.md): proposed endpoint with
+  a database membership lock shared with removal, exact-route NIP-98 and no
+  fallback to ordinary publication. Source review found no lock-order blocker.
+- [Codex startup policy](CODEX_SUBSCRIPTION_ENFORCEMENT.md): native 0.158.0 policy
+  belongs at app-server startup, not thread CODEX_CONFIG. Added an offline native
+  artifact test rejecting a synthetic API login without starting any model task.
+
+Initial permission run `36491742128` built the executable but caught a fixture
+attempt to clone upstream's non-Clone Config. Fixed the fixture without changing
+production Config. [ACP/native run 36492581585](https://github.com/randymy/omarchy-buzz/actions/runs/36492581585)
+passed in 3m53s: full ACP build, 995-test target compilation, four denial/mode
+tests, 14 reply tests, prior key/auth regressions, four real-adapter discovery
+cases, and actual native Codex 0.158.0 rejecting synthetic API login under a
+startup ChatGPT restriction. No real account or model task was used. See
+[evidence](evidence/acp-policy-subscription-36492581585.json). Provider routing,
+real Pro entitlement and effective task billing remain unverified.
+Postgres/relay membership run `36492581271` is still pending. Four new Python probe tests
+and five existing discovery tests pass locally. Complete seven-patch application
+passes in a disposable source subset. No account or installed component changed.

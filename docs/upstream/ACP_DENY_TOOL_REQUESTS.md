@@ -31,3 +31,9 @@ synthetic stdio peers, including offered allow choices, absent rejection choices
 malformed options and colliding option IDs; runtime tests check policy propagation
 and rejection of bypass mode. No real agent, account, shell tool action or relay
 is used by those tests. Full pinned-adapter execution isolation remains a gate.
+
+
+[Manual run 36492581585](https://github.com/randymy/omarchy-buzz/actions/runs/36492581585)
+passed the full ACP build and four new denial/mode-confirmation tests, with earlier
+reply, key and authentication regressions passing. The 995-test unit target
+compiled; only targeted tests ran. See [evidence](../evidence/acp-policy-subscription-36492581585.json).
