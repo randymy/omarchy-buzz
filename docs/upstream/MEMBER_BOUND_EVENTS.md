@@ -29,4 +29,11 @@ Manual CI compiles the real relay/ACP and their test targets. Disposable
 Postgres/Redis fixtures test open-room nonmembers, active/removed membership,
 tenant isolation, duplicates after removal, removal-held-lock ordering, and the
 actual router's authentication/kind/member checks. A client fixture proves an
-older relay's ordinary endpoint is never used as fallback. Results pending.
+older relay's ordinary endpoint is never used as fallback.
+
+[Manual run 36493588467](https://github.com/randymy/omarchy-buzz/actions/runs/36493588467)
+passed the complete relay/ACP build, two database tests, the actual router test
+and the transport test (eight cases). See [evidence](../evidence/member-bound-36493588467.json).
+The complete unit suites were compiled but not run. This validates the proposed
+endpoint in disposable Postgres/Redis fixtures, not deployment or a complete
+prompt-to-room lifecycle. The first run caught missing test imports, now corrected.

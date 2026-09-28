@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-09-28",
+  "runId": 36493588467,
+  "runUrl": "https://github.com/randymy/omarchy-buzz/actions/runs/36493588467",
+  "conclusion": "success",
+  "pluginRevision": "f8db0ce46b755ec5347e090e89952df5aab109fe",
+  "upstreamBase": "781d39510cf23cfe224e8f521ae06a23377e06de",
+  "runner": "ubuntu-24.04 Linux x86_64",
+  "toolchain": "1.95.0",
+  "completeRelayAndAcpBuilt": true,
+  "compiledUnitTestTargets": {
+    "buzz-db": 428,
+    "buzz-relay": 1335,
+    "buzz-acp": 995
+  },
+  "fullUnitSuitesRun": false,
+  "testsPassed": {
+    "databaseMembershipAndRemovalOrdering": 2,
+    "actualAuthenticatedRelayEndpoint": 1,
+    "boundedReplyTransport": 1
+  },
+  "transportCases": 8,
+  "productionRelayUsed": false,
+  "realAccountUsed": false,
+  "modelTaskRun": false,
+  "installedPluginChanged": false,
+  "patchSha256": {
+    "ws-resource-limits.patch": "e781a5b984ed3895ddd5ca0f893918f35028753f79b6c0a159d56f88c09bf24c",
+    "acp-permission-mode.patch": "ddf10293ab52bf170fc29e5eb928c0f40b9acf319d8cb9442855f34db5fbc83a",
+    "acp-interactive-login.patch": "a92de4a9b0d27a1ecd368371c7ca1ca37c43bb9b724a20e18962892536c4d8c5",
+    "acp-key-isolation.patch": "224bcda5bec0dd5f993d4a6b01b9597e999699c62b61ad3b8e18f366fc2a4d6c",
+    "acp-harness-replies.patch": "182662141dfde29bf1e116b66ec3bee09aa17129de914c93614dea0e87179d26",
+    "acp-deny-tool-requests.patch": "acb1a4e0db90bc866c7eb952c818c0d854a4ac598b47b7eb33dd053b554e0d38",
+    "member-bound-events.patch": "67e602d45904a22c2293275fded43e111a8d64ed640d515b9a806433d38a6154"
+  },
+  "limits": [
+    "Unsubmitted proposed endpoint; not available on deployed relays",
+    "Membership lock orders member changes, not channel deletion or all authority changes",
+    "No complete prompt-to-room lifecycle tested",
+    "No real Pro entitlement or per-turn billing tested"
+  ],
+  "priorAttempt": {
+    "runId": 36492581271,
+    "result": "Database tests passed; HTTP test fixture imports corrected after compilation failure"
+  }
+}

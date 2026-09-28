@@ -67,3 +67,14 @@ and key-boundary tests remain in the manual workflow. No automatic triggers.
 passed all targeted checks at `50977e68be423cec8d1d6edd96e8fbf69fddc651`.
 See [sanitized evidence](../evidence/acp-harness-replies-36490384302.json) for exact
 counts, patch digests and remaining unverified boundaries.
+
+## Follow-up conformance
+
+The sixth [deny-policy proposal](ACP_DENY_TOOL_REQUESTS.md) rejects ACP permission
+requests and confirms the requested mode; it is not an execution sandbox. The
+seventh [member-bound proposal](MEMBER_BOUND_EVENTS.md) replaces `/events` with a
+dedicated authenticated endpoint and shares the database lock used by membership
+removal. Its real router/database checks pass in [run 36493588467](https://github.com/randymy/omarchy-buzz/actions/runs/36493588467).
+This addresses the removal race in the combined prototype. The fifth patch alone
+and currently deployed relays do not gain that guarantee. All proposals remain
+unsubmitted/uninstalled; complete prompt-to-room acceptance remains outstanding.

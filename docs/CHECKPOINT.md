@@ -734,6 +734,15 @@ cases, and actual native Codex 0.158.0 rejecting synthetic API login under a
 startup ChatGPT restriction. No real account or model task was used. See
 [evidence](evidence/acp-policy-subscription-36492581585.json). Provider routing,
 real Pro entitlement and effective task billing remain unverified.
-Postgres/relay membership run `36492581271` is still pending. Four new Python probe tests
-and five existing discovery tests pass locally. Complete seven-patch application
-passes in a disposable source subset. No account or installed component changed.
+Postgres/relay run `36492581271` passed both database tests but caught missing
+imports in the HTTP test fixture. Corrected run [36493588467](https://github.com/randymy/omarchy-buzz/actions/runs/36493588467)
+at `f8db0ce46b755ec5347e090e89952df5aab109fe` passed: full relay/ACP builds,
+two database membership/removal tests, one actual HTTP router test and one
+transport test containing eight cases. The full unit suites were not run. See
+[evidence](evidence/member-bound-36493588467.json). The endpoint is still an
+unsubmitted proposal, unavailable on deployed relays. Four new Python probe
+tests and five discovery tests pass locally. No account or installed component changed.
+
+Next: constrain subscription provider routing and validate the complete synthetic
+prompt-to-room lifecycle before any real Pro task. Codex and Claude are the
+first supported-agent targets, Goose next; these are goals, not certified integrations.

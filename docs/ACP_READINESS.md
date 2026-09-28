@@ -251,3 +251,16 @@ outcomes. It is opt-in, unsubmitted and uninstalled. Independent review identifi
 a membership-removal race for open rooms; resolving that is a release gate.
 Pro subscription acceptance still requires actual provider login and verified
 billing behavior. Synthetic reply tests do not close either requirement.
+
+## Permission, membership and subscription conformance
+
+The six-patch ACP prototype now passes permission rejection and read-only mode
+confirmation tests. Native Codex 0.158.0 rejects a synthetic API login under a
+startup ChatGPT-only policy in an offline namespace; no real account or model
+turn was used. [Evidence](evidence/acp-policy-subscription-36492581585.json).
+
+The seventh proposal passes real relay/database membership checks, including
+removal ordering, exact-route authentication and no legacy-publication fallback.
+[Evidence](evidence/member-bound-36493588467.json). These are unsubmitted upstream
+proposals, not installed features. Provider routing, real Pro entitlement,
+effective billing and complete prompt-to-room acceptance remain open.
