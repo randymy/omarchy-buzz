@@ -201,21 +201,47 @@ index 28b0c78..0dac1d7 100644
          AcpClient::spawn("bash", &["-c".into(), script.into()], &[], false)
              .await
 diff --git a/crates/buzz-acp/src/config.rs b/crates/buzz-acp/src/config.rs
-index 340b7c7..99d2f1e 100644
+index 340b7c7..8ab5127 100644
 --- a/crates/buzz-acp/src/config.rs
 +++ b/crates/buzz-acp/src/config.rs
-@@ -492,6 +492,10 @@ pub struct CliArgs {
+@@ -124,6 +124,8 @@ pub enum PermissionMode {
+     /// Agent default — permission requests per tool call.
+     #[value(alias = "default")]
+     Default,
++    /// Codex ACP read-only sandbox preset. Requires adapter support.
++    ReadOnly,
+     /// Auto mode — fully autonomous execution; model-gated (requires a model
+     /// that supports `supportsAutoMode`).  Degrades gracefully to `default`
+     /// when the session's active model does not support it.
+@@ -144,11 +146,16 @@ pub enum PermissionMode {
+ }
+ 
+ impl PermissionMode {
++    pub(crate) fn permits_deny_tool_requests(&self) -> bool {
++        matches!(self, Self::Default | Self::Plan | Self::ReadOnly)
++    }
++
+     /// Return the wire-format string sent to the agent via
+     /// `session/set_config_option`.
+     pub fn as_wire_str(&self) -> &'static str {
+         match self {
+             Self::Default => "default",
++            Self::ReadOnly => "read-only",
+             Self::Auto => "auto",
+             Self::AcceptEdits => "acceptEdits",
+             Self::BypassPermissions => "bypassPermissions",
+@@ -492,6 +499,10 @@ pub struct CliArgs {
      )]
      pub permission_mode: PermissionMode,
  
-+    /// Reject every ACP tool permission request. Requires explicit default mode.
++    /// Reject every ACP tool permission request. Requires default, plan or read-only mode.
 +    #[arg(long)]
 +    pub deny_tool_requests: bool,
 +
      /// Inbound author gate: which authors' events the harness forwards.
      /// Modes: owner-only (default), allowlist, anyone, nobody.
      #[arg(
-@@ -614,6 +618,7 @@ pub struct Config {
+@@ -614,6 +625,7 @@ pub struct Config {
      pub session_title: Option<String>,
      /// Permission mode to apply after session creation. `Default` = skip.
      pub permission_mode: PermissionMode,
@@ -223,19 +249,19 @@ index 340b7c7..99d2f1e 100644
      /// Inbound author gate mode.
      pub respond_to: RespondTo,
      /// Validated allowlist of pubkey hex strings (used when respond_to == Allowlist).
-@@ -974,6 +979,11 @@ impl Config {
+@@ -974,6 +986,11 @@ impl Config {
              args.no_base_prompt = true;
          }
  
-+        if args.deny_tool_requests && !args.permission_mode.is_default() {
++        if args.deny_tool_requests && !args.permission_mode.permits_deny_tool_requests() {
 +            return Err(ConfigError::ConfigFile(
-+                "deny-tool-requests requires --permission-mode default".into(),
++                "deny-tool-requests requires --permission-mode default, plan or read-only".into(),
 +            ));
 +        }
          if args.harness_replies
              && (!isolate_relay_identity
                  || args.session_policy != crate::scope::SessionPolicy::Thread
-@@ -1243,6 +1253,7 @@ impl Config {
+@@ -1243,6 +1260,7 @@ impl Config {
                  .as_deref()
                  .and_then(sanitize_session_title),
              permission_mode: args.permission_mode,
@@ -243,7 +269,7 @@ index 340b7c7..99d2f1e 100644
              respond_to: args.respond_to,
              respond_to_allowlist,
              allowed_respond_to,
-@@ -1619,6 +1630,7 @@ mod tests {
+@@ -1619,6 +1637,7 @@ mod tests {
              effort_level: None,
              session_title: None,
              permission_mode: PermissionMode::BypassPermissions,
@@ -373,7 +399,7 @@ index fe4b639..a453102 100644
              respond_to_allowlist: HashSet::new(),
              allowed_respond_to: vec![],
 diff --git a/crates/buzz-acp/src/pool.rs b/crates/buzz-acp/src/pool.rs
-index 476d2af..6848643 100644
+index 476d2af..7c22411 100644
 --- a/crates/buzz-acp/src/pool.rs
 +++ b/crates/buzz-acp/src/pool.rs
 @@ -841,6 +841,7 @@ pub struct PromptContext {
@@ -384,16 +410,68 @@ index 476d2af..6848643 100644
      /// Agent identity — used to derive the NIP-AE conversation key at
      /// session creation for core injection.
      pub agent_keys: nostr::Keys,
-@@ -1743,7 +1744,7 @@ async fn create_session_and_apply_model(
+@@ -1743,9 +1744,15 @@ async fn create_session_and_apply_model(
      );
  
      // An explicitly requested nondefault mode must not silently degrade.
 -    if !ctx.permission_mode.is_default() {
 +    if ctx.deny_tool_requests || !ctx.permission_mode.is_default() {
          require_permission_mode(&resp.raw, ctx.permission_mode.as_wire_str())?;
-         apply_permission_mode(&mut agent.acp, &resp.session_id, &ctx.permission_mode).await?;
+-        apply_permission_mode(&mut agent.acp, &resp.session_id, &ctx.permission_mode).await?;
++        apply_permission_mode(
++            &mut agent.acp,
++            &resp.session_id,
++            &ctx.permission_mode,
++            ctx.deny_tool_requests,
++        )
++        .await?;
      }
-@@ -10071,6 +10072,7 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
+ 
+     Ok(resp.session_id)
+@@ -2085,6 +2092,7 @@ async fn apply_permission_mode(
+     acp: &mut AcpClient,
+     session_id: &str,
+     mode: &PermissionMode,
++    require_confirmation: bool,
+ ) -> Result<(), AcpError> {
+     let wire = mode.as_wire_str();
+     let result = tokio::time::timeout(PERMISSION_MODE_TIMEOUT, async {
+@@ -2094,7 +2102,33 @@ async fn apply_permission_mode(
+     .await;
+ 
+     match result {
+-        Ok(Ok(_)) => Ok(()),
++        Ok(Ok(response)) => {
++            if require_confirmation {
++                let options = response
++                    .get("configOptions")
++                    .and_then(|value| value.as_array())
++                    .ok_or_else(|| {
++                        AcpError::Protocol("permission mode confirmation missing".into())
++                    })?;
++                let modes: Vec<_> = options
++                    .iter()
++                    .filter(|option| {
++                        option.get("id").and_then(|value| value.as_str()) == Some("mode")
++                    })
++                    .collect();
++                if modes.len() != 1
++                    || modes[0]
++                        .get("currentValue")
++                        .and_then(|value| value.as_str())
++                        != Some(wire)
++                {
++                    return Err(AcpError::Protocol(
++                        "permission mode confirmation mismatch".into(),
++                    ));
++                }
++            }
++            Ok(())
++        }
+         Ok(Err(error)) => Err(error),
+         Err(_) => Err(AcpError::Timeout(PERMISSION_MODE_TIMEOUT)),
+     }
+@@ -10071,6 +10105,7 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
              context_message_limit: 0,
              max_turns_per_session: 0,
              permission_mode: PermissionMode::Default,
@@ -401,8 +479,57 @@ index 476d2af..6848643 100644
              agent_keys: agent_keys.clone(),
              agent_owner_pubkey: owner_pubkey,
              memory_enabled: false,
+@@ -12045,3 +12080,48 @@ done"#
+ #[cfg(all(test, unix))]
+ #[path = "pool/pi_prompt_tests.rs"]
+ mod pi_prompt_tests;
++
++#[cfg(test)]
++mod deny_tool_policy_confirmation_tests {
++    use super::*;
++
++    #[tokio::test]
++    async fn deny_tool_policy_requires_confirmed_read_only_mode_on_wire() {
++        use serde_json::json;
++        for (result, accepted) in [
++            (
++                json!({"configOptions":[{"id":"mode","currentValue":"read-only"}]}),
++                true,
++            ),
++            (json!({}), false),
++            (
++                json!({"configOptions":[{"id":"mode","currentValue":"agent-full-access"}]}),
++                false,
++            ),
++            (
++                json!({"configOptions":[{"id":"mode","currentValue":"read-only"},{"id":"mode","currentValue":"agent"}]}),
++                false,
++            ),
++        ] {
++            let script = r#"
++                IFS= read -r req
++                printf '%s\n' '__RESPONSE__'
++                sleep 1
++            "#
++            .replace(
++                "__RESPONSE__",
++                &json!({"jsonrpc":"2.0","id":0,"result":result}).to_string(),
++            );
++            let mut client = AcpClient::spawn("bash", &["-c".into(), script], &[], false)
++                .await
++                .unwrap();
++            assert_eq!(
++                apply_permission_mode(&mut client, "s", &PermissionMode::ReadOnly, true)
++                    .await
++                    .is_ok(),
++                accepted
++            );
++            client.shutdown().await;
++        }
++    }
++}
 diff --git a/crates/buzz-acp/src/runtime.rs b/crates/buzz-acp/src/runtime.rs
-index d076988..57fa9a5 100644
+index d076988..af97545 100644
 --- a/crates/buzz-acp/src/runtime.rs
 +++ b/crates/buzz-acp/src/runtime.rs
 @@ -32,6 +32,10 @@ impl AgentRuntime {
@@ -410,8 +537,8 @@ index d076988..57fa9a5 100644
              "invalid harness reply configuration"
          );
 +        anyhow::ensure!(
-+            !config.deny_tool_requests || config.permission_mode.is_default(),
-+            "deny-tool-requests requires default permission mode"
++            !config.deny_tool_requests || config.permission_mode.permits_deny_tool_requests(),
++            "deny-tool-requests requires default, plan or read-only permission mode"
 +        );
          let git_environment = if config.isolate_relay_identity {
              anyhow::ensure!(
@@ -440,7 +567,7 @@ index d076988..57fa9a5 100644
          agent_keys: config.keys.clone(),
          agent_owner_pubkey: resolve_agent_owner(config)
              .as_deref()
-@@ -179,3 +186,31 @@ mod key_isolation_tests {
+@@ -179,3 +186,35 @@ mod key_isolation_tests {
          assert!(AgentRuntime::prepare(config).is_err());
      }
  }
@@ -456,18 +583,22 @@ index d076988..57fa9a5 100644
 +        config.isolate_relay_identity = true;
 +        config.deny_tool_requests = true;
 +        config.permission_mode = crate::config::PermissionMode::Default;
-+        let runtime = AgentRuntime::prepare(config.clone()).unwrap();
++        let runtime = AgentRuntime::prepare(config).unwrap();
 +        assert!(runtime.startup(None).deny_tool_requests);
 +        let rest = relay::RestClient {
 +            http: reqwest::Client::new(),
 +            base_url: "http://127.0.0.1:1".into(),
-+            keys: config.keys.clone(),
++            keys: runtime.config.keys.clone(),
 +            auth_tag_json: None,
 +        };
 +        let context = runtime
 +            .prompt_context(rest, HashMap::new(), SessionMode::Conversation)
 +            .unwrap();
 +        assert!(context.deny_tool_requests);
++        let mut config = crate::build_mcp_servers_tests::test_config();
++        config.mcp_command.clear();
++        config.isolate_relay_identity = true;
++        config.deny_tool_requests = true;
 +        config.permission_mode = crate::config::PermissionMode::BypassPermissions;
 +        assert!(AgentRuntime::prepare(config).is_err());
 +    }

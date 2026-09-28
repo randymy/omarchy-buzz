@@ -3,15 +3,19 @@
 Unsubmitted proposal, applied after the five ACP/resource-limit proposals at
 Buzz `781d39510cf23cfe224e8f521ae06a23377e06de`. Not installed or a sandbox.
 
-`--deny-tool-requests --permission-mode default` removes automatic approval for
+`--deny-tool-requests` with an explicitly chosen permission mode removes automatic approval for
 that harness. Each requested permission selects the adapter's unique, valid
 `reject_once` option. If no such option exists, the harness returns the ACP
 `cancelled` outcome. Missing, malformed, duplicate or excessively large option
 sets cannot fall back to an allow choice. Diagnostics contain a static denial
 reason, not request content or proposed commands.
 
-This flag requires an explicit default mode. Session setup must advertise that
-mode and acknowledge the mode-setting request before any prompt is sent. The
+This flag permits `default`, `plan` or `read-only`, and rejects automatic/bypass
+modes. The pinned Codex adapter advertises `read-only`, not `default`, so its
+proposed command uses `--deny-tool-requests --permission-mode read-only`.
+Session setup must advertise the selected mode and return exactly one matching
+`configOptions` mode/currentValue before any prompt is sent. A successful RPC
+without that confirmation is insufficient. The
 policy passes through conversation/task startup and all recovery launches. It
 is enforced again at runtime preparation for callers that bypass CLI parsing.
 Existing launches without the flag retain upstream behavior.
