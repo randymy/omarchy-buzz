@@ -474,3 +474,24 @@ multiroom activity and preference persistence checks pass; notifier calls use a
 fake executable. JS observer tests and package tests pass. Manual-only GitHub
 workflow behavior is unchanged. Preflight reports authenticated and acknowledged
 delivery, with no send in progress.
+
+Installed 0.0.5 from `ed01778` using the native plugin updater, a matching helper
+binary, user-service restart and native shell restart. Installed plugin HEAD
+matches source. Native summon returns `ok`; helper reports authenticated, four
+joined rooms, a history snapshot and four monitored activity entries. No agent
+profile hints are present in the selected room (not fabricated as humans/idle).
+Service is active/running with core dumps disabled. Previous 0.0.4 helper is
+retained at `~/.local/bin/omarchy-buzz.before-0.0.5-20260928`; previous plugin
+implementation is `697495c`. Restore both together with the service stopped if
+rollback is needed. No relay configuration, identity or production message was
+changed for validation.
+
+Remaining boundaries: real ACP/model execution, truthful per-run dashboard,
+stop/cancel and authoritative approvals cannot be completed with the inspected
+upstream interfaces under this project's credential/permission requirements.
+See ACP_READINESS.md for concrete upstream changes and acceptance tests. Public
+community submission also remains gated by upstream WS resource bounds,
+dependency-notice/provenance review and broader desktop compatibility checks.
+Current local activity is deliberately sampled, session-only and distinct from
+Buzz synchronized unread state. Native messaging and the generic vPerps desktop
+consumption path are operational without a fork. GitHub workflows stay manual.
