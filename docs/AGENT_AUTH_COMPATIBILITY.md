@@ -7,7 +7,20 @@ is an explicit per-agent choice between subscription sign-in and usage-based
 API billing, with no automatic change of payer. See
 [ACP_READINESS.md](ACP_READINESS.md#required-subscription-and-usage-based-authentication-workflow).
 
-## Current conclusion
+## Support priorities and current verification
+
+Codex and Claude Code are the first agent targets, with subscription sign-in a
+requirement and API billing an explicit alternative. Goose is next through Buzz
+ACP; other ACP agents require their own compatibility and execution checks.
+
+Pinned Codex/Claude adapter authentication discovery has passed offline. Native
+Codex 0.158.0 also rejected synthetic API login under a startup ChatGPT policy;
+see [current evidence](evidence/acp-policy-subscription-36492581585.json). These
+checks do not establish real subscription login, Pro entitlement, effective
+per-turn billing or safe execution. The original source/path assessment below
+predates those isolated runtime checks.
+
+## Initial source assessment
 
 Both native products support subscription and API-key modes. [Official OpenAI
 Docs](https://learn.chatgpt.com/docs/auth) distinguish ChatGPT sign-in for

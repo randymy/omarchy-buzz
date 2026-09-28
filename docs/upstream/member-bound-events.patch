@@ -359,7 +359,7 @@ index 411c518..93e2c67 100644
                      (
                          "buzz_db_pool_acquire_attempts_total".to_owned(),
 diff --git a/crates/buzz-relay/src/api/bridge.rs b/crates/buzz-relay/src/api/bridge.rs
-index 13437d9..e8b5a51 100644
+index 13437d9..6e3f8ba 100644
 --- a/crates/buzz-relay/src/api/bridge.rs
 +++ b/crates/buzz-relay/src/api/bridge.rs
 @@ -15,11 +15,11 @@ use axum::{
@@ -526,7 +526,16 @@ index 13437d9..e8b5a51 100644
          Ok(result) => {
              let response = Json(serde_json::json!({
                  "event_id": result.event_id,
-@@ -2968,9 +3007,11 @@ mod postgres_tests {
+@@ -2889,6 +2928,8 @@ fn ban_json(b: &buzz_db::moderation::BanRecord) -> Value {
+ #[cfg(test)]
+ mod postgres_tests {
+     use super::*;
++    use buzz_db::channel::{ChannelType, ChannelVisibility};
++    use uuid::Uuid;
+     use nostr::{Alphabet, EventBuilder, Keys, Kind, SingleLetterTag, Tag};
+     use std::sync::Mutex;
+ 
+@@ -2968,9 +3009,11 @@ mod postgres_tests {
  
          // A presence-snapshot query for a concrete author reaches the Redis
          // lookup (an empty author set would short-circuit to an empty snapshot).
@@ -541,7 +550,7 @@ index 13437d9..e8b5a51 100644
  
          let result = synthesize_presence(&pubsub, &relay_keypair, &tenant, &filters).await;
  
-@@ -3512,6 +3553,14 @@ mod postgres_tests {
+@@ -3512,6 +3555,14 @@ mod postgres_tests {
          let url_b = nip98_expected_url("wss://config-host.example", &tenant_b, "/events");
          assert_eq!(url_a, "https://host-a.example/events");
          assert_eq!(url_b, "https://host-b.example/events");
@@ -556,7 +565,7 @@ index 13437d9..e8b5a51 100644
  
          // Same tenant, two different config hosts → output is identical.
          // (If config-host ever leaked into the URL, this assertion would bite.)
-@@ -4279,6 +4328,9 @@ mod postgres_tests {
+@@ -4279,6 +4330,9 @@ mod postgres_tests {
          let pool = sqlx::PgPool::connect(&crate::test_support::database_url())
              .await
              .ok()?;
@@ -566,7 +575,7 @@ index 13437d9..e8b5a51 100644
          let db = buzz_db::Db::from_pool(pool.clone());
          let redis_pool = deadpool_redis::Config::from_url(&config.redis_url)
              .create_pool(Some(deadpool_redis::Runtime::Tokio1))
-@@ -4313,6 +4365,133 @@ mod postgres_tests {
+@@ -4313,6 +4367,133 @@ mod postgres_tests {
          Some(Arc::new(state))
      }
  
@@ -700,7 +709,7 @@ index 13437d9..e8b5a51 100644
      /// Drive a single POST /events request through the router and return the
      /// HTTP status code.
      async fn post_events(
-@@ -4322,7 +4501,7 @@ mod postgres_tests {
+@@ -4322,7 +4503,7 @@ mod postgres_tests {
          body: &[u8],
      ) -> axum::http::StatusCode {
          use axum::body::Body;
@@ -709,7 +718,7 @@ index 13437d9..e8b5a51 100644
          use tower::ServiceExt;
  
          crate::router::build_router(state)
-@@ -4348,7 +4527,7 @@ mod postgres_tests {
+@@ -4348,7 +4529,7 @@ mod postgres_tests {
          body: &[u8],
      ) -> (axum::http::StatusCode, String) {
          use axum::body::Body;
@@ -718,7 +727,7 @@ index 13437d9..e8b5a51 100644
          use tower::ServiceExt;
  
          let resp = crate::router::build_router(state)
-@@ -4414,7 +4593,9 @@ mod postgres_tests {
+@@ -4414,7 +4595,9 @@ mod postgres_tests {
              .expect("current_thread runtime");
  
          let Some(state) = rt.block_on(bridge_handler_test_state()) else {
@@ -729,7 +738,7 @@ index 13437d9..e8b5a51 100644
          };
  
          // Provision a fresh community so bind_community succeeds.
-@@ -4470,7 +4651,9 @@ mod postgres_tests {
+@@ -4470,7 +4653,9 @@ mod postgres_tests {
              .expect("current_thread runtime");
  
          let Some(state) = rt.block_on(bridge_handler_test_state()) else {
@@ -740,7 +749,7 @@ index 13437d9..e8b5a51 100644
          };
  
          let host = {
-@@ -4542,7 +4725,9 @@ mod postgres_tests {
+@@ -4542,7 +4727,9 @@ mod postgres_tests {
              .expect("current_thread runtime");
  
          let Some(state) = rt.block_on(bridge_handler_test_state()) else {
@@ -751,7 +760,7 @@ index 13437d9..e8b5a51 100644
          };
  
          let host = {
-@@ -4635,7 +4820,9 @@ mod postgres_tests {
+@@ -4635,7 +4822,9 @@ mod postgres_tests {
              .expect("current_thread runtime");
  
          let Some(state) = rt.block_on(bridge_handler_test_state()) else {
@@ -762,7 +771,7 @@ index 13437d9..e8b5a51 100644
          };
  
          let (host, channel_id) = rt.block_on(async {
-@@ -5056,7 +5243,7 @@ mod postgres_tests {
+@@ -5056,7 +5245,7 @@ mod postgres_tests {
              AssertionKeySet, FederatedAssertionVerifier, FreshnessClass, IssuerPolicy,
              IssuerRegistry, StaticIssuerKeySource, TokenClass, VerifyAssertion,
          };
@@ -771,7 +780,7 @@ index 13437d9..e8b5a51 100644
  
          let mut state = (*nip_fi_enforce_test_state().await?).clone();
  
-@@ -5315,7 +5502,7 @@ mod postgres_tests {
+@@ -5315,7 +5504,7 @@ mod postgres_tests {
          headers: axum::http::HeaderMap,
          body: &[u8],
      ) -> (axum::http::StatusCode, axum::http::HeaderMap, bytes::Bytes) {
@@ -780,7 +789,7 @@ index 13437d9..e8b5a51 100644
          use axum::http::Request;
          use tower::ServiceExt;
  
-@@ -6463,7 +6650,7 @@ mod postgres_tests {
+@@ -6463,7 +6652,7 @@ mod postgres_tests {
              AssertionKeySet, FederatedAssertionVerifier, FreshnessClass, IssuerPolicy,
              IssuerRegistry, StaticIssuerKeySource, TokenClass, VerifyAssertion,
          };
@@ -789,7 +798,7 @@ index 13437d9..e8b5a51 100644
  
          let rt = tokio::runtime::Builder::new_current_thread()
              .enable_all()
-@@ -6706,7 +6893,7 @@ mod postgres_tests {
+@@ -6706,7 +6895,7 @@ mod postgres_tests {
              AssertionKeySet, FederatedAssertionVerifier, FreshnessClass, IssuerPolicy,
              IssuerRegistry, StaticIssuerKeySource, TokenClass, VerifyAssertion,
          };
@@ -798,7 +807,7 @@ index 13437d9..e8b5a51 100644
  
          let rt = tokio::runtime::Builder::new_current_thread()
              .enable_all()
-@@ -7061,7 +7248,7 @@ mod postgres_tests {
+@@ -7061,7 +7250,7 @@ mod postgres_tests {
          );
  
          let single_resp = rt.block_on(async {
@@ -807,7 +816,7 @@ index 13437d9..e8b5a51 100644
              use tower::ServiceExt;
              let mut builder = axum::http::Request::builder()
                  .method("POST")
-@@ -7313,7 +7500,7 @@ mod postgres_tests {
+@@ -7313,7 +7502,7 @@ mod postgres_tests {
          body: &[u8],
      ) -> (axum::http::StatusCode, axum::body::Bytes) {
          use axum::body::Body;
