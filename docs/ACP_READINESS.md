@@ -108,6 +108,12 @@ supervision, tool approvals and encrypted run telemetry remain unimplemented.
 
 These are proposed upstream contributions, not local patches or filed issues:
 
+- Support an explicit per-agent choice between subscription sign-in and
+  usage-based API billing, through the provider's supported agent/ACP adapter
+  authentication flow. Subscription support for Claude Code and Codex is a
+  first-class product requirement, not an optional API-key-only follow-up.
+  Acceptance and credential boundaries are specified below. This requirement
+  is not a claim that every current adapter supports both modes.
 - Add an explicit credential source (inherited descriptor or external signer)
   to `buzz-acp` and separate relay signing from Git bootstrap. Default agent
   child environments must exclude relay/provider secrets. An opt-in Git bridge
@@ -131,3 +137,43 @@ adding an approval button would bypass the project's stated security boundary.
 The community plugin can still collaborate with independently configured agent
 identities through normal messages; that does not certify those agents' runtime
 permissions or credential handling.
+
+## Required subscription and usage-based authentication workflow
+
+For Claude Code and Codex, users should be able to choose **Subscription sign-in**
+or **Usage-based API billing** when configuring an agent. The integration must
+preserve that explicit choice for each agent. Where the provider and adapter
+support it, reuse the user's existing native signed-in session; otherwise invoke
+the provider's supported browser or terminal login flow. Do not require an API
+key merely because the same agent is being used through Buzz ACP.
+
+This is a required integration outcome, subject to provider entitlements and
+documented adapter support. Verify each mode through the actual ACP adapter;
+successful authentication in a standalone CLI alone is insufficient. If a mode
+is unsupported, show that limitation and track the upstream work rather than
+silently substituting another authentication route.
+
+- Keep account login, token refresh and API credential storage in the native
+  agent/provider mechanism or a dedicated local process. QML may display the
+  selected mode and sanitized authentication status, never passwords, tokens,
+  API keys or credential-store contents. Buzz relay identity remains separate.
+- Subscription expiry, exhausted allowances or rate limits must produce an
+  actionable paused/unavailable state. Never fall back automatically to API
+  billing, another account or another provider. A billing-mode change requires
+  an explicit user action before the next task runs.
+- Show which authentication/billing mode an agent is configured to use, and
+  distinguish configured mode from verified effective mode. Do not promise
+  unlimited subscription usage, display invented balances or infer costs from
+  message counts. Show provider-reported limits only where supported.
+- Mode selection must not alter workspace permissions, tool-approval policy,
+  sandboxing or credential isolation. Subscription login is not authorization
+  for the agent to perform privileged actions.
+
+Before claiming Claude or Codex subscription support, record a compatibility
+matrix for the exact agent, ACP adapter and harness versions. Test subscription
+sign-in/session reuse, usage-based setup, effective-mode confirmation, logout,
+expiry, exhausted allowance, revoked API credentials and explicit mode changes.
+Use mocked authentication for routine conformance; real paid/subscription runs
+need a deliberately authorized limited demo. Confirm that no test or failure
+silently changes the payer or leaks credentials into relay events, QML, logs,
+argv, unrelated child processes or temporary files.
