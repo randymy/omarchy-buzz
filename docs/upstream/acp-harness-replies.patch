@@ -1123,7 +1123,7 @@ index 3586081..476d2af 100644
                  let _ = socket.write_all(response.as_bytes()).await;
              }
 diff --git a/crates/buzz-acp/src/relay.rs b/crates/buzz-acp/src/relay.rs
-index a019e75..e1f8aac 100644
+index a019e75..268fb22 100644
 --- a/crates/buzz-acp/src/relay.rs
 +++ b/crates/buzz-acp/src/relay.rs
 @@ -122,10 +122,10 @@ use buzz_core::kind::{
@@ -1499,7 +1499,7 @@ index a019e75..e1f8aac 100644
 +            let reply = crate::room_reply::Ready {
 +                target: crate::room_reply::Target {
 +                    channel_id: Uuid::new_v4(),
-+                    root_event_id: nostr::EventId::from_hex("01".repeat(32)).unwrap(),
++                    root_event_id: nostr::EventId::from_hex(&"01".repeat(32)).unwrap(),
 +                },
 +                text: "synthetic reply".into(),
 +            };
@@ -1725,7 +1725,7 @@ index 0000000..41c8f07
 +}
 diff --git a/crates/buzz-acp/src/room_reply.rs b/crates/buzz-acp/src/room_reply.rs
 new file mode 100644
-index 0000000..b1ca342
+index 0000000..b261d15
 --- /dev/null
 +++ b/crates/buzz-acp/src/room_reply.rs
 @@ -0,0 +1,237 @@
@@ -1835,7 +1835,7 @@ index 0000000..b1ca342
 +    }
 +
 +    fn root() -> EventId {
-+        EventId::from_hex("ab".repeat(32)).unwrap()
++        EventId::from_hex(&"ab".repeat(32)).unwrap()
 +    }
 +
 +    #[test]

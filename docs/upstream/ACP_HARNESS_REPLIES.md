@@ -31,6 +31,12 @@ reply delivery are separate outcomes.
   changes. Buzz upstream permits nonmember posting to open rooms. Relay acceptance
   does not prove current room membership. Resolve this with an upstream authority
   check/fence or an explicitly narrower supported room policy before release.
+  A preflight membership query alone cannot close this race. Preferred upstream
+  work is an opt-in publication precondition, enforced atomically at ingest,
+  requiring the signing identity to remain a room member even in open rooms.
+  The client must detect support and fail closed when unavailable; a new header
+  silently ignored by old relays would not provide that guarantee. This is a
+  proposal, not an existing Buzz interface.
 - No guarantee against a same-UID agent reading harness memory/configuration.
   These proposals prevent known credential handoff, not local privilege isolation.
 - Existing upstream agent wire/observer logs are not globally redacted. Do not

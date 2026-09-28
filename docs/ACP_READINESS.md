@@ -241,3 +241,13 @@ Disabling agent-side signing also removes the current CLI-based room-reply path.
 A harness-owned reply path, tool policy, same-UID/process isolation, native
 subscription validation and effective-payer checks remain necessary. The proposal
 documents the next reply increment using existing Buzz signing/submission APIs.
+
+
+## Harness-owned reply prototype
+
+The [reply proposal](upstream/ACP_HARNESS_REPLIES.md) keeps generated replies on
+the harness signing path and adds bounded text capture and explicit delivery
+outcomes. It is opt-in, unsubmitted and uninstalled. Independent review identified
+a membership-removal race for open rooms; resolving that is a release gate.
+Pro subscription acceptance still requires actual provider login and verified
+billing behavior. Synthetic reply tests do not close either requirement.
