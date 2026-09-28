@@ -425,3 +425,16 @@ No production message or agent invocation was used. GitHub CI remains manual.
 Before installation, the existing helper reported disconnected, no catalog rows,
 and an acknowledged delivery (no active send). Recheck connectivity after update;
 do not infer the relay is reachable from earlier successful enrollment.
+
+Installed 0.0.4 helper and matching plugin at commit `697495c` through native
+`omarchy plugin update`; restarted the user helper and Omarchy shell. The helper
+reports authenticated, four rooms, and `history_auto_refresh`; service is active
+with `LimitCORE=0`. Native panel summon returned `ok`. Alerts default off.
+Previous helper retained at `~/.local/bin/omarchy-buzz.before-0.0.4-20260928`;
+previous plugin source is commit `4dda7b0`. Roll back both together with helper
+service stopped, then restart helper/socket and shell. No relay changes made.
+
+Next: implement truthful local unread state across rooms, persistent notification
+preferences, and broader reconnect/access-revocation testing before the ACP
+milestone. ACP permissions/credential propagation and upstream resource limits
+remain release gates; this update does not claim a completed public release.
