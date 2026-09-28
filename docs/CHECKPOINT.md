@@ -311,3 +311,16 @@ a channel member. Existing owner access is preserved; a supported room invitatio
 is still needed. Opened the local hidden enrollment prompt for operator input.
 Helper/socket remain stopped until enrollment is verified against the supplied
 public key. No channel membership mutation, message send, or relay restart ran.
+
+## Human profile published; desktop invitation search still unresolved
+
+Read-only checks now confirm the new human identity has a kind-0 profile, an
+active users row, regular community membership, and a profile in the same
+community as the requested private development room. Its generated search vector
+matches the supplied display name; the event is channel-less and not future-dated.
+The identity is still not a member of either requested room. The operator confirms
+they are searching from the original owner profile, but the desktop picker reports
+no matches. Database evidence alone does not certify the authenticated HTTP search
+response or the desktop's active origin/version. Requested the laptop Buzz version
+and a fresh app session on the Mac mini community to narrow that remaining gap.
+No new remote mutations or credential access occurred during these checks.
