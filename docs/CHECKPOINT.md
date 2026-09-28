@@ -346,3 +346,36 @@ reconciliation; do not assume it supports forced targeted repair. Prepare and
 validate a compatible upstream binary/schema path and rollback before production
 changes. Do not use SQL membership/event edits or reopen rooms publicly as a
 workaround. No upgrade, repair, invite or message was executed in this check.
+
+## Private development-room admission unblocked
+
+Operator explicitly authorized repair. The deployed reconciliation command cannot
+replace an existing roster. Further inspection found that even newer upstream
+`buzz-admin reconcile-channels --channel` still signs without self-tagging,
+unlike the corrected relay roster writer. It was NOT run against production.
+Downloaded upstream image 781d395 (digest
+`sha256:8096413eb360785f510e4b62deeb749330a29a291423c9996c807433263e6412`)
+for inspection only; the running relay and schema were not upgraded.
+
+Instead, completed the already-authorized human admission through the normal
+upstream signed operation: `buzz_sdk::build_add_member`, regular member role,
+sent through `buzz_ws_client::NostrWsConnection`. A temporary one-shot operator
+program loaded the existing owner key from Secret Service, verified the expected
+public identity, signed once, and required the matching positive relay receipt.
+No private key was read from chat, put in argv/environment, printed, or saved to
+disk. Core dumps were disabled. This administration path is not installed or
+exposed in plugin IPC/QML. It is not a new permanent plugin capability.
+
+Read-only checks after the acknowledgement confirmed: the new human is an active
+regular member of the requested private development room, its key appears in the
+live signed 39002 roster, and the original canonical owner remains. No direct SQL
+mutation, relay restart, metadata edit, or chat message was used. The deployed
+self-tag omission remains for the relay identity; this unblocks the human path
+without claiming that upstream bug has been repaired for every identity/room.
+
+Opened hidden-terminal enrollment for the human identity. Helper/socket remain
+stopped until configuration matches the supplied human public key. Next verify
+enrollment, restart activation/service, and confirm authenticated room discovery.
+Temporary maintenance source retained outside the repo at
+`/tmp/omarchy-buzz-maintenance-add-member.rs`; binary is in the existing temporary
+build tree. No broader admin surface was added to the plugin.
