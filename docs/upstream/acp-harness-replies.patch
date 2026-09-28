@@ -1,5 +1,5 @@
 diff --git a/crates/buzz-acp/src/acp.rs b/crates/buzz-acp/src/acp.rs
-index 16651a1..c775695 100644
+index 16651a1..28b0c78 100644
 --- a/crates/buzz-acp/src/acp.rs
 +++ b/crates/buzz-acp/src/acp.rs
 @@ -217,6 +217,10 @@ pub struct AcpClient {
@@ -101,15 +101,85 @@ index 16651a1..c775695 100644
                  }
                  false
              }
-@@ -2443,7 +2503,7 @@ impl Drop for AcpClient {
- /// syscall — so the crate's `#![deny(unsafe_code)]` policy is preserved.
- #[cfg(unix)]
- fn kill_process_group(pid: u32) -> bool {
--    use nix::sys::signal::{killpg, Signal};
-+    use nix::sys::signal::{Signal, killpg};
-     use nix::unistd::Pid;
+@@ -3151,6 +3211,78 @@ mod tests {
+             .expect("failed to spawn test script")
+     }
  
-     // pid == pgid because the child was spawned with process_group(0).
++    #[cfg(unix)]
++    #[tokio::test]
++    async fn room_reply_captures_only_active_session_message_chunks_from_wire() {
++        let script = r#"
++            IFS= read -r REQ
++            ID=$(printf '%s' "$REQ" | sed -E 's/.*"id":([0-9]+).*/\1/')
++            echo '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"other","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"wrong room"}}}}'
++            echo '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"active","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"private thought"}}}}'
++            echo '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"active","update":{"sessionUpdate":"tool_call_update","content":{"type":"text","text":"tool output"}}}}'
++            echo '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"active","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Hello, "}}}}'
++            echo '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"active","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"room"}}}}'
++            echo '{"jsonrpc":"2.0","id":'"$ID"',"result":{"stopReason":"end_turn"}}'
++            sleep 1
++        "#;
++        let mut client = spawn_script(script).await;
++        let channel_id = uuid::Uuid::new_v4();
++        let root_event_id = "ab".repeat(32);
++        let scope = crate::scope::SessionScope::Thread {
++            channel_id,
++            root_event_id: root_event_id.clone(),
++        };
++        client.begin_room_reply("active", &scope).unwrap();
++        let stop = client
++            .session_prompt_with_idle_timeout(
++                "active",
++                "prompt",
++                std::time::Duration::from_secs(2),
++                std::time::Duration::from_secs(5),
++            )
++            .await
++            .unwrap();
++        assert_eq!(stop, StopReason::EndTurn);
++        let reply = client.take_room_reply().expect("completed reply");
++        assert_eq!(reply.text, "Hello, room");
++        assert_eq!(reply.target.channel_id, channel_id);
++        assert_eq!(reply.target.root_event_id.to_hex(), root_event_id);
++        assert!(client.take_room_reply().is_none());
++    }
++
++    #[cfg(unix)]
++    #[tokio::test]
++    async fn room_reply_discards_text_when_wire_turn_does_not_complete() {
++        let script = r#"
++            IFS= read -r REQ
++            ID=$(printf '%s' "$REQ" | sed -E 's/.*"id":([0-9]+).*/\1/')
++            echo '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"active","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"partial"}}}}'
++            echo '{"jsonrpc":"2.0","id":'"$ID"',"result":{"stopReason":"max_tokens"}}'
++            sleep 1
++        "#;
++        let mut client = spawn_script(script).await;
++        let scope = crate::scope::SessionScope::Thread {
++            channel_id: uuid::Uuid::new_v4(),
++            root_event_id: "cd".repeat(32),
++        };
++        client.begin_room_reply("active", &scope).unwrap();
++        let stop = client
++            .session_prompt_with_idle_timeout(
++                "active",
++                "prompt",
++                std::time::Duration::from_secs(2),
++                std::time::Duration::from_secs(5),
++            )
++            .await
++            .unwrap();
++        assert_eq!(stop, StopReason::MaxTokens);
++        assert!(client.take_room_reply().is_none());
++        assert!(matches!(
++            client.begin_room_reply("active", &scope),
++            Err(AcpError::Protocol(reason)) if reason == "reply_session_not_fresh"
++        ));
++    }
++
+     #[cfg(unix)]
+     async fn spawn_named_script(name: &str, script: &str) -> (AcpClient, std::path::PathBuf) {
+         use std::os::unix::fs::PermissionsExt;
 diff --git a/crates/buzz-acp/src/config.rs b/crates/buzz-acp/src/config.rs
 index ab7ae34..340b7c7 100644
 --- a/crates/buzz-acp/src/config.rs

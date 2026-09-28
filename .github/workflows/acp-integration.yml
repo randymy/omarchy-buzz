@@ -90,6 +90,7 @@ jobs:
         working-directory: buzz
         run: |
           cargo +1.95.0 test --locked -p buzz-acp --lib reply_capture:: --target-dir "$RUNNER_TEMP/relay-target"
+          cargo +1.95.0 test --locked -p buzz-acp --lib acp::tests::room_reply_ --target-dir "$RUNNER_TEMP/relay-target"
           cargo +1.95.0 test --locked -p buzz-acp --lib room_reply:: --target-dir "$RUNNER_TEMP/relay-target"
           cargo +1.95.0 test --locked -p buzz-acp --lib room_reply_transport_tests:: --target-dir "$RUNNER_TEMP/relay-target"
       - name: Exercise actual key input without relay or agent startup

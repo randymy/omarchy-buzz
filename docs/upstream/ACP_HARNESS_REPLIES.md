@@ -51,6 +51,7 @@ then exercises bounded capture, SDK routing/signing and a loopback HTTP fixture
 that verifies event and NIP-98 signatures and body digest. HTTP cases cover exact
 acceptance, mismatched ID, malformed/oversized response, forbidden response,
 redirect and service failure; request counts assert no retry/redirect following.
-These are synthetic transport checks, not a real-relay membership proof or a
-full ACP prompt-to-room acceptance test. Both are still required. Earlier auth
+Two additional real ACP-client stdio tests cover session filtering, thought/tool
+exclusion, incomplete turns and rejected session-ID reuse. These are synthetic
+checks, not a real-relay membership proof or a full ACP prompt-to-room acceptance test. Both are still required. Earlier auth
 and key-boundary tests remain in the manual workflow. No automatic triggers.
