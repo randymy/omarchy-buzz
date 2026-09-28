@@ -1,0 +1,1949 @@
+diff --git a/crates/buzz-acp/src/acp.rs b/crates/buzz-acp/src/acp.rs
+index 16651a1..c775695 100644
+--- a/crates/buzz-acp/src/acp.rs
++++ b/crates/buzz-acp/src/acp.rs
+@@ -217,6 +217,10 @@ pub struct AcpClient {
+     standard_usage: StandardUsageTracker,
+     /// Known adapter identity for prompt-response usage mapping.
+     standard_adapter: Option<StandardAdapterKind>,
++    reply_capture: Option<crate::reply_capture::Capture>,
++    reply_target: Option<crate::room_reply::Target>,
++    ready_reply: Option<crate::room_reply::Ready>,
++    reply_sessions: std::collections::HashSet<String>,
+ }
+ 
+ /// Recursively merge `overlay` into `base`, with `overlay` winning on scalar/shape
+@@ -670,6 +674,10 @@ impl AcpClient {
+             goose_usage: UsageTracker::default(),
+             standard_usage: StandardUsageTracker::default(),
+             standard_adapter,
++            reply_capture: None,
++            reply_target: None,
++            ready_reply: None,
++            reply_sessions: std::collections::HashSet::new(),
+         })
+     }
+ 
+@@ -955,7 +963,54 @@ impl AcpClient {
+                 self.current_hard_deadline = None;
+             }
+         }
+-        self.parse_prompt_response(session_id, &result?)
++        let parsed = result.and_then(|value| self.parse_prompt_response(session_id, &value));
++        self.finish_room_reply(matches!(&parsed, Ok(StopReason::EndTurn)));
++        parsed
++    }
++
++    pub(crate) fn clear_room_reply(&mut self) {
++        self.reply_capture = None;
++        self.reply_target = None;
++        self.ready_reply = None;
++    }
++
++    pub(crate) fn begin_room_reply(
++        &mut self,
++        session: &str,
++        scope: &crate::scope::SessionScope,
++    ) -> Result<(), AcpError> {
++        self.clear_room_reply();
++        let target = crate::room_reply::Target::from_scope(scope)
++            .map_err(|reason| AcpError::Protocol(reason.into()))?;
++        if session.is_empty()
++            || session.len() > 1024
++            || self.reply_sessions.len() >= 128
++            || !self.reply_sessions.insert(session.to_owned())
++        {
++            return Err(AcpError::Protocol("reply_session_not_fresh".into()));
++        }
++        self.reply_capture = Some(crate::reply_capture::Capture::new(session));
++        self.reply_target = Some(target);
++        Ok(())
++    }
++
++    fn finish_room_reply(&mut self, completed: bool) {
++        if let (Some(capture), Some(target)) = (self.reply_capture.take(), self.reply_target.take())
++        {
++            match capture.finish(completed) {
++                Ok(text) => self.ready_reply = Some(crate::room_reply::Ready { target, text }),
++                Err(reason) => self.observe(
++                    "room_reply_suppressed",
++                    serde_json::json!({"reason": reason}),
++                ),
++            }
++        }
++    }
++
++    pub(crate) fn take_room_reply(&mut self) -> Option<crate::room_reply::Ready> {
++        self.reply_capture = None;
++        self.reply_target = None;
++        self.ready_reply.take()
+     }
+ 
+     /// Send a `session/cancel` **notification** (no `id` field, no response expected).
+@@ -1866,6 +1921,9 @@ impl AcpClient {
+     /// leave it `None` and are steered via `_session/steering` instead, which
+     /// needs no run id.
+     fn handle_session_update(&mut self, msg: &serde_json::Value) -> bool {
++        if let Some(capture) = &mut self.reply_capture {
++            capture.observe(msg);
++        }
+         let update = &msg["params"]["update"];
+         let update_type = update
+             .get("sessionUpdate")
+@@ -1875,7 +1933,9 @@ impl AcpClient {
+         match update_type {
+             "agent_message_chunk" => {
+                 if let Some(text) = update["content"]["text"].as_str() {
+-                    tracing::info!(target: "acp::stream", "{text}");
++                    if self.reply_capture.is_none() {
++                        tracing::info!(target: "acp::stream", "{text}");
++                    }
+                 }
+                 false
+             }
+@@ -2443,7 +2503,7 @@ impl Drop for AcpClient {
+ /// syscall — so the crate's `#![deny(unsafe_code)]` policy is preserved.
+ #[cfg(unix)]
+ fn kill_process_group(pid: u32) -> bool {
+-    use nix::sys::signal::{killpg, Signal};
++    use nix::sys::signal::{Signal, killpg};
+     use nix::unistd::Pid;
+ 
+     // pid == pgid because the child was spawned with process_group(0).
+diff --git a/crates/buzz-acp/src/config.rs b/crates/buzz-acp/src/config.rs
+index ab7ae34..340b7c7 100644
+--- a/crates/buzz-acp/src/config.rs
++++ b/crates/buzz-acp/src/config.rs
+@@ -266,6 +266,11 @@ pub struct CliArgs {
+     #[arg(long, conflicts_with = "private_key", value_parser = clap::value_parser!(i32).range(3..))]
+     pub private_key_fd: Option<i32>,
+ 
++    /// Publish complete ACP text from the harness (requires FD identity,
++    /// thread sessions, queued events, and no initial message or heartbeat).
++    #[arg(long, requires = "private_key_fd")]
++    pub harness_replies: bool,
++
+     /// Agent owner pubkey (64-char hex). Used for --respond-to=owner-only gate.
+     #[arg(long, env = "BUZZ_ACP_AGENT_OWNER")]
+     pub agent_owner: Option<String>,
+@@ -558,6 +563,7 @@ pub struct Config {
+     pub keys: Keys,
+     /// FD-fed identities stay in the harness; this is not an agent sandbox.
+     pub isolate_relay_identity: bool,
++    pub harness_replies: bool,
+     pub relay_url: String,
+     pub agent_command: String,
+     pub agent_args: Vec<String>,
+@@ -676,11 +682,7 @@ fn sanitize_session_title(raw: &str) -> Option<String> {
+         .collect::<String>()
+         .trim_end()
+         .to_string();
+-    if title.is_empty() {
+-        None
+-    } else {
+-        Some(title)
+-    }
++    if title.is_empty() { None } else { Some(title) }
+ }
+ 
+ /// Separator between the agent name and the channel in a composed title.
+@@ -957,7 +959,7 @@ impl Config {
+             _ => {
+                 return Err(ConfigError::ConfigFile(
+                     "exactly one relay key input is required".into(),
+-                ))
++                ));
+             }
+         };
+         if isolate_relay_identity
+@@ -972,6 +974,18 @@ impl Config {
+             args.no_base_prompt = true;
+         }
+ 
++        if args.harness_replies
++            && (!isolate_relay_identity
++                || args.session_policy != crate::scope::SessionPolicy::Thread
++                || args.multiple_event_handling != MultipleEventHandling::Queue
++                || args.initial_message.is_some()
++                || args.heartbeat_interval != 0)
++        {
++            return Err(ConfigError::ConfigFile(
++                "harness replies require FD identity, thread sessions, queued events, no initial message and no heartbeat".into(),
++            ));
++        }
++
+         let system_prompt = if let Some(text) = args.system_prompt {
+             Some(text)
+         } else if let Some(ref path) = args.system_prompt_file {
+@@ -1189,6 +1203,7 @@ impl Config {
+         let config = Config {
+             keys,
+             isolate_relay_identity,
++            harness_replies: args.harness_replies,
+             relay_url: args.relay_url,
+             agent_command,
+             agent_args,
+@@ -1297,8 +1312,8 @@ struct TomlConfig {
+ }
+ 
+ pub fn load_rules(path: &std::path::Path) -> Result<Vec<SubscriptionRule>, ConfigError> {
+-    use std::sync::atomic::AtomicU32;
+     use std::sync::Arc;
++    use std::sync::atomic::AtomicU32;
+ 
+     let content = std::fs::read_to_string(path)?;
+     let mut config: TomlConfig =
+@@ -1609,6 +1624,7 @@ mod tests {
+             allowed_respond_to: Vec::new(),
+             persona_env_vars: vec![],
+             isolate_relay_identity: false,
++            harness_replies: false,
+             has_generated_codex_config: false,
+             relay_observer: false,
+             exit_after_inactivity_secs: 0,
+@@ -1627,8 +1643,8 @@ mod tests {
+         kinds: Vec<u32>,
+         mention: bool,
+     ) -> SubscriptionRule {
+-        use std::sync::atomic::AtomicU32;
+         use std::sync::Arc;
++        use std::sync::atomic::AtomicU32;
+         SubscriptionRule {
+             name: name.into(),
+             channels,
+@@ -2545,11 +2561,7 @@ channels = "ALL"
+             (None, Some(turn)) => turn,
+             (None, None) => DEFAULT_IDLE_TIMEOUT_SECS,
+         };
+-        if raw == 0 {
+-            1
+-        } else {
+-            raw
+-        }
++        if raw == 0 { 1 } else { raw }
+     }
+ 
+     #[test]
+diff --git a/crates/buzz-acp/src/lib.rs b/crates/buzz-acp/src/lib.rs
+index 8461ef6..fe4b639 100644
+--- a/crates/buzz-acp/src/lib.rs
++++ b/crates/buzz-acp/src/lib.rs
+@@ -4,6 +4,8 @@ mod git;
+ #[cfg(all(test, unix))]
+ mod git_runtime_tests;
+ mod key_input;
++mod reply_capture;
++mod room_reply;
+ 
+ mod acp;
+ mod config;
+@@ -32,14 +34,14 @@ use std::sync::Arc;
+ use std::time::Duration;
+ 
+ use acp::{AcpClient, EnvVar, McpServer};
+-use anyhow::{ensure, Context, Result};
++use anyhow::{Context, Result, ensure};
+ use buzz_core::kind::{
+     KIND_MEMBER_ADDED_NOTIFICATION, KIND_MEMBER_REMOVED_NOTIFICATION, KIND_STREAM_MESSAGE,
+     KIND_STREAM_REMINDER, KIND_WORKFLOW_APPROVAL_REQUESTED,
+ };
+ use buzz_core::observer::{
+-    decrypt_observer_payload, encrypt_observer_payload, OBSERVER_FRAME_TELEMETRY,
+-    OBSERVER_MAX_PLAINTEXT_LEN,
++    OBSERVER_FRAME_TELEMETRY, OBSERVER_MAX_PLAINTEXT_LEN, decrypt_observer_payload,
++    encrypt_observer_payload,
+ };
+ use clap::Parser;
+ use config::{
+@@ -346,8 +348,8 @@ fn effective_prompt_author(
+ /// dropping the load inside it fails the construction regressions.
+ mod inbound_author_gate {
+     use super::{
+-        effective_prompt_author, is_dm_channel, is_owner_or_sibling, pool, refresh_relay_self,
+-        relay, OwnerCache, RespondTo,
++        OwnerCache, RespondTo, effective_prompt_author, is_dm_channel, is_owner_or_sibling, pool,
++        refresh_relay_self, relay,
+     };
+     use std::collections::HashSet;
+ 
+@@ -2420,7 +2422,7 @@ fn startup_watermark_with_floor(now_unix: u64, replay_floor: Option<u64>) -> u64
+ 
+ #[cfg(test)]
+ mod replay_floor_tests {
+-    use super::{startup_watermark_with_floor, REPLAY_FLOOR_MAX_AGE_SECS};
++    use super::{REPLAY_FLOOR_MAX_AGE_SECS, startup_watermark_with_floor};
+ 
+     const NOW: u64 = 1_700_000_000;
+ 
+@@ -2544,7 +2546,7 @@ async fn tokio_main() -> Result<()> {
+     let (shutdown_tx, mut shutdown_rx) = watch::channel(());
+     #[cfg(unix)]
+     let signals = {
+-        use tokio::signal::unix::{signal, SignalKind};
++        use tokio::signal::unix::{SignalKind, signal};
+         (
+             signal(SignalKind::interrupt())?,
+             signal(SignalKind::terminate())?,
+@@ -4663,6 +4665,67 @@ fn spawn_failure_notice(
+     }
+ }
+ 
++// Bound background reply submissions even when synthetic peers complete instantly.
++static ROOM_REPLY_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(8);
++
++fn spawn_room_reply(
++    rest: relay::RestClient,
++    reply: room_reply::Ready,
++    observer: Option<observer::ObserverHandle>,
++    agent_index: usize,
++    turn_id: String,
++) {
++    let context = observer::context_for_turn(
++        Some(reply.target.channel_id),
++        None,
++        turn_id.clone(),
++        chrono::Utc::now().to_rfc3339(),
++    );
++    let Ok(permit) = ROOM_REPLY_SLOTS.try_acquire() else {
++        if let Some(observer) = &observer {
++            observer.emit(
++                "room_reply_submission",
++                Some(agent_index),
++                &context,
++                serde_json::json!({"status": "not_sent", "reason": "publisher_busy"}),
++            );
++        }
++        tracing::warn!("room reply not submitted: publisher busy");
++        return;
++    };
++    tokio::spawn(async move {
++        let _permit = permit;
++        let channel = reply.target.channel_id;
++        let Ok(event) = reply.sign(&rest.keys) else {
++            if let Some(observer) = &observer {
++                observer.emit(
++                    "room_reply_submission",
++                    Some(agent_index),
++                    &context,
++                    serde_json::json!({"status": "not_sent", "reason": "invalid_reply"}),
++                );
++            }
++            tracing::warn!("room reply not submitted: invalid reply");
++            return;
++        };
++        let status = rest.submit_room_reply_once(&event).await;
++        tracing::info!(event_id = %event.id, status, "room reply submission result");
++        if let Some(observer) = observer {
++            observer.emit(
++                "room_reply_submission",
++                Some(agent_index),
++                &observer::context_for_turn(
++                    Some(channel),
++                    None,
++                    turn_id,
++                    chrono::Utc::now().to_rfc3339(),
++                ),
++                serde_json::json!({"eventId": event.id.to_hex(), "status": status}),
++            );
++        }
++    });
++}
++
+ #[allow(clippy::too_many_arguments)]
+ fn handle_prompt_result(
+     pool: &mut AgentPool,
+@@ -4677,6 +4740,37 @@ fn handle_prompt_result(
+     observer: Option<observer::ObserverHandle>,
+     rest_client: Option<&relay::RestClient>,
+ ) -> LoopAction {
++    if let Some(reply) = result.agent.acp.take_room_reply() {
++        let allowed = config.harness_replies
++            && config.isolate_relay_identity
++            && matches!(&result.outcome, PromptOutcome::Ok(acp::StopReason::EndTurn))
++            && result
++                .source
++                .scope()
++                .is_some_and(|scope| reply.target.matches_scope(scope))
++            && !removed_channels.contains(&reply.target.channel_id);
++        if allowed {
++            if let Some(rest) = rest_client {
++                spawn_room_reply(
++                    rest.clone(),
++                    reply,
++                    result.agent.acp.observer_handle(),
++                    result.agent.index,
++                    result.turn_id.clone(),
++                );
++            } else {
++                result.agent.acp.observe(
++                    "room_reply_suppressed",
++                    serde_json::json!({"reason": "reply_transport_unavailable"}),
++                );
++            }
++        } else {
++            result.agent.acp.observe(
++                "room_reply_suppressed",
++                serde_json::json!({"reason": "reply_route_unavailable"}),
++            );
++        }
++    }
+     let before = pool.task_map().len();
+     let agent_index = result.agent.index;
+     let successful_steer_deliveries = pool
+@@ -5361,8 +5455,11 @@ mod agent_draft_prompt_tests {
+         assert!(prompt.contains("success JSON's `mention_pubkeys`"));
+         assert!(prompt.contains("no follow-up verification command is needed"));
+         assert!(prompt.contains("stops before sending"));
+-        assert!(prompt
+-            .contains("add them explicitly with `buzz channels add-member` only when authorized"));
++        assert!(
++            prompt.contains(
++                "add them explicitly with `buzz channels add-member` only when authorized"
++            )
++        );
+         assert!(prompt.contains("never changes membership automatically"));
+     }
+ }
+@@ -9138,12 +9235,16 @@ mod observer_chunk_coalescer_tests {
+     fn coalesces_chunks_until_non_chunk_event() {
+         let mut coalescer = ObserverChunkCoalescer::default();
+ 
+-        assert!(coalescer
+-            .ingest(chunk_event(1, "agent_message_chunk", "message-1", "hello "))
+-            .is_empty());
+-        assert!(coalescer
+-            .ingest(chunk_event(2, "agent_message_chunk", "message-1", "world"))
+-            .is_empty());
++        assert!(
++            coalescer
++                .ingest(chunk_event(1, "agent_message_chunk", "message-1", "hello "))
++                .is_empty()
++        );
++        assert!(
++            coalescer
++                .ingest(chunk_event(2, "agent_message_chunk", "message-1", "world"))
++                .is_empty()
++        );
+ 
+         let events = coalescer.ingest(non_chunk_event(3));
+         assert_eq!(events.len(), 2);
+@@ -9161,17 +9262,21 @@ mod observer_chunk_coalescer_tests {
+     fn keeps_independent_chunk_streams_separate() {
+         let mut coalescer = ObserverChunkCoalescer::default();
+ 
+-        assert!(coalescer
+-            .ingest(chunk_event(1, "agent_message_chunk", "message-1", "answer"))
+-            .is_empty());
+-        assert!(coalescer
+-            .ingest(chunk_event(
+-                2,
+-                "agent_thought_chunk",
+-                "thought-1",
+-                "thinking"
+-            ))
+-            .is_empty());
++        assert!(
++            coalescer
++                .ingest(chunk_event(1, "agent_message_chunk", "message-1", "answer"))
++                .is_empty()
++        );
++        assert!(
++            coalescer
++                .ingest(chunk_event(
++                    2,
++                    "agent_thought_chunk",
++                    "thought-1",
++                    "thinking"
++                ))
++                .is_empty()
++        );
+ 
+         let events = coalescer.flush();
+         assert_eq!(events.len(), 2);
+@@ -9227,6 +9332,7 @@ mod build_mcp_servers_tests {
+             allowed_respond_to: vec![],
+             persona_env_vars: vec![],
+             isolate_relay_identity: false,
++            harness_replies: false,
+             has_generated_codex_config: false,
+             relay_observer: false,
+             exit_after_inactivity_secs: 0,
+@@ -9492,6 +9598,7 @@ mod error_outcome_emission_tests {
+             allowed_respond_to: vec![],
+             persona_env_vars: vec![],
+             isolate_relay_identity: false,
++            harness_replies: false,
+             has_generated_codex_config: false,
+             relay_observer: false,
+             exit_after_inactivity_secs: 0,
+@@ -9828,10 +9935,12 @@ mod error_outcome_emission_tests {
+         );
+ 
+         let returned = pool.agents_mut()[0].as_ref().expect("returned agent");
+-        assert!(!returned
+-            .state
+-            .deliveries
+-            .contains_key(&scope::SessionScope::Conversation { channel_id }));
++        assert!(
++            !returned
++                .state
++                .deliveries
++                .contains_key(&scope::SessionScope::Conversation { channel_id })
++        );
+     }
+ 
+     /// Drive one error outcome through `handle_prompt_result` and return how
+@@ -10737,7 +10846,9 @@ mod error_outcome_emission_tests {
+         );
+         assert_eq!(
+             turn_error.payload["error"].as_str().unwrap(),
+-            format!("Agent did not stop within {grace:?} after cancellation; the agent process is being replaced."),
++            format!(
++                "Agent did not stop within {grace:?} after cancellation; the agent process is being replaced."
++            ),
+             "observer message must name the actual grace and must not claim preservation"
+         );
+         assert_eq!(
+@@ -10843,7 +10954,9 @@ mod error_outcome_emission_tests {
+         );
+         assert_eq!(
+             turn_error.payload["error"].as_str().unwrap(),
+-            format!("Agent did not stop within {grace:?} after cancellation; the agent process is being replaced."),
++            format!(
++                "Agent did not stop within {grace:?} after cancellation; the agent process is being replaced."
++            ),
+             "observer message must be fate-neutral even though the batch was dropped"
+         );
+         assert_eq!(
+@@ -11260,11 +11373,12 @@ mod error_outcome_emission_tests {
+             "⚠️ I couldn't process the last request: the configured model wasn't found at the provider's endpoint. Open agent settings, select a different model from the dropdown, and save your changes. Restart the agent to apply the new configuration, then re-send your request."
+         );
+         let tags = serde_json::to_value(&notice.tags).unwrap();
+-        assert!(tags
+-            .as_array()
+-            .unwrap()
+-            .iter()
+-            .any(|tag| tag[0] == "h" && tag[1] == channel_id.to_string()));
++        assert!(
++            tags.as_array()
++                .unwrap()
++                .iter()
++                .any(|tag| tag[0] == "h" && tag[1] == channel_id.to_string())
++        );
+         let threading = queue::parse_thread_tags(&notice);
+         assert_eq!(threading.root_event_id, Some(root.to_hex()));
+         assert_eq!(threading.parent_event_id, Some(parent.to_hex()));
+diff --git a/crates/buzz-acp/src/pool.rs b/crates/buzz-acp/src/pool.rs
+index 3586081..476d2af 100644
+--- a/crates/buzz-acp/src/pool.rs
++++ b/crates/buzz-acp/src/pool.rs
+@@ -30,13 +30,13 @@ use tokio::time::timeout;
+ use uuid::Uuid;
+ 
+ use crate::acp::{
+-    extract_model_config_options, extract_model_state, extract_thought_level_config_id,
+-    model_in_catalog, resolve_model_switch_method, AcpClient, AcpError, EnvVar, McpServer,
+-    ModelSwitchMethod, StopReason, SystemPromptTransport, BUZZ_PI_ACP_NAME,
++    AcpClient, AcpError, BUZZ_PI_ACP_NAME, EnvVar, McpServer, ModelSwitchMethod, StopReason,
++    SystemPromptTransport, extract_model_config_options, extract_model_state,
++    extract_thought_level_config_id, model_in_catalog, resolve_model_switch_method,
+ };
+-use crate::config::{compose_scoped_session_title, DedupMode, PermissionMode};
++use crate::config::{DedupMode, PermissionMode, compose_scoped_session_title};
+ use crate::observer;
+-use crate::prompt_project::{pick_authoritative_project_home, PromptProjectInfo};
++use crate::prompt_project::{PromptProjectInfo, pick_authoritative_project_home};
+ use crate::queue::{
+     CancelReason, ContextMessage, ConversationContext, FlushBatch, PromptChannelInfo,
+     PromptProfile, PromptProfileLookup, ThreadTags,
+@@ -809,6 +809,7 @@ impl ChannelInfoResolver {
+ }
+ 
+ pub struct PromptContext {
++    pub harness_replies: bool,
+     pub mcp_servers: Vec<McpServer>,
+     pub initial_message: Option<String>,
+     pub idle_timeout: Duration,
+@@ -2073,7 +2074,9 @@ fn require_permission_mode(raw: &serde_json::Value, mode: &str) -> Result<(), Ac
+     if agent_supports_mode(raw, mode) {
+         Ok(())
+     } else {
+-        Err(AcpError::Protocol("requested permission mode is not advertised".into()))
++        Err(AcpError::Protocol(
++            "requested permission mode is not advertised".into(),
++        ))
+     }
+ }
+ 
+@@ -2265,6 +2268,9 @@ fn send_prompt_result(
+     batch: Option<FlushBatch>,
+ ) {
+     agent.acp.clear_steer_rx();
++    if !matches!(outcome, PromptOutcome::Ok(StopReason::EndTurn)) {
++        agent.acp.clear_room_reply();
++    }
+     let _ = result_tx.send(PromptResult {
+         agent,
+         source,
+@@ -2300,6 +2306,10 @@ pub async fn run_prompt_task(
+         Some(b) => PromptSource::Channel(b.scope.clone()),
+         None => PromptSource::Heartbeat,
+     };
++    agent.acp.clear_room_reply();
++    if ctx.harness_replies {
++        agent.state.invalidate(&source);
++    }
+     let observer_channel_id = source.channel_id();
+     let turn_started_at = chrono::Utc::now().to_rfc3339();
+     agent.acp.set_observer_context(observer::context_for_turn(
+@@ -3067,6 +3077,26 @@ pub async fn run_prompt_task(
+     // the main loop can cancel, interrupt, or rotate it. Heartbeats
+     // (control_rx=None) take the simple await path — they are not controllable.
+     //
++    if ctx.harness_replies {
++        let prepared = match &source {
++            PromptSource::Channel(scope) => agent.acp.begin_room_reply(&session_id, scope),
++            PromptSource::Heartbeat => Err(AcpError::Protocol("reply_scope_unsupported".into())),
++        };
++        if let Err(error) = prepared {
++            // No prompt was sent. Preserve the triggering batch even if the
++            // operator selected Drop dedup mode; Protocol errors respawn this
++            // worker and the fresh process can retry the same request.
++            send_prompt_result(
++                &result_tx,
++                &turn_id,
++                agent,
++                source,
++                PromptOutcome::Error(error),
++                batch,
++            );
++            return;
++        }
++    }
+     let prompt_result = match control_rx {
+         None => {
+             // Heartbeat / non-cancellable path.
+@@ -5592,10 +5622,12 @@ mod tests {
+         assert!(servers[0].env.iter().any(|entry| {
+             entry.name == "BUZZ_GIT_ORIGIN_CHANNEL_ID" && entry.value == channel_id.to_string()
+         }));
+-        assert!(!servers[0]
+-            .env
+-            .iter()
+-            .any(|entry| entry.name == "BUZZ_GIT_ORIGIN_AGENT_NAME"));
++        assert!(
++            !servers[0]
++                .env
++                .iter()
++                .any(|entry| entry.name == "BUZZ_GIT_ORIGIN_AGENT_NAME")
++        );
+     }
+ 
+     #[test]
+@@ -5609,10 +5641,12 @@ mod tests {
+         assert!(servers[0].env.iter().any(|entry| {
+             entry.name == "BUZZ_GIT_ORIGIN_AGENT_NAME" && entry.value == "Builder"
+         }));
+-        assert!(!servers[0]
+-            .env
+-            .iter()
+-            .any(|entry| entry.name == "BUZZ_GIT_ORIGIN_CHANNEL_ID"));
++        assert!(
++            !servers[0]
++                .env
++                .iter()
++                .any(|entry| entry.name == "BUZZ_GIT_ORIGIN_CHANNEL_ID")
++        );
+     }
+ 
+     // These pin the initial_message dispatch path (run_prompt_task, ~line 855):
+@@ -6085,9 +6119,11 @@ mod tests {
+                 assert_eq!(messages[0].content, "root");
+                 assert_eq!(messages[1].content, "middle reply");
+                 assert_eq!(messages[2].content, "newest agent reply");
+-                assert!(messages
+-                    .iter()
+-                    .all(|msg| msg.content != "sentinel omitted reply"));
++                assert!(
++                    messages
++                        .iter()
++                        .all(|msg| msg.content != "sentinel omitted reply")
++                );
+             }
+             _ => panic!("expected Thread context"),
+         }
+@@ -6211,18 +6247,26 @@ mod tests {
+             ConversationContext::Thread { messages, .. } => {
+                 assert_eq!(messages.len(), 3); // root + 2 displayed replies
+                 assert_eq!(messages[0].content, "root");
+-                assert!(messages
+-                    .iter()
+-                    .any(|msg| msg.content == "agent reply outside recent window"));
+-                assert!(messages
+-                    .iter()
+-                    .any(|msg| msg.content == "newer human reply"));
+-                assert!(messages
+-                    .iter()
+-                    .all(|msg| msg.content != "middle human reply"));
+-                assert!(messages
+-                    .iter()
+-                    .all(|msg| msg.content != "oldest displayed reply without agent pin"));
++                assert!(
++                    messages
++                        .iter()
++                        .any(|msg| msg.content == "agent reply outside recent window")
++                );
++                assert!(
++                    messages
++                        .iter()
++                        .any(|msg| msg.content == "newer human reply")
++                );
++                assert!(
++                    messages
++                        .iter()
++                        .all(|msg| msg.content != "middle human reply")
++                );
++                assert!(
++                    messages
++                        .iter()
++                        .all(|msg| msg.content != "oldest displayed reply without agent pin")
++                );
+             }
+             _ => panic!("expected Thread context"),
+         }
+@@ -6532,12 +6576,16 @@ mod tests {
+                     1,
+                     "separate agent-reply query must not duplicate the same event"
+                 );
+-                assert!(messages
+-                    .iter()
+-                    .any(|msg| msg.content == "newer human reply"));
+-                assert!(messages
+-                    .iter()
+-                    .all(|msg| msg.content != "middle human reply"));
++                assert!(
++                    messages
++                        .iter()
++                        .any(|msg| msg.content == "newer human reply")
++                );
++                assert!(
++                    messages
++                        .iter()
++                        .all(|msg| msg.content != "middle human reply")
++                );
+             }
+             _ => panic!("expected Thread context"),
+         }
+@@ -6624,18 +6672,26 @@ mod tests {
+             truncated,
+             "omitted session history must be represented as a truncated context window"
+         );
+-        assert!(messages
+-            .iter()
+-            .any(|message| message.content == "newer human reply"));
+-        assert!(messages
+-            .iter()
+-            .any(|message| message.content == "middle human reply"));
+-        assert!(messages
+-            .iter()
+-            .all(|message| message.content != "recent agent reply already in provider history"));
+-        assert!(messages
+-            .iter()
+-            .any(|message| message.content == "same-key reply from another provider session"));
++        assert!(
++            messages
++                .iter()
++                .any(|message| message.content == "newer human reply")
++        );
++        assert!(
++            messages
++                .iter()
++                .any(|message| message.content == "middle human reply")
++        );
++        assert!(
++            messages
++                .iter()
++                .all(|message| message.content != "recent agent reply already in provider history")
++        );
++        assert!(
++            messages
++                .iter()
++                .any(|message| message.content == "same-key reply from another provider session")
++        );
+     }
+ 
+     #[tokio::test]
+@@ -6700,18 +6756,26 @@ mod tests {
+                     total, 5,
+                     "root plus all four distinct fetched replies prove the lower bound"
+                 );
+-                assert!(messages
+-                    .iter()
+-                    .any(|msg| msg.content == "older distinct agent reply"));
+-                assert!(messages
+-                    .iter()
+-                    .any(|msg| msg.content == "newest human reply"));
+-                assert!(messages
+-                    .iter()
+-                    .all(|msg| msg.content != "middle human reply"));
+-                assert!(messages
+-                    .iter()
+-                    .all(|msg| msg.content != "sentinel human reply"));
++                assert!(
++                    messages
++                        .iter()
++                        .any(|msg| msg.content == "older distinct agent reply")
++                );
++                assert!(
++                    messages
++                        .iter()
++                        .any(|msg| msg.content == "newest human reply")
++                );
++                assert!(
++                    messages
++                        .iter()
++                        .all(|msg| msg.content != "middle human reply")
++                );
++                assert!(
++                    messages
++                        .iter()
++                        .all(|msg| msg.content != "sentinel human reply")
++                );
+             }
+             _ => panic!("expected Thread context"),
+         }
+@@ -7194,7 +7258,8 @@ done"#
+                 };
+                 let response = format!(
+                     "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+-                    body.len(), body
++                    body.len(),
++                    body
+                 );
+                 let _ = socket.write_all(response.as_bytes()).await;
+             }
+@@ -7303,9 +7368,11 @@ done"#
+             first_result.outcome,
+             PromptOutcome::Ok(StopReason::EndTurn)
+         ));
+-        assert!(first_result.agent.state.deliveries[&scope]
+-            .hydrated_thread_roots
+-            .contains(&root_id));
++        assert!(
++            first_result.agent.state.deliveries[&scope]
++                .hydrated_thread_roots
++                .contains(&root_id)
++        );
+ 
+         run_prompt_task(
+             first_result.agent,
+@@ -7322,9 +7389,11 @@ done"#
+             result.outcome,
+             PromptOutcome::Ok(StopReason::EndTurn)
+         ));
+-        assert!(result.agent.state.deliveries[&scope]
+-            .hydrated_thread_roots
+-            .contains(&root_id));
++        assert!(
++            result.agent.state.deliveries[&scope]
++                .hydrated_thread_roots
++                .contains(&root_id)
++        );
+         result.agent.acp.shutdown().await;
+         server.abort();
+ 
+@@ -7406,7 +7475,8 @@ done"#
+                 let _ = socket.read(&mut request).await;
+                 let response = format!(
+                     "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+-                    response_body.len(), response_body
++                    response_body.len(),
++                    response_body
+                 );
+                 let _ = socket.write_all(response.as_bytes()).await;
+             }
+@@ -7563,7 +7633,8 @@ done"#
+                 let _ = socket.read(&mut request).await;
+                 let response = format!(
+                     "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+-                    response_body.len(), response_body
++                    response_body.len(),
++                    response_body
+                 );
+                 let _ = socket.write_all(response.as_bytes()).await;
+             }
+@@ -7694,10 +7765,12 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
+         let delivery = state.deliveries.get(&conv(channel)).unwrap();
+         assert!(delivery.standing_context_sent);
+         assert_eq!(delivery.delivered_event_ids.len(), 2);
+-        assert!(delivery
+-            .hydrated_thread_roots
+-            .iter()
+-            .any(|root| root == "thread-root"));
++        assert!(
++            delivery
++                .hydrated_thread_roots
++                .iter()
++                .any(|root| root == "thread-root")
++        );
+     }
+ 
+     #[test]
+@@ -7974,18 +8047,26 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
+             panic!("expected thread context");
+         };
+         assert_eq!(messages.len(), 3);
+-        assert!(messages
+-            .iter()
+-            .all(|message| message.content != "agent reply already retained by ACP"));
+-        assert!(messages
+-            .iter()
+-            .any(|message| message.content == "intervening human reply"));
+-        assert!(messages
+-            .iter()
+-            .any(|message| message.content == "same-key reply from another session"));
+-        assert!(messages
+-            .iter()
+-            .any(|message| message.content == "missing valid author metadata"));
++        assert!(
++            messages
++                .iter()
++                .all(|message| message.content != "agent reply already retained by ACP")
++        );
++        assert!(
++            messages
++                .iter()
++                .any(|message| message.content == "intervening human reply")
++        );
++        assert!(
++            messages
++                .iter()
++                .any(|message| message.content == "same-key reply from another session")
++        );
++        assert!(
++            messages
++                .iter()
++                .any(|message| message.content == "missing valid author metadata")
++        );
+     }
+ 
+     #[test]
+@@ -9205,15 +9286,21 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
+             .into_iter()
+             .filter(|e| e.kind == "turn_liveness")
+             .collect();
+-        assert!(pings
+-            .iter()
+-            .all(|event| event.turn_id.as_deref() == Some("t-1")));
+-        assert!(pings
+-            .iter()
+-            .all(|event| event.started_at.as_deref() == Some(&started_at)));
+-        assert!(pings
+-            .iter()
+-            .all(|event| event.payload == serde_json::json!({})));
++        assert!(
++            pings
++                .iter()
++                .all(|event| event.turn_id.as_deref() == Some("t-1"))
++        );
++        assert!(
++            pings
++                .iter()
++                .all(|event| event.started_at.as_deref() == Some(&started_at))
++        );
++        assert!(
++            pings
++                .iter()
++                .all(|event| event.payload == serde_json::json!({}))
++        );
+         assert_eq!(
+             serde_json::to_value(&pings[0]).unwrap()["startedAt"],
+             started_at,
+@@ -9953,6 +10040,7 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
+     ) -> PromptContext {
+         use crate::relay::RestClient;
+         PromptContext {
++            harness_replies: false,
+             mcp_servers: vec![],
+             initial_message: None,
+             idle_timeout: Duration::from_secs(60),
+@@ -10030,18 +10118,22 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
+             .as_deref(),
+             Some("reply immediately")
+         );
+-        assert!(huddle_instructions_from_query_response(
+-            &[event(&stranger, channel)],
+-            channel,
+-            &owner.public_key(),
+-        )
+-        .is_none());
+-        assert!(huddle_instructions_from_query_response(
+-            &[event(&owner, Uuid::new_v4())],
+-            channel,
+-            &owner.public_key(),
+-        )
+-        .is_none());
++        assert!(
++            huddle_instructions_from_query_response(
++                &[event(&stranger, channel)],
++                channel,
++                &owner.public_key(),
++            )
++            .is_none()
++        );
++        assert!(
++            huddle_instructions_from_query_response(
++                &[event(&owner, Uuid::new_v4())],
++                channel,
++                &owner.public_key(),
++            )
++            .is_none()
++        );
+     }
+ 
+     // ── render_canvas_section ────────────────────────────────────────────────
+@@ -10447,7 +10539,8 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
+                 let body = responses[index].to_string();
+                 let response = format!(
+                     "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+-                    body.len(), body
++                    body.len(),
++                    body
+                 );
+                 let _ = socket.write_all(response.as_bytes()).await;
+             }
+@@ -10497,7 +10590,8 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
+                 let body = "not-json";
+                 let response = format!(
+                     "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+-                    body.len(), body
++                    body.len(),
++                    body
+                 );
+                 let _ = socket.write_all(response.as_bytes()).await;
+             }
+@@ -10585,7 +10679,8 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
+                 let body = "not-json";
+                 let response = format!(
+                     "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+-                    body.len(), body
++                    body.len(),
++                    body
+                 );
+                 let _ = socket.write_all(response.as_bytes()).await;
+             }
+@@ -10741,7 +10836,8 @@ done"#
+                 let body = responses[index].to_string();
+                 let response = format!(
+                     "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+-                    body.len(), body
++                    body.len(),
++                    body
+                 );
+                 socket.write_all(response.as_bytes()).await.unwrap();
+             }
+@@ -10846,7 +10942,8 @@ done"#
+                 let body = responses[index].to_string();
+                 let response = format!(
+                     "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+-                    body.len(), body
++                    body.len(),
++                    body
+                 );
+                 let _ = socket.write_all(response.as_bytes()).await;
+             }
+diff --git a/crates/buzz-acp/src/relay.rs b/crates/buzz-acp/src/relay.rs
+index a019e75..e1f8aac 100644
+--- a/crates/buzz-acp/src/relay.rs
++++ b/crates/buzz-acp/src/relay.rs
+@@ -122,10 +122,10 @@ use buzz_core::kind::{
+ };
+ use futures_util::{SinkExt, StreamExt};
+ use nostr::{Event, EventBuilder, Keys, Kind, RelayUrl, Tag};
+-use serde_json::{json, Value};
++use serde_json::{Value, json};
+ use tokio::sync::mpsc;
+ use tokio::time::timeout;
+-use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
++use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message};
+ use tracing::{debug, info, warn};
+ use uuid::Uuid;
+ 
+@@ -277,6 +277,84 @@ fn unix_now_secs() -> u64 {
+ }
+ 
+ impl RestClient {
++    /// One bounded publication, with no redirect, proxy or application retry.
++    /// A lost acknowledgment is deliberately not converted into a fresh event.
++    pub(crate) async fn submit_room_reply_once(&self, event: &Event) -> &'static str {
++        use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderValue};
++        let Ok(mut url) = url::Url::parse(&self.base_url) else {
++            return "not_sent";
++        };
++        if !matches!(url.scheme(), "http" | "https")
++            || !url.username().is_empty()
++            || url.password().is_some()
++            || url.query().is_some()
++            || url.fragment().is_some()
++            || !matches!(url.path(), "" | "/")
++        {
++            return "not_sent";
++        }
++        url.set_path("/events");
++        let Ok(body) = serde_json::to_vec(event) else {
++            return "not_sent";
++        };
++        let Ok(auth) = self.nip98_header("POST", url.as_str(), Some(&body)) else {
++            return "not_sent";
++        };
++        let Ok(mut auth) = HeaderValue::from_str(&auth) else {
++            return "not_sent";
++        };
++        auth.set_sensitive(true);
++        let Ok(client) = reqwest::Client::builder()
++            .redirect(reqwest::redirect::Policy::none())
++            .no_proxy()
++            .retry(reqwest::retry::never())
++            .connect_timeout(Duration::from_secs(2))
++            .timeout(Duration::from_secs(5))
++            .build()
++        else {
++            return "not_sent";
++        };
++        let mut request = client
++            .post(url)
++            .header(AUTHORIZATION, auth)
++            .header(CONTENT_TYPE, "application/json")
++            .body(body);
++        if let Some(tag) = &self.auth_tag_json {
++            let Ok(mut tag) = HeaderValue::from_str(tag) else {
++                return "not_sent";
++            };
++            tag.set_sensitive(true);
++            request = request.header("x-auth-tag", tag);
++        }
++        let result = tokio::time::timeout(Duration::from_secs(5), async {
++            let Ok(mut response) = request.send().await else {
++                return "delivery_unknown";
++            };
++            if matches!(response.status().as_u16(), 401 | 403) {
++                return "rejected";
++            }
++            if !response.status().is_success() {
++                return "delivery_unknown";
++            }
++            let mut bytes = Vec::new();
++            loop {
++                match response.chunk().await {
++                    Ok(Some(chunk)) if bytes.len() + chunk.len() <= 8192 => {
++                        bytes.extend_from_slice(&chunk)
++                    }
++                    Ok(Some(_)) | Err(_) => return "delivery_unknown",
++                    Ok(None) => break,
++                }
++            }
++            let Ok(ack) = serde_json::from_slice(&bytes) else {
++                return "delivery_unknown";
++            };
++            crate::room_reply::classify_ack(&event.id, &ack)
++        })
++        .await;
++        result.unwrap_or("delivery_unknown")
++    }
++
+     /// Fetch the relay's stable signing identity from its NIP-11 document.
+     ///
+     /// Relay-authored workflow attribution is trusted only when the event signer
+@@ -1602,7 +1680,9 @@ async fn execute_connected_command(
+                 true
+             } else {
+                 // Send failed — record intent so reconnect restores it.
+-                warn!("subscribe REQ failed for channel {channel_id} — recording intent for reconnect");
++                warn!(
++                    "subscribe REQ failed for channel {channel_id} — recording intent for reconnect"
++                );
+                 apply_command_to_state(
+                     state,
+                     RelayCommand::Subscribe {
+@@ -2230,7 +2310,9 @@ async fn handle_ws_message(
+                         match observer_control_tx.try_send(*event) {
+                             Ok(()) => {}
+                             Err(mpsc::error::TrySendError::Full(_)) => {
+-                                warn!("observer control event dropped because control channel is full");
++                                warn!(
++                                    "observer control event dropped because control channel is full"
++                                );
+                             }
+                             Err(mpsc::error::TrySendError::Closed(_)) => return false,
+                         }
+@@ -2434,7 +2516,9 @@ async fn handle_ws_message(
+                         if sent {
+                             state.observer_control_sub_active = true;
+                         } else {
+-                            warn!("observer control resubscribe failed after CLOSED — triggering reconnect");
++                            warn!(
++                                "observer control resubscribe failed after CLOSED — triggering reconnect"
++                            );
+                             return false;
+                         }
+                     } else if subscription_id == MEMBERSHIP_NOTIF_SUB_ID {
+@@ -2472,7 +2556,9 @@ async fn handle_ws_message(
+                                     // Fail closed: missing filter state means the subscription
+                                     // intent is inconsistent. Trigger reconnect rather than
+                                     // resubscribing with a permissive wildcard.
+-                                    warn!("missing filter for channel {channel_id} after CLOSED — triggering reconnect (fail-closed)");
++                                    warn!(
++                                        "missing filter for channel {channel_id} after CLOSED — triggering reconnect (fail-closed)"
++                                    );
+                                     return false;
+                                 }
+                             };
+@@ -2494,7 +2580,9 @@ async fn handle_ws_message(
+                             } else {
+                                 // Resubscribe failed — likely half-dead socket.
+                                 // Keep channel in active_subscriptions so reconnect restores it.
+-                                warn!("channel {channel_id} resubscribe failed after CLOSED — triggering reconnect");
++                                warn!(
++                                    "channel {channel_id} resubscribe failed after CLOSED — triggering reconnect"
++                                );
+                                 return false;
+                             }
+                         } // end: channel is still active
+@@ -2508,7 +2596,9 @@ async fn handle_ws_message(
+                     if let Err(e) =
+                         send_auth_response(ws, &challenge, relay_url, keys, auth_tag).await
+                     {
+-                        warn!("failed to respond to mid-session AUTH challenge: {e} — triggering reconnect");
++                        warn!(
++                            "failed to respond to mid-session AUTH challenge: {e} — triggering reconnect"
++                        );
+                         return false;
+                     }
+                 }
+@@ -2519,7 +2609,9 @@ async fn handle_ws_message(
+                 } => {
+                     if !accepted && message.starts_with("auth") {
+                         // AUTH OK with accepted=false means auth was rejected.
+-                        warn!("mid-session AUTH rejected (event {event_id}): {message} — triggering reconnect");
++                        warn!(
++                            "mid-session AUTH rejected (event {event_id}): {message} — triggering reconnect"
++                        );
+                         return false;
+                     }
+                     // A refused EVENT is acknowledged on its own channel, so the
+@@ -2705,7 +2797,9 @@ async fn resubscribe_after_reconnect(
+                     // Fail closed: missing filter state means the subscription
+                     // intent is inconsistent. Skip rather than resubscribe with
+                     // a permissive wildcard that would widen the subscription.
+-                    warn!("missing filter for channel {channel_id} — skipping resubscribe (fail-closed)");
++                    warn!(
++                        "missing filter for channel {channel_id} — skipping resubscribe (fail-closed)"
++                    );
+                     state.resubscribe_retry.insert(channel_id);
+                     continue;
+                 }
+@@ -2892,7 +2986,9 @@ async fn drain_rate_limited_pending(
+             // will detect the dead socket and trigger a full reconnect.
+             let penalty = tokio::time::Instant::now() + Duration::from_secs(5);
+             state.rate_limited_pending.insert(channel_id, penalty);
+-            warn!("drain_rate_limited_pending: REQ failed for channel {channel_id} — re-queued with +5s penalty");
++            warn!(
++                "drain_rate_limited_pending: REQ failed for channel {channel_id} — re-queued with +5s penalty"
++            );
+         }
+     }
+     sent_count
+@@ -3018,7 +3114,9 @@ async fn drain_commands(
+                 // actual live send attempt.
+                 let pace_after = state.check_rate_gate().is_none();
+                 if !execute_connected_command(ws, state, agent_pubkey_hex, cmd).await {
+-                    warn!("send failed during post-reconnect drain — recording remaining commands as intent");
++                    warn!(
++                        "send failed during post-reconnect drain — recording remaining commands as intent"
++                    );
+                     send_failed = true;
+                 }
+                 if !send_failed
+@@ -3030,7 +3128,9 @@ async fn drain_commands(
+             }
+             cmd => {
+                 if !execute_connected_command(ws, state, agent_pubkey_hex, cmd).await {
+-                    warn!("send failed during post-reconnect drain — recording remaining commands as intent");
++                    warn!(
++                        "send failed during post-reconnect drain — recording remaining commands as intent"
++                    );
+                     send_failed = true;
+                 }
+             }
+@@ -3133,7 +3233,9 @@ async fn try_autonomous_reconnect(
+                         ResubscribeResult::Ok => return ReconnectOutcome::Ok,
+                         ResubscribeResult::Shutdown => return ReconnectOutcome::Shutdown,
+                         ResubscribeResult::RetryConnection => {
+-                            warn!("resubscribe failed after autonomous reconnect — treating as failed attempt");
++                            warn!(
++                                "resubscribe failed after autonomous reconnect — treating as failed attempt"
++                            );
+                             // Fall through to backoff sleep and retry.
+                         }
+                     }
+@@ -3258,7 +3360,9 @@ async fn wait_for_reconnect(
+                 )
+                 .await;
+                 if !handshake_ok {
+-                    warn!("handshake buffer contained a drop signal after reconnect — will retry with backoff");
++                    warn!(
++                        "handshake buffer contained a drop signal after reconnect — will retry with backoff"
++                    );
+                     // Fall through to the backoff sleep below instead of
+                     // tight-looping. A relay that consistently fails the
+                     // handshake would otherwise drive a reconnect storm.
+@@ -3849,8 +3953,8 @@ fn is_terminal_connect_error(err: &RelayError) -> bool {
+ /// startup connect retry. No wildcard — a tungstenite upgrade forces
+ /// reclassification at compile time.
+ fn is_terminal_ws_error(err: &tokio_tungstenite::tungstenite::Error) -> bool {
+-    use tokio_tungstenite::tungstenite::error::ProtocolError;
+     use tokio_tungstenite::tungstenite::Error as WsError;
++    use tokio_tungstenite::tungstenite::error::ProtocolError;
+ 
+     match err {
+         // Deterministic pre-connect / handshake-shape failures.
+@@ -4317,9 +4421,11 @@ mod tests {
+             .relay_self()
+             .await
+             .expect_err("malformed relay identities must fail closed");
+-        assert!(error
+-            .to_string()
+-            .contains("failed to fetch a usable NIP-11 document"));
++        assert!(
++            error
++                .to_string()
++                .contains("failed to fetch a usable NIP-11 document")
++        );
+         server.abort();
+     }
+ 
+@@ -6046,9 +6152,7 @@ mod tests {
+                 "Io(rustls InvalidCertificate(NotValidForName)): hostname mismatch is terminal",
+                 ws(WsError::Io(std::io::Error::new(
+                     std::io::ErrorKind::InvalidData,
+-                    rustls::Error::InvalidCertificate(
+-                        rustls::CertificateError::NotValidForName,
+-                    ),
++                    rustls::Error::InvalidCertificate(rustls::CertificateError::NotValidForName),
+                 ))),
+                 true,
+             ),
+@@ -6975,3 +7079,125 @@ mod tests {
+         );
+     }
+ }
++
++#[cfg(test)]
++mod room_reply_transport_tests {
++    use super::*;
++    use axum::{
++        Router,
++        body::Bytes,
++        extract::State,
++        http::{HeaderMap, StatusCode},
++        response::IntoResponse,
++        routing::post,
++    };
++    use std::sync::{
++        Arc,
++        atomic::{AtomicUsize, Ordering},
++    };
++
++    #[tokio::test]
++    async fn bounded_single_attempt_room_reply_transport() {
++        for case in [
++            "accepted",
++            "mismatch",
++            "malformed",
++            "oversize",
++            "forbidden",
++            "redirect",
++            "unavailable",
++        ] {
++            let calls = Arc::new(AtomicUsize::new(0));
++            let state = (case.to_owned(), calls.clone());
++            async fn serve(
++                State((case, calls)): State<(String, Arc<AtomicUsize>)>,
++                headers: HeaderMap,
++                body: Bytes,
++            ) -> axum::response::Response {
++                calls.fetch_add(1, Ordering::SeqCst);
++                let event: Event = serde_json::from_slice(&body).unwrap();
++                event.verify().unwrap();
++                use base64::Engine;
++                let auth = headers
++                    .get("authorization")
++                    .unwrap()
++                    .to_str()
++                    .unwrap()
++                    .strip_prefix("Nostr ")
++                    .unwrap();
++                let auth: Event = serde_json::from_slice(
++                    &base64::engine::general_purpose::STANDARD
++                        .decode(auth)
++                        .unwrap(),
++                )
++                .unwrap();
++                auth.verify().unwrap();
++                assert_eq!(auth.pubkey, event.pubkey);
++                assert_eq!(auth.kind, Kind::Custom(27235));
++                use sha2::{Digest, Sha256};
++                let digest = hex::encode(Sha256::digest(&body));
++                assert!(
++                    auth.tags
++                        .iter()
++                        .any(|tag| tag.as_slice() == ["payload", digest.as_str()])
++                );
++                match case.as_str() {
++                    "accepted" => {
++                        axum::Json(json!({"event_id": event.id.to_hex(), "accepted": true}))
++                            .into_response()
++                    }
++                    "mismatch" => {
++                        axum::Json(json!({"event_id": "00".repeat(32), "accepted": true}))
++                            .into_response()
++                    }
++                    "malformed" => "not json".into_response(),
++                    "oversize" => "x".repeat(8193).into_response(),
++                    "forbidden" => StatusCode::FORBIDDEN.into_response(),
++                    "redirect" => {
++                        (StatusCode::TEMPORARY_REDIRECT, [("location", "/events")]).into_response()
++                    }
++                    _ => StatusCode::SERVICE_UNAVAILABLE.into_response(),
++                }
++            }
++            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
++            let addr = listener.local_addr().unwrap();
++            let app = Router::new()
++                .route("/events", post(serve))
++                .with_state(state);
++            let server = tokio::spawn(async move {
++                axum::serve(listener, app).await.unwrap();
++            });
++            let keys = Keys::generate();
++            let reply = crate::room_reply::Ready {
++                target: crate::room_reply::Target {
++                    channel_id: Uuid::new_v4(),
++                    root_event_id: nostr::EventId::from_hex("01".repeat(32)).unwrap(),
++                },
++                text: "synthetic reply".into(),
++            };
++            let event = reply.sign(&keys).unwrap();
++            let rest = RestClient {
++                http: reqwest::Client::new(),
++                base_url: format!("http://{addr}"),
++                keys,
++                auth_tag_json: None,
++            };
++            let expected = match case {
++                "accepted" => "accepted",
++                "forbidden" => "rejected",
++                _ => "delivery_unknown",
++            };
++            assert_eq!(
++                rest.submit_room_reply_once(&event).await,
++                expected,
++                "{case}"
++            );
++            assert_eq!(
++                calls.load(Ordering::SeqCst),
++                1,
++                "must not retry or follow redirects: {case}"
++            );
++            server.abort();
++        }
++    }
++}
+diff --git a/crates/buzz-acp/src/reply_capture.rs b/crates/buzz-acp/src/reply_capture.rs
+new file mode 100644
+index 0000000..41c8f07
+--- /dev/null
++++ b/crates/buzz-acp/src/reply_capture.rs
+@@ -0,0 +1,188 @@
++//! Bounded, turn-local collection of user-facing ACP message text.
++
++const MAX_REPLY_BYTES: usize = 64 * 1024;
++
++pub(crate) struct Capture {
++    session_id: String,
++    text: String,
++    failure: Option<&'static str>,
++}
++
++impl Capture {
++    pub(crate) fn new(session: &str) -> Self {
++        Self {
++            session_id: session.to_owned(),
++            text: String::new(),
++            failure: None,
++        }
++    }
++
++    pub(crate) fn observe(&mut self, message: &serde_json::Value) {
++        // Only ACP notifications can contribute text. A response or request with
++        // an id cannot be mistaken for an agent's user-facing message.
++        if message.get("jsonrpc").and_then(serde_json::Value::as_str) != Some("2.0")
++            || message.get("method").and_then(serde_json::Value::as_str) != Some("session/update")
++            || message.get("id").is_some()
++            || message
++                .pointer("/params/update/sessionUpdate")
++                .and_then(serde_json::Value::as_str)
++                != Some("agent_message_chunk")
++        {
++            return;
++        }
++
++        match message
++            .pointer("/params/sessionId")
++            .and_then(serde_json::Value::as_str)
++        {
++            Some(id) if id == self.session_id.as_str() => {}
++            Some(_) => return,
++            None => {
++                self.poison("malformed");
++                return;
++            }
++        }
++
++        let content = &message["params"]["update"]["content"];
++        match content.get("type").and_then(serde_json::Value::as_str) {
++            Some("text") => {}
++            Some(_) => return, // Images and other content blocks are unsupported.
++            None => {
++                self.poison("malformed");
++                return;
++            }
++        }
++        let Some(chunk) = content.get("text").and_then(serde_json::Value::as_str) else {
++            self.poison("malformed");
++            return;
++        };
++        if self.failure.is_some() {
++            return;
++        }
++        if chunk.len() > MAX_REPLY_BYTES.saturating_sub(self.text.len()) {
++            self.poison("too_large");
++            return;
++        }
++        self.text.push_str(chunk);
++    }
++
++    pub(crate) fn finish(self, completed: bool) -> Result<String, &'static str> {
++        if !completed {
++            return Err("cancelled");
++        }
++        if let Some(reason) = self.failure {
++            return Err(reason);
++        }
++        if self.text.trim().is_empty() {
++            return Err("empty");
++        }
++        Ok(self.text)
++    }
++
++    fn poison(&mut self, reason: &'static str) {
++        self.failure.get_or_insert(reason);
++        self.text.clear();
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::{Capture, MAX_REPLY_BYTES};
++    use serde_json::{Value, json};
++
++    fn chunk(session: &str, content: Value) -> Value {
++        json!({
++            "jsonrpc": "2.0", "method": "session/update",
++            "params": {"sessionId": session, "update": {
++                "sessionUpdate": "agent_message_chunk", "content": content
++            }}
++        })
++    }
++
++    #[test]
++    fn matching_text_chunks_keep_wire_order() {
++        let mut capture = Capture::new("active");
++        capture.observe(&chunk("active", json!({"type": "text", "text": "Hello"})));
++        capture.observe(&chunk("active", json!({"type": "text", "text": ", "})));
++        capture.observe(&chunk("active", json!({"type": "text", "text": "world"})));
++        assert_eq!(capture.finish(true), Ok("Hello, world".to_owned()));
++    }
++
++    #[test]
++    fn other_sessions_and_non_notifications_are_ignored() {
++        let mut capture = Capture::new("active");
++        let foreign = chunk("other", json!({"type": "text", "text": "secret"}));
++        capture.observe(&foreign);
++        let mut with_id = chunk("active", json!({"type": "text", "text": "request"}));
++        with_id["id"] = json!(1);
++        capture.observe(&with_id);
++        let mut wrong_version = chunk("active", json!({"type": "text", "text": "old"}));
++        wrong_version["jsonrpc"] = json!("1.0");
++        capture.observe(&wrong_version);
++        capture.observe(&chunk("active", json!({"type": "text", "text": "yes"})));
++        assert_eq!(capture.finish(true), Ok("yes".to_owned()));
++    }
++
++    #[test]
++    fn missing_session_poison_clears_previous_text() {
++        let mut capture = Capture::new("active");
++        capture.observe(&chunk("active", json!({"type": "text", "text": "before"})));
++        let mut malformed = chunk("active", json!({"type": "text", "text": "bad"}));
++        malformed["params"]
++            .as_object_mut()
++            .unwrap()
++            .remove("sessionId");
++        capture.observe(&malformed);
++        capture.observe(&chunk("active", json!({"type": "text", "text": "after"})));
++        assert_eq!(capture.finish(true), Err("malformed"));
++    }
++
++    #[test]
++    fn thought_tool_and_nontext_content_are_not_copied() {
++        let mut capture = Capture::new("active");
++        let mut thought = chunk("active", json!({"type": "text", "text": "private"}));
++        thought["params"]["update"]["sessionUpdate"] = json!("agent_thought_chunk");
++        capture.observe(&thought);
++        let mut tool = thought.clone();
++        tool["params"]["update"]["sessionUpdate"] = json!("tool_call_update");
++        capture.observe(&tool);
++        capture.observe(&chunk("active", json!({"type": "image", "data": "hidden"})));
++        capture.observe(&chunk("active", json!({"type": "text", "text": "public"})));
++        assert_eq!(capture.finish(true), Ok("public".to_owned()));
++    }
++
++    #[test]
++    fn malformed_text_poison_clears_previous_text() {
++        let mut capture = Capture::new("active");
++        capture.observe(&chunk("active", json!({"type": "text", "text": "before"})));
++        capture.observe(&chunk("active", json!({"type": "text", "text": 7})));
++        assert_eq!(capture.finish(true), Err("malformed"));
++    }
++
++    #[test]
++    fn byte_limit_includes_multibyte_utf8() {
++        let mut exact = Capture::new("active");
++        exact.observe(&chunk(
++            "active",
++            json!({"type": "text", "text": "é".repeat(MAX_REPLY_BYTES / 2)}),
++        ));
++        assert_eq!(exact.finish(true).unwrap().len(), MAX_REPLY_BYTES);
++
++        let mut overflow = Capture::new("active");
++        overflow.observe(&chunk(
++            "active",
++            json!({"type": "text", "text": "x".repeat(MAX_REPLY_BYTES - 1)}),
++        ));
++        overflow.observe(&chunk("active", json!({"type": "text", "text": "é"})));
++        overflow.observe(&chunk("active", json!({"type": "text", "text": "after"})));
++        assert_eq!(overflow.finish(true), Err("too_large"));
++    }
++
++    #[test]
++    fn empty_and_cancelled_turns_have_distinct_results() {
++        assert_eq!(Capture::new("active").finish(true), Err("empty"));
++        let mut capture = Capture::new("active");
++        capture.observe(&chunk("active", json!({"type": "text", "text": "partial"})));
++        assert_eq!(capture.finish(false), Err("cancelled"));
++    }
++}
+diff --git a/crates/buzz-acp/src/room_reply.rs b/crates/buzz-acp/src/room_reply.rs
+new file mode 100644
+index 0000000..b1ca342
+--- /dev/null
++++ b/crates/buzz-acp/src/room_reply.rs
+@@ -0,0 +1,237 @@
++//! Trusted thread destinations and relay acknowledgment classification.
++
++use crate::scope::SessionScope;
++use uuid::Uuid;
++
++const MAX_REPLY_BYTES: usize = 64 * 1024;
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) struct Target {
++    pub channel_id: Uuid,
++    pub root_event_id: nostr::EventId,
++}
++
++impl Target {
++    pub(crate) fn from_scope(scope: &SessionScope) -> Result<Self, &'static str> {
++        let SessionScope::Thread {
++            channel_id,
++            root_event_id,
++        } = scope
++        else {
++            return Err("unsupported_scope");
++        };
++        let root = nostr::EventId::from_hex(root_event_id).map_err(|_| "invalid_root")?;
++        if root.to_hex() != *root_event_id {
++            return Err("invalid_root");
++        }
++        Ok(Self {
++            channel_id: *channel_id,
++            root_event_id: root,
++        })
++    }
++
++    pub(crate) fn matches_scope(&self, scope: &SessionScope) -> bool {
++        Self::from_scope(scope).is_ok_and(|target| target == *self)
++    }
++}
++
++pub(crate) struct Ready {
++    pub target: Target,
++    pub text: String,
++}
++
++impl Ready {
++    pub(crate) fn sign(&self, keys: &nostr::Keys) -> Result<nostr::Event, &'static str> {
++        if self.text.trim().is_empty() {
++            return Err("empty");
++        }
++        if self.text.len() > MAX_REPLY_BYTES {
++            return Err("too_large");
++        }
++        let thread = buzz_sdk::ThreadRef {
++            root_event_id: self.target.root_event_id,
++            parent_event_id: self.target.root_event_id,
++        };
++        buzz_sdk::build_message(
++            self.target.channel_id,
++            &self.text,
++            Some(&thread),
++            &[],
++            false,
++            &[],
++            &[],
++        )
++        .map_err(|_| "build_failed")?
++        .sign_with_keys(keys)
++        .map_err(|_| "sign_failed")
++    }
++}
++
++/// A duplicate response is ambiguous because it does not prove that this
++/// submission created the event. Callers must retain the signed event ID.
++pub(crate) fn classify_ack(expected: &nostr::EventId, ack: &serde_json::Value) -> &'static str {
++    if ack.get("event_id").and_then(serde_json::Value::as_str) != Some(expected.to_hex().as_str()) {
++        return "delivery_unknown";
++    }
++    match ack.get("accepted").and_then(serde_json::Value::as_bool) {
++        Some(true) => "accepted",
++        Some(false)
++            if ack
++                .get("message")
++                .and_then(serde_json::Value::as_str)
++                .is_some_and(|message| message.starts_with("duplicate:")) =>
++        {
++            "delivery_unknown"
++        }
++        Some(false) => "rejected",
++        None => "delivery_unknown",
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::{MAX_REPLY_BYTES, Ready, Target, classify_ack};
++    use crate::scope::SessionScope;
++    use nostr::{EventId, Keys, Kind};
++    use serde_json::json;
++    use uuid::Uuid;
++
++    fn scope(channel_id: Uuid, root: &str) -> SessionScope {
++        SessionScope::Thread {
++            channel_id,
++            root_event_id: root.to_owned(),
++        }
++    }
++
++    fn root() -> EventId {
++        EventId::from_hex("ab".repeat(32)).unwrap()
++    }
++
++    #[test]
++    fn target_accepts_only_canonical_thread_scope() {
++        let channel = Uuid::new_v4();
++        let valid = scope(channel, &root().to_hex());
++        let target = Target::from_scope(&valid).unwrap();
++        assert_eq!(target.channel_id, channel);
++        assert_eq!(target.root_event_id, root());
++        assert!(target.matches_scope(&valid));
++        assert!(!target.matches_scope(&scope(Uuid::new_v4(), &root().to_hex())));
++        assert!(!target.matches_scope(&scope(channel, &"cd".repeat(32))));
++        assert_eq!(
++            Target::from_scope(&scope(channel, "invalid")),
++            Err("invalid_root")
++        );
++        assert_eq!(
++            Target::from_scope(&scope(channel, &"AB".repeat(32))),
++            Err("invalid_root")
++        );
++        assert_eq!(
++            Target::from_scope(&SessionScope::Conversation {
++                channel_id: channel
++            }),
++            Err("unsupported_scope")
++        );
++    }
++
++    #[test]
++    fn signed_reply_uses_public_author_and_flat_thread_tags() {
++        let keys = Keys::generate();
++        let channel = Uuid::new_v4();
++        let event = Ready {
++            target: Target::from_scope(&scope(channel, &root().to_hex())).unwrap(),
++            text: "A reply".to_owned(),
++        }
++        .sign(&keys)
++        .unwrap();
++        event.verify().unwrap();
++        assert_eq!(event.kind, Kind::Custom(9));
++        assert_eq!(event.pubkey, keys.public_key());
++        assert_eq!(event.content, "A reply");
++        let tags: Vec<&[String]> = event.tags.iter().map(|tag| tag.as_slice()).collect();
++        assert_eq!(tags.len(), 2);
++        assert!(tags.contains(&["h".to_owned(), channel.to_string()].as_slice()));
++        assert!(
++            tags.contains(
++                &[
++                    "e".to_owned(),
++                    root().to_hex(),
++                    String::new(),
++                    "reply".to_owned()
++                ]
++                .as_slice()
++            )
++        );
++    }
++
++    #[test]
++    fn signing_rejects_empty_and_excess_utf8_bytes() {
++        let keys = Keys::generate();
++        let target = Target::from_scope(&scope(Uuid::new_v4(), &root().to_hex())).unwrap();
++        for text in [String::new(), "   ".to_owned()] {
++            assert!(matches!(
++                Ready {
++                    target: target.clone(),
++                    text
++                }
++                .sign(&keys),
++                Err("empty")
++            ));
++        }
++        assert!(matches!(
++            Ready {
++                target: target.clone(),
++                text: "é".repeat(MAX_REPLY_BYTES / 2 + 1),
++            }
++            .sign(&keys),
++            Err("too_large")
++        ));
++        assert!(
++            Ready {
++                target,
++                text: "é".repeat(MAX_REPLY_BYTES / 2),
++            }
++            .sign(&keys)
++            .is_ok()
++        );
++    }
++
++    #[test]
++    fn ack_requires_exact_event_id_and_boolean_result() {
++        let id = root();
++        let matching = id.to_hex();
++        assert_eq!(
++            classify_ack(&id, &json!({"event_id": matching, "accepted": true})),
++            "accepted"
++        );
++        assert_eq!(
++            classify_ack(
++                &id,
++                &json!({"event_id": id.to_hex(), "accepted": false, "message": "denied"})
++            ),
++            "rejected"
++        );
++        assert_eq!(
++            classify_ack(
++                &id,
++                &json!({"event_id": id.to_hex(), "accepted": false, "message": "duplicate: stored"})
++            ),
++            "delivery_unknown"
++        );
++        assert_eq!(
++            classify_ack(&id, &json!({"event_id": "wrong", "accepted": true})),
++            "delivery_unknown"
++        );
++        assert_eq!(
++            classify_ack(&id, &json!({"event_id": id.to_hex(), "accepted": "true"})),
++            "delivery_unknown"
++        );
++        assert_eq!(
++            classify_ack(&id, &json!({"accepted": true})),
++            "delivery_unknown"
++        );
++        assert_eq!(
++            classify_ack(&id, &serde_json::Value::Null),
++            "delivery_unknown"
++        );
++    }
++}
+diff --git a/crates/buzz-acp/src/runtime.rs b/crates/buzz-acp/src/runtime.rs
+index 6fd67b3..d076988 100644
+--- a/crates/buzz-acp/src/runtime.rs
++++ b/crates/buzz-acp/src/runtime.rs
+@@ -1,8 +1,8 @@
+ //! Shared agent capabilities. Intake and scheduling belong to each entry point;
+ //! environment, credentials, adapter settings and prompt equipment belong here.
+ use crate::{
+-    build_mcp_servers, config::Config, current_working_directory, git, observer, pool, relay,
+-    resolve_agent_owner, PromptContext,
++    PromptContext, build_mcp_servers, config::Config, current_working_directory, git, observer,
++    pool, relay, resolve_agent_owner,
+ };
+ use anyhow::Result;
+ use std::{collections::HashMap, time::Duration};
+@@ -22,6 +22,16 @@ pub(crate) struct AgentRuntime {
+ 
+ impl AgentRuntime {
+     pub(crate) fn prepare(mut config: Config) -> Result<Self> {
++        anyhow::ensure!(
++            !config.harness_replies
++                || (config.isolate_relay_identity
++                    && config.session_policy == crate::scope::SessionPolicy::Thread
++                    && config.multiple_event_handling
++                        == crate::config::MultipleEventHandling::Queue
++                    && config.initial_message.is_none()
++                    && config.heartbeat_interval_secs == 0),
++            "invalid harness reply configuration"
++        );
+         let git_environment = if config.isolate_relay_identity {
+             anyhow::ensure!(
+                 config.mcp_command.is_empty(),
+@@ -97,6 +107,7 @@ fn make_prompt_context(
+     let cwd = current_working_directory()?;
+     Ok(PromptContext {
+         mcp_servers: build_mcp_servers(config),
++        harness_replies: config.harness_replies,
+         initial_message: config.initial_message.clone(),
+         idle_timeout: Duration::from_secs(config.idle_timeout_secs),
+         max_turn_duration: Duration::from_secs(config.max_turn_duration_secs),
+@@ -105,7 +116,9 @@ fn make_prompt_context(
+         system_prompt: config.system_prompt.clone(),
+         session_title: config.session_title.clone(),
+         team_instructions: config.team_instructions.clone(),
+-        base_prompt: if config.no_base_prompt {
++        base_prompt: if config.harness_replies {
++            Some("Reply using user-facing ACP text. The Buzz harness posts your completed reply to the incoming room thread. Do not use Buzz CLI, MCP or Git credentials to publish. Do not include private reasoning or credentials in your reply.".into())
++        } else if config.no_base_prompt {
+             None
+         } else {
+             // Build standing context once under the configured policy, before

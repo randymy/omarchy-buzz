@@ -686,3 +686,16 @@ demo must use Pro, not an API-billed substitute. Codex's generated native types
 expose `forced_login_method` as a potential enforcement mechanism; matching native
 0.158.0 source/precedence still needs inspection before relying on it. Neither
 provider's real login or effective billing mode has been tested.
+
+## Harness-owned reply draft (2026-09-28)
+
+Added a fifth incremental upstream proposal, [harness replies](upstream/ACP_HARNESS_REPLIES.md),
+with bounded ACP user-facing text capture, fresh-session routing, SDK signing and
+single-attempt HTTP delivery. It is unsubmitted and uninstalled. Independent
+review caught a dropped input batch during session-guard recycling; that path now
+preserves the batch. Review also identified the unresolved open-room membership
+removal race described in the proposal; this remains a release blocker.
+
+Manual CI now includes capture/signing/loopback delivery tests. Results pending;
+no new build or end-to-end success is claimed here. Pro real-login, payer control,
+tool execution policy and full prompt-to-room acceptance remain outstanding.
