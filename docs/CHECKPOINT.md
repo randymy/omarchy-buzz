@@ -630,3 +630,23 @@ used. Installed 0.0.6 remains unchanged. Next: actual adapter artifact and isola
 initialization validation, then user-driven subscription sign-in when ready;
 effective-payer and safe execution requirements remain. The local patches are
 still unsubmitted proposals and have not changed the production dependency pin.
+
+## Published adapter discovery verified, 2026-09-28
+
+[Manual run 36478940003](https://github.com/randymy/omarchy-buzz/actions/runs/36478940003)
+succeeded in 2m58s at `4b28fb659d9df5c5a3e8da1a1c868e95e02b729c`.
+Pinned npm artifacts Codex ACP 2.0.0/native Codex 0.158.0 and Claude ACP
+0.82.0/SDK 0.3.280 initialize through the complete patched Buzz harness on
+Linux x86_64/Node 22.23.3. Codex advertises agent-owned `chat-gpt` and `api-key`;
+Claude advertises terminal `claude-ai-login` and `console-login` only with
+explicit terminal capability. Four discovery cases, five probe boundary tests,
+nine real-client synthetic auth cases and three targeted upstream unit tests
+passed. See [validation](VENDOR_ADAPTER_VALIDATION.md) and its sanitized evidence.
+
+Discovery ran in an offline network/PID namespace with fresh profiles; no account
+sign-in, model task, production relay or installed plugin changed. Automatic
+workflows remain disabled. ARM64 runtime, real login, effective payer and safe
+execution remain gates. Independent review reconfirmed there is no current
+key-FD/stdin input in Buzz ACP; adding one alone would not stop mandatory Git
+bootstrap from writing and forwarding the relay key. Address that upstream
+boundary together with child propagation before a persistent-identity demo.

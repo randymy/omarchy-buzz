@@ -1,5 +1,9 @@
 # Codex ACP: pinned authentication source assessment
 
+Published artifact initialization has since passed on an isolated Linux x86_64
+runner; see [runtime follow-up](VENDOR_ADAPTER_VALIDATION.md). The original
+source assessment and its account/billing limits remain below.
+
 Reviewed 2026-09-28 from public `agentclientprotocol/codex-acp` commit
 [`2eebebc35441e03cd466003b40a75953b221b886`](https://github.com/agentclientprotocol/codex-acp/tree/2eebebc35441e03cd466003b40a75953b221b886).
 Its source package declares version `2.0.0` and depends on `@openai/codex`

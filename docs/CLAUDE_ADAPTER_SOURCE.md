@@ -1,5 +1,9 @@
 # Claude Agent ACP: pinned source assessment
 
+Published artifact initialization has since passed on an isolated Linux x86_64
+runner; see [runtime follow-up](VENDOR_ADAPTER_VALIDATION.md). The original
+source assessment and its account/billing limits remain below.
+
 Reviewed 2026-09-28 from the public `agentclientprotocol/claude-agent-acp`
 `main` commit [`18de37624071b48e95aed9ec5382823e2d72cd39`](https://github.com/agentclientprotocol/claude-agent-acp/tree/18de37624071b48e95aed9ec5382823e2d72cd39).
 The source package identifies itself as version `0.82.0` in

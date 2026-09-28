@@ -1,0 +1,71 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-09-28",
+  "runId": 36478940003,
+  "runUrl": "https://github.com/randymy/omarchy-buzz/actions/runs/36478940003",
+  "conclusion": "success",
+  "pluginRevision": "4b28fb659d9df5c5a3e8da1a1c868e95e02b729c",
+  "upstreamBase": "781d39510cf23cfe224e8f521ae06a23377e06de",
+  "runner": "ubuntu-24.04 Linux x86_64",
+  "lockSha256": "08abfc394262401b0f2d4ea824475b094036ba955bf9740c3e1f047ea17a0ef8",
+  "discovery": {
+    "failures": [],
+    "methods": {
+      "claude": {
+        "default": [],
+        "terminalOptIn": [
+          {
+            "id": "claude-ai-login",
+            "type": "terminal"
+          },
+          {
+            "id": "console-login",
+            "type": "terminal"
+          }
+        ]
+      },
+      "codex": {
+        "default": [
+          {
+            "id": "api-key",
+            "type": "agent"
+          },
+          {
+            "id": "chat-gpt",
+            "type": "agent"
+          }
+        ],
+        "terminalOptIn": [
+          {
+            "id": "api-key",
+            "type": "agent"
+          },
+          {
+            "id": "chat-gpt",
+            "type": "agent"
+          }
+        ]
+      }
+    },
+    "networkIsolated": true,
+    "nodeVersion": "v22.23.3",
+    "packages": {
+      "@agentclientprotocol/claude-agent-acp": "0.82.0",
+      "@agentclientprotocol/codex-acp": "2.0.0",
+      "@anthropic-ai/claude-agent-sdk": "0.3.280",
+      "@openai/codex": "0.158.0"
+    },
+    "successful": true
+  },
+  "providerLoginPerformed": false,
+  "modelPromptPerformed": false,
+  "productionRelayUsed": false,
+  "installedPluginChanged": false,
+  "limits": [
+    "Network namespace and fresh profiles; not a filesystem sandbox",
+    "Published adapter initialization and methods only; no subscription or API login",
+    "Linux x86_64 only; ARM64 runtime remains unverified",
+    "Does not certify effective payer, workspace permissions or safe agent execution",
+    "Local Buzz proposals remain unsubmitted and uninstalled"
+  ]
+}

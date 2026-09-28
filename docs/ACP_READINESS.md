@@ -214,3 +214,13 @@ tests and nine actual-client authentication tests pass with synthetic stdio peer
 This does not certify vendor adapters, provider sign-in, billing choice, complete
 desktop integration, credential propagation or tool permissions. The staged
 patches remain unsubmitted and uninstalled.
+
+## Published adapter discovery follow-up
+
+[Manual run 36478940003](VENDOR_ADAPTER_VALIDATION.md) now verifies published
+Codex ACP 2.0.0 and Claude ACP 0.82.0 initialization and their subscription/API
+login method descriptors through the complete patched harness on Linux x86_64.
+All four offline discovery cases pass with fresh profiles. No authentication or
+model task was requested. ARM64 runtime, actual account behavior, effective
+payer and safe relay-key/tool handling remain unverified. Installed 0.0.6 is
+unchanged; this evidence concerns the disposable conformance build.

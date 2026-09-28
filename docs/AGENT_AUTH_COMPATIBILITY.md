@@ -166,3 +166,13 @@ real-harness tests against fake stdio peers passed in
 This verifies Buzz's command/transport integration, not Codex or Claude adapter
 installation, account sign-in, subscription reuse or effective payer. Those
 remain the next provider-specific checks.
+
+## Published artifact discovery verified
+
+The next conformance step now passes: [published adapter validation](VENDOR_ADAPTER_VALIDATION.md)
+records four offline discovery cases for Codex ACP 2.0.0 and Claude ACP 0.82.0
+on Linux x86_64. Codex advertises ChatGPT/API-key methods; Claude advertises
+subscription/Console terminal methods only with explicit terminal capability.
+This supersedes the earlier lack of vendor runtime evidence **for isolated
+initialization only**. No account login, subscription reuse, effective-payer
+check or local ARM64 adapter installation is claimed.
