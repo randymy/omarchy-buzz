@@ -379,3 +379,19 @@ enrollment, restart activation/service, and confirm authenticated room discovery
 Temporary maintenance source retained outside the repo at
 `/tmp/omarchy-buzz-maintenance-add-member.rs`; binary is in the existing temporary
 build tree. No broader admin surface was added to the plugin.
+
+## Human enrollment and native room access verified
+
+Operator completed hidden-terminal enrollment with the intended separate human
+public identity. Started the helper socket/service. Its projected status confirms
+the expected human identity, authenticated connection, and four discovered rooms,
+including the requested private development stream. A scoped read-only history
+request returned `snapshot` with zero visible rows and the expected conservative
+`history_completeness_unknown` category. No message contents were printed and no
+chat message was sent. Native panel summon succeeded. The earlier enrollment and
+room-discovery blockers are resolved for this human identity; sending and a
+cross-client reply remain to be exercised deliberately by the operator.
+
+The old server-identity Secret Service entry has not been deleted; configuration
+now selects the human identity. The original relay's self-tag omission and the
+previously documented exposed-human-key limitation remain separate follow-ups.
