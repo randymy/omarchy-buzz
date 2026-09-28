@@ -23,6 +23,7 @@ OWNER = "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
 AGENT = "c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5"
 PUBLIC_FIXTURE_SCALAR = "0" * 63 + "2"
 PEER = "desktop/tests/e2e/fixtures/fake-acp-agent.mjs"
+REPLY_PEER = Path(__file__).resolve().parents[1] / "tests/harness_reply_peer.py"
 
 
 def origin(value):
@@ -57,7 +58,7 @@ def room(value):
     return value
 
 
-def environment(directory, binaries, node, relay):
+def environment(directory, binaries, node, relay, harness_replies=False):
     paths = {}
     for name in ("home", "config", "runtime", "state", "data", "cache", "workspace"):
         path = directory / name
@@ -65,23 +66,48 @@ def environment(directory, binaries, node, relay):
         paths[name] = path
     # Deliberately build from scratch; no auth, keyring/session bus, Git config,
     # cloud provider, proxy, dynamic loader, or inherited agent configuration.
-    return {"PATH": os.pathsep.join((str(binaries), str(node.parent), "/usr/bin", "/bin")),
+    env = {"PATH": os.pathsep.join((str(binaries), str(node.parent), "/usr/bin", "/bin")),
             "HOME": str(paths["home"]), "XDG_CONFIG_HOME": str(paths["config"]),
             "XDG_RUNTIME_DIR": str(paths["runtime"]), "XDG_STATE_HOME": str(paths["state"]),
             "XDG_DATA_HOME": str(paths["data"]), "XDG_CACHE_HOME": str(paths["cache"]),
             "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
-            "GIT_TERMINAL_PROMPT": "0", "BUZZ_RELAY_URL": relay,
-            "BUZZ_PRIVATE_KEY": PUBLIC_FIXTURE_SCALAR,
-            "BUZZ_E2E_CLI_BIN": str(binaries / "buzz"), "RUST_LOG": "warn",
+            "GIT_TERMINAL_PROMPT": "0", "BUZZ_RELAY_URL": relay, "RUST_LOG": "warn",
             "LANG": "C.UTF-8"}
+    if not harness_replies:
+        env["BUZZ_PRIVATE_KEY"] = PUBLIC_FIXTURE_SCALAR
+        env["BUZZ_E2E_CLI_BIN"] = str(binaries / "buzz")
+    return env
 
 
-def command(binaries, node, peer, room_id):
-    return [str(binaries / "buzz-acp"), "--agent-command", str(node), "--agent-args", str(peer),
+def command(binaries, node, peer, room_id, harness_replies=False, key_fd=None):
+    args = [str(binaries / "buzz-acp"), "--agent-command", str(node), "--agent-args", str(peer),
             "--agent-owner", OWNER, "--respond-to", "owner-only", "--allowed-respond-to", "owner-only",
             "--subscribe", "mentions", "--channels", room_id, "--kinds", "9",
-            "--permission-mode", "default", "--mcp-command", "", "--no-memory", "--no-presence",
+            "--mcp-command", "", "--no-memory", "--no-presence",
             "--no-typing", "--idle-timeout", "10", "--max-turn-duration", "30"]
+    if harness_replies:
+        if key_fd is None or key_fd < 3:
+            raise ValueError("reply fixture requires inherited key pipe")
+        args.extend(["--private-key-fd", str(key_fd), "--harness-replies",
+                     "--session-policy", "thread", "--multiple-event-handling", "queue",
+                     "--deny-tool-requests", "--permission-mode", "read-only",
+                     "--heartbeat-interval", "0"])
+    else:
+        args.extend(["--permission-mode", "default"])
+    return args
+
+
+def identity_pipe():
+    """Return a read end containing only the fixed, disposable fixture scalar."""
+    read_fd, write_fd = os.pipe()
+    try:
+        os.write(write_fd, (PUBLIC_FIXTURE_SCALAR + "\n").encode("ascii"))
+    except BaseException:
+        os.close(read_fd)
+        raise
+    finally:
+        os.close(write_fd)
+    return read_fd
 
 
 def session_groups(session):
@@ -143,37 +169,56 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--buzz-source", required=True, type=Path)
     parser.add_argument("--buzz-bin-dir", required=True, type=Path)
-    parser.add_argument("--node", required=True, type=Path)
+    parser.add_argument("--node", type=Path, help="required for the legacy CLI-backed peer")
     parser.add_argument("--relay-url", required=True, type=checked_type(origin))
     parser.add_argument("--room", required=True, type=checked_type(room))
     parser.add_argument("--fixture-auth-tag", required=True, type=checked_type(auth_tag))
+    parser.add_argument("--harness-replies", action="store_true",
+                        help="use the patched harness publisher and text-only Python ACP peer")
     parser.add_argument("--deadline", type=int, default=90)
     args = parser.parse_args()
     if not 1 <= args.deadline <= 180:
         raise ValueError("deadline must be 1..180 seconds")
-    source, binaries, node = args.buzz_source.resolve(), args.buzz_bin_dir.resolve(), args.node.resolve()
+    if not args.harness_replies and args.node is None:
+        raise ValueError("legacy fixture requires --node")
+    source, binaries = args.buzz_source.resolve(), args.buzz_bin_dir.resolve()
+    node = args.node.resolve() if args.node is not None else Path(sys.executable)
     if "," in str(source):
         raise ValueError("fixture source path cannot contain the CLI argument delimiter")
     verify_source(source)
-    for executable in (node, *(binaries / name for name in ("buzz-acp", "buzz", "git-sign-nostr", "git-credential-nostr"))):
+    required = ("buzz-acp",) if args.harness_replies else ("buzz-acp", "buzz", "git-sign-nostr", "git-credential-nostr")
+    executables = (sys.executable, *(binaries / name for name in required)) if args.harness_replies else (node, *(binaries / name for name in required))
+    for executable in executables:
         if not executable.is_file() or not os.access(executable, os.X_OK):
             raise ValueError("required isolated fixture executable unavailable")
+    if args.harness_replies and not REPLY_PEER.is_file():
+        raise ValueError("text-only synthetic ACP peer unavailable")
     # Ctrl-C/SIGTERM enter the same finally-based group cleanup as normal stop.
     def interrupted(_number, _frame):
         raise KeyboardInterrupt()
     signal.signal(signal.SIGTERM, interrupted)
     with tempfile.TemporaryDirectory(prefix="omarchy-buzz-acp-") as temporary:
         directory = Path(temporary)
-        env = environment(directory, binaries, node, args.relay_url)
+        env = environment(directory, binaries, node, args.relay_url, args.harness_replies)
         env["BUZZ_AUTH_TAG"] = args.fixture_auth_tag
         with (directory / "private.log").open("wb") as output:
             os.chmod(directory / "private.log", 0o600)
-            process = subprocess.Popen(command(binaries, node, source / PEER, args.room), env=env,
-                                       cwd=directory / "workspace", stdin=subprocess.DEVNULL,
-                                       stdout=output, stderr=output, start_new_session=True)
+            key_fd = identity_pipe() if args.harness_replies else None
+            try:
+                process = subprocess.Popen(
+                    command(binaries, Path(sys.executable) if args.harness_replies else node,
+                            REPLY_PEER if args.harness_replies else source / PEER,
+                            args.room, args.harness_replies, key_fd),
+                    env=env, cwd=directory / "workspace", stdin=subprocess.DEVNULL,
+                    stdout=output, stderr=output, start_new_session=True,
+                    pass_fds=(key_fd,) if key_fd is not None else ())
+            finally:
+                if key_fd is not None:
+                    os.close(key_fd)
             try:
                 print(json.dumps({"type": "started", "agentKey": AGENT, "ownerKey": OWNER,
-                                  "roomId": args.room, "sourceRevision": PIN}), flush=True)
+                                  "roomId": args.room, "sourceRevision": PIN,
+                                  "replyMode": "harness" if args.harness_replies else "legacy"}), flush=True)
                 # A distinct driver must establish readiness through relay observations.
                 expires = time.monotonic() + args.deadline
                 with selectors.DefaultSelector() as selector:

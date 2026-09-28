@@ -76,4 +76,67 @@ with tempfile.TemporaryDirectory(prefix="buzz-acp-supervisor-test-") as temporar
     exited = subprocess.Popen([sys.executable, "-c", "pass"], env=env, start_new_session=True)
     assert exited.wait(timeout=3) == 0
     fixture.cleanup(exited)
+    reply_root = root / "reply"
+    reply_root.mkdir()
+    reply_env = fixture.environment(reply_root, binaries, Path(sys.executable), "ws://127.0.0.1:12345", True)
+    assert "BUZZ_PRIVATE_KEY" not in reply_env and "BUZZ_E2E_CLI_BIN" not in reply_env
+    read_fd = fixture.identity_pipe()
+    reply_command = fixture.command(binaries, Path(sys.executable), fixture.REPLY_PEER,
+                                    "11111111-1111-4111-8111-111111111111", True, read_fd)
+    assert "--private-key-fd" in reply_command and "--harness-replies" in reply_command
+    assert "--deny-tool-requests" in reply_command and "read-only" in reply_command
+    assert "--session-policy" in reply_command and "thread" in reply_command
+    assert "--multiple-event-handling" in reply_command and "queue" in reply_command
+    assert fixture.PUBLIC_FIXTURE_SCALAR not in " ".join(reply_command)
+    # Exercise the same pass_fds boundary used to launch the real patched harness.
+    fd_probe = "import os,sys; fd=int(sys.argv[1]); assert os.read(fd,128)==b'" + fixture.PUBLIC_FIXTURE_SCALAR + "\\n'; assert 'BUZZ_PRIVATE_KEY' not in os.environ; assert 'BUZZ_E2E_CLI_BIN' not in os.environ"
+    child = subprocess.run([sys.executable, "-c", fd_probe, str(read_fd)], env=reply_env,
+                           pass_fds=(read_fd,), capture_output=True, timeout=5)
+    os.close(read_fd)
+    assert child.returncode == 0, child.stderr
+    try:
+        fixture.command(binaries, Path(sys.executable), fixture.REPLY_PEER,
+                        "11111111-1111-4111-8111-111111111111", True)
+        raise AssertionError("reply mode accepted no key FD")
+    except ValueError:
+        pass
+
+    peer_requests = [
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+        {"jsonrpc": "2.0", "id": 2, "method": "session/new", "params": {}},
+        {"jsonrpc": "2.0", "id": 3, "method": "session/set_config_option",
+         "params": {"sessionId": "synthetic-reply-1", "configId": "mode", "value": "read-only"}},
+        {"jsonrpc": "2.0", "id": 4, "method": "session/prompt",
+         "params": {"sessionId": "synthetic-reply-1",
+                    "prompt": [{"type": "text", "text": "AE-ID:TEST-123"}]}},
+        {"jsonrpc": "2.0", "id": "fixture-permission",
+         "result": {"outcome": {"outcome": "selected", "optionId": "deny"}}},
+    ]
+    peer = subprocess.run([sys.executable, str(fixture.REPLY_PEER)],
+                          input="".join(json.dumps(item) + "\n" for item in peer_requests),
+                          text=True, capture_output=True, env=reply_env, timeout=5)
+    assert peer.returncode == 0 and peer.stderr == ""
+    replies = [json.loads(line) for line in peer.stdout.splitlines()]
+    assert len(replies) == 7
+    assert replies[1]["result"]["modes"]["availableModes"] == [{"id": "read-only"}]
+    assert replies[2]["result"]["configOptions"] == [{"id": "mode", "currentValue": "read-only"}]
+    assert replies[3]["params"]["update"]["sessionUpdate"] == "agent_thought_chunk"
+    assert replies[3]["params"]["update"]["content"]["text"] == "THOUGHT-MUST-NOT-PUBLISH"
+    assert replies[4]["method"] == "session/request_permission"
+    assert replies[4]["params"]["options"][1]["kind"] == "reject_once"
+    assert replies[5]["params"]["sessionId"] == "synthetic-reply-1"
+    assert replies[5]["params"]["update"]["content"]["text"] == "AE-ACK:TEST-123"
+    assert replies[6]["result"]["stopReason"] == "end_turn"
+    denied = [*peer_requests[:-1],
+              {"jsonrpc": "2.0", "id": "fixture-permission",
+               "result": {"outcome": {"outcome": "selected", "optionId": "allow"}}}]
+    rejected_peer = subprocess.run([sys.executable, str(fixture.REPLY_PEER)],
+                                   input="".join(json.dumps(item) + "\n" for item in denied),
+                                   text=True, capture_output=True, env=reply_env, timeout=5)
+    rejected_replies = [json.loads(line) for line in rejected_peer.stdout.splitlines()]
+    assert rejected_peer.returncode == 0
+    assert not any(item.get("method") == "session/update" and
+                   item.get("params", {}).get("update", {}).get("sessionUpdate") == "agent_message_chunk"
+                   for item in rejected_replies)
+    assert rejected_replies[-1]["error"]["message"] == "fixture permission was not denied"
 print("PASS: loopback-only fixture, public disposable identity, clean private environment, fixed owner routing and process cleanup")

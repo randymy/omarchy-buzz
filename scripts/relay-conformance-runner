@@ -213,11 +213,14 @@ def run(args):
     acp_node_input = getattr(args, "acp_node", None)
     if (acp_binary_input is None) != (acp_node_input is None):
         raise ValueError("ACP binary directory and Node executable must be supplied together")
+    harness_replies = getattr(args, "acp_harness_replies", False)
+    if harness_replies and acp_binary_input is None:
+        raise ValueError("harness replies require explicit synthetic ACP tools")
     acp_binary = acp_node = None
     if acp_binary_input is not None:
         acp_binary = acp_binary_input.resolve(strict=True)
         acp_node = acp_node_input.resolve(strict=True)
-        for executable in (acp_node, *(acp_binary / name for name in ("buzz-acp", "buzz", "git-sign-nostr", "git-credential-nostr"))):
+        for executable in (acp_node, *(acp_binary / name for name in (("buzz-acp",) if harness_replies else ("buzz-acp", "buzz", "git-sign-nostr", "git-credential-nostr")))):
             if not executable.is_file() or not os.access(executable, os.X_OK):
                 raise ValueError("built synthetic ACP fixture executable required")
     source = args.buzz_source.resolve(strict=True)
@@ -237,6 +240,7 @@ def run(args):
               "relayBinarySha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
               "messaging": {"state": "not_run"},
               "acp": {"state": "not_run" if acp_binary is not None else "not_requested", "syntheticOnly": True}}
+    report["acp"]["replyMode"] = "harness" if harness_replies else "legacy-agent-cli"
     report["runtimeRecipeSha256"] = hashlib.sha256(RUNTIME_RECIPE.encode()).hexdigest()
     report["runtimeBaseReference"] = "ubuntu:24.04"
     relay = None
@@ -336,8 +340,10 @@ def run(args):
                            "OMARCHY_BUZZ_TEST_ACP_BUZZ_SOURCE": str(source),
                            "OMARCHY_BUZZ_TEST_ACP_BIN_DIR": str(acp_binary),
                            "OMARCHY_BUZZ_TEST_ACP_NODE": str(acp_node)}
+                if harness_replies:
+                    acp_env["OMARCHY_BUZZ_TEST_HARNESS_REPLIES"] = "1"
                 acp_output = command(helper_command(helper, target, acp=True), acp_env, helper, log, timeout=240, capture=True)
-                report["acp"] = {"state": "passed", "syntheticOnly": True, "tests": successful_tests(acp_output, acp=True)}
+                report["acp"] = {"state": "passed", "syntheticOnly": True, "replyMode": "harness" if harness_replies else "legacy-agent-cli", "tests": successful_tests(acp_output, acp=True)}
             report["state"] = "passed"
             report["stage"] = "complete"
         except Exception as error:
@@ -375,6 +381,7 @@ def main():
     parser.add_argument("--messaging-only", action="store_true", help="omit object storage and its startup probe; no Git/media conformance")
     parser.add_argument("--acp-bin-dir", type=Path, help="optional prebuilt synthetic ACP tools; requires --acp-node")
     parser.add_argument("--acp-node", type=Path, help="optional Node executable for the pinned synthetic peer only")
+    parser.add_argument("--acp-harness-replies", action="store_true", help="test proposed harness-owned replies with the local text-only peer")
     args = parser.parse_args()
     def interrupted(_signum, _frame):
         raise InterruptedError("runner interrupted")

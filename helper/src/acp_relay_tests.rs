@@ -103,9 +103,13 @@ async fn acp_relay_synthetic_routing() {
         let sid=Uuid::new_v4().to_string();
         admin.send_raw(&json!(["REQ",sid,{"kinds":[9],"#h":[room.to_string()],"authors":[agent.public_key().to_hex()]}])).await.unwrap();
         timeout(Duration::from_secs(5),async {loop {if let RelayMessage::Eose{subscription_id}=admin.next_event(Duration::from_secs(5)).await.unwrap(){if subscription_id==sid{break;}}}}).await.unwrap();
+        let harness_replies=std::env::var("OMARCHY_BUZZ_TEST_HARNESS_REPLIES").as_deref()==Ok("1");
         let root=PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf();
         eprintln!("OMARCHY_ACP_STAGE=spawn");
-        let mut supervisor=Supervisor(Command::new("/usr/bin/python3").arg(root.join("scripts/acp-fixture"))
+        let mut command=Command::new("/usr/bin/python3");
+        command.arg(root.join("scripts/acp-fixture"));
+        if harness_replies { command.arg("--harness-replies"); }
+        let mut supervisor=Supervisor(command
             .arg("--buzz-source").arg(input("OMARCHY_BUZZ_TEST_ACP_BUZZ_SOURCE"))
             .arg("--buzz-bin-dir").arg(input("OMARCHY_BUZZ_TEST_ACP_BIN_DIR"))
             .arg("--node").arg(input("OMARCHY_BUZZ_TEST_ACP_NODE"))
@@ -124,6 +128,7 @@ async fn acp_relay_synthetic_routing() {
         supervisor.0.stdout=Some(stdout);
         let started:serde_json::Value=serde_json::from_str(&line).expect("supervisor startup metadata");
         assert!(started["type"]=="started"&&started["agentKey"]==agent.public_key().to_hex()&&started["roomId"]==room.to_string(),"supervisor fixture scope");
+        if harness_replies { assert_eq!(started["replyMode"],"harness"); }
         let key=agent.public_key().to_hex();let positive=token();
         eprintln!("OMARCHY_ACP_STAGE=await_ack");
         // Pinned harness lib.rs startup_watermark_with_floor and relay.rs
@@ -131,7 +136,9 @@ async fn acp_relay_synthetic_routing() {
         // Publish once after the harness is spawned; live subscription or replay
         // receives this same trigger. Repeated fresh prompts could later copy
         // excluded tokens from history even when author/mention routing is correct.
-        publish(&mut admin,build_message(room,&format!("AE-ID:{positive}"),None,&[&key],false,&[],&[]).unwrap().sign_with_keys(&owner).unwrap()).await;
+        let trigger=build_message(room,&format!("AE-ID:{positive}"),None,&[&key],false,&[],&[]).unwrap().sign_with_keys(&owner).unwrap();
+        let trigger_id=trigger.id.to_hex();
+        publish(&mut admin,trigger).await;
         let ready_deadline=Instant::now()+Duration::from_secs(45);
         loop {
             supervisor.alive();assert!(Instant::now()<ready_deadline,"synthetic ACP signed ACK readiness deadline");
@@ -139,7 +146,15 @@ async fn acp_relay_synthetic_routing() {
                 Ok(RelayMessage::Event{subscription_id,event}) if subscription_id==sid => {
                     event.verify().unwrap();assert_eq!(event.pubkey,agent.public_key());
                     assert!(event.tags.iter().any(|t|t.as_slice()==["h",room.to_string().as_str()]));
-                    if event.content.contains("AE-ACK:")&&event.content.contains(&positive){break;}
+                    if event.content.contains("AE-ACK:")&&event.content.contains(&positive){
+                        if harness_replies {
+                            assert_eq!(event.content,format!("AE-ACK:{positive}"));
+                            assert_eq!(event.kind,nostr::Kind::Custom(9));
+                            assert!(event.tags.iter().any(|t|t.as_slice()==["e",trigger_id.as_str(),"","reply"]),"reply must target admitted root");
+                            assert!(!event.content.contains("THOUGHT-MUST-NOT-PUBLISH"));
+                        }
+                        break;
+                    }
                 },Err(buzz_ws_client::WsClientError::Timeout)=>{},Err(_)=>panic!("synthetic observation transport failed"),_=>{}
             }
         }

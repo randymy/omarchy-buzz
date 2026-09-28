@@ -92,7 +92,7 @@ class RunnerTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 runner.successful_tests(output)
 
-    def run_mock(self, fixture_output=PASSED, fail_build=False, collision=False, messaging_only=False, acp=False, acp_output=ACP_PASSED):
+    def run_mock(self, fixture_output=PASSED, fail_build=False, collision=False, messaging_only=False, acp=False, acp_output=ACP_PASSED, harness_replies=False):
         with tempfile.TemporaryDirectory(prefix="runner mock spaces ") as temp:
             base = Path(temp)
             source = base / "buzz"
@@ -130,6 +130,7 @@ class RunnerTests(unittest.TestCase):
                         self.assertEqual(env["OMARCHY_BUZZ_TEST_ACP_BIN_DIR"], str(acp_bins))
                         self.assertEqual(env["OMARCHY_BUZZ_TEST_ACP_NODE"], str(node))
                         self.assertEqual(env["OMARCHY_BUZZ_TEST_RELAY_URL"], "ws://127.0.0.1:43211")
+                        self.assertEqual(env.get("OMARCHY_BUZZ_TEST_HARNESS_REPLIES"), "1" if harness_replies else None)
                         self.assertEqual(kwargs["timeout"], 240)
                         self.assertTrue(any("real_relay_" in previous for previous in calls[:-1]))
                         return acp_output
@@ -138,7 +139,7 @@ class RunnerTests(unittest.TestCase):
             process = SimpleNamespace(poll=lambda: None)
             arguments = SimpleNamespace(buzz_source=source, relay_binary=binary, helper_source=helper,
                                         helper_target=base / "target", output=base / "output", messaging_only=messaging_only,
-                                        acp_bin_dir=acp_bins if acp else None, acp_node=node if acp else None)
+                                        acp_bin_dir=acp_bins if acp else None, acp_node=node if acp else None, acp_harness_replies=harness_replies)
             with patch.dict(os.environ, {"GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "github-hosted", "GH_TOKEN": "must-not-pass"}), \
                     patch.object(runner, "command", command), patch.object(runner.subprocess, "Popen", return_value=process), \
                     patch.object(runner, "reserved_ports", return_value=([SimpleNamespace(close=lambda: None)], [43210, 43211])), \
@@ -160,6 +161,13 @@ class RunnerTests(unittest.TestCase):
                 self.assertFalse(any("acp_relay_" in call for call in calls))
             self.assertEqual((arguments.output / "private-runner.log").stat().st_mode & 0o777, 0o600)
             return status, summary
+
+    def test_harness_reply_mode_is_explicit_and_reported(self):
+        status, report = self.run_mock(acp=True, harness_replies=True)
+        self.assertEqual(status, 0)
+        self.assertEqual(report["acp"]["replyMode"], "harness")
+        with self.assertRaisesRegex(ValueError, "harness replies require"):
+            self.run_mock(harness_replies=True)
 
     def test_optional_acp_stage_requires_exact_test_and_prior_messaging(self):
         self.assertEqual(runner.successful_tests(ACP_PASSED, acp=True)["requiredTest"], "acp_relay_tests::acp_relay_synthetic_routing")
