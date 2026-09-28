@@ -1,0 +1,1149 @@
+diff --git a/crates/buzz-acp/src/relay.rs b/crates/buzz-acp/src/relay.rs
+index 268fb22..86c67b3 100644
+--- a/crates/buzz-acp/src/relay.rs
++++ b/crates/buzz-acp/src/relay.rs
+@@ -293,7 +293,7 @@ impl RestClient {
+         {
+             return "not_sent";
+         }
+-        url.set_path("/events");
++        url.set_path("/events/member-bound");
+         let Ok(body) = serde_json::to_vec(event) else {
+             return "not_sent";
+         };
+@@ -7106,6 +7106,7 @@ mod room_reply_transport_tests {
+             "forbidden",
+             "redirect",
+             "unavailable",
++            "legacy",
+         ] {
+             let calls = Arc::new(AtomicUsize::new(0));
+             let state = (case.to_owned(), calls.clone());
+@@ -7153,17 +7154,22 @@ mod room_reply_transport_tests {
+                     "malformed" => "not json".into_response(),
+                     "oversize" => "x".repeat(8193).into_response(),
+                     "forbidden" => StatusCode::FORBIDDEN.into_response(),
+-                    "redirect" => {
+-                        (StatusCode::TEMPORARY_REDIRECT, [("location", "/events")]).into_response()
+-                    }
++                    "redirect" => (
++                        StatusCode::TEMPORARY_REDIRECT,
++                        [("location", "/events/member-bound")],
++                    )
++                        .into_response(),
+                     _ => StatusCode::SERVICE_UNAVAILABLE.into_response(),
+                 }
+             }
+             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+             let addr = listener.local_addr().unwrap();
+-            let app = Router::new()
+-                .route("/events", post(serve))
+-                .with_state(state);
++            let route = if case == "legacy" {
++                "/events"
++            } else {
++                "/events/member-bound"
++            };
++            let app = Router::new().route(route, post(serve)).with_state(state);
+             let server = tokio::spawn(async move {
+                 axum::serve(listener, app).await.unwrap();
+             });
+@@ -7194,8 +7200,8 @@ mod room_reply_transport_tests {
+             );
+             assert_eq!(
+                 calls.load(Ordering::SeqCst),
+-                1,
+-                "must not retry or follow redirects: {case}"
++                if case == "legacy" { 0 } else { 1 },
++                "must not retry, follow redirects or fall back to legacy publication: {case}"
+             );
+             server.abort();
+         }
+diff --git a/crates/buzz-db/src/store/channel_members.rs b/crates/buzz-db/src/store/channel_members.rs
+index 7a246e0..f16c91b 100644
+--- a/crates/buzz-db/src/store/channel_members.rs
++++ b/crates/buzz-db/src/store/channel_members.rs
+@@ -7,9 +7,9 @@ use chrono::{DateTime, Utc};
+ use sqlx::{PgPool, Postgres, Row, Transaction};
+ use uuid::Uuid;
+ 
+-use crate::channel::{row_to_channel_record, ChannelRecord};
+-use crate::error::{DbError, Result};
+ use crate::Db;
++use crate::channel::{ChannelRecord, row_to_channel_record};
++use crate::error::{DbError, Result};
+ use buzz_core::CommunityId;
+ use buzz_datastore_tracing::datastore_span;
+ 
+@@ -178,7 +178,7 @@ pub async fn verify_channel_roster_fence_behavior(pool: &sqlx::PgPool) -> Result
+ /// Take the per-channel membership lock. MUST be the first statement in the
+ /// transaction that then reads roles/owner counts and writes membership, so the
+ /// whole check-then-write sequence is atomic against a concurrent one.
+-async fn acquire_channel_membership_lock(
++pub(crate) async fn acquire_channel_membership_lock(
+     tx: &mut Transaction<'_, Postgres>,
+     community_id: CommunityId,
+     channel_id: Uuid,
+@@ -462,7 +462,7 @@ pub async fn add_member(
+                 _ => {
+                     return Err(DbError::AccessDenied(
+                         "only owners/admins may grant elevated roles".to_string(),
+-                    ))
++                    ));
+                 }
+             }
+         } else {
+@@ -1227,9 +1227,13 @@ pub async fn get_accessible_channels(
+     );
+ 
+     let sql = if visibility_filter.is_some() {
+-        format!("{base}  AND c.visibility::text = $3\n        ORDER BY array_position(ARRAY['stream','forum','dm']::text[], c.channel_type::text), c.name\n        LIMIT 1000")
++        format!(
++            "{base}  AND c.visibility::text = $3\n        ORDER BY array_position(ARRAY['stream','forum','dm']::text[], c.channel_type::text), c.name\n        LIMIT 1000"
++        )
+     } else {
+-        format!("{base}        ORDER BY array_position(ARRAY['stream','forum','dm']::text[], c.channel_type::text), c.name\n        LIMIT 1000")
++        format!(
++            "{base}        ORDER BY array_position(ARRAY['stream','forum','dm']::text[], c.channel_type::text), c.name\n        LIMIT 1000"
++        )
+     };
+ 
+     let query = sqlx::query(sqlx::AssertSqlSafe(sql))
+diff --git a/crates/buzz-db/src/store/event.rs b/crates/buzz-db/src/store/event.rs
+index 411c518..93e2c67 100644
+--- a/crates/buzz-db/src/store/event.rs
++++ b/crates/buzz-db/src/store/event.rs
+@@ -10,19 +10,19 @@ use sqlx::{PgConnection, PgPool, Postgres, QueryBuilder, Row, Transaction};
+ use uuid::Uuid;
+ 
+ use buzz_core::kind::{
+-    event_kind_i32, is_ephemeral, is_parameterized_replaceable, KIND_AUTH, KIND_CANVAS,
+-    KIND_EVENT_REMINDER, KIND_HUDDLE_STARTED, SHARED_GATED_KINDS,
++    KIND_AUTH, KIND_CANVAS, KIND_EVENT_REMINDER, KIND_HUDDLE_STARTED, SHARED_GATED_KINDS,
++    event_kind_i32, is_ephemeral, is_parameterized_replaceable,
+ };
+ use buzz_core::{CommunityId, StoredEvent};
+ use buzz_datastore_tracing::datastore_span;
+ 
+-use crate::error::{DbError, Result};
+ use crate::Db;
++use crate::error::{DbError, Result};
+ 
+ // Compatibility exports preserve the pre-extraction public event-store paths.
+ pub use crate::reminder::{
+-    claim_due_reminder, claim_due_reminder_with_stamp, query_due_reminders, release_due_reminder,
+-    DueReminder,
++    DueReminder, claim_due_reminder, claim_due_reminder_with_stamp, query_due_reminders,
++    release_due_reminder,
+ };
+ 
+ /// Largest page [`query_events`] will return when [`EventQuery::max_limit`] is
+@@ -148,7 +148,7 @@ impl EventQuery {
+     }
+ }
+ 
+-pub use crate::reaction::{insert_reaction_event_with_thread_metadata, ReactionEventInsertOutcome};
++pub use crate::reaction::{ReactionEventInsertOutcome, insert_reaction_event_with_thread_metadata};
+ 
+ /// Maximum length for a `d_tag` value (bytes). NIP-33 d-tags are short identifiers;
+ /// anything beyond this is either a bug or abuse.
+@@ -1588,6 +1588,60 @@ pub async fn insert_event_with_thread_metadata(
+     Ok(result)
+ }
+ 
++/// Append a kind-9 stream message while the author's channel membership is
++/// protected by the same transaction lock used by add/remove member. The
++/// membership read must follow the lock and share the event's transaction.
++pub async fn insert_member_bound_stream_message(
++    pool: &PgPool,
++    community_id: CommunityId,
++    event: &Event,
++    channel_id: Uuid,
++    thread_meta: Option<ThreadMetadataParams<'_>>,
++) -> Result<(StoredEvent, bool)> {
++    if event_kind_i32(event) != buzz_core::kind::KIND_STREAM_MESSAGE as i32 {
++        return Err(DbError::AccessDenied(
++            "restricted: member-bound publication requires kind 9".into(),
++        ));
++    }
++    let connection = crate::observability::acquire_writer(
++        pool,
++        crate::observability::WriterOperation::EventWrite,
++    )
++    .await?;
++    let mut tx = sqlx::Transaction::begin(connection, None).await?;
++    // The first SQL statement is the membership lock: concurrent removal
++    // either commits before this read or waits until the event commits.
++    crate::channel_members::acquire_channel_membership_lock(&mut tx, community_id, channel_id)
++        .await?;
++    let signer = event.pubkey.to_bytes();
++    let active: bool = sqlx::query_scalar(
++        "SELECT EXISTS (SELECT 1 FROM channel_members cm \
++         JOIN channels c ON c.community_id = cm.community_id AND c.id = cm.channel_id \
++         WHERE cm.community_id = $1 AND cm.channel_id = $2 AND cm.pubkey = $3 \
++         AND cm.removed_at IS NULL AND c.deleted_at IS NULL)",
++    )
++    .bind(community_id.as_uuid())
++    .bind(channel_id)
++    .bind(signer.as_slice())
++    .fetch_one(&mut *tx)
++    .await?;
++    if !active {
++        return Err(DbError::AccessDenied(
++            "restricted: signer is not an active channel member".into(),
++        ));
++    }
++    let result = insert_event_with_thread_metadata_tx(
++        &mut tx,
++        community_id,
++        event,
++        Some(channel_id),
++        thread_meta,
++    )
++    .await?;
++    tx.commit().await?;
++    Ok(result)
++}
++
+ /// Outcome of a channel-head conditional canvas write.
+ #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+ pub enum ChannelHeadWriteStatus {
+@@ -2267,6 +2321,32 @@ impl Db {
+         Ok(result)
+     }
+ 
++    #[datastore_span(name = "insert_member_bound_stream_message", system = "postgresql")]
++    pub async fn insert_member_bound_stream_message(
++        &self,
++        community_id: CommunityId,
++        event: &Event,
++        channel_id: Uuid,
++        thread_meta: Option<crate::event::ThreadMetadataParams<'_>>,
++    ) -> Result<(StoredEvent, bool)> {
++        let result = crate::event::insert_member_bound_stream_message(
++            &self.pool,
++            community_id,
++            event,
++            channel_id,
++            thread_meta,
++        )
++        .await?;
++        if result.1 {
++            if let Err(e) =
++                crate::insert_mentions(&self.pool, community_id, event, Some(channel_id)).await
++            {
++                tracing::warn!(event_id = %event.id, "Failed to insert mentions: {e}");
++            }
++        }
++        Ok(result)
++    }
++
+     /// Backfill `d_tag` for existing NIP-33 events (kind 30000–39999) that have `d_tag IS NULL`.
+     ///
+     /// Idempotent — safe to call on every startup. No-ops when all rows are already populated.
+@@ -2388,6 +2468,104 @@ mod postgres_tests {
+         id
+     }
+ 
++    #[tokio::test]
++    #[ignore = "requires Postgres"]
++    async fn member_bound_message_requires_live_member_in_host_community() {
++        let pool = setup_pool().await;
++        crate::migration::run_migrations(&pool)
++            .await
++            .expect("migrate test DB");
++        let a = make_test_community(&pool).await;
++        let b = make_test_community(&pool).await;
++        let channel = make_test_channel(&pool, a, None).await;
++        let event = make_text_event("guarded room reply");
++        let signer = event.pubkey.to_bytes();
++        let community_a = CommunityId::from_uuid(a);
++        let community_b = CommunityId::from_uuid(b);
++
++        let denied =
++            insert_member_bound_stream_message(&pool, community_a, &event, channel, None).await;
++        assert!(matches!(denied, Err(DbError::AccessDenied(_))));
++
++        sqlx::query("INSERT INTO channel_members (community_id, channel_id, pubkey, role) VALUES ($1,$2,$3,'member')")
++            .bind(a).bind(channel).bind(signer.as_slice()).execute(&pool).await
++            .expect("add fixture member");
++        let wrong_tenant =
++            insert_member_bound_stream_message(&pool, community_b, &event, channel, None).await;
++        assert!(matches!(wrong_tenant, Err(DbError::AccessDenied(_))));
++
++        assert!(
++            insert_member_bound_stream_message(&pool, community_a, &event, channel, None,)
++                .await
++                .expect("member insert")
++                .1
++        );
++
++        sqlx::query("UPDATE channel_members SET removed_at = now() WHERE community_id=$1 AND channel_id=$2 AND pubkey=$3")
++            .bind(a).bind(channel).bind(signer.as_slice()).execute(&pool).await
++            .expect("remove fixture member");
++        let duplicate_after_removal =
++            insert_member_bound_stream_message(&pool, community_a, &event, channel, None).await;
++        assert!(matches!(
++            duplicate_after_removal,
++            Err(DbError::AccessDenied(_))
++        ));
++    }
++
++    #[tokio::test]
++    #[ignore = "requires Postgres"]
++    async fn member_bound_insert_waits_for_removal_commit() {
++        use std::time::Duration;
++        let pool = setup_pool().await;
++        crate::migration::run_migrations(&pool)
++            .await
++            .expect("migrate test DB");
++        let community_uuid = make_test_community(&pool).await;
++        let community = CommunityId::from_uuid(community_uuid);
++        let channel = make_test_channel(&pool, community_uuid, None).await;
++        let event = make_text_event("reply racing removal");
++        let signer = event.pubkey.to_bytes();
++        sqlx::query("INSERT INTO channel_members (community_id, channel_id, pubkey, role) VALUES ($1,$2,$3,'member')")
++            .bind(community_uuid).bind(channel).bind(signer.as_slice()).execute(&pool).await
++            .expect("add fixture member");
++
++        let mut removal = pool.begin().await.expect("begin removal");
++        crate::channel_members::acquire_channel_membership_lock(&mut removal, community, channel)
++            .await
++            .expect("lock membership");
++        sqlx::query("UPDATE channel_members SET removed_at = now() WHERE community_id=$1 AND channel_id=$2 AND pubkey=$3")
++            .bind(community_uuid).bind(channel).bind(signer.as_slice())
++            .execute(&mut *removal).await.expect("stage removal");
++
++        let pool_for_write = pool.clone();
++        let write = tokio::spawn(async move {
++            insert_member_bound_stream_message(&pool_for_write, community, &event, channel, None)
++                .await
++        });
++        let mut write = write;
++        assert!(
++            tokio::time::timeout(Duration::from_millis(100), &mut write)
++                .await
++                .is_err(),
++            "publication must wait for membership writer"
++        );
++        removal.commit().await.expect("commit removal");
++        assert!(matches!(
++            write.await.expect("join writer"),
++            Err(DbError::AccessDenied(_))
++        ));
++        let count: i64 = sqlx::query_scalar(
++            "SELECT count(*) FROM events WHERE community_id=$1 AND channel_id=$2 AND pubkey=$3",
++        )
++        .bind(community_uuid)
++        .bind(channel)
++        .bind(signer.as_slice())
++        .fetch_one(&pool)
++        .await
++        .expect("count committed messages");
++        assert_eq!(count, 0);
++    }
++
+     #[tokio::test]
+     #[ignore = "requires Postgres"]
+     async fn event_insert_in_existing_transaction_rolls_back_with_caller() {
+@@ -3090,10 +3268,7 @@ mod postgres_tests {
+         assert_eq!(
+             counters,
+             [
+-                (
+-                    ("buzz_db_pool_acquire_started_total".to_owned(), None),
+-                    1,
+-                ),
++                (("buzz_db_pool_acquire_started_total".to_owned(), None), 1,),
+                 (
+                     (
+                         "buzz_db_pool_acquire_attempts_total".to_owned(),
+diff --git a/crates/buzz-relay/src/api/bridge.rs b/crates/buzz-relay/src/api/bridge.rs
+index 13437d9..e8b5a51 100644
+--- a/crates/buzz-relay/src/api/bridge.rs
++++ b/crates/buzz-relay/src/api/bridge.rs
+@@ -15,11 +15,11 @@ use axum::{
+ use base64::Engine;
+ use serde_json::Value;
+ 
+-use buzz_auth::{LimitType, Nip98ReplayGuard, NipFiMode, DEFAULT_REPLAY_TTL_SECS};
++use buzz_auth::{DEFAULT_REPLAY_TTL_SECS, LimitType, Nip98ReplayGuard, NipFiMode};
+ use buzz_core::TenantContext;
+ 
+ use crate::handlers::ingest::{IngestAuth, IngestError};
+-use crate::nip_fi_http::{admit_nip_fi_http_on_state, Nip98Proof};
++use crate::nip_fi_http::{Nip98Proof, admit_nip_fi_http_on_state};
+ use crate::state::AppState;
+ 
+ use super::{api_error, internal_error, not_found, parse_query_or_400};
+@@ -518,11 +518,7 @@ fn extract_feed_types(raw: &Value) -> Option<Vec<String>> {
+         .iter()
+         .filter_map(|v| v.as_str().map(String::from))
+         .collect();
+-    if types.is_empty() {
+-        None
+-    } else {
+-        Some(types)
+-    }
++    if types.is_empty() { None } else { Some(types) }
+ }
+ 
+ fn extract_search_mode(raw: &Value) -> buzz_search::SearchMode {
+@@ -888,8 +884,34 @@ pub async fn submit_event(
+     State(state): State<Arc<AppState>>,
+     headers: HeaderMap,
+     body: axum::body::Bytes,
++) -> Result<axum::response::Response, axum::response::Response> {
++    submit_event_inner(state, headers, body, false).await
++}
++
++/// Publish a kind-9 message only if its signer remains a channel member at commit.
++/// A distinct URL makes older relays reject the request instead of ignoring a
++/// new optional header and accepting an unfenced event.
++pub async fn submit_member_bound_event(
++    State(state): State<Arc<AppState>>,
++    headers: HeaderMap,
++    body: axum::body::Bytes,
++) -> Result<axum::response::Response, axum::response::Response> {
++    submit_event_inner(state, headers, body, true).await
++}
++
++#[allow(clippy::result_large_err)]
++async fn submit_event_inner(
++    state: Arc<AppState>,
++    headers: HeaderMap,
++    body: axum::body::Bytes,
++    member_bound: bool,
+ ) -> Result<axum::response::Response, axum::response::Response> {
+     use axum::response::IntoResponse as _;
++    let route = if member_bound {
++        "/events/member-bound"
++    } else {
++        "/events"
++    };
+     // Row zero: bind this HTTP request to its community from the request host
+     // before any tenant-scoped write, identical to the WS door in `router.rs`.
+     // Unmapped host or lookup failure fails closed with a generic 404 — never a
+@@ -908,7 +930,7 @@ pub async fn submit_event(
+             .into_response()
+         })?;
+ 
+-    let url = nip98_expected_url(&state.config.relay_url, &tenant, "/events");
++    let url = nip98_expected_url(&state.config.relay_url, &tenant, route);
+     // In NIP-FI enforce/deny-protected mode, a real NIP-98 event is mandatory —
+     // the X-Pubkey dev-mode fallback must never satisfy the pairing requirement.
+     // [NIP-FI.md:594-607, FI-TRACE-HTTP-INGRESS]
+@@ -927,8 +949,8 @@ pub async fn submit_event(
+             "POST",
+             &url,
+             Some(&body),
+-            state.config.require_auth_token || nip_fi_active,
+-            nip_fi_enforce,
++            state.config.require_auth_token || nip_fi_active || member_bound,
++            nip_fi_enforce || member_bound,
+         )
+         .map(|auth| Nip98Proof::new(auth.pubkey, (auth.event_id_bytes, auth.signed_created_at)))
+         .map_err(|e| e.into_response())
+@@ -949,6 +971,7 @@ pub async fn submit_event(
+         pubkey,
+         event_id_bytes,
+         signed_created_at,
++        member_bound,
+     )
+     .await;
+ 
+@@ -956,7 +979,7 @@ pub async fn submit_event(
+         SubmitOutcome::Ok { accepted, kind, .. } => {
+             tracing::info!(
+                 pubkey = %pubkey_hex,
+-                route = "/events",
++                route,
+                 status = 200u16,
+                 accepted,
+                 kind,
+@@ -971,7 +994,7 @@ pub async fn submit_event(
+         } => {
+             tracing::warn!(
+                 pubkey = %pubkey_hex,
+-                route = "/events",
++                route,
+                 status = 400u16,
+                 accepted = false,
+                 category,
+@@ -987,7 +1010,7 @@ pub async fn submit_event(
+         } => {
+             tracing::warn!(
+                 pubkey = %pubkey_hex,
+-                route = "/events",
++                route,
+                 status = response.0.as_u16(),
+                 accepted = false,
+                 kind,
+@@ -998,7 +1021,7 @@ pub async fn submit_event(
+         SubmitOutcome::Err { status, .. } => {
+             tracing::warn!(
+                 pubkey = %pubkey_hex,
+-                route = "/events",
++                route,
+                 status = status.as_u16(),
+                 accepted = false,
+                 "HTTP bridge request"
+@@ -1067,6 +1090,7 @@ async fn submit_event_authed(
+     pubkey: nostr::PublicKey,
+     event_id_bytes: [u8; 32],
+     signed_auth_created_at: Option<u64>,
++    member_bound: bool,
+ ) -> SubmitOutcome {
+     // Admission and replay checks fire before body parse — a 429 or replay
+     // reject on a malformed body must still be attributed.
+@@ -1142,13 +1166,28 @@ async fn submit_event_authed(
+     }
+ 
+     let kind_u32 = buzz_core::kind::event_kind_u32(&event);
++    if member_bound && kind_u32 != buzz_core::kind::KIND_STREAM_MESSAGE {
++        return SubmitOutcome::Rejected {
++            kind: kind_u32,
++            reason: "restricted: member-bound publication requires kind 9".into(),
++            response: api_error(
++                StatusCode::BAD_REQUEST,
++                "restricted: member-bound publication requires kind 9",
++            ),
++        };
++    }
+     let auth = IngestAuth::Http {
+         pubkey,
+         scopes: buzz_auth::Scope::all_known(), // Pure Nostr: full scopes, channel access via membership
+         auth_method: crate::handlers::ingest::HttpAuthMethod::Nip98,
+     };
+ 
+-    match crate::handlers::ingest::ingest_event(state, tenant, event, auth).await {
++    let ingest = if member_bound {
++        crate::handlers::ingest::ingest_member_bound_event(state, tenant, event, auth).await
++    } else {
++        crate::handlers::ingest::ingest_event(state, tenant, event, auth).await
++    };
++    match ingest {
+         Ok(result) => {
+             let response = Json(serde_json::json!({
+                 "event_id": result.event_id,
+@@ -2968,9 +3007,11 @@ mod postgres_tests {
+ 
+         // A presence-snapshot query for a concrete author reaches the Redis
+         // lookup (an empty author set would short-circuit to an empty snapshot).
+-        let filters = vec![nostr::Filter::new()
+-            .kind(Kind::Custom(KIND_PRESENCE_SNAPSHOT as u16))
+-            .author(Keys::generate().public_key())];
++        let filters = vec![
++            nostr::Filter::new()
++                .kind(Kind::Custom(KIND_PRESENCE_SNAPSHOT as u16))
++                .author(Keys::generate().public_key()),
++        ];
+ 
+         let result = synthesize_presence(&pubsub, &relay_keypair, &tenant, &filters).await;
+ 
+@@ -3512,6 +3553,14 @@ mod postgres_tests {
+         let url_b = nip98_expected_url("wss://config-host.example", &tenant_b, "/events");
+         assert_eq!(url_a, "https://host-a.example/events");
+         assert_eq!(url_b, "https://host-b.example/events");
++        assert_eq!(
++            nip98_expected_url(
++                "wss://config-host.example",
++                &tenant_a,
++                "/events/member-bound"
++            ),
++            "https://host-a.example/events/member-bound"
++        );
+ 
+         // Same tenant, two different config hosts → output is identical.
+         // (If config-host ever leaked into the URL, this assertion would bite.)
+@@ -4279,6 +4328,9 @@ mod postgres_tests {
+         let pool = sqlx::PgPool::connect(&crate::test_support::database_url())
+             .await
+             .ok()?;
++        buzz_db::migration::run_migrations(&pool)
++            .await
++            .expect("migrate bridge test DB");
+         let db = buzz_db::Db::from_pool(pool.clone());
+         let redis_pool = deadpool_redis::Config::from_url(&config.redis_url)
+             .create_pool(Some(deadpool_redis::Runtime::Tokio1))
+@@ -4313,6 +4365,133 @@ mod postgres_tests {
+         Some(Arc::new(state))
+     }
+ 
++    /// Fresh auth event per request: NIP-98 replay detection must not turn the
++    /// post-join retry of the same message into an unrelated 401.
++    fn member_bound_test_auth(keys: &Keys, url: &str, body: &[u8]) -> axum::http::HeaderMap {
++        use base64::Engine as _;
++        use sha2::{Digest, Sha256};
++
++        let payload = hex::encode(Sha256::digest(body));
++        let nonce = Uuid::new_v4().to_string();
++        let event = EventBuilder::new(Kind::HttpAuth, "")
++            .tags([
++                Tag::parse(["u", url]).expect("u tag"),
++                Tag::parse(["method", "POST"]).expect("method tag"),
++                Tag::parse(["payload", payload.as_str()]).expect("payload tag"),
++                Tag::parse(["x-test-nonce", nonce.as_str()]).expect("nonce tag"),
++            ])
++            .sign_with_keys(keys)
++            .expect("sign unique NIP-98 auth");
++        let encoded = base64::engine::general_purpose::STANDARD
++            .encode(serde_json::to_vec(&event).expect("serialize auth event"));
++        let mut headers = axum::http::HeaderMap::new();
++        headers.insert(
++            axum::http::header::AUTHORIZATION,
++            format!("Nostr {encoded}").parse().expect("auth header"),
++        );
++        headers
++    }
++
++    /// Exercise the shipping router and bridge with a real open channel. The
++    /// same signed message is retried after joining to prove the first denial
++    /// did not store it, and the accepted response names the exact event ID.
++    #[tokio::test]
++    #[ignore = "requires Postgres and Redis"]
++    async fn member_bound_http_requires_exact_auth_kind_and_live_membership() {
++        let state = bridge_handler_test_state().await.expect("test relay state");
++        let host = format!("member-bound-{}.local", Uuid::new_v4().simple());
++        let community = state
++            .db
++            .ensure_configured_community(&host)
++            .await
++            .expect("ensure community");
++        let creator = Keys::generate();
++        let (channel, _) = state
++            .db
++            .create_channel_with_id(
++                community.id,
++                Uuid::new_v4(),
++                &format!("member-bound-{}", Uuid::new_v4().simple()),
++                ChannelType::Stream,
++                ChannelVisibility::Open,
++                None,
++                creator.public_key().to_bytes().as_slice(),
++                None,
++            )
++            .await
++            .expect("create open channel");
++        let member = Keys::generate();
++        let channel_id = channel.id.to_string();
++        let message = EventBuilder::new(Kind::Custom(9), "guarded reply")
++            .tag(Tag::parse(["h", channel_id.as_str()]).expect("channel tag"))
++            .sign_with_keys(&member)
++            .expect("sign message");
++        let body = serde_json::to_vec(&message).expect("serialize message");
++        let route = "/events/member-bound";
++        let url = format!("https://{host}{route}");
++
++        // This state permits dev X-Pubkey on ordinary /events; the guarded
++        // route must require a signed NIP-98 request regardless.
++        let mut dev_headers = axum::http::HeaderMap::new();
++        dev_headers.insert("x-pubkey", member.public_key().to_hex().parse().unwrap());
++        assert_eq!(
++            oneshot_request(state.clone(), "POST", route, &host, dev_headers, &body).await,
++            StatusCode::UNAUTHORIZED
++        );
++
++        let wrong_url = format!("https://{host}/events");
++        let wrong_headers = member_bound_test_auth(&member, &wrong_url, &body);
++        assert_eq!(
++            oneshot_request(state.clone(), "POST", route, &host, wrong_headers, &body).await,
++            StatusCode::UNAUTHORIZED
++        );
++
++        let profile = EventBuilder::new(Kind::Metadata, "{}")
++            .sign_with_keys(&member)
++            .expect("sign non-message");
++        let profile_body = serde_json::to_vec(&profile).unwrap();
++        let profile_auth = member_bound_test_auth(&member, &url, &profile_body);
++        assert_eq!(
++            oneshot_request(
++                state.clone(),
++                "POST",
++                route,
++                &host,
++                profile_auth,
++                &profile_body
++            )
++            .await,
++            StatusCode::BAD_REQUEST
++        );
++
++        let auth = member_bound_test_auth(&member, &url, &body);
++        assert_eq!(
++            oneshot_request(state.clone(), "POST", route, &host, auth, &body).await,
++            StatusCode::BAD_REQUEST,
++            "an open room must still deny nonmember publication"
++        );
++
++        state
++            .db
++            .add_member(
++                community.id,
++                channel.id,
++                member.public_key().to_bytes().as_slice(),
++                buzz_core::channel::MemberRole::Member,
++                None,
++            )
++            .await
++            .expect("join member");
++        let auth = member_bound_test_auth(&member, &url, &body);
++        let (status, _, response) =
++            oneshot_request_full(state, "POST", route, &host, auth, &body).await;
++        assert_eq!(status, StatusCode::OK);
++        let ack: serde_json::Value = serde_json::from_slice(&response).expect("JSON ack");
++        assert_eq!(ack["accepted"], true);
++        assert_eq!(ack["event_id"], message.id.to_hex());
++        assert_eq!(ack["message"], "");
++    }
++
+     /// Drive a single POST /events request through the router and return the
+     /// HTTP status code.
+     async fn post_events(
+@@ -4322,7 +4501,7 @@ mod postgres_tests {
+         body: &[u8],
+     ) -> axum::http::StatusCode {
+         use axum::body::Body;
+-        use axum::http::{header, Request};
++        use axum::http::{Request, header};
+         use tower::ServiceExt;
+ 
+         crate::router::build_router(state)
+@@ -4348,7 +4527,7 @@ mod postgres_tests {
+         body: &[u8],
+     ) -> (axum::http::StatusCode, String) {
+         use axum::body::Body;
+-        use axum::http::{header, Request};
++        use axum::http::{Request, header};
+         use tower::ServiceExt;
+ 
+         let resp = crate::router::build_router(state)
+@@ -4414,7 +4593,9 @@ mod postgres_tests {
+             .expect("current_thread runtime");
+ 
+         let Some(state) = rt.block_on(bridge_handler_test_state()) else {
+-            panic!("local Postgres not reachable — start Postgres on 127.0.0.1:5432 before running ignored bridge handler tests");
++            panic!(
++                "local Postgres not reachable — start Postgres on 127.0.0.1:5432 before running ignored bridge handler tests"
++            );
+         };
+ 
+         // Provision a fresh community so bind_community succeeds.
+@@ -4470,7 +4651,9 @@ mod postgres_tests {
+             .expect("current_thread runtime");
+ 
+         let Some(state) = rt.block_on(bridge_handler_test_state()) else {
+-            panic!("local Postgres not reachable — start Postgres on 127.0.0.1:5432 before running ignored bridge handler tests");
++            panic!(
++                "local Postgres not reachable — start Postgres on 127.0.0.1:5432 before running ignored bridge handler tests"
++            );
+         };
+ 
+         let host = {
+@@ -4542,7 +4725,9 @@ mod postgres_tests {
+             .expect("current_thread runtime");
+ 
+         let Some(state) = rt.block_on(bridge_handler_test_state()) else {
+-            panic!("local Postgres not reachable — start Postgres on 127.0.0.1:5432 before running ignored bridge handler tests");
++            panic!(
++                "local Postgres not reachable — start Postgres on 127.0.0.1:5432 before running ignored bridge handler tests"
++            );
+         };
+ 
+         let host = {
+@@ -4635,7 +4820,9 @@ mod postgres_tests {
+             .expect("current_thread runtime");
+ 
+         let Some(state) = rt.block_on(bridge_handler_test_state()) else {
+-            panic!("local Postgres not reachable — start Postgres on 127.0.0.1:5432 before running ignored bridge handler tests");
++            panic!(
++                "local Postgres not reachable — start Postgres on 127.0.0.1:5432 before running ignored bridge handler tests"
++            );
+         };
+ 
+         let (host, channel_id) = rt.block_on(async {
+@@ -5056,7 +5243,7 @@ mod postgres_tests {
+             AssertionKeySet, FederatedAssertionVerifier, FreshnessClass, IssuerPolicy,
+             IssuerRegistry, StaticIssuerKeySource, TokenClass, VerifyAssertion,
+         };
+-        use jsonwebtoken::{jwk::JwkSet, Algorithm};
++        use jsonwebtoken::{Algorithm, jwk::JwkSet};
+ 
+         let mut state = (*nip_fi_enforce_test_state().await?).clone();
+ 
+@@ -5315,7 +5502,7 @@ mod postgres_tests {
+         headers: axum::http::HeaderMap,
+         body: &[u8],
+     ) -> (axum::http::StatusCode, axum::http::HeaderMap, bytes::Bytes) {
+-        use axum::body::{to_bytes, Body};
++        use axum::body::{Body, to_bytes};
+         use axum::http::Request;
+         use tower::ServiceExt;
+ 
+@@ -6463,7 +6650,7 @@ mod postgres_tests {
+             AssertionKeySet, FederatedAssertionVerifier, FreshnessClass, IssuerPolicy,
+             IssuerRegistry, StaticIssuerKeySource, TokenClass, VerifyAssertion,
+         };
+-        use jsonwebtoken::{jwk::JwkSet, Algorithm};
++        use jsonwebtoken::{Algorithm, jwk::JwkSet};
+ 
+         let rt = tokio::runtime::Builder::new_current_thread()
+             .enable_all()
+@@ -6706,7 +6893,7 @@ mod postgres_tests {
+             AssertionKeySet, FederatedAssertionVerifier, FreshnessClass, IssuerPolicy,
+             IssuerRegistry, StaticIssuerKeySource, TokenClass, VerifyAssertion,
+         };
+-        use jsonwebtoken::{jwk::JwkSet, Algorithm};
++        use jsonwebtoken::{Algorithm, jwk::JwkSet};
+ 
+         let rt = tokio::runtime::Builder::new_current_thread()
+             .enable_all()
+@@ -7061,7 +7248,7 @@ mod postgres_tests {
+         );
+ 
+         let single_resp = rt.block_on(async {
+-            use axum::body::{to_bytes, Body};
++            use axum::body::{Body, to_bytes};
+             use tower::ServiceExt;
+             let mut builder = axum::http::Request::builder()
+                 .method("POST")
+@@ -7313,7 +7500,7 @@ mod postgres_tests {
+         body: &[u8],
+     ) -> (axum::http::StatusCode, axum::body::Bytes) {
+         use axum::body::Body;
+-        use axum::http::{header, Request};
++        use axum::http::{Request, header};
+         use tower::ServiceExt;
+ 
+         let resp = crate::router::build_router(state)
+diff --git a/crates/buzz-relay/src/handlers/ingest.rs b/crates/buzz-relay/src/handlers/ingest.rs
+index 9b95218..0d07d06 100644
+--- a/crates/buzz-relay/src/handlers/ingest.rs
++++ b/crates/buzz-relay/src/handlers/ingest.rs
+@@ -10,11 +10,11 @@ use tracing::{debug, error, info, warn};
+ use uuid::Uuid;
+ 
+ use buzz_auth::Scope;
++use buzz_core::CommunityId;
+ use buzz_core::kind::{
+-    event_kind_u32, is_identity_archive_request_kind, is_parameterized_replaceable,
+-    is_relay_admin_kind, KIND_AGENT_ENGRAM, KIND_AGENT_PROFILE, KIND_AGENT_TURN_METRIC,
+-    KIND_APPROVAL_DENY, KIND_APPROVAL_GRANT, KIND_AUTH, KIND_BOOKMARK_LIST, KIND_BOOKMARK_SET,
+-    KIND_CANVAS, KIND_CONTACT_LIST, KIND_DELETION, KIND_DM_ADD_MEMBER, KIND_DM_HIDE, KIND_DM_OPEN,
++    KIND_AGENT_ENGRAM, KIND_AGENT_PROFILE, KIND_AGENT_TURN_METRIC, KIND_APPROVAL_DENY,
++    KIND_APPROVAL_GRANT, KIND_AUTH, KIND_BOOKMARK_LIST, KIND_BOOKMARK_SET, KIND_CANVAS,
++    KIND_CONTACT_LIST, KIND_DELETION, KIND_DM_ADD_MEMBER, KIND_DM_HIDE, KIND_DM_OPEN,
+     KIND_EMOJI_LIST, KIND_EMOJI_SET, KIND_EVENT_REMINDER, KIND_FOLLOW_SET, KIND_FORUM_COMMENT,
+     KIND_FORUM_POST, KIND_FORUM_VOTE, KIND_GIFT_WRAP, KIND_GIT_ISSUE, KIND_GIT_PATCH,
+     KIND_GIT_PR_UPDATE, KIND_GIT_PULL_REQUEST, KIND_GIT_REPO_ANNOUNCEMENT, KIND_GIT_REPO_STATE,
+@@ -34,11 +34,11 @@ use buzz_core::kind::{
+     KIND_STREAM_MESSAGE_SCHEDULED, KIND_STREAM_MESSAGE_V2, KIND_STREAM_REMINDER, KIND_TEAM,
+     KIND_TEAM_CATALOG, KIND_TEXT_NOTE, KIND_USER_STATUS, KIND_WORKFLOW_DEF, KIND_WORKFLOW_TRIGGER,
+     RELAY_ADMIN_ADD_MEMBER, RELAY_ADMIN_CHANGE_ROLE, RELAY_ADMIN_REMOVE_MEMBER,
+-    RELAY_ADMIN_SET_WORKSPACE_PROFILE,
++    RELAY_ADMIN_SET_WORKSPACE_PROFILE, event_kind_u32, is_identity_archive_request_kind,
++    is_parameterized_replaceable, is_relay_admin_kind,
+ };
+ use buzz_core::tenant::TenantContext;
+ use buzz_core::verification::verify_event;
+-use buzz_core::CommunityId;
+ use nostr::Event;
+ 
+ use crate::state::AppState;
+@@ -46,8 +46,8 @@ use crate::state::AppState;
+ use super::event::dispatch_persistent_event;
+ 
+ use crate::conformance::{
+-    self as conf, channel_label, claimed_community_from_event, emit, msg_id_label,
+-    state_for_request, EmitGuard, TraceAction, Verdict,
++    self as conf, EmitGuard, TraceAction, Verdict, channel_label, claimed_community_from_event,
++    emit, msg_id_label, state_for_request,
+ };
+ 
+ fn huddle_backing_channel_id(event: &Event) -> Result<Uuid, IngestError> {
+@@ -2148,11 +2148,7 @@ async fn author_type_label(
+             v
+         }
+     };
+-    if is_agent {
+-        "agent"
+-    } else {
+-        "human"
+-    }
++    if is_agent { "agent" } else { "human" }
+ }
+ 
+ /// Ingest a signed Nostr event through the full validation pipeline.
+@@ -2174,6 +2170,30 @@ pub async fn ingest_event(
+     tenant: &TenantContext,
+     event: Event,
+     auth: IngestAuth,
++) -> Result<IngestResult, IngestError> {
++    ingest_event_with_member_requirement(state, tenant, event, auth, false).await
++}
++
++pub async fn ingest_member_bound_event(
++    state: &Arc<AppState>,
++    tenant: &TenantContext,
++    event: Event,
++    auth: IngestAuth,
++) -> Result<IngestResult, IngestError> {
++    if !auth.is_http() || event_kind_u32(&event) != KIND_STREAM_MESSAGE {
++        return Err(IngestError::Rejected(
++            "restricted: member-bound publication requires HTTP kind 9".into(),
++        ));
++    }
++    ingest_event_with_member_requirement(state, tenant, event, auth, true).await
++}
++
++async fn ingest_event_with_member_requirement(
++    state: &Arc<AppState>,
++    tenant: &TenantContext,
++    event: Event,
++    auth: IngestAuth,
++    member_bound: bool,
+ ) -> Result<IngestResult, IngestError> {
+     // Captured before `event` moves into the inner fn: the stored-events
+     // counter below is emitted at this shared seam so WebSocket and HTTP
+@@ -2190,7 +2210,7 @@ pub async fn ingest_event(
+         "ingest_event_exited_without_trace",
+     );
+ 
+-    let result = ingest_event_inner(state, &tracer, tenant, event, auth).await;
++    let result = ingest_event_inner(state, &tracer, tenant, event, auth, member_bound).await;
+ 
+     // Fleet-wide stored counter: kind + author_type only, no community tag
+     // (see the cardinality rationale on buzz_events_received_total —
+@@ -2255,6 +2275,7 @@ async fn ingest_event_inner(
+     tenant: &TenantContext,
+     event: Event,
+     auth: IngestAuth,
++    member_bound: bool,
+ ) -> Result<IngestResult, IngestError> {
+     let event_id_hex = event.id.to_hex();
+     let kind_u32 = event_kind_u32(&event);
+@@ -3312,17 +3333,37 @@ async fn ingest_event_inner(
+         }
+     } else {
+         let thread_params = thread_meta.as_ref().map(|m| m.as_params());
+-        match state
+-            .db
+-            .insert_event_with_thread_metadata(
+-                tenant.community(),
+-                &event,
+-                channel_id,
+-                thread_params,
+-            )
+-            .await
+-        {
++        let write_result = if member_bound {
++            let ch_id = channel_id.ok_or_else(|| {
++                IngestError::Rejected(
++                    "restricted: member-bound publication requires a channel".into(),
++                )
++            })?;
++            state
++                .db
++                .insert_member_bound_stream_message(
++                    tenant.community(),
++                    &event,
++                    ch_id,
++                    thread_params,
++                )
++                .await
++        } else {
++            state
++                .db
++                .insert_event_with_thread_metadata(
++                    tenant.community(),
++                    &event,
++                    channel_id,
++                    thread_params,
++                )
++                .await
++        };
++        match write_result {
+             Ok(result) => result,
++            Err(buzz_db::DbError::AccessDenied(reason)) if member_bound => {
++                return Err(IngestError::Rejected(reason));
++            }
+             Err(e) => {
+                 // Compensate: if we pre-created a channel for kind:9007,
+                 // soft-delete it so no orphaned channel row remains.
+@@ -3676,8 +3717,8 @@ mod postgres_tests {
+     #[ignore = "requires Postgres"]
+     async fn ingest_write_fence_follows_community_deletion_lifecycle() {
+         use buzz_db::deletion::{
+-            FrozenInventory, KeyStreamDigest, PrefixManifest, StorageManifest,
+-            DEFAULT_LEASE_DURATION,
++            DEFAULT_LEASE_DURATION, FrozenInventory, KeyStreamDigest, PrefixManifest,
++            StorageManifest,
+         };
+ 
+         let url = std::env::var("BUZZ_TEST_DATABASE_URL")
+@@ -5893,7 +5934,7 @@ mod postgres_tests {
+         let tracer: Arc<dyn buzz_conformance::Tracer> = Arc::new(VecTracer::default());
+ 
+         // ── Submit through the real ingest path ───────────────────────────────
+-        let result = ingest_event_inner(&state, &tracer, &tenant, event, auth).await;
++        let result = ingest_event_inner(&state, &tracer, &tenant, event, auth, false).await;
+ 
+         // The canvas-specific guard must fire before the h-tag check.
+         // created_at = relay_now + 600 is 300 s above the canvas ceiling, so
+@@ -6212,7 +6253,7 @@ mod postgres_tests {
+             .expect("sign first canvas");
+         let first_id_hex = first.id.to_hex();
+ 
+-        ingest_event_inner(&state, &tracer, &tenant, first, make_auth(&author))
++        ingest_event_inner(&state, &tracer, &tenant, first, make_auth(&author), false)
+             .await
+             .expect("first canvas write must succeed");
+ 
+@@ -6226,7 +6267,7 @@ mod postgres_tests {
+             .sign_with_keys(&author)
+             .expect("sign second canvas");
+ 
+-        ingest_event_inner(&state, &tracer, &tenant, second, make_auth(&author))
++        ingest_event_inner(&state, &tracer, &tenant, second, make_auth(&author), false)
+             .await
+             .expect("second canvas write must succeed");
+ 
+@@ -6245,7 +6286,9 @@ mod postgres_tests {
+         let stale_id_bytes = stale.id.as_bytes().to_vec();
+ 
+         let err =
+-            match ingest_event_inner(&state, &tracer, &tenant, stale, make_auth(&author)).await {
++            match ingest_event_inner(&state, &tracer, &tenant, stale, make_auth(&author), false)
++                .await
++            {
+                 Ok(_) => panic!("stale precondition must be rejected, but ingest returned Ok"),
+                 Err(e) => e,
+             };
+@@ -6276,8 +6319,15 @@ mod postgres_tests {
+                 .sign_with_keys(&author)
+                 .expect("sign untagged canvas");
+ 
+-        ingest_event_inner(&state, &tracer, &tenant, untagged, make_auth(&author))
+-            .await
+-            .expect("untagged canvas write must append unconditionally");
++        ingest_event_inner(
++            &state,
++            &tracer,
++            &tenant,
++            untagged,
++            make_auth(&author),
++            false,
++        )
++        .await
++        .expect("untagged canvas write must append unconditionally");
+     }
+ }
+diff --git a/crates/buzz-relay/src/router.rs b/crates/buzz-relay/src/router.rs
+index 50af16d..3d7d0fd 100644
+--- a/crates/buzz-relay/src/router.rs
++++ b/crates/buzz-relay/src/router.rs
+@@ -1,16 +1,16 @@
+ //! axum routers — app (WebSocket + REST), health (K8s probes), metrics (Prometheus).
+ 
+-use std::sync::atomic::Ordering;
+ use std::sync::Arc;
++use std::sync::atomic::Ordering;
+ 
+ use axum::{
++    Router,
+     body::Body,
+     extract::{ConnectInfo, FromRequest, State, WebSocketUpgrade},
+-    http::{header, HeaderMap, HeaderValue, Request, StatusCode},
++    http::{HeaderMap, HeaderValue, Request, StatusCode, header},
+     middleware,
+     response::{IntoResponse, Json},
+     routing::{get, post, put},
+-    Router,
+ };
+ use serde_json::json;
+ use tower::ServiceExt;
+@@ -23,8 +23,8 @@ use crate::api;
+ use crate::audio;
+ use crate::connection::handle_connection;
+ use crate::metrics::track_metrics;
+-use crate::nip11::{nip11_document, relay_info_handler};
+ use crate::nip_fi_http::http_denial;
++use crate::nip11::{nip11_document, relay_info_handler};
+ use crate::readiness::{self, ReadinessEvaluation, ReadinessReason};
+ use crate::state::AppState;
+ 
+@@ -300,6 +300,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
+         .route("/_readiness", get(public_readiness_handler))
+         // Nostr HTTP bridge (NIP-98 auth)
+         .route("/events", post(api::bridge::submit_event))
++        .route(
++            "/events/member-bound",
++            post(api::bridge::submit_member_bound_event),
++        )
+         .route("/query", post(api::bridge::query_events))
+         .route("/count", post(api::bridge::count_events))
+         // Relay-owned third-party GIF metadata proxy (NIP-98 auth).
+@@ -760,12 +764,12 @@ mod tests {
+     use std::sync::{Mutex, PoisonError};
+     use std::time::Duration;
+ 
+-    use axum::{routing::get, Router};
++    use axum::{Router, routing::get};
+     use futures_util::SinkExt;
+     use opentelemetry::trace::TracerProvider as _;
+     use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
+     use tokio::net::TcpListener;
+-    use tokio::sync::{mpsc, Notify};
++    use tokio::sync::{Notify, mpsc};
+     use tokio_tungstenite::{connect_async, tungstenite::Message};
+     use tower::ServiceBuilder;
+     use tracing::Instrument as _;
+@@ -1717,6 +1721,7 @@ mod tests {
+     #[test]
+     fn protected_paths_are_not_exempt() {
+         assert!(!is_exempt("/events"), "POST /events must be protected");
++        assert!(!is_exempt("/events/member-bound"));
+         assert!(!is_exempt("/query"), "POST /query must be protected");
+         assert!(!is_exempt("/count"), "POST /count must be protected");
+         assert!(
+@@ -2159,8 +2164,7 @@ mod tests {
+                 .and_then(|v| v.to_str().ok())
+                 .unwrap_or("");
+             assert_eq!(
+-                www_auth,
+-                "Nostr",
++                www_auth, "Nostr",
+                 "Enforce: {path} on tenant host 401 must have WWW-Authenticate: Nostr header. \
+                  Falsifying mutation: remove challenge from MissingEvidence denial → assertion fires."
+             );
+diff --git a/docs/member-bound-events.md b/docs/member-bound-events.md
+new file mode 100644
+index 0000000..4ec34d6
+--- /dev/null
++++ b/docs/member-bound-events.md
+@@ -0,0 +1,25 @@
++# Member-bound HTTP publication (proposal)
++
++`POST /events/member-bound` accepts only signed kind-9 channel messages. The
++request uses the existing event JSON and NIP-98 authorization format. The NIP-98
++`u` tag must name this exact route on the tenant host, and its payload digest
++must cover the event body. Dev `X-Pubkey` authentication is not accepted.
++
++The relay accepts only while the event signer has an active membership in the
++event's channel. The check uses the authoritative database, after acquiring the
++same per-community, per-channel advisory transaction lock as member removal.
++The event, thread metadata, and membership decision commit in one transaction.
++An absent, removed, or cross-community membership rejects with HTTP 400 and no
++event is stored. A duplicate event submitted after removal is also rejected.
++
++This distinct path is the capability check: older relays lack the route and
++cannot silently ignore an optional request header. Clients requiring the
++membership guarantee must send only to this path and require the exact event-ID
++acceptance response. `POST /events` keeps its current open-channel behavior.
++
++The guarantee orders the write against add/remove membership operations that
++use the channel-membership lock. A subsequent removal does not retract an event
++that committed first. Channel deletion uses a separate write path and is not
++serialized by this membership fence; its existing event-write guards still
++apply. This route does not assert that an ACP turn succeeded or that delivery
++to subscribers completed.

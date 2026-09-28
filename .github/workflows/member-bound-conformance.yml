@@ -1,0 +1,105 @@
+name: Manual member-bound reply conformance
+
+# Explicit conformance only; never contacts a user or public relay.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: member-bound-conformance
+  cancel-in-progress: false
+
+jobs:
+  membership:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: buzz
+          POSTGRES_PASSWORD: buzz_dev
+          POSTGRES_DB: buzz
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U buzz -d buzz"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+      DATABASE_URL: postgres://buzz:buzz_dev@127.0.0.1:5432/buzz
+      BUZZ_TEST_DATABASE_URL: postgres://buzz:buzz_dev@127.0.0.1:5432/buzz
+      REDIS_URL: redis://127.0.0.1:6379
+    steps:
+      - name: Set disposable build location
+        run: echo "CARGO_HOME=$RUNNER_TEMP/buzz-cargo" >> "$GITHUB_ENV"
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          path: plugin
+          persist-credentials: false
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: block/buzz
+          ref: 781d39510cf23cfe224e8f521ae06a23377e06de
+          path: buzz
+          persist-credentials: false
+      - name: Restore disposable compiled dependencies
+        id: cache
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25
+        with:
+          path: |
+            ${{ runner.temp }}/buzz-cargo
+            ${{ runner.temp }}/relay-target
+            ${{ runner.temp }}/helper-target
+          key: buzz-member-bound-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('plugin/docs/upstream/*.patch') }}
+          restore-keys: |
+            buzz-member-bound-v1-${{ runner.os }}-${{ runner.arch }}-
+            buzz-acp-auth-v1-${{ runner.os }}-${{ runner.arch }}-
+      - name: Install tested build prerequisites
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libssl-dev libdbus-1-dev protobuf-compiler
+      - name: Apply proposed interfaces only to disposable source
+        working-directory: buzz
+        run: |
+          test "$(git rev-parse HEAD)" = 781d39510cf23cfe224e8f521ae06a23377e06de
+          git diff --exit-code
+          for patch in ws-resource-limits acp-permission-mode acp-interactive-login acp-key-isolation acp-harness-replies acp-deny-tool-requests member-bound-events; do
+            git apply --check "../plugin/docs/upstream/$patch.patch"
+            git apply "../plugin/docs/upstream/$patch.patch"
+          done
+      - name: Build complete patched relay and ACP
+        id: build
+        working-directory: buzz
+        run: cargo +1.95.0 build --locked -p buzz-relay -p buzz-acp --target-dir "$RUNNER_TEMP/relay-target"
+      - name: Test database membership and removal ordering
+        working-directory: buzz
+        run: cargo +1.95.0 test --locked -p buzz-db --lib member_bound --target-dir "$RUNNER_TEMP/relay-target" -- --ignored --test-threads=1
+      - name: Test actual authenticated relay endpoint
+        working-directory: buzz
+        run: cargo +1.95.0 test --locked -p buzz-relay --lib member_bound --target-dir "$RUNNER_TEMP/relay-target" -- --ignored --test-threads=1
+      - name: Test client rejects legacy publication fallback
+        working-directory: buzz
+        run: cargo +1.95.0 test --locked -p buzz-acp --lib room_reply_transport_tests --target-dir "$RUNNER_TEMP/relay-target"
+      - name: Preserve compiled dependencies
+        if: always() && !cancelled() && steps.build.outcome == 'success' && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25
+        with:
+          path: |
+            ${{ runner.temp }}/buzz-cargo
+            ${{ runner.temp }}/relay-target
+            ${{ runner.temp }}/helper-target
+          key: ${{ steps.cache.outputs.cache-primary-key }}
