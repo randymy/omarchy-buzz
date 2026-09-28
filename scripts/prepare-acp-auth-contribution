@@ -1,0 +1,55 @@
+#!/usr/bin/env python3
+"""Stage an ACP patch and compile only its exact pure auth-policy functions/tests.
+
+This does not compile or run the ACP harness, spawn an adapter or prove login.
+"""
+import argparse
+from pathlib import Path
+import shutil
+import subprocess
+
+ROOT = Path(__file__).resolve().parents[1]
+BASE = '781d39510cf23cfe224e8f521ae06a23377e06de'
+
+def prepare(source, output):
+    if output.exists() or output.is_symlink():
+        raise ValueError('choose a new output directory')
+    files = {name: subprocess.check_output(['git', 'show', BASE + ':crates/buzz-acp/src/' + name], cwd=source)
+             for name in ('acp.rs', 'lib.rs')}
+    output.mkdir(parents=True, mode=0o700)
+    upstream = output / 'crates/buzz-acp/src'
+    upstream.mkdir(parents=True)
+    for name, data in files.items():
+        (upstream / name).write_bytes(data)
+    patch = ROOT / 'docs/upstream/acp-terminal-auth.patch'
+    subprocess.run(['git', 'apply', '--check', str(patch)], cwd=output, check=True)
+    subprocess.run(['git', 'apply', str(patch)], cwd=output, check=True)
+    library = (upstream / 'lib.rs').read_text()
+    client = (upstream / 'acp.rs').read_text()
+    policy = library[library.index('fn validate_authenticate_method('):library.index('/// `buzz-acp auth-methods`')]
+    tests = library[library.index('#[cfg(test)]\nmod auth_method_tests'):library.index('/// `buzz-acp authenticate`')]
+    capabilities = client[client.index('fn build_client_capabilities()'):client.index('impl AcpClient {')]
+    crate = output / 'policy-test'
+    (crate / 'src').mkdir(parents=True)
+    (crate / 'src/lib.rs').write_text('#![allow(dead_code)]\n' + policy + capabilities + tests + '''
+#[test]
+fn no_unsupported_terminal_auth_claim() {
+    let value=build_client_capabilities();
+    assert_eq!(value["auth"]["terminal"],false);
+    assert!(value["_meta"].get("terminal-auth").is_none());
+    assert_eq!(value["_meta"]["goose"]["customNotifications"],true);
+}
+''')
+    for name in ('Cargo.toml', 'Cargo.lock'):
+        shutil.copyfile(ROOT / 'tests/upstream-acp-auth' / name, crate / name)
+    print(crate)
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--buzz-source', required=True, type=Path)
+    parser.add_argument('--output', required=True, type=Path)
+    args = parser.parse_args()
+    try:
+        prepare(args.buzz_source.resolve(), args.output.absolute())
+    except (ValueError, OSError, subprocess.CalledProcessError) as error:
+        parser.exit(1, 'auth contribution preparation failed: ' + str(error) + '\n')

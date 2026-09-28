@@ -95,3 +95,8 @@ jobs:
         run: rustup toolchain install 1.95.0 --profile minimal
       - name: Test proposed client limits against synthetic peers
         run: cargo +1.95.0 test --locked --manifest-path "$RUNNER_TEMP/buzz-ws-review/crates/buzz-ws-client/Cargo.toml"
+      - name: Stage ACP authentication policy proposal
+        working-directory: omarchy-buzz
+        run: python3 scripts/prepare-acp-auth-contribution --buzz-source ../buzz --output "$RUNNER_TEMP/buzz-acp-auth-review"
+      - name: Test exact pure ACP authentication policy functions
+        run: cargo +1.95.0 test --locked --manifest-path "$RUNNER_TEMP/buzz-acp-auth-review/policy-test/Cargo.toml"

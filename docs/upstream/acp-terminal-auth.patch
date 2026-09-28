@@ -1,0 +1,160 @@
+--- a/crates/buzz-acp/src/acp.rs
++++ b/crates/buzz-acp/src/acp.rs
+@@ -395,11 +395,10 @@
+ 
+ fn build_client_capabilities() -> serde_json::Value {
+     serde_json::json!({
+-        // Signal to ACP adapters that Buzz can hand users to terminal-native
+-        // auth flows. Adapters decide which auth methods to expose; Buzz does
+-        // not hardcode vendor login commands from this capability.
++        // Terminal auth requires a separate interactive agent invocation,
++        // which this harness does not implement.
+         "auth": {
+-            "terminal": true
++            "terminal": false
+         },
+         // Signal to goose that we handle `_goose/unstable/session/update`
+         // notifications. Without this the custom notification is suppressed
+@@ -407,11 +406,7 @@
+         "_meta": {
+             "goose": {
+                 "customNotifications": true
+-            },
+-            // Non-standard extension used by claude-agent-acp to advertise the
+-            // exact terminal login argv for subscription auth. Unknown `_meta`
+-            // keys are ignored by other adapters.
+-            "terminal-auth": true
++            }
+         }
+     })
+ }
+@@ -2569,8 +2564,14 @@
+         assert!(msg["params"]["clientCapabilities"].is_object());
+         assert_eq!(
+             msg["params"]["clientCapabilities"]["auth"]["terminal"].as_bool(),
+-            Some(true),
+-            "terminal auth capability must be advertised so adapters can expose terminal login methods"
++            Some(false),
++            "terminal auth must not be advertised without an interactive flow"
++        );
++        assert!(
++            msg["params"]["clientCapabilities"]["_meta"]
++                .get("terminal-auth")
++                .is_none(),
++            "do not advertise the non-standard terminal auth extension"
+         );
+         assert_eq!(
+             msg["params"]["clientCapabilities"]["_meta"]["goose"]["customNotifications"].as_bool(),
+--- a/crates/buzz-acp/src/lib.rs
++++ b/crates/buzz-acp/src/lib.rs
+@@ -5622,6 +5622,35 @@
+         .unwrap_or_default()
+ }
+ 
++/// Only ACP `agent` auth methods may receive an `authenticate` request.
++/// An absent type defaults to `agent` per ACP. `terminal` methods require a
++/// separate interactive process. Reject malformed and duplicate IDs fail closed.
++fn validate_authenticate_method(
++    init_result: &serde_json::Value,
++    method_id: &str,
++) -> std::result::Result<(), &'static str> {
++    let mut matches = init_result
++        .get("authMethods")
++        .and_then(serde_json::Value::as_array)
++        .into_iter()
++        .flatten()
++        .filter(|method| method.get("id").and_then(serde_json::Value::as_str) == Some(method_id));
++    let Some(method) = matches.next() else {
++        return Err("method is not advertised by this adapter");
++    };
++    if matches.next().is_some() {
++        return Err("method ID is advertised more than once");
++    }
++    match method.get("type") {
++        None => Ok(()), // ACP defaults an absent type to `agent`.
++        Some(serde_json::Value::String(method_type)) if method_type == "agent" => Ok(()),
++        Some(serde_json::Value::String(method_type)) if method_type == "terminal" => {
++            Err("terminal authentication requires an interactive flow")
++        }
++        _ => Err("unsupported authentication method type"),
++    }
++}
++
+ /// `buzz-acp auth-methods` — spawn an adapter, initialize it, print authMethods.
+ async fn run_auth_methods(args: AuthMethodsArgs) -> Result<()> {
+     let mut client = match spawn_auth_client(&args.agent).await {
+@@ -5670,6 +5699,56 @@
+     Ok(())
+ }
+ 
++#[cfg(test)]
++mod auth_method_tests {
++    use super::validate_authenticate_method;
++    use serde_json::json;
++
++    #[test]
++    fn only_an_unambiguous_agent_method_can_use_acp_authenticate() {
++        let init = json!({"authMethods": [
++            {"id": "agent-login", "type": "agent"},
++            {"id": "terminal-login", "type": "terminal", "args": ["login"]},
++            {"id": "future-login", "type": "future"},
++            {"id": "untyped-login"},
++            {"id": "null-login", "type": null},
++            {"id": "number-login", "type": 1},
++            {"id": "duplicate", "type": "agent"},
++            {"id": "duplicate", "type": "terminal"}
++        ]});
++        assert_eq!(validate_authenticate_method(&init, "agent-login"), Ok(()));
++        assert_eq!(
++            validate_authenticate_method(&init, "terminal-login"),
++            Err("terminal authentication requires an interactive flow")
++        );
++        assert_eq!(
++            validate_authenticate_method(&init, "future-login"),
++            Err("unsupported authentication method type")
++        );
++        assert_eq!(validate_authenticate_method(&init, "untyped-login"), Ok(()));
++        assert_eq!(
++            validate_authenticate_method(&init, "null-login"),
++            Err("unsupported authentication method type")
++        );
++        assert_eq!(
++            validate_authenticate_method(&init, "number-login"),
++            Err("unsupported authentication method type")
++        );
++        assert_eq!(
++            validate_authenticate_method(&init, "duplicate"),
++            Err("method ID is advertised more than once")
++        );
++        assert_eq!(
++            validate_authenticate_method(&init, "missing"),
++            Err("method is not advertised by this adapter")
++        );
++        assert_eq!(
++            validate_authenticate_method(&json!({"authMethods": "malformed"}), "agent-login"),
++            Err("method is not advertised by this adapter")
++        );
++    }
++}
++
+ /// `buzz-acp authenticate` — invoke one adapter-owned auth method.
+ async fn run_authenticate(args: AuthenticateArgs) -> Result<()> {
+     let mut client = match spawn_auth_client(&args.agent).await {
+@@ -5694,15 +5773,9 @@
+         }
+     };
+ 
+-    let supports_method = extract_auth_methods(&init_result)
+-        .iter()
+-        .any(|method| method.get("id").and_then(|id| id.as_str()) == Some(args.method_id.as_str()));
+-    if !supports_method {
++    if let Err(reason) = validate_authenticate_method(&init_result, &args.method_id) {
+         client.shutdown().await;
+-        eprintln!(
+-            "error: auth method '{}' is not advertised by this adapter",
+-            args.method_id
+-        );
++        eprintln!("error: auth method '{}' unavailable: {reason}", args.method_id);
+         std::process::exit(1);
+     }
+ 

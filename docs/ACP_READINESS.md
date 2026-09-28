@@ -177,3 +177,12 @@ Use mocked authentication for routine conformance; real paid/subscription runs
 need a deliberately authorized limited demo. Confirm that no test or failure
 silently changes the payer or leaks credentials into relay events, QML, logs,
 argv, unrelated child processes or temporary files.
+
+## Authentication compatibility follow-up
+
+See [AGENT_AUTH_COMPATIBILITY.md](AGENT_AUTH_COMPATIBILITY.md) for the native
+provider versus ACP verification matrix and the discovered terminal-auth
+capability mismatch in the Buzz harness. Source refresh to official Buzz
+`ebe99a46e8802b9ff20fdf6a1028ce93bdefaa43` did not change these ACP paths.
+Subscription support is still required; no real subscription/paid agent was
+launched to establish it in this pass.
