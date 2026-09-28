@@ -368,8 +368,7 @@ async fn optional_profile_access_denial_preserves_the_verified_roster() {
                         "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                             .into()
                     } else {
-                        "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n[]"
-                            .into()
+                        "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n[]".into()
                     };
                     stream.write_all(reply.as_bytes()).await.unwrap();
                 }

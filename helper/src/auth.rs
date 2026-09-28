@@ -28,9 +28,14 @@ fn publish_status(tx: &watch::Sender<Status>, change: impl FnOnce(&mut Status)) 
     tx.send_modify(|status| {
         change(status);
         #[cfg(test)]
-        assert!(status.activity.iter().all(|entry|
-            status.catalog.rooms.iter().any(|room|room.id==entry.room_id)),
-            "published activity references an inaccessible room");
+        assert!(
+            status.activity.iter().all(|entry| status
+                .catalog
+                .rooms
+                .iter()
+                .any(|room| room.id == entry.room_id)),
+            "published activity references an inaccessible room"
+        );
     });
 }
 fn update(tx: &watch::Sender<Status>, state: &str, category: Option<&str>) {
