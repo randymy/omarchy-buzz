@@ -1517,3 +1517,11 @@ room/owner filters route input and do not restrict all possible signed events.
 Shared network and provider credentials inside the dedicated profile remain
 explicit trust limits. Do not present this as a hostile-code or network sandbox,
 a future vMachine authority layer, human approval UI, or full agent-state dashboard.
+
+## Running UI upgrade corrected
+
+The operator reported `Incompatible helper` despite matching 0.0.8 files.
+`omarchy restart shell` followed by normal-window summon resolved it. A targeted
+window capture confirmed authenticated rooms and VASSIVE DEV messages. The
+earlier helper/socket verification did not establish that old compiled QML had
+unloaded. Future upgrades must include the actual rendered-window check.

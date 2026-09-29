@@ -21,3 +21,8 @@ record their root ID to prevent submission reuse across threads. After a thread
 has been sent, downgrading to 0.0.7 makes its strict ledger reader disable
 sending. Keep the ledger and return to 0.0.8; do not delete delivery history to
 work around a downgrade.
+
+On the tested Omarchy build, a plugin rescan can retain old compiled QML. After
+upgrading both components, run `omarchy restart shell`, then reopen Buzz and
+verify the rendered window shows authenticated rooms. A healthy helper socket
+and matching files alone do not prove the running UI loaded the new code.
