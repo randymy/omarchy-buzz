@@ -50,6 +50,35 @@ class AgentPreview(unittest.TestCase):
             run.assert_not_called()
             temporary.assert_not_called()
 
+    def test_hydration_bounds_npm_network_retries(self):
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            bundle = root / 'bundle'
+            profile = root / 'profile'
+            (profile / 'cache').mkdir(parents=True)
+            with patch.object(module.shutil, 'disk_usage', return_value=SimpleNamespace(free=3*1024**3)), patch.object(module.subprocess, 'run', return_value=SimpleNamespace(returncode=1)) as run:
+                with self.assertRaisesRegex(module.Refused, 'runtime_install_failed'):
+                    module.hydrate(bundle, {}, 'codex', profile)
+            command = run.call_args.args[0]
+            self.assertIn('--fetch-retries=1', command)
+            self.assertIn('--fetch-timeout=30000', command)
+            self.assertIn('--fetch-retry-maxtimeout=5000', command)
+
+    def test_discovery_rejects_methods_login_cannot_use(self):
+        cases = [
+            ('codex', [{'id': 'chat-gpt-device-code', 'type': 'agent'}]),
+            ('codex', [{'id': 'chat-gpt', 'type': 'terminal'}]),
+            ('codex', [{'id': 'chat-gpt'}, {'id': 'chat-gpt'}]),
+            ('claude', [{'id': 'claude-ai-login', 'type': 'agent'}]),
+        ]
+        for agent, methods in cases:
+            with self.subTest(agent=agent, methods=methods):
+                with self.assertRaisesRegex(module.Refused, 'unexpected_auth_method'):
+                    module.checked_methods(json.dumps({'methods': methods}), agent)
+        self.assertEqual(module.checked_methods(json.dumps({'methods': [
+            {'id': 'claude-ai-login', 'type': 'terminal'}]}), 'claude'), ['claude-ai-login'])
+
     def test_bundle_rejects_file_change_and_linked_entrypoint(self):
         with tempfile.TemporaryDirectory() as temporary:
             bundle, _ = fixture_bundle(Path(temporary))

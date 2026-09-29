@@ -1071,3 +1071,33 @@ manifest validation and shell syntax validation passed. Marketplace submission
 remains prepared but unsubmitted; resource-bound, notice and desktop acceptance
 gates remain. Next: obtain disk headroom, hydrate/verify target runtimes, then
 interactive subscription acceptance; independently finish messaging release gates.
+
+## Target runtimes ready; native sign-in opened (September 29)
+
+Try Omarchy enlarged the virtual disk to 64 GiB and expanded ext4 on boot.
+After setup, approximately 38 GiB remains available. Both vendor runtimes were
+hydrated from the staged bundle's original locks with lifecycle scripts disabled.
+Package versions and native runtime hashes passed against the ARM64 build report.
+Restricted-network attempts failed DNS; explicit network-enabled retries passed.
+
+On this machine, the compiled Buzz harness and adapters expose only `chat-gpt`
+for Codex and `claude-ai-login` for Claude. Authentication-method validation now
+rejects incompatible types, duplicate IDs and discovery lists lacking the method
+used by the login command. npm retries/timeouts are bounded. Eleven launcher
+boundary tests pass; no provider credentials were inspected or imported.
+
+A native Omarchy terminal was launched with a private local wrapper for sequential
+ChatGPT and Claude subscription sign-in. Completion is not observed or certified;
+do not infer a logged-in Pro account or successful model execution. Its local
+wrapper is beneath the staged run directory (`sign-in.sh`); no credentials or
+login output are stored in the repository. The installed messaging socket is
+active. No room agent, production relay change or model task was initiated.
+Evidence: [agent-target-setup-2026-09-29.json](evidence/agent-target-setup-2026-09-29.json).
+
+Independent notice review confirmed the staged Buzz workspace crate manifests,
+lock and root license match pinned source. Three exact registry notice sources
+remain unavailable locally: nostr 0.44.7, bitcoin-io 0.1.4, bitcoin_hashes 0.14.1.
+Older cached versions cannot supply their provenance. Preserve inventory review
+flags; the bundle is still experimental. Next: observe user-controlled sign-in,
+verify subscription admission without API fallback, and advance upstream gates
+before any supervised room-agent acceptance. Marketplace remains unsubmitted.

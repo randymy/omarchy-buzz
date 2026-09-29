@@ -1,0 +1,31 @@
+{
+  "date": "2026-09-29",
+  "platform": "linux-aarch64",
+  "bundleWorkflowRun": 36518401395,
+  "bundleSource": "043668cd35f77ff7fe004d16dc7043d9a42ac598",
+  "manifestSha256": "dccd9e9a0659f53a7c910a0cfc8fe1bb000277213447284d7f1090f7e450b2f9",
+  "virtualDiskGiB": 64,
+  "freeDiskApproxGiB": 38,
+  "codex": {
+    "runtimeReady": true,
+    "nativeRuntimeHashesVerified": true,
+    "methods": [
+      "chat-gpt"
+    ],
+    "authentication": "not_checked"
+  },
+  "claude": {
+    "runtimeReady": true,
+    "nativeRuntimeHashesVerified": true,
+    "methods": [
+      "claude-ai-login"
+    ],
+    "authentication": "not_checked"
+  },
+  "nativeSignInTerminalLaunched": true,
+  "signInCompletion": "not_observed",
+  "roomAgentsEnabled": false,
+  "modelTaskSubmitted": false,
+  "messagingSocket": "active",
+  "productionConfigurationChanged": false
+}

@@ -157,6 +157,8 @@ def hydrate(bundle, report, agent, profile):
         command = [str(bundle / ENTRIES['node']), str(bundle / ENTRIES['npm']), 'ci',
                    '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund',
                    '--registry=https://registry.npmjs.org/',
+                   '--fetch-retries=1', '--fetch-timeout=30000',
+                   '--fetch-retry-mintimeout=1000', '--fetch-retry-maxtimeout=5000',
                    '--userconfig=' + str(scratch / 'user.npmrc'),
                    '--globalconfig=' + str(scratch / 'global.npmrc'),
                    '--cache=' + str(scratch / 'npm-cache')]
@@ -177,6 +179,21 @@ def auth_command(bundle, agent, login=False):
     else:
         command += ['--json', '--terminal-auth']
     return command
+
+
+def checked_methods(raw, agent):
+    methods = json.loads(raw)['methods']
+    allowed = {'chat-gpt', 'chat-gpt-device-code'} if agent == 'codex' else {'claude-ai-login'}
+    login_id = 'chat-gpt' if agent == 'codex' else 'claude-ai-login'
+    expected_type = 'agent' if agent == 'codex' else 'terminal'
+    if (not isinstance(methods, list) or not methods or len(methods) > 8 or
+            any(not isinstance(method, dict) or method.get('id') not in allowed or
+                method.get('type', 'agent') != expected_type for method in methods)):
+        raise Refused('unexpected_auth_method')
+    ids = [method['id'] for method in methods]
+    if len(ids) != len(set(ids)) or login_id not in ids:
+        raise Refused('unexpected_auth_method')
+    return ids
 
 
 def capture_discovery(command, env, cwd):
@@ -254,12 +271,8 @@ def main():
             os.chdir(profile / 'work')
             os.execve(str(args.bundle / ENTRIES['buzzAcp']), auth_command(args.bundle, args.agent, True), env)
         raw = capture_discovery(auth_command(args.bundle, args.agent), env, profile / 'work')
-        methods = json.loads(raw)['methods']
-        allowed = {'chat-gpt', 'chat-gpt-device-code'} if args.agent == 'codex' else {'claude-ai-login'}
-        if (not isinstance(methods, list) or not methods or len(methods) > 8 or
-                any(not isinstance(m, dict) or m.get('id') not in allowed for m in methods)):
-            raise Refused('unexpected_auth_method')
-        print(json.dumps({'agent': args.agent, 'methods': [m['id'] for m in methods],
+        methods = checked_methods(raw, args.agent)
+        print(json.dumps({'agent': args.agent, 'methods': methods,
                           'authentication': 'not_checked', 'roomAgentsEnabled': False}))
         return 0
     except (Refused, OSError, ValueError, KeyError, TypeError, AttributeError, subprocess.TimeoutExpired) as error:
