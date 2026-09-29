@@ -22,7 +22,7 @@ index 704c7f6..040fb59 100644
  `preview` channel — every push to `main` publishes one. See
  [`docs/RELEASES.md`](docs/RELEASES.md#preview-releases).
 diff --git c/src/acp-agent.ts i/src/acp-agent.ts
-index 83bae1d..06bd0ff 100644
+index 83bae1d..f348f50 100644
 --- c/src/acp-agent.ts
 +++ i/src/acp-agent.ts
 @@ -177,6 +177,9 @@ import { buildClaudePermissionOptions } from "./permissions/options.js";
@@ -166,7 +166,15 @@ index 83bae1d..06bd0ff 100644
      if (_params.methodId === "gateway" || _params.methodId === "gateway-bedrock") {
        const gateway = (_params as GatewayAuthRequest)._meta?.gateway;
        if (gateway !== undefined && gateway !== null) {
-@@ -2880,6 +2895,7 @@ export class ClaudeAcpAgent {
+@@ -2778,6 +2793,7 @@ export class ClaudeAcpAgent {
+       const cliPath = await claudeCliPath();
+       ({ stdout } = await execFileAsync(cliPath, ["auth", "status", "--json"], {
+         timeout: AUTH_STATUS_PROBE_TIMEOUT_MS,
++        ...(requiresClaudeSubscription() && { env: subscriptionChildEnv(process.env) }),
+       }));
+     } catch (error) {
+       const failed = error as { stdout?: unknown; killed?: boolean; signal?: unknown } | null;
+@@ -2880,6 +2896,7 @@ export class ClaudeAcpAgent {
     * loaded after this call.
     */
    async unstable_setProvider(params: SetProviderRequest): Promise<SetProviderResponse> {
@@ -174,7 +182,7 @@ index 83bae1d..06bd0ff 100644
      if (params.providerId !== PROVIDER_ID) {
        throw RequestError.invalidParams(
          { providerId: params.providerId },
-@@ -2936,6 +2952,7 @@ export class ClaudeAcpAgent {
+@@ -2936,6 +2953,7 @@ export class ClaudeAcpAgent {
     * backend slot and restores the agent's native routing state.
     */
    async unstable_disableProvider(params: DisableProviderRequest): Promise<DisableProviderResponse> {
@@ -182,7 +190,17 @@ index 83bae1d..06bd0ff 100644
      if (params.providerId === PROVIDER_ID) {
        this.logger.log(`[providers/disable] sessions=${Object.keys(this.sessions).length}`);
        await this.enqueueProviderUpdate(undefined);
-@@ -3024,6 +3041,16 @@ export class ClaudeAcpAgent {
+@@ -2996,7 +3014,8 @@ export class ClaudeAcpAgent {
+     // `claude auth logout` is non-interactive and idempotent.
+     const cliPath = await claudeCliPath();
+     try {
+-      await execFileAsync(cliPath, ["auth", "logout"]);
++      await execFileAsync(cliPath, ["auth", "logout"],
++        requiresClaudeSubscription() ? { env: subscriptionChildEnv(process.env) } : undefined);
+     } catch (error) {
+       const stderr =
+         typeof error === "object" && error && "stderr" in error
+@@ -3024,6 +3043,16 @@ export class ClaudeAcpAgent {
      if (!session) {
        throw new Error("Session not found");
      }
@@ -199,7 +217,7 @@ index 83bae1d..06bd0ff 100644
      // The one re-read per user prompt, fired here and never awaited: a prompt
      // must not wait on a CLI process, and its result is pushed on change
      // whenever it lands, mid-turn included. It runs BEFORE the guard on
-@@ -3284,6 +3311,7 @@ export class ClaudeAcpAgent {
+@@ -3284,6 +3313,7 @@ export class ClaudeAcpAgent {
    }
  
    async goal(params: GoalRequest): Promise<GoalControlResponse> {
@@ -207,7 +225,7 @@ index 83bae1d..06bd0ff 100644
      const command = params.action === "set" ? `/goal ${params.objective}` : "/goal clear";
      const prompt = [{ type: "text" as const, text: command }];
      const steering = await this.steer({
-@@ -3386,6 +3414,7 @@ export class ClaudeAcpAgent {
+@@ -3386,6 +3416,7 @@ export class ClaudeAcpAgent {
     *  `session/prompt`. Without the opt-in, the existing detached `prompt()` and
     *  `startedNewTurn` result are preserved for compatibility. */
    async steer(params: SteerRequest): Promise<SteerResponse> {
@@ -215,7 +233,7 @@ index 83bae1d..06bd0ff 100644
      const sessionId = params.sessionId;
      let session = this.sessions[sessionId];
      if (!session) {
-@@ -8415,6 +8444,19 @@ export class ClaudeAcpAgent {
+@@ -8415,6 +8446,19 @@ export class ClaudeAcpAgent {
      } = {},
    ): Promise<NewSessionResponse> {
      const createStartedAt = performance.now();
@@ -235,7 +253,7 @@ index 83bae1d..06bd0ff 100644
      // Validate `cwd` up front. The ACP spec requires an absolute path, and the
      // directory must actually exist on the machine running the agent. Without
      // this check a session is created against a missing directory and the
-@@ -8461,8 +8503,17 @@ export class ClaudeAcpAgent {
+@@ -8461,8 +8505,17 @@ export class ClaudeAcpAgent {
  
      const settingsManager = new SettingsManager(params.cwd, {
        logger: this.logger,
@@ -253,7 +271,7 @@ index 83bae1d..06bd0ff 100644
      timing.phase("settings");
  
      const mcpServers: Record<string, McpServerConfig> = {};
-@@ -8645,6 +8696,9 @@ export class ClaudeAcpAgent {
+@@ -8645,6 +8698,9 @@ export class ClaudeAcpAgent {
        // Opt-in to session state events like when the agent is idle
        CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1",
      };
@@ -263,7 +281,7 @@ index 83bae1d..06bd0ff 100644
      // Scopes the context-window cache to this query's backend (see
      // `contextWindowCache`). Derived from the same `env` object handed to the
      // SDK, so per-session `_meta` env routing and ambient process-env routing
-@@ -8656,7 +8710,7 @@ export class ClaudeAcpAgent {
+@@ -8656,7 +8712,7 @@ export class ClaudeAcpAgent {
  
      const options: Options = {
        systemPrompt,
@@ -272,7 +290,7 @@ index 83bae1d..06bd0ff 100644
        ...(thinking !== undefined && { thinking }),
        ...userProvidedOptions,
        // Claude Code uses the same checkpoint store for /rewind. Enable it only
-@@ -8664,7 +8718,9 @@ export class ClaudeAcpAgent {
+@@ -8664,7 +8720,9 @@ export class ClaudeAcpAgent {
        // snapshot I/O for every other session.
        ...(fileChangeReporter ? { enableFileCheckpointing: true } : {}),
        ...(settings && { settings }),
@@ -283,7 +301,7 @@ index 83bae1d..06bd0ff 100644
        // Override certain fields that must be controlled by ACP
        cwd: params.cwd,
        includePartialMessages: true,
-@@ -8845,6 +8901,10 @@ export class ClaudeAcpAgent {
+@@ -8845,6 +8903,10 @@ export class ClaudeAcpAgent {
        }
        timing.phase("sdk-initialize");
  
@@ -461,15 +479,30 @@ index 0000000..ba50854
 +}
 diff --git c/src/tests/subscription-policy.test.ts i/src/tests/subscription-policy.test.ts
 new file mode 100644
-index 0000000..2e22279
+index 0000000..91e1cee
 --- /dev/null
 +++ i/src/tests/subscription-policy.test.ts
-@@ -0,0 +1,61 @@
-+import { afterEach, describe, expect, it, vi } from "vitest";
+@@ -0,0 +1,207 @@
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 +import type { AccountInfo, Settings } from "@anthropic-ai/claude-agent-sdk";
 +import { ClaudeAcpAgent, type AcpClient } from "../acp-agent.js";
++import { Pushable } from "../utils.js";
++import { makeMockQuery } from "./helpers.js";
 +import { isSubscriptionAccount, subscriptionChildEnv, validateSubscriptionEnvironment,
 +  validateSubscriptionSettings } from "../subscription-policy.js";
++
++const sdkMocks = vi.hoisted(() => ({ query: vi.fn(), resolveSettings: vi.fn() }));
++const execFileMock = vi.hoisted(() => vi.fn());
++vi.mock("@anthropic-ai/claude-agent-sdk", async () => ({
++  ...(await vi.importActual<typeof import("@anthropic-ai/claude-agent-sdk")>(
++    "@anthropic-ai/claude-agent-sdk")),
++  query: sdkMocks.query,
++  resolveSettings: sdkMocks.resolveSettings,
++}));
++vi.mock("node:child_process", async () => ({
++  ...(await vi.importActual<typeof import("node:child_process")>("node:child_process")),
++  execFile: execFileMock,
++}));
 +
 +describe("opt-in Claude subscription admission policy", () => {
 +  afterEach(() => vi.restoreAllMocks());
@@ -524,5 +557,136 @@ index 0000000..2e22279
 +    } finally {
 +      process.argv = argv;
 +    }
++  });
++
++  describe("fake SDK session boundary", () => {
++    let savedEnv: NodeJS.ProcessEnv;
++    let savedArgv: string[];
++    const goodAccount = { apiProvider: "firstParty", subscriptionType: "pro",
++      apiKeySource: "none" } as AccountInfo;
++    const models = [{ value: "id", displayName: "name", description: "description",
++      supportsAutoMode: true }];
++    const params = () => ({ cwd: process.cwd(), mcpServers: [] });
++
++    beforeEach(() => {
++      savedEnv = process.env;
++      savedArgv = process.argv;
++      process.env = { HOME: "/isolated", CLAUDE_CONFIG_DIR: "/isolated/claude",
++        PATH: savedEnv.PATH };
++      process.argv = [...savedArgv, "--require-claude-subscription"];
++      sdkMocks.resolveSettings.mockResolvedValue({ effective: {} });
++      sdkMocks.query.mockImplementation(() => makeMockQuery({
++        initializationResult: async () => ({ models, account: goodAccount }),
++        accountInfo: async () => goodAccount,
++      }));
++      execFileMock.mockImplementation((_file: string, _args: string[], _options: unknown,
++        callback: (error: null, stdout: string, stderr: string) => void) => {
++        callback(null, "{}", "");
++      });
++    });
++
++    afterEach(() => {
++      process.env = savedEnv;
++      process.argv = savedArgv;
++      sdkMocks.query.mockReset();
++      sdkMocks.resolveSettings.mockReset();
++      execFileMock.mockReset();
++    });
++
++    function agent() {
++      return new ClaudeAcpAgent({ sessionUpdate: vi.fn(async () => {}) } as unknown as AcpClient);
++    }
++
++    it("admits a fresh first-party subscription and passes a restricted SDK launch", async () => {
++      const client = agent();
++      try {
++        const session = await client.newSession(params());
++        expect(session.sessionId).toBeTruthy();
++        expect(sdkMocks.query).toHaveBeenCalledTimes(1);
++        expect(sdkMocks.query.mock.calls[0][0].options).toMatchObject({
++          settingSources: [],
++          env: { HOME: "/isolated", CLAUDE_CONFIG_DIR: "/isolated/claude" },
++        });
++      } finally {
++        await client.dispose();
++      }
++    });
++
++    it.each([
++      undefined,
++      { ...goodAccount, apiKeySource: "ANTHROPIC_API_KEY" },
++      { ...goodAccount, apiKeySource: "future-unknown" },
++    ])("refuses an unverified initial account and closes its query: %o", async (account) => {
++      const close = vi.fn();
++      sdkMocks.query.mockImplementation(() => makeMockQuery({
++        initializationResult: async () => ({ models, account }), close,
++      }));
++      const client = agent();
++      try {
++        await expect(client.newSession(params())).rejects.toMatchObject({
++          data: { reason: "claude_subscription_route_unavailable" },
++        });
++        expect(sdkMocks.query).toHaveBeenCalledTimes(1);
++        expect(close).toHaveBeenCalledTimes(1);
++      } finally {
++        await client.dispose();
++      }
++    });
++
++    it.each([
++      async () => ({ ...goodAccount, apiKeySource: "ANTHROPIC_API_KEY" }),
++      async () => { throw new Error("synthetic account read failure"); },
++    ])("refuses a changed or unreadable account before enqueuing a prompt", async (accountInfo) => {
++      const check = vi.fn(accountInfo);
++      sdkMocks.query.mockImplementation(() => makeMockQuery({
++        initializationResult: async () => ({ models, account: goodAccount }),
++        accountInfo: check,
++      }));
++      const client = agent();
++      try {
++        const { sessionId } = await client.newSession(params());
++        const push = vi.spyOn(Pushable.prototype, "push");
++        await expect(client.prompt({ sessionId, prompt: [{ type: "text", text: "synthetic" }] }))
++          .rejects.toMatchObject({ data: { reason: "claude_subscription_route_unavailable" } });
++        expect(check).toHaveBeenCalledTimes(1);
++        expect(push).not.toHaveBeenCalled();
++      } finally {
++        await client.dispose();
++      }
++    });
++
++    it.each([
++      { mcpServers: [{ name: "synthetic", command: "never-executed", args: [] }] },
++      { _meta: { claudeCode: { options: { env: { ANTHROPIC_API_KEY: "synthetic" } } } } },
++    ])("rejects client route inputs before spawning a query", async (extra) => {
++      const client = agent();
++      try {
++        await expect(client.newSession({ ...params(), ...extra } as never))
++          .rejects.toMatchObject({ data: { reason: "claude_subscription_route_unavailable" } });
++        expect(sdkMocks.query).not.toHaveBeenCalled();
++      } finally {
++        await client.dispose();
++      }
++    });
++
++    it("gives auth status and logout subprocesses only the subscription child environment", async () => {
++      process.env.UNKNOWN_SECRET = "synthetic";
++      const client = agent();
++      try {
++        await (client as unknown as { runCliAuthProbe(): Promise<unknown> }).runCliAuthProbe();
++        await client.logout({} as never);
++        const authCalls = execFileMock.mock.calls.filter((call) =>
++          call[1]?.[0] === "auth" && ["status", "logout"].includes(call[1]?.[1]));
++        expect(authCalls.some((call) => call[1][1] === "status")).toBe(true);
++        expect(authCalls.some((call) => call[1][1] === "logout")).toBe(true);
++        for (const call of authCalls) {
++          expect(call[2]?.env).toMatchObject({ HOME: "/isolated",
++            CLAUDE_CONFIG_DIR: "/isolated/claude" });
++          expect(call[2]?.env).not.toHaveProperty("UNKNOWN_SECRET");
++        }
++      } finally {
++        await client.dispose();
++      }
++    });
 +  });
 +});

@@ -7,14 +7,11 @@ The [adapter patch](claude-subscription-policy.patch) is an **uninstalled
 upstream proposal** against that exact revision, not a native CLI patch, login
 result, model run, or billing attestation. No account or local Claude settings
 were read. The patch adds `--require-claude-subscription` and synthetic tests;
-the ordinary adapter mode is unchanged. Build and tests still need to run on
-the patched checkout.
-The synthetic tests currently cover policy predicates and direct method denials;
-fake SDK tests for successful creation, lost account at prompt, and cleanup
-after admission failure remain an acceptance gate.
-The adapter's separate informational `auth status` probe and `auth logout`
-subprocesses still inherit the parent environment; their scoped-mode child
-environment needs review before deployment. Neither admits a model turn.
+the ordinary adapter mode is unchanged. The first focused build and 163 tests
+passed in [run 36510233749](https://github.com/randymy/omarchy-buzz/actions/runs/36510233749).
+The subsequent fake SDK creation, account-loss prompt, cleanup, and scoped
+auth-subprocess tests in the patch still need to run. The native SDK account
+remains cached per query, so those tests do not establish fresh billing proof.
 
 ## Narrow objective
 
