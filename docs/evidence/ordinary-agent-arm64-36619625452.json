@@ -1,0 +1,83 @@
+{
+  "runId": 36619625452,
+  "runUrl": "https://github.com/randymy/omarchy-buzz/actions/runs/36619625452",
+  "conclusion": "success",
+  "checksumReport": {
+    "artifact": "agent-preview-arm64.tar.gz",
+    "bytes": 58864893,
+    "manifestSha256": "cb4016277afa6bb06f009316f1d6759bfaf935705274d8935b91db5452b46da6",
+    "sha256": "fb2d900a43b6cb9d5c3386b8d2e2104f60f1162a8ea6b684b2fa56494ca41094"
+  },
+  "archiveVerified": true,
+  "manifestVerified": true,
+  "publicationContract": "ordinary",
+  "relayRequirement": {
+    "agentServiceAllowed": false,
+    "publicationRoute": "/events",
+    "verifiedOnTargetRelay": false
+  },
+  "sources": {
+    "buzz": {
+      "patches": [
+        {
+          "name": "ws-resource-limits",
+          "sha256": "e781a5b984ed3895ddd5ca0f893918f35028753f79b6c0a159d56f88c09bf24c"
+        },
+        {
+          "name": "acp-permission-mode",
+          "sha256": "ddf10293ab52bf170fc29e5eb928c0f40b9acf319d8cb9442855f34db5fbc83a"
+        },
+        {
+          "name": "acp-interactive-login",
+          "sha256": "eb92515fa12fdfea5d5ae4f36101b91a65172e1f2cd50acf7f3d2e793e11e71e"
+        },
+        {
+          "name": "acp-key-isolation",
+          "sha256": "224bcda5bec0dd5f993d4a6b01b9597e999699c62b61ad3b8e18f366fc2a4d6c"
+        },
+        {
+          "name": "acp-harness-replies",
+          "sha256": "182662141dfde29bf1e116b66ec3bee09aa17129de914c93614dea0e87179d26"
+        },
+        {
+          "name": "acp-deny-tool-requests",
+          "sha256": "acb1a4e0db90bc866c7eb952c818c0d854a4ac598b47b7eb33dd053b554e0d38"
+        },
+        {
+          "name": "acp-auth-timeout",
+          "sha256": "4b9c2e24e966a62cf049a2e9c046837d38a68f25cbeb965713211c535d5fe60d"
+        }
+      ],
+      "repository": "block/buzz",
+      "revision": "781d39510cf23cfe224e8f521ae06a23377e06de"
+    },
+    "claude": {
+      "lockSha256": "602d99cc341302346dbfc1d872860460ee089c6cd56c70226dd29a66847b7ee4",
+      "patches": [
+        {
+          "name": "claude-subscription-policy",
+          "sha256": "513c8b2df7ca91185dae675e7470dc772f1bd6db1b1bc7cb2767755ca29a8c17"
+        }
+      ],
+      "repository": "agentclientprotocol/claude-agent-acp",
+      "revision": "18de37624071b48e95aed9ec5382823e2d72cd39"
+    },
+    "codex": {
+      "lockSha256": "1034e92ecada6b39f4fe856ef2d529ff6903ea87f297f97986427aa3c7434be6",
+      "patches": [
+        {
+          "name": "codex-subscription-policy",
+          "sha256": "3511f6e6e7fd8b6f9cfa428d922230209e4db06884ba70c6b0ae81ec8852626d"
+        }
+      ],
+      "repository": "agentclientprotocol/codex-acp",
+      "revision": "2eebebc35441e03cd466003b40a75953b221b886"
+    },
+    "plugin": {
+      "repository": "randymy/omarchy-buzz",
+      "revision": "0991c2fe54faa65761f517c555974ed427a34e0d"
+    }
+  },
+  "installed": false,
+  "modelAccountUsed": false
+}

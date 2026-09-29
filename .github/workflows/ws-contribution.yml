@@ -1,0 +1,82 @@
+name: Manual upstream WebSocket contribution tests
+
+# Run only by explicit dispatch. This checks the submitted fork commit in the
+# complete Buzz workspace without starting a relay or exercising ignored E2E tests.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ws-contribution
+  cancel-in-progress: false
+
+jobs:
+  library-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+    steps:
+      - name: Set disposable Cargo home
+        run: echo "CARGO_HOME=$RUNNER_TEMP/buzz-cargo" >> "$GITHUB_ENV"
+      - name: Check out exact submitted Buzz commit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: randymy/buzz
+          ref: 7c752971a815af63ba94a3086c4a2c867a129e30
+          persist-credentials: false
+      - name: Verify checkout pin
+        run: |
+          test "$(git rev-parse HEAD)" = 7c752971a815af63ba94a3086c4a2c867a129e30
+          git diff --exit-code
+      - name: Restore dedicated build cache
+        id: cache
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            ${{ runner.temp }}/buzz-cargo
+            ${{ runner.temp }}/ws-target
+          key: buzz-ws-contribution-v1-${{ runner.os }}-${{ runner.arch }}-7c752971a815af63ba94a3086c4a2c867a129e30-${{ hashFiles('Cargo.lock') }}
+      - name: Install tested Rust toolchain and native prerequisites
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libssl-dev
+      - name: Run affected library suites in the complete workspace
+        id: tests
+        run: cargo +1.95.0 test --locked -p buzz-ws-client -p buzz-test-client --lib --target-dir "$RUNNER_TEMP/ws-target"
+      - name: Preserve successful compiled dependencies
+        if: steps.tests.outcome == 'success' && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            ${{ runner.temp }}/buzz-cargo
+            ${{ runner.temp }}/ws-target
+          key: ${{ steps.cache.outputs.cache-primary-key }}
+      - name: Write sanitized result summary
+        if: always()
+        env:
+          TEST_OUTCOME: ${{ steps.tests.outcome }}
+        run: |
+          summary="$RUNNER_TEMP/ws-contribution-summary.md"
+          {
+            echo '# Buzz WebSocket contribution validation'
+            echo
+            echo 'Source: randymy/buzz at `7c752971a815af63ba94a3086c4a2c867a129e30`'
+            echo 'Command: `cargo +1.95.0 test --locked -p buzz-ws-client -p buzz-test-client --lib`'
+            echo "Library test outcome: $TEST_OUTCOME"
+          } > "$summary"
+          cat "$summary" >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload sanitized result summary
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ws-contribution-summary
+          path: ${{ runner.temp }}/ws-contribution-summary.md
+          if-no-files-found: error
