@@ -69,6 +69,10 @@ for line in sys.stdin:
         assert request["roomId"] == ROOM
         record["recipientFetches"] += 1
         save()
+        if record["recipientFetches"] == 1:
+            print(json.dumps({"version": 1, "type": "error", "id": request["id"],
+                              "instanceId": INSTANCE, "category": "request_busy"}), flush=True)
+            continue
         status["recipients"] = {"state": "snapshot", "roomId": ROOM,
                                 "entries": [{"key": "c" * 64, "name": "Duplicate name"}, {"key": "d" * 64, "name": "Duplicate name"}],
                                 "partial": True, "category": None}

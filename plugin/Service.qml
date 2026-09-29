@@ -118,6 +118,10 @@ Item {
   property int submissionGeneration: 0
   property string submissionInstance: ""
   property string acknowledgedRefreshId: ""
+  property int recipientsRetryBudget: 0
+  property string recipientsRetryRoom: ""
+  property string recipientsRetryInstance: ""
+  property int recipientsRetryGeneration: 0
   property bool recipientsSupported: false
   property string recipientsState: "unavailable"
   property string recipientsRoomId: ""
@@ -393,6 +397,7 @@ Item {
   }
   function formatTimestamp(seconds) { return Qt.formatDateTime(new Date(seconds * 1000), "yyyy-MM-dd HH:mm:ss t") }
   function clearRecipients() {
+    recipientsRetry.stop()
     pendingRecipientsRequestId = ""
     recipientsRoomId = ""
     recipientEntries = []
@@ -404,6 +409,10 @@ Item {
   function refreshRecipients() {
     clearRecipients()
     if (sampleMode || !recipientsSupported || connection !== "authenticated" || !selectedRoom) return
+    recipientsRetryBudget = 2
+    recipientsRetryRoom = selectedRoomId
+    recipientsRetryInstance = instanceId
+    recipientsRetryGeneration = generation
     recipientsState = "loading"
     send("fetch_recipients", selectedRoomId)
   }
@@ -576,8 +585,13 @@ Item {
       if (frame.id === pendingRecipientsRequestId) {
         clearRecipients()
         recipientsCategory = "recipients_unavailable"
+        if (frame.category === "request_busy" && recipientsRetryBudget > 0) {
+          recipientsRetryBudget--
+          recipientsRetry.restart()
+        }
       }
-      // A bounded queue rejection is recoverable and never retries automatically.
+      // Only the read-only recipient lookup gets bounded, scope-fenced retries.
+      // Message submissions are never retried automatically.
       return true
     }
     if (!frame || frame.version !== 1 || ["hello", "status"].indexOf(frame.type) === -1
@@ -756,6 +770,18 @@ Item {
     repeat: true
     running: root.panelOpen && root.threadState === "snapshot" && root.canOpenThread(root.threadRootId)
     onTriggered: root.refreshThread()
+  }
+  Timer {
+    id: recipientsRetry
+    interval: 300
+    onTriggered: {
+      if (root.sessionFailed || root.connection !== "authenticated"
+          || root.selectedRoomId !== root.recipientsRetryRoom
+          || root.instanceId !== root.recipientsRetryInstance
+          || root.generation !== root.recipientsRetryGeneration) return
+      root.recipientsState = "loading"
+      root.send("fetch_recipients", root.selectedRoomId)
+    }
   }
   Timer {
     id: notificationCooldown
