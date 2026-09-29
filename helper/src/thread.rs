@@ -356,6 +356,7 @@ pub fn reduce(
             text(edit.map_or(original.content.as_str(), |e| e.content.as_str()))
         };
         rows.push(crate::history::Row {
+            reactions: None,
             id,
             author_pubkey: author(original, relay)?.to_hex(),
             timestamp: original.created_at.as_secs(),

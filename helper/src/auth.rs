@@ -674,7 +674,7 @@ async fn observe_inner(
                             Ok(thread) if thread.room==room && thread.root==root && thread.rows.len()<=8=>Thread {
                                 state:"snapshot".into(),room_id:Some(room.clone()),root_id:Some(root.clone()),
                                 has_more:Some(thread.has_more),category:Some(thread.category.into()),
-                                rows:thread.rows.into_iter().map(|r|crate::protocol::HistoryRow{id:r.id,author:r.author_pubkey,time:r.timestamp,text:r.text,edited:r.edited,truncated:r.truncated,unavailable:r.unavailable}).collect(),
+                                rows:thread.rows.into_iter().map(|r|crate::protocol::HistoryRow{ reactions: r.reactions,id:r.id,author:r.author_pubkey,time:r.timestamp,text:r.text,edited:r.edited,truncated:r.truncated,unavailable:r.unavailable}).collect(),
                             },
                             Ok(_)=>Thread::unavailable(Some(room.clone()),Some(root.clone()),Some("thread_invalid")),
                             Err(error)=> {
@@ -716,7 +716,7 @@ async fn observe_inner(
                             if let Some(delivery)=revoked_delivery {s.delivery=delivery;}
                             s.activity=activity.summaries();
                             s.history=match result {
-                            Ok(h) if h.room==room=>History {state:"snapshot".into(),room_id:Some(h.room),has_more:Some(h.has_more),category:Some(h.category.into()),rows:h.rows.into_iter().map(|r|crate::protocol::HistoryRow {id:r.id,author:r.author_pubkey,time:r.timestamp,text:r.text,edited:r.edited,truncated:r.truncated,unavailable:r.unavailable}).collect()},
+                            Ok(h) if h.room==room=>History {state:"snapshot".into(),room_id:Some(h.room),has_more:Some(h.has_more),category:Some(h.category.into()),rows:h.rows.into_iter().map(|r|crate::protocol::HistoryRow { reactions: r.reactions,id:r.id,author:r.author_pubkey,time:r.timestamp,text:r.text,edited:r.edited,truncated:r.truncated,unavailable:r.unavailable}).collect()},
                             Ok(_)=>History::unavailable(Some(room),Some("history_invalid")),
                             Err(error)=>History::unavailable(Some(room),Some(history_category(error))),
                         };});
@@ -1034,6 +1034,7 @@ mod thread_policy_tests {
             state: "snapshot".into(),
             room_id: Some(room.into()),
             rows: vec![crate::protocol::HistoryRow {
+                reactions: None,
                 id: root.clone(),
                 author: "b".repeat(64),
                 time: 1,
@@ -1137,6 +1138,7 @@ mod thread_policy_tests {
             state: "snapshot".into(),
             room_id: Some(room.into()),
             rows: vec![crate::protocol::HistoryRow {
+                reactions: None,
                 id: root.clone(),
                 author: "b".repeat(64),
                 time: 1,

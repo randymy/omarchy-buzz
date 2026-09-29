@@ -8,6 +8,12 @@ const EVENTS: usize = 200;
 const BYTES: usize = 512 * 1024;
 const ROWS: usize = 20;
 
+/// Observed live reactions in this bounded page, not authoritative agent state.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct Reactions {
+    pub seen: usize,
+    pub working: usize,
+}
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Row {
@@ -18,6 +24,7 @@ pub struct Row {
     pub edited: bool,
     pub truncated: bool,
     pub unavailable: bool,
+    pub reactions: Option<Reactions>,
 }
 #[derive(Clone, Debug)]
 pub struct History {
@@ -186,7 +193,7 @@ pub fn reduce(
     if originals.len() > ROWS {
         return Err("history_oversized");
     }
-    for reaction in reactions {
+    for reaction in &reactions {
         if !targets(reaction)?
             .iter()
             .any(|target| originals.contains_key(target))
@@ -201,7 +208,7 @@ pub fn reduce(
             // One marker may reference targets outside this page. They do not
             // establish scope or a content claim, and are ignored here.
             if let Some(event) = index.get(&target) {
-                if !matches!(event.kind.as_u16(), 9 | 40002 | 40003) {
+                if !matches!(event.kind.as_u16(), 9 | 40002 | 40003 | 7) {
                     continue;
                 }
                 if marker.pubkey == author(event, relay)? {
@@ -239,6 +246,29 @@ pub fn reduce(
             }
         }
     }
+    let mut observed: BTreeMap<String, (BTreeSet<PublicKey>, BTreeSet<PublicKey>)> =
+        BTreeMap::new();
+    for reaction in reactions {
+        if deleted.contains(&reaction.id.to_hex()) || uncertain.contains(&reaction.id.to_hex()) {
+            continue;
+        }
+        // Buzz's builder emits exactly one target. Ambiguous multi-target
+        // reactions cannot establish a per-message acknowledgement.
+        let targets = targets(reaction)?;
+        if targets.len() != 1 {
+            continue;
+        }
+        let counts = observed.entry(targets[0].clone()).or_default();
+        match reaction.content.as_str() {
+            "👀" => {
+                counts.0.insert(author(reaction, relay)?);
+            }
+            "💬" => {
+                counts.1.insert(author(reaction, relay)?);
+            }
+            _ => {}
+        }
+    }
     let mut rows = Vec::new();
     for (id, original) in originals {
         if deleted.contains(&id) {
@@ -251,7 +281,17 @@ pub fn reduce(
         } else {
             text(edit.map_or(original.content.as_str(), |e| e.content.as_str()))
         };
+        let reactions = if unavailable {
+            None
+        } else {
+            let (seen, working) = observed.remove(&id).unwrap_or_default();
+            Some(Reactions {
+                seen: seen.len(),
+                working: working.len(),
+            })
+        };
         rows.push(Row {
+            reactions,
             id,
             author_pubkey: author(original, relay)?.to_hex(),
             timestamp: original.created_at.as_secs(),

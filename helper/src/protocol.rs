@@ -190,6 +190,8 @@ impl RecipientsView {
 }
 #[derive(Clone, Serialize)]
 pub struct HistoryRow {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reactions: Option<crate::history::Reactions>,
     pub id: String,
     pub author: String,
     pub time: u64,
@@ -541,6 +543,7 @@ mod state_tests {
             .collect();
         status.history.rows = (0..20)
             .map(|_| HistoryRow {
+                reactions: None,
                 id: "a".repeat(64),
                 author: "b".repeat(64),
                 time: u64::MAX,

@@ -81,6 +81,7 @@ mod tests {
     use super::*;
     fn row(id: &str) -> Row {
         Row {
+            reactions: None,
             id: id.into(),
             author_pubkey: "other".into(),
             timestamp: 100,

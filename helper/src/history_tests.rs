@@ -412,3 +412,47 @@ async fn loopback_fetch_uses_one_bounded_nip_cw_query_and_projects_only_rows() {
     assert_eq!(result.rows[0].id, original.id.to_hex());
     server.await.unwrap();
 }
+
+#[test]
+fn observed_agent_reactions_deduplicate_and_apply_deletions() {
+    let relay = key(1);
+    let user = key(2);
+    let bot = key(3);
+    let other = key(4);
+    let original = row(&user, "task");
+    let reaction = |signer: &Keys, emoji: &str, at| {
+        buzz_sdk::build_reaction(original.id, emoji)
+            .unwrap()
+            .custom_created_at(Timestamp::from(at))
+            .sign_with_keys(signer)
+            .unwrap()
+    };
+    let seen = reaction(&bot, "👀", 150);
+    let duplicate = reaction(&bot, "👀", 151);
+    let working = reaction(&bot, "💬", 152);
+    let page = vec![
+        original.clone(),
+        seen.clone(),
+        duplicate.clone(),
+        working.clone(),
+        head(&relay),
+    ];
+    let result = reduce(room(), relay.public_key(), &page, 200).unwrap();
+    let counts = result.rows[0].reactions.as_ref().unwrap();
+    assert_eq!((counts.seen, counts.working), (1, 1));
+    let mut removed = page.clone();
+    removed.extend([
+        deletion(&bot, &seen),
+        deletion(&bot, &duplicate),
+        deletion(&bot, &working),
+    ]);
+    let result = reduce(room(), relay.public_key(), &removed, 200).unwrap();
+    let counts = result.rows[0].reactions.as_ref().unwrap();
+    assert_eq!((counts.seen, counts.working), (0, 0));
+    // Unknown moderation authority is conservatively suppressed, not shown as live.
+    let mut uncertain = page;
+    uncertain.push(deletion(&other, &working));
+    let result = reduce(room(), relay.public_key(), &uncertain, 200).unwrap();
+    assert_eq!(result.rows[0].reactions.as_ref().unwrap().working, 0);
+    assert!(!result.rows[0].unavailable);
+}
