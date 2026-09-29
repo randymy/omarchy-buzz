@@ -112,6 +112,7 @@ Item {
   property string acknowledgedRefreshId: ""
   property bool recipientsSupported: false
   property string recipientsState: "unavailable"
+  property string recipientsRoomId: ""
   property string recipientsCategory: ""
   property var recipientEntries: []
   property var agentProfiles: []
@@ -346,6 +347,7 @@ Item {
   function formatTimestamp(seconds) { return Qt.formatDateTime(new Date(seconds * 1000), "yyyy-MM-dd HH:mm:ss t") }
   function clearRecipients() {
     pendingRecipientsRequestId = ""
+    recipientsRoomId = ""
     recipientEntries = []
     agentProfiles = []
     recipientsState = "unavailable"
@@ -395,6 +397,20 @@ Item {
   function participantLabel(key) {
     var agent = agentProfiles.find(function(a) { return a.key === key })
     return agent ? "Self-described agent" : "Participant"
+  }
+  function messageAuthorName(key) {
+    // Signed profile labels are presentation only; mentions still use exact keys.
+    if (recipientsState === "snapshot" && recipientsRoomId === selectedRoomId && selectedRoomId !== "") {
+      var recipient = recipientEntries.find(function(entry) { return entry.key === key })
+      if (recipient && recipient.name.trim()) return recipient.name
+    }
+    return key.slice(0, 12) + "…"
+  }
+  function messageAuthorLabel(key) {
+    var label = messageAuthorName(key)
+    if (recipientsState === "snapshot" && recipientsRoomId === selectedRoomId
+        && agentProfiles.some(function(agent) { return agent.key === key })) label += " · Self-described agent"
+    return label
   }
   function clearCatalog() {
     roomActivity = RoomActivity.fresh()
@@ -612,6 +628,7 @@ Item {
     } else if (thread && thread.rootId === null && threadState !== "loading") clearThread()
     if (state.connection !== "authenticated" || !supportsRecipients || ["loading", "unavailable"].indexOf(catalogState) !== -1) clearRecipients()
     else if (recipients && recipients.roomId === selectedRoomId && selectedRoomId !== "") {
+      recipientsRoomId = recipients.roomId
       recipientEntries = recipients.entries
       agentProfiles = agents
       recipientsState = recipients.state

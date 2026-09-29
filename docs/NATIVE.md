@@ -54,3 +54,10 @@ python3 tests/desktop_shortcut.py
 After native installation, confirm `status` says `installed` and physically press Super+B twice to open and close the panel. The fixture suite verifies file ownership boundaries, conflict refusal, IPC failures, backups, reload validation, and byte preservation. Physical keyboard and native panel behavior remain a separate graphical smoke check.
 
 The native binding convention is defined in the pinned Omarchy source at `default/hypr/helpers.lua` (`o.bind`); stock shell toggles use it in `default/hypr/bindings/utilities.lua`. The revision is recorded in `DESIGN.md`.
+
+Message and reply headers prefer the Buzz profile display name (falling back
+to the profile name) from the current room's verified recipient snapshot. Hover
+a header to see the exact public key. Names are self-asserted labels, not unique
+identities; mentions continue to target exact keys. Missing profile names use a
+short key. The current recipient snapshot is bounded to 20 members, so historical
+authors outside that snapshot may still display a key.

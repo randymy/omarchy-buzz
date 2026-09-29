@@ -350,13 +350,21 @@ FocusScope {
                 Text {
                   width: parent.width
                   text: root.service && root.service.sampleMode ? modelData.author + " · " + modelData.role + " · " + modelData.time
-                    : modelData.author.slice(0, 12) + "… · " + root.service.participantLabel(modelData.author) + " · " + root.service.formatTimestamp(modelData.time)
+                    : root.service.messageAuthorLabel(modelData.author) + " · " + root.service.formatTimestamp(modelData.time)
                   textFormat: Text.PlainText
                   wrapMode: Text.WordWrap
                   color: Color.accent
                   font.family: Style.font.family
                   font.pixelSize: Style.font.body
                   font.bold: true
+                  Controls.ToolTip.visible: messageAuthorHover.containsMouse && !root.service.sampleMode
+                  Controls.ToolTip.text: messageRow.modelData.author
+                  MouseArea {
+                    id: messageAuthorHover
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    acceptedButtons: Qt.NoButton
+                  }
                 }
                 Text {
                   width: parent.width
@@ -397,7 +405,15 @@ FocusScope {
                       spacing: Style.space(4)
                       Text {
                         width: parent.width
-                        text: modelData.author.slice(0, 12) + "… · " + root.service.participantLabel(modelData.author) + " · " + root.service.formatTimestamp(modelData.time)
+                        text: root.service.messageAuthorLabel(modelData.author) + " · " + root.service.formatTimestamp(modelData.time)
+                        Controls.ToolTip.visible: replyAuthorHover.containsMouse
+                        Controls.ToolTip.text: modelData.author
+                        MouseArea {
+                          id: replyAuthorHover
+                          anchors.fill: parent
+                          hoverEnabled: true
+                          acceptedButtons: Qt.NoButton
+                        }
                         textFormat: Text.PlainText
                         wrapMode: Text.WordWrap
                         color: Color.accent

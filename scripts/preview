@@ -21,6 +21,8 @@ if [[ ${1:-} == --send-bridge ]]; then
   printf '{"sends":[],"fetches":0}\n' > "$BUZZ_SEND_RECORD"
 elif [[ ${1:-} == --thread-replies ]]; then
   cp "$project_root/tests/ThreadReplies.qml" "$preview_dir/shell.qml"
+elif [[ ${1:-} == --author-names ]]; then
+  cp "$project_root/tests/AuthorNames.qml" "$preview_dir/shell.qml"
 elif [[ ${1:-} == --presentation ]]; then
   cp "$project_root/tests/Presentation.qml" "$preview_dir/shell.qml"
 elif [[ ${1:-} == --activity ]]; then

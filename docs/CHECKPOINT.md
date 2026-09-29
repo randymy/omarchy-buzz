@@ -951,3 +951,13 @@ account or installed plugin/helper changed. Next concrete gates:
 4. Perform an authorized real subscription acceptance flow before claiming Pro
    support or enabling normal room-agent launches. Preserve cached-account and
    externally mutable configuration limitations in the deployment contract.
+
+## Username-first message headers (2026-09-28)
+
+User requested usernames instead of abbreviated keys plus Participant. Messages
+and thread replies now use verified current-room recipient profile names. Full
+keys remain available on hover; exact-key mentions are unchanged. Unknown or
+blank names fall back to a short key. Explicit recipient room scope prevents
+labels carrying into another room. The synthetic author-name test and full
+offscreen panel check passed. This UI-only change does not require a new helper
+binary. The helper still limits recipient profiles to 20 current members.
