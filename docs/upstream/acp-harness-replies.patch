@@ -300,7 +300,7 @@ index ab7ae34..340b7c7 100644
  
      #[test]
 diff --git a/crates/buzz-acp/src/lib.rs b/crates/buzz-acp/src/lib.rs
-index 8461ef6..6891eaa 100644
+index 8461ef6..cfa1d43 100644
 --- a/crates/buzz-acp/src/lib.rs
 +++ b/crates/buzz-acp/src/lib.rs
 @@ -4,6 +4,8 @@ mod git;
@@ -543,7 +543,7 @@ index 8461ef6..6891eaa 100644
              has_generated_codex_config: false,
              relay_observer: false,
              exit_after_inactivity_secs: 0,
-@@ -9450,6 +9556,126 @@ mod error_outcome_emission_tests {
+@@ -9450,6 +9556,141 @@ mod error_outcome_emission_tests {
      use nostr::{EventBuilder, Keys, Kind};
      use std::collections::HashSet;
  
@@ -602,6 +602,21 @@ index 8461ef6..6891eaa 100644
 +                text: text.into(),
 +            });
 +            let mut pool = AgentPool::from_slots(vec![None]);
++            bind_agent_scope_owner(&mut pool, &mut agent, scope.clone());
++            let task_id = pool.join_set.spawn(async {}).id();
++            pool.task_map_mut().insert(
++                task_id,
++                crate::pool::TaskMeta {
++                    agent_index: 0,
++                    channel_id: Some(room),
++                    scope: Some(scope.clone()),
++                    turn_id: "reply-removal-test".into(),
++                    recoverable_batch: None,
++                    control_tx: None,
++                    steer_tx: None,
++                    successful_steer_deliveries: HashSet::new(),
++                },
++            );
 +            let mut queue = EventQueue::new(config::DedupMode::Queue);
 +            let mut heartbeat_in_flight = false;
 +            let removed_channels = if removed {
@@ -670,7 +685,7 @@ index 8461ef6..6891eaa 100644
      fn test_config() -> Config {
          Config {
              keys: nostr::Keys::generate(),
-@@ -9492,6 +9718,7 @@ mod error_outcome_emission_tests {
+@@ -9492,6 +9733,7 @@ mod error_outcome_emission_tests {
              allowed_respond_to: vec![],
              persona_env_vars: vec![],
              isolate_relay_identity: false,
@@ -678,7 +693,7 @@ index 8461ef6..6891eaa 100644
              has_generated_codex_config: false,
              relay_observer: false,
              exit_after_inactivity_secs: 0,
-@@ -9828,10 +10055,12 @@ mod error_outcome_emission_tests {
+@@ -9828,10 +10070,12 @@ mod error_outcome_emission_tests {
          );
  
          let returned = pool.agents_mut()[0].as_ref().expect("returned agent");
@@ -695,7 +710,7 @@ index 8461ef6..6891eaa 100644
      }
  
      /// Drive one error outcome through `handle_prompt_result` and return how
-@@ -10737,7 +10966,9 @@ mod error_outcome_emission_tests {
+@@ -10737,7 +10981,9 @@ mod error_outcome_emission_tests {
          );
          assert_eq!(
              turn_error.payload["error"].as_str().unwrap(),
@@ -706,7 +721,7 @@ index 8461ef6..6891eaa 100644
              "observer message must name the actual grace and must not claim preservation"
          );
          assert_eq!(
-@@ -10843,7 +11074,9 @@ mod error_outcome_emission_tests {
+@@ -10843,7 +11089,9 @@ mod error_outcome_emission_tests {
          );
          assert_eq!(
              turn_error.payload["error"].as_str().unwrap(),
@@ -717,7 +732,7 @@ index 8461ef6..6891eaa 100644
              "observer message must be fate-neutral even though the batch was dropped"
          );
          assert_eq!(
-@@ -11260,11 +11493,12 @@ mod error_outcome_emission_tests {
+@@ -11260,11 +11508,12 @@ mod error_outcome_emission_tests {
              "⚠️ I couldn't process the last request: the configured model wasn't found at the provider's endpoint. Open agent settings, select a different model from the dropdown, and save your changes. Restart the agent to apply the new configuration, then re-send your request."
          );
          let tags = serde_json::to_value(&notice.tags).unwrap();
