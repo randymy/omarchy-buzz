@@ -33,6 +33,28 @@ client-side membership cache, or added optional HTTP header cannot make that
 contract atomic. The existing [member-bound proposal](MEMBER_BOUND_EVENTS.md)
 is the reviewed stronger option; it is not an existing upstream API.
 
+## Manual publication-contract conformance
+
+The manual-only `acp-room-conformance.yml` workflow has a
+`publication_contract` choice. Its default, `member-bound`, applies all seven
+staged Buzz patches, including `member-bound-events.patch`. Selecting `ordinary`
+applies the same first six patches and omits only `member-bound-events.patch`,
+leaving the harness reply on upstream's existing `POST /events` route. Both
+choices build a disposable relay and run the same synthetic ACP reply fixture
+through signed receipt, persistence and thread projection. Neither choice
+changes a production relay or enables a room agent.
+
+Run either choice explicitly from the Actions workflow dispatch UI, or with
+`gh workflow run acp-room-conformance.yml --ref <test-branch> -f publication_contract=member-bound`
+and the same command with `publication_contract=ordinary`. Use a branch that
+contains the workflow and patches under review. When the runner generates a
+sanitized `summary.json`, the uploaded copy records `publicationContractSelected`,
+`publicationRouteSelected`, and `membershipRemovalConformance: not_tested`;
+its stage and pass/fail fields still determine whether conformance actually
+ran. A pass establishes the signed reply and persisted-thread path for that
+selected disposable build. It does not test removal, an open-room publication
+race, or atomic revocation, and it does not select the product contract.
+
 ## Smallest upstream patch series for ordinary room replies
 
 Contribute the independent, reviewable Buzz patches in this order, rebased and

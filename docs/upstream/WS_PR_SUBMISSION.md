@@ -37,6 +37,12 @@ Recheck the actual upstream PR base before submission because `main` can move.
 > remain for the upstream PR branch. Byte accounting measures UTF-8 wire text,
 > not exact heap use; new error variants can require downstream exhaustive
 > match updates.
+>
+> Related work: [#4212](https://github.com/block/buzz/pull/4212) bounds
+> desktop/ACP publish waits and improves rate-limit rejection handling; it
+> does not change `buzz-ws-client`. [#3964](https://github.com/block/buzz/pull/3964)
+> adds verified, bounded CLI listening. This PR covers the shared client's
+> frame, replay-queue and deadline limits.
 
 Do not add `buzz-review-completed` to this body yet. Buzz's
 [agent contributor guide](https://github.com/block/buzz/blob/12670bd0f037c66a682272bb81c46c3f254fad74/AGENTS.md) reserves that marker for a
@@ -85,6 +91,27 @@ data and queue count, not precise heap allocation after parsing or the memory
 of a caller-created outbound value. These limits must be reviewed against
 legitimate upstream message sizes.
 
+## Current open-PR overlap (read-only check)
+
+The open [PR #4212](https://github.com/block/buzz/pull/4212) changes
+`crates/buzz-relay/src/connection.rs`, `crates/buzz-acp/src/relay.rs`, and
+`desktop/src/shared/api/relayClientSession.ts`. Its body addresses
+rate-limited EVENT rejection and bounded desktop/ACP publish waits. It shares
+the deadline and pending-send concern with this proposal, but it does not touch
+the shared `buzz-ws-client` or its test client. Keep this patch focused on the
+shared transport's frame, replay-queue and operation limits. Compare caller
+behavior again if #4212 merges before submission so the PR does not imply it
+introduced every publish deadline.
+
+The open draft [PR #3964](https://github.com/block/buzz/pull/3964) changes
+`buzz-cli` commands, client code, tests and CLI docs. Its bounded catch-up,
+verified filtering and reconnect behavior serve long-running CLI listeners;
+none of its listed files are in this five-file patch. It is complementary, not
+a substitute for bounding the shared client's pre-authentication and OK-wait
+buffers. Link both PRs as related work and ask maintainers whether the proposed
+defaults should align with those callers. The public bodies and changed-file
+lists support a separate focused PR; no author contact or comment was made.
+
 ## Submission readiness and required sign-off
 
 - [x] Read Buzz `AGENTS.md`, `CONTRIBUTING.md`, `VISION.md`, and the relevant
@@ -92,11 +119,13 @@ legitimate upstream message sizes.
   without changing protocol events or access control.
 - [x] Confirm the five source paths are unchanged at target `12670bd`; apply
   the patch cleanly in an isolated target tree; pass focused tests and formatting.
-- [ ] Complete the duplicate search before sending. A September 29 title scan
-  of the first 100 open PRs/issues found no matching resource-bound contribution.
+- [x] Inspect the two closest open PRs' public bodies and changed-file lists:
+  #4212 and #3964, as summarized above. No changed-file overlap was found.
+  A September 29 title scan of the first 100 open PRs/issues found no matching
+  resource-bound contribution.
   [PR 7852](https://github.com/block/buzz/pull/7852) concerns thread windows over
   WebSocket REQ, not these client queue limits. This bounded title scan does not
-  establish that the full remote queue has no duplicate.
+  establish that the full remote queue has no duplicate; recheck before sending.
 - [ ] Review the patch against current upstream `main`, including default limits,
   API compatibility, and the regression tests' production seams. Refresh the
   target and rerun checks if any affected files change.

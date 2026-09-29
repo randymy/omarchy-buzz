@@ -2,6 +2,15 @@ name: Manual harness-owned room reply conformance
 
 on:
   workflow_dispatch:
+    inputs:
+      publication_contract:
+        description: Relay publication contract to exercise with synthetic room replies
+        required: true
+        type: choice
+        default: member-bound
+        options:
+          - member-bound
+          - ordinary
 
 permissions:
   contents: read
@@ -15,6 +24,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
+      PUBLICATION_CONTRACT: ${{ inputs.publication_contract }}
       CARGO_BUILD_JOBS: '2'
       CARGO_PROFILE_DEV_DEBUG: '0'
       CARGO_PROFILE_TEST_DEBUG: '0'
@@ -62,11 +72,9 @@ jobs:
             ${{ runner.temp }}/buzz-cargo
             ${{ runner.temp }}/relay-target
             ${{ runner.temp }}/helper-target
-          key: buzz-room-replies-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('plugin/docs/upstream/*.patch', 'plugin/helper/Cargo.lock') }}
+          key: buzz-room-replies-v2-${{ inputs.publication_contract }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('plugin/docs/upstream/*.patch', 'plugin/helper/Cargo.lock') }}
           restore-keys: |
-            buzz-room-replies-v1-${{ runner.os }}-${{ runner.arch }}-
-            buzz-member-bound-v1-${{ runner.os }}-${{ runner.arch }}-
-            buzz-acp-auth-v1-${{ runner.os }}-${{ runner.arch }}-
+            buzz-room-replies-v2-${{ inputs.publication_contract }}-${{ runner.os }}-${{ runner.arch }}-
       - name: Install the tested toolchain and native build dependencies
         run: |
           rustup toolchain install 1.95.0 --profile minimal --component rustfmt
@@ -79,15 +87,23 @@ jobs:
           cargo +1.95.0 fmt --manifest-path helper/Cargo.toml --check
           python3 tests/relay_conformance_runner.py
           python3 tests/acp_fixture.py
-      - name: Apply seven proposals only to disposable build source
+      - name: Apply selected proposals only to disposable build source
         working-directory: buzz
         run: |
           test "$(git rev-parse HEAD)" = 781d39510cf23cfe224e8f521ae06a23377e06de
           git diff --exit-code
-          for patch in ws-resource-limits acp-permission-mode acp-interactive-login acp-key-isolation acp-harness-replies acp-deny-tool-requests member-bound-events; do
+          case "$PUBLICATION_CONTRACT" in
+            member-bound|ordinary) ;;
+            *) echo 'Unsupported publication contract' >&2; exit 1 ;;
+          esac
+          for patch in ws-resource-limits acp-permission-mode acp-interactive-login acp-key-isolation acp-harness-replies acp-deny-tool-requests; do
             git apply --check "../plugin/docs/upstream/$patch.patch"
             git apply "../plugin/docs/upstream/$patch.patch"
           done
+          if [ "$PUBLICATION_CONTRACT" = member-bound ]; then
+            git apply --check ../plugin/docs/upstream/member-bound-events.patch
+            git apply ../plugin/docs/upstream/member-bound-events.patch
+          fi
       - name: Build complete proposed relay and ACP
         id: build
         working-directory: buzz
@@ -112,11 +128,29 @@ jobs:
             --helper-source "$GITHUB_WORKSPACE/plugin" \
             --helper-target "$RUNNER_TEMP/helper-target" \
             --output "$RUNNER_TEMP/relay-evidence"
+      - name: Label sanitized summary with selected publication contract
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          contract = os.environ['PUBLICATION_CONTRACT']
+          routes = {'member-bound': '/events/member-bound', 'ordinary': '/events'}
+          if contract not in routes:
+              raise SystemExit('Unsupported publication contract')
+          summary = Path(os.environ['RUNNER_TEMP']) / 'relay-evidence' / 'summary.json'
+          if summary.exists():
+              report = json.loads(summary.read_text())
+              report['publicationContractSelected'] = contract
+              report['publicationRouteSelected'] = routes[contract]
+              report['membershipRemovalConformance'] = 'not_tested'
+              summary.write_text(json.dumps(report, sort_keys=True, indent=2) + '\n')
+          PY
       - name: Upload only sanitized test evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: harness-reply-evidence
+          name: harness-reply-${{ inputs.publication_contract }}-evidence
           path: ${{ runner.temp }}/relay-evidence/summary.json
           if-no-files-found: warn
           retention-days: 7
