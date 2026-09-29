@@ -788,5 +788,23 @@ reactions have only an event target and no room tag. Sanitized diagnostic run
 thread readers, with SDK-built reaction regressions, and `5542ad1` additionally
 checks that the root remains in room history while its reply stays in the
 thread. An independent source review found no blocker. Corrected relay run
-`36503855340` and ARM64 run `36503857736` are pending. Installed helper/plugin
-remain 0.0.6 until both pass. No production identity, relay, or account changed.
+`36503855340` and ARM64 run `36503857736` both passed at source `5542ad1`.
+The native run passed 114 helper tests (two external fixtures ignored), plus
+synthetic IPC/send/activation. The downloaded artifact's SHA-256, exact source,
+architecture and version were checked, and all three isolated process checks
+also passed locally outside the socket-restricted sandbox. See
+[thread evidence](evidence/thread-room-36503855340.json) and
+[native evidence](evidence/helper-arm64-36503857736.json).
+
+Installed helper and plugin are now 0.0.7. The plugin checkout is `4c0a7bc`
+(runtime sources match tested `5542ad1`; subsequent commits only updated docs).
+Native plugin update, helper service restart, shell restart and panel summon
+succeeded. The helper is active/running with core dumps disabled. Shell logs
+after restart show no Buzz load error. `plugin list`'s `active` flag only applies
+to whole-bar alternatives, not Buzz's service/widget/panel; it is not a panel
+health signal. Physical keyboard/display interaction remains unverified.
+
+Rollback is preserved at
+`~/.cache/omarchy-buzz/rollback/0.0.6-before-36503857736/` with the previous
+binary, hash and plugin revision (`c70d33b`). Configuration, identity, delivery
+ledger and relay deployment were preserved. No real agent/model task was run.

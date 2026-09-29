@@ -9,11 +9,13 @@ identified a signed kind-7 reaction without an `h` tag, matching upstream
 `buzz_sdk::build_reaction`. Commit `dc3776e` allows those auxiliary reactions
 with validated event targets while rejecting explicit wrong-room tags and
 forged events; reactions never become rows or execution-state evidence.
-The corrected actual-relay test is pending. Installed 0.0.6
-is unchanged. The following design describes the intended contract, not a
-claim that the live-relay thread read has passed.
+The corrected actual-relay test passed in
+[run 36503855340](https://github.com/randymy/omarchy-buzz/actions/runs/36503855340):
+the helper projects the persisted reply and keeps the root in top-level history.
+The matching 0.0.7 helper/plugin are installed locally. This is synthetic
+conformance against the pinned disposable relay, not a real-model demonstration.
 
-The installed 0.0.6 helper asks
+The pre-thread 0.0.6 helper asks
 `POST /query` for `top_level: true` in `helper/src/query.rs::RoomHistory`.
 `helper/src/history.rs` materializes only that channel-window response and
 requires a signed `39006` head bounds event. `helper/src/protocol.rs::History`
@@ -115,8 +117,12 @@ refresh. A separate, user-triggered fetch is sufficient for this increment.
 
 The initial ARM64 build passed 111 tests plus synthetic IPC checks in
 [run 36502926877](https://github.com/randymy/omarchy-buzz/actions/runs/36502926877).
-The reaction correction is undergoing a fresh native build.
+The corrected build passed 114 tests plus synthetic IPC checks in
+[run 36503857736](https://github.com/randymy/omarchy-buzz/actions/runs/36503857736).
+Its binary passed the same isolated IPC/send/activation checks on the local
+ARM64 machine before installation.
 
 The implementation targets pinned Buzz revision
-`781d39510cf23cfe224e8f521ae06a23377e06de`. Release gates remain the actual
-relay thread-read conformance and a passing native ARM64 helper build/IPC check.
+`781d39510cf23cfe224e8f521ae06a23377e06de`. Those read-path and native-build
+gates pass. Real subscription authentication, effective provider routing,
+agent execution controls and detailed state remain separate unfinished work.
