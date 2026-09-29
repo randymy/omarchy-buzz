@@ -50,6 +50,7 @@ jobs:
                   '--cache='+str(root/'cache')],env=env,check=True,timeout=300)
           PY
       - name: Typecheck build and exercise policy without provider access
+        id: build
         working-directory: adapter
         run: |
           probe_uid=$(id -u)
@@ -66,7 +67,7 @@ jobs:
               npm run build
               ./node_modules/.bin/vitest run --no-file-parallelism --retry=0 src/__tests__/SubscriptionPolicy.test.ts src/__tests__/CodexACPAgent/providers.test.ts src/__tests__/CodexACPAgent/auth-status.test.ts
             '
-      - name: Validate native configuration and compiled adapter admission offline
+      - name: Validate native configuration offline
         working-directory: plugin
         run: |
           python3 -B -m unittest discover -s tests -p 'test_codex_policy_*probe.py' -v
@@ -83,6 +84,14 @@ jobs:
             --outside-netns "$outside_netns" \
             --policy-module "$GITHUB_WORKSPACE/adapter/src/SubscriptionPolicy.ts" \
             --output "$RUNNER_TEMP/codex-policy-native.json"
+      - name: Validate compiled adapter admission offline
+        if: always() && !cancelled() && steps.build.outcome == 'success'
+        working-directory: plugin
+        run: |
+          probe_uid=$(id -u)
+          probe_gid=$(id -g)
+          probe_node=$(command -v node)
+          outside_netns=$(readlink /proc/self/ns/net)
           sudo unshare --net --pid --fork --kill-child --mount-proc -- \
             /usr/bin/setpriv --reuid="$probe_uid" --regid="$probe_gid" --clear-groups --no-new-privs \
             --bounding-set=-all --inh-caps=-all --ambient-caps=-all \

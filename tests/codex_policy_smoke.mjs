@@ -13,6 +13,8 @@ const {SubscriptionPolicy, validSubscriptionConfig, validateSubscriptionStartup,
 
 const clean = {forced_login_method: 'chatgpt', model_provider: 'openai'};
 assert.equal(validSubscriptionConfig(clean), true);
+assert.equal(validSubscriptionConfig({...clean,
+  chatgpt_base_url: 'https://chatgpt.com/backend-api/'}), true);
 for (const config of [null, [], {}, {...clean, forced_login_method: 'api'},
   {...clean, model_provider: 'gateway'}, {...clean, model_providers: {openai: {}}},
   ...['openai_base_url', 'chatgpt_base_url', 'model_catalog_url', 'experimental_bearer_token']
