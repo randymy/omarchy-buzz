@@ -1101,3 +1101,18 @@ Older cached versions cannot supply their provenance. Preserve inventory review
 flags; the bundle is still experimental. Next: observe user-controlled sign-in,
 verify subscription admission without API fallback, and advance upstream gates
 before any supervised room-agent acceptance. Marketplace remains unsubmitted.
+
+## Codex generated profile links fixed (September 29)
+
+The first interactive login stopped before authentication with
+`profile_tree_unsafe`. Actual discovery had created four native command shims
+in `provider/tmp/arg0/codex-arg0*/`; the blanket link prohibition rejected its
+own runtime output. Added a narrow exception for those four exact names/paths,
+owned by the current user and pointing directly to the recorded native Codex
+binary with a matching SHA-256. Arbitrary targets, modified binaries and
+configuration links remain rejected. No existing profile files were removed.
+
+Twelve launcher tests pass, including rejection of alternate targets/tampering.
+Actual target discovery followed by another status/profile check passes. Reopened
+the native sign-in terminal. Provider login completion remains unverified; no
+agent task or API-billed operation was started.

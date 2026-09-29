@@ -94,7 +94,21 @@ def private_dir(path):
     return path
 
 
-def profile_for(agent):
+def allowed_codex_link(item, profile, bundle, report):
+    relative = item.relative_to(profile).as_posix()
+    if not re.fullmatch(r'provider/tmp/arg0/codex-arg0[A-Za-z0-9_-]+/(apply_patch|applypatch|codex-linux-sandbox|codex-execve-wrapper)', relative):
+        return False
+    if bundle is None or report is None or item.lstat().st_uid != os.getuid():
+        return False
+    name = 'node_modules/@openai/codex-linux-arm64/vendor/aarch64-unknown-linux-musl/bin/codex'
+    target = member(bundle / 'adapters' / 'codex', name)
+    expected = report['nativeProbeFiles']['codex'].get(name)
+    return (os.readlink(item) == str(target) and target.is_file() and
+            target.stat().st_uid == os.getuid() and expected is not None and
+            digest(target) == expected)
+
+
+def profile_for(agent, bundle=None, report=None):
     # Explicit local profile; never borrow normal native credentials/configuration.
     home = Path.home()
     anchor = home / '.local' / 'state'
@@ -110,7 +124,10 @@ def profile_for(agent):
         for current, dirs, files in os.walk(profile / directory, followlinks=False):
             for name in dirs + files:
                 item = Path(current) / name
-                if item.is_symlink() or item.stat().st_uid != os.getuid():
+                if item.is_symlink():
+                    if agent != 'codex' or not allowed_codex_link(item, profile, bundle, report):
+                        raise Refused('profile_tree_unsafe')
+                elif item.stat().st_uid != os.getuid():
                     raise Refused('profile_tree_unsafe')
     return profile
 
@@ -245,7 +262,7 @@ def main():
         if ',' in str(args.bundle) or not args.bundle.is_absolute():
             raise Refused('absolute_bundle_path_required')
         report = verify_bundle(args.bundle, args.manifest_sha256)
-        profile = profile_for(args.agent)
+        profile = profile_for(args.agent, args.bundle, report)
         if args.action == 'hydrate':
             hydrate(args.bundle, report, args.agent, profile)
         if args.action in ('status', 'hydrate'):

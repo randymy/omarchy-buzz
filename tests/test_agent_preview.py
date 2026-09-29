@@ -79,6 +79,40 @@ class AgentPreview(unittest.TestCase):
         self.assertEqual(module.checked_methods(json.dumps({'methods': [
             {'id': 'claude-ai-login', 'type': 'terminal'}]}), 'claude'), ['claude-ai-login'])
 
+    def test_codex_generated_links_allow_only_verified_runtime(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            bundle = root / 'bundle'
+            name = 'node_modules/@openai/codex-linux-arm64/vendor/aarch64-unknown-linux-musl/bin/codex'
+            binary = bundle / 'adapters/codex' / name
+            binary.parent.mkdir(parents=True)
+            binary.write_bytes(b'verified native fixture')
+            report = {'nativeProbeFiles': {'codex': {name: module.digest(binary)}}}
+            with patch.object(module.Path, 'home', return_value=root):
+                profile = module.profile_for('codex')
+                directory = profile / 'provider/tmp/arg0/codex-arg0ABC123'
+                directory.mkdir(parents=True)
+                for name in ('apply_patch', 'applypatch', 'codex-linux-sandbox', 'codex-execve-wrapper'):
+                    (directory / name).symlink_to(binary)
+                module.profile_for('codex', bundle, report)
+                with self.assertRaisesRegex(module.Refused, 'profile_tree_unsafe'):
+                    module.profile_for('codex')
+                binary.write_bytes(b'tampered')
+                with self.assertRaisesRegex(module.Refused, 'profile_tree_unsafe'):
+                    module.profile_for('codex', bundle, report)
+                binary.write_bytes(b'verified native fixture')
+                link = directory / 'apply_patch'
+                link.unlink()
+                outside = root / 'other'
+                outside.write_bytes(binary.read_bytes())
+                link.symlink_to(outside)
+                with self.assertRaisesRegex(module.Refused, 'profile_tree_unsafe'):
+                    module.profile_for('codex', bundle, report)
+                link.unlink()
+                (profile / 'provider/config.toml').symlink_to(binary)
+                with self.assertRaisesRegex(module.Refused, 'profile_tree_unsafe'):
+                    module.profile_for('codex', bundle, report)
+
     def test_bundle_rejects_file_change_and_linked_entrypoint(self):
         with tempfile.TemporaryDirectory() as temporary:
             bundle, _ = fixture_bundle(Path(temporary))

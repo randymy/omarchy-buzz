@@ -44,7 +44,10 @@ explicitly leaves authentication `not_checked`.
 Each agent gets an owner-only profile beneath
 `~/.local/state/omarchy-buzz-agent-preview/`. The launcher creates separate HOME,
 provider, XDG and working directories. Reused configuration trees containing
-symlinks or other owners are rejected. Existing native credentials and user
+unexpected symlinks or other owners are rejected. The only link exception is
+Codex's four known temporary command shims under `provider/tmp/arg0/`: each must
+point directly to the exact native binary whose digest matches the verified
+bundle. Configuration and credential symlinks remain rejected. Existing native credentials and user
 project settings are not imported. The launch environment is allowlisted;
 provider API keys, proxy overrides, Node options and Buzz credentials are not
 forwarded. Profile locations, not tokens, pass through the Buzz auth subprocess.
