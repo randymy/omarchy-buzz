@@ -1,0 +1,198 @@
+name: Manual ARM64 agent preview
+
+# An experimental, unsubmitted contribution preview. Never runs on push or PR.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-arm64-preview
+  cancel-in-progress: false
+
+jobs:
+  preview:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+    steps:
+      - name: Use disposable build locations
+        run: echo "CARGO_HOME=$RUNNER_TEMP/buzz-cargo" >> "$GITHUB_ENV"
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          path: plugin
+          persist-credentials: false
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: block/buzz
+          ref: 781d39510cf23cfe224e8f521ae06a23377e06de
+          path: buzz
+          persist-credentials: false
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: agentclientprotocol/codex-acp
+          ref: 2eebebc35441e03cd466003b40a75953b221b886
+          path: codex
+          persist-credentials: false
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: agentclientprotocol/claude-agent-acp
+          ref: 18de37624071b48e95aed9ec5382823e2d72cd39
+          path: claude
+          persist-credentials: false
+      - name: Require native ARM64 and pinned toolchains
+        run: |
+          test "$(uname -m)" = aarch64
+          rustup toolchain install 1.95.0 --profile minimal
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libssl-dev libdbus-1-dev protobuf-compiler
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22.23.3'
+      - name: Apply exact proposals only to disposable upstream checkouts
+        run: |
+          for patch in ws-resource-limits acp-permission-mode acp-interactive-login acp-key-isolation acp-harness-replies acp-deny-tool-requests member-bound-events; do
+            git -C buzz apply --check "$GITHUB_WORKSPACE/plugin/docs/upstream/$patch.patch"
+            git -C buzz apply "$GITHUB_WORKSPACE/plugin/docs/upstream/$patch.patch"
+          done
+          for vendor in codex claude; do
+            git -C "$vendor" apply --check "$GITHUB_WORKSPACE/plugin/docs/upstream/$vendor-subscription-policy.patch"
+            git -C "$vendor" apply "$GITHUB_WORKSPACE/plugin/docs/upstream/$vendor-subscription-policy.patch"
+          done
+      - uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        id: cache
+        with:
+          path: |
+            ${{ runner.temp }}/buzz-cargo
+            ${{ runner.temp }}/agent-target
+          key: buzz-agent-arm64-v1-${{ hashFiles('plugin/docs/upstream/*.patch') }}
+          restore-keys: buzz-agent-arm64-v1-
+      - name: Build native patched Buzz ACP and check contribution boundaries
+        id: build
+        working-directory: buzz
+        run: |
+          cargo +1.95.0 build --locked -p buzz-acp --target-dir "$RUNNER_TEMP/agent-target"
+          cargo +1.95.0 test --locked -p buzz-acp --lib terminal_auth::tests --target-dir "$RUNNER_TEMP/agent-target"
+          cargo +1.95.0 test --locked -p buzz-acp --lib deny_tool_policy --target-dir "$RUNNER_TEMP/agent-target"
+          cargo +1.95.0 test --locked -p buzz-acp --lib key_isolation_tests:: --target-dir "$RUNNER_TEMP/agent-target"
+      - name: Inventory ARM64 Rust dependency notices from the locked ACP graph
+        working-directory: buzz
+        run: |
+          cargo +1.95.0 metadata --locked --offline --format-version 1 \
+            --filter-platform aarch64-unknown-linux-gnu \
+            --manifest-path crates/buzz-acp/Cargo.toml > "$RUNNER_TEMP/agent-cargo-metadata.json"
+          python3 - <<'PY'
+          import json, os, pathlib
+          path = pathlib.Path(os.environ['RUNNER_TEMP']) / 'agent-cargo-metadata.json'
+          document = json.loads(path.read_text())
+          roots = [p['id'] for p in document['packages'] if p['name'] == 'buzz-acp'
+                   and pathlib.Path(p['manifest_path']).resolve() ==
+                   (pathlib.Path.cwd() / 'crates/buzz-acp/Cargo.toml').resolve()]
+          if len(roots) != 1 or roots[0] not in {n['id'] for n in document['resolve']['nodes']}:
+              raise SystemExit('exact ACP root is absent from filtered Cargo graph')
+          document['resolve']['root'] = roots[0]
+          path.write_text(json.dumps(document))
+          PY
+          python3 ../plugin/scripts/helper-notices "$RUNNER_TEMP/agent-cargo-metadata.json" \
+            --lock Cargo.lock --target aarch64-unknown-linux-gnu \
+            --output "$RUNNER_TEMP/agent-rust-notices"
+      - name: Install locked guarded adapter dependencies without lifecycle scripts
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, shutil, subprocess, tempfile
+          for vendor in ('codex', 'claude'):
+              with tempfile.TemporaryDirectory(prefix='agent-npm-', dir=os.environ['RUNNER_TEMP']) as home:
+                  root = pathlib.Path(home)
+                  for name in ('user.npmrc', 'global.npmrc'):
+                      (root / name).touch()
+                  env = {'HOME': home, 'PATH': os.environ['PATH'], 'LANG': 'C.UTF-8'}
+                  npm = shutil.which('npm')
+                  common = ['--userconfig=' + str(root / 'user.npmrc'),
+                            '--globalconfig=' + str(root / 'global.npmrc'),
+                            '--cache=' + str(root / 'cache')]
+                  subprocess.run([npm, 'ci', '--ignore-scripts', '--no-audit', '--no-fund', *common],
+                                 cwd=vendor, env=env, check=True, timeout=300)
+          PY
+      - name: Build guarded adapters in a clean offline network namespace
+        run: |
+          probe_uid=$(id -u)
+          probe_gid=$(id -g)
+          probe_node=$(command -v node)
+          for vendor in codex claude; do
+            probe_home=$(mktemp -d "$RUNNER_TEMP/agent-build.XXXXXXXX")
+            sudo unshare --net --pid --fork --kill-child --mount-proc -- \
+              /usr/bin/setpriv --reuid="$probe_uid" --regid="$probe_gid" --clear-groups --no-new-privs \
+              --bounding-set=-all --inh-caps=-all --ambient-caps=-all \
+              /usr/bin/env -i HOME="$probe_home" PATH="$(dirname "$probe_node"):/usr/bin:/bin" LANG=C.UTF-8 \
+              /bin/bash -euc 'cd "$1"; npm run build' -- "$GITHUB_WORKSPACE/$vendor"
+          done
+      - name: Prune runtime trees without lifecycle scripts
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, shutil, subprocess, tempfile
+          for vendor in ('codex', 'claude'):
+              with tempfile.TemporaryDirectory(prefix='agent-prune-', dir=os.environ['RUNNER_TEMP']) as home:
+                  root = pathlib.Path(home)
+                  for name in ('user.npmrc', 'global.npmrc'):
+                      (root / name).touch()
+                  env = {'HOME': home, 'PATH': os.environ['PATH'], 'LANG': 'C.UTF-8'}
+                  subprocess.run([shutil.which('npm'), 'prune', '--omit=dev', '--ignore-scripts',
+                                  '--no-audit', '--no-fund',
+                                  '--userconfig=' + str(root / 'user.npmrc'),
+                                  '--globalconfig=' + str(root / 'global.npmrc'),
+                                  '--cache=' + str(root / 'cache')],
+                                 cwd=vendor, env=env, check=True, timeout=300)
+          PY
+          git -C codex diff --exit-code -- package-lock.json
+          git -C claude diff --exit-code -- package-lock.json
+      - name: Prove guarded ACP method discovery without accounts or network
+        working-directory: plugin
+        run: |
+          probe_uid=$(id -u)
+          probe_gid=$(id -g)
+          probe_node=$(command -v node)
+          outside_netns=$(readlink /proc/self/ns/net)
+          sudo unshare --net --pid --fork --kill-child --mount-proc -- \
+            /usr/bin/setpriv --reuid="$probe_uid" --regid="$probe_gid" --clear-groups --no-new-privs \
+            --bounding-set=-all --inh-caps=-all --ambient-caps=-all \
+            /usr/bin/env -i PATH="$(dirname "$probe_node"):/usr/bin:/bin" LANG=C.UTF-8 \
+            /usr/bin/python3 tests/guarded_adapter_harness_probe.py \
+            --binary "$RUNNER_TEMP/agent-target/debug/buzz-acp" --node "$probe_node" \
+            --codex-source "$GITHUB_WORKSPACE/codex" --claude-source "$GITHUB_WORKSPACE/claude" \
+            --outside-netns "$outside_netns" --output "$RUNNER_TEMP/agent-arm64-probe.json"
+      - name: Build hashed preview archive without vendor runtime redistribution
+        working-directory: plugin
+        run: |
+          node_bin=$(command -v node)
+          node_root=$(dirname "$(dirname "$node_bin")")
+          python3 scripts/package-agent-preview \
+            --buzz "$GITHUB_WORKSPACE/buzz" --codex "$GITHUB_WORKSPACE/codex" \
+            --claude "$GITHUB_WORKSPACE/claude" \
+            --buzz-binary "$RUNNER_TEMP/agent-target/debug/buzz-acp" \
+            --node-binary "$node_bin" --node-license "$node_root/LICENSE" \
+            --npm-root "$node_root/lib/node_modules/npm" \
+            --rust-notices "$RUNNER_TEMP/agent-rust-notices" \
+            --node-version "$(node --version)" --npm-version "$(npm --version)" \
+            --rust-version 1.95.0 --output "$RUNNER_TEMP/agent-preview"
+      - name: Upload preview and sanitized account-free evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: agent-arm64-experimental-preview
+          path: |
+            ${{ runner.temp }}/agent-preview/agent-preview-arm64.tar.gz
+            ${{ runner.temp }}/agent-preview/agent-preview-arm64.sha256.json
+            ${{ runner.temp }}/agent-arm64-probe.json
+          if-no-files-found: error
+          retention-days: 7
+      - name: Cache successful native compilation
+        if: always() && !cancelled() && steps.build.outcome == 'success' && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            ${{ runner.temp }}/buzz-cargo
+            ${{ runner.temp }}/agent-target
+          key: ${{ steps.cache.outputs.cache-primary-key }}

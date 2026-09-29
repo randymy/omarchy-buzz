@@ -1,0 +1,265 @@
+#!/usr/bin/env python3
+"""Package a manual ARM64 agent preview from disposable, pinned CI checkouts."""
+import argparse
+import hashlib
+import io
+import json
+from pathlib import Path
+import re
+import subprocess
+import tarfile
+import tempfile
+
+ROOT = Path(__file__).resolve().parents[1]
+SOURCES = {
+    "buzz": "781d39510cf23cfe224e8f521ae06a23377e06de",
+    "codex": "2eebebc35441e03cd466003b40a75953b221b886",
+    "claude": "18de37624071b48e95aed9ec5382823e2d72cd39",
+}
+PATCHES = {
+    "buzz": ("ws-resource-limits", "acp-permission-mode", "acp-interactive-login",
+             "acp-key-isolation", "acp-harness-replies", "acp-deny-tool-requests",
+             "member-bound-events"),
+    "codex": ("codex-subscription-policy",),
+    "claude": ("claude-subscription-policy",),
+}
+
+
+def sha(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def json_bytes(value):
+    return (json.dumps(value, indent=2, sort_keys=True) + "\n").encode()
+
+
+def checked_revision(directory, expected):
+    actual = subprocess.check_output(["git", "-C", str(directory), "rev-parse", "HEAD"], text=True).strip()
+    if actual != expected:
+        raise ValueError(f"unexpected source revision: {directory}")
+
+
+def checked_file(path):
+    if path.is_symlink() or not path.is_file():
+        raise ValueError(f"missing or linked package file: {path}")
+    return path.read_bytes()
+
+
+def elf_arm64(data):
+    if (len(data) < 64 or data[:7] != b"\x7fELF\x02\x01\x01" or data[7] not in (0, 3)
+            or int.from_bytes(data[16:18], "little") not in (2, 3)
+            or int.from_bytes(data[18:20], "little") != 183):
+        raise ValueError("Buzz ACP must be a Linux ARM64 ELF binary")
+
+
+def installed_packages(source, lock):
+    packages = []
+    for rel, record in sorted(lock["packages"].items()):
+        if not rel.startswith("node_modules/"):
+            continue
+        directory = source / rel
+        if not directory.exists():
+            continue
+        metadata = json.loads(checked_file(directory / "package.json"))
+        if metadata.get("version") != record["version"]:
+            raise ValueError(f"installed package differs from lock: {rel}")
+        if not record.get("license") or not record.get("integrity"):
+            raise ValueError(f"missing locked license or integrity: {rel}")
+        packages.append({"path": rel, "version": record["version"],
+                         "license": record["license"], "integrity": record["integrity"]})
+    return packages
+
+
+def native_probe_files(source, package):
+    directory = source / "node_modules" / package
+    if directory.is_symlink() or not directory.is_dir():
+        raise ValueError(f"missing native ARM64 package: {package}")
+    files = {}
+    for path in sorted(directory.rglob("*")):
+        if path.is_symlink():
+            raise ValueError(f"linked native ARM64 file: {path}")
+        if path.is_file():
+            files[path.relative_to(source).as_posix()] = sha(path.read_bytes())
+    if not files:
+        raise ValueError(f"empty native ARM64 package: {package}")
+    return files
+
+
+def add_tree(members, source, destination):
+    if source.is_symlink() or not source.is_dir():
+        raise ValueError(f"missing package directory: {source}")
+    for path in sorted(source.rglob("*")):
+        relative = path.relative_to(source)
+        if any(part in (".bin", "__pycache__") for part in relative.parts):
+            continue
+        if path.is_symlink():
+            raise ValueError(f"linked runtime file: {path}")
+        if path.is_file():
+            members[f"{destination}/{relative.as_posix()}"] = path.read_bytes()
+
+
+def rust_notice_members(directory, cargo_lock):
+    notices = json.loads(checked_file(directory / "inventory.json"))
+    if (notices.get("schemaVersion") != 1 or
+            notices.get("target") != "aarch64-unknown-linux-gnu" or
+            notices.get("lockSha256") != sha(cargo_lock) or
+            notices.get("reviewRequired") is not True or
+            not notices.get("packages")):
+        raise ValueError("Rust notices do not match the ARM64 Buzz lock")
+    members = {}
+    add_tree(members, directory, "notices/rust")
+    expected = {"notices/rust/inventory.json", "notices/rust/README.txt"}
+    for package in notices["packages"]:
+        for item in package["licenseFiles"]:
+            path = "notices/rust/" + item["path"]
+            if (not re.fullmatch(r"texts/[0-9a-f]{64}\.txt", item["path"]) or
+                    path not in members or sha(members[path]) != item["sha256"] or
+                    len(members[path]) != item["bytes"]):
+                raise ValueError("Rust notice text differs from inventory")
+            expected.add(path)
+    if set(members) != expected:
+        raise ValueError("unexpected Rust notice files")
+    summary = {"inventorySha256": sha(members["notices/rust/inventory.json"]),
+               "lockSha256": sha(cargo_lock), "packages": len(notices["packages"]),
+               "flaggedPackages": sum(bool(p["reviewFlags"]) for p in notices["packages"]),
+               "reviewRequired": True}
+    return members, summary
+
+
+def package(args):
+    if args.node_version != "v22.23.3" or args.rust_version != "1.95.0":
+        raise ValueError("unexpected Node or Rust version")
+    for name in SOURCES:
+        checked_revision(getattr(args, name), SOURCES[name])
+    members = {}
+    binary = checked_file(args.buzz_binary)
+    elf_arm64(binary)
+    members["bin/buzz-acp"] = binary
+    node = checked_file(args.node_binary)
+    elf_arm64(node)
+    members["bin/node"] = node
+    members["licenses/Node-LICENSE"] = checked_file(args.node_license)
+    npm_metadata = json.loads(checked_file(args.npm_root / "package.json"))
+    if npm_metadata.get("name") != "npm" or npm_metadata.get("version") != args.npm_version:
+        raise ValueError("npm version differs from pinned Node toolchain")
+    add_tree(members, args.npm_root, "runtime/npm")
+    members["licenses/plugin-LICENSE"] = checked_file(ROOT / "LICENSE")
+    members["licenses/Buzz-LICENSE"] = checked_file(args.buzz / "LICENSE")
+    cargo_lock = checked_file(args.buzz / "Cargo.lock")
+    members["provenance/buzz-Cargo.lock"] = cargo_lock
+    notice_members, notice_summary = rust_notice_members(args.rust_notices, cargo_lock)
+    members.update(notice_members)
+    source_report = {}
+    for name in SOURCES:
+        source = getattr(args, name)
+        patches = []
+        for patch_name in PATCHES[name]:
+            path = ROOT / "docs/upstream" / f"{patch_name}.patch"
+            content = checked_file(path)
+            members[f"provenance/{patch_name}.patch"] = content
+            patches.append({"name": patch_name, "sha256": sha(content)})
+        source_report[name] = {"repository": {"buzz": "block/buzz", "codex": "agentclientprotocol/codex-acp",
+                                               "claude": "agentclientprotocol/claude-agent-acp"}[name],
+                               "revision": SOURCES[name], "patches": patches}
+    installed = {}
+    for name in ("codex", "claude"):
+        source = getattr(args, name)
+        root = f"adapters/{name}"
+        metadata = json.loads(checked_file(source / "package.json"))
+        expected = {"codex": ("@agentclientprotocol/codex-acp", "2.0.0"),
+                    "claude": ("@agentclientprotocol/claude-agent-acp", "0.82.0")}[name]
+        if (metadata.get("name"), metadata.get("version")) != expected:
+            raise ValueError(f"unexpected {name} package")
+        for filename in ("package.json", "package-lock.json", "LICENSE"):
+            members[f"{root}/{filename}"] = checked_file(source / filename)
+        add_tree(members, source / "dist", f"{root}/dist")
+        if f"{root}/dist/index.js" not in members:
+            raise ValueError(f"missing {name} entrypoint")
+        lock = json.loads(members[f"{root}/package-lock.json"])
+        installed[name] = installed_packages(source, lock)
+        source_report[name]["lockSha256"] = sha(members[f"{root}/package-lock.json"])
+    codex_packages = {p["path"]: p for p in installed["codex"]}
+    native = "node_modules/@openai/codex-linux-arm64"
+    if native not in codex_packages or codex_packages[native]["version"] != "0.158.0-linux-arm64":
+        raise ValueError("locked native Codex ARM64 package missing")
+    if any("codex-linux-" in p and p != native for p in codex_packages):
+        raise ValueError("unexpected Codex architecture included")
+    if "node_modules/@anthropic-ai/claude-agent-sdk-linux-arm64" not in {p["path"] for p in installed["claude"]}:
+        raise ValueError("native Claude ARM64 package missing from CI probe")
+    if any("claude-agent-sdk-linux-" in p["path"] and p["path"] !=
+           "node_modules/@anthropic-ai/claude-agent-sdk-linux-arm64" for p in installed["claude"]):
+        raise ValueError("unexpected Claude architecture included")
+    native_files = {
+        "codex": native_probe_files(args.codex, "@openai/codex-linux-arm64"),
+        "claude": native_probe_files(args.claude, "@anthropic-ai/claude-agent-sdk-linux-arm64"),
+    }
+    manifest = {
+        "schemaVersion": 1,
+        "platform": {"os": "linux", "architecture": "aarch64", "libc": "glibc"},
+        "preview": {"experimental": True, "unsubmittedPatches": True, "releaseReady": False,
+                    "accountVerified": False, "modelTurnVerified": False, "relayVerified": False},
+        "toolchain": {"node": "22.23.3", "npm": args.npm_version, "rust": "1.95.0"},
+        "entrypoints": {"buzzAcp": "bin/buzz-acp", "node": "bin/node",
+                        "npm": "runtime/npm/bin/npm-cli.js",
+                        "codex": "adapters/codex/dist/index.js", "claude": "adapters/claude/dist/index.js"},
+        "guardArguments": {"codex": "--require-chatgpt-subscription",
+                           "claude": "--require-claude-subscription"},
+        "runtime": {"codexIncluded": False, "claudeIncluded": False,
+                    "setupFromAdapterDirectory": "../../bin/node ../../runtime/npm/bin/npm-cli.js ci --omit=dev --ignore-scripts --no-audit --no-fund",
+                    "claudeRedistributionReviewRequired": True,
+                    "targetSetupRequired": True},
+        "relayRequirement": {"memberBoundEventsEndpoint": True,
+                             "verifiedOnTargetRelay": False,
+                             "agentServiceAllowed": False},
+        "sources": {"plugin": {"repository": "randymy/omarchy-buzz",
+                                "revision": subprocess.check_output(
+                                    ["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True).strip()},
+                    **source_report},
+        "npmProbePackages": installed,
+        "nativeProbeFiles": native_files,
+        "rustNotices": notice_summary,
+        "files": {path: {"sha256": sha(content), "bytes": len(content)}
+                  for path, content in sorted(members.items())},
+    }
+    members["manifest.json"] = json_bytes(manifest)
+    output = args.output / "agent-preview-arm64.tar.gz"
+    args.output.mkdir(parents=True, exist_ok=True)
+    if output.exists():
+        raise ValueError("preview output already exists")
+    with tempfile.NamedTemporaryFile(dir=args.output, prefix=".agent-preview-", delete=False) as temporary:
+        temporary_path = Path(temporary.name)
+    try:
+        with tarfile.open(temporary_path, "w:gz", format=tarfile.PAX_FORMAT) as archive:
+            for path, content in sorted(members.items()):
+                info = tarfile.TarInfo("agent-preview-arm64/" + path)
+                info.size = len(content)
+                info.mode = 0o755 if path in ("bin/buzz-acp", "bin/node") else 0o644
+                info.mtime = info.uid = info.gid = 0
+                archive.addfile(info, io.BytesIO(content))
+        temporary_path.rename(output)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+    checksum = {"artifact": output.name, "sha256": sha(output.read_bytes()),
+                "bytes": output.stat().st_size, "manifestSha256": sha(members["manifest.json"])}
+    (args.output / "agent-preview-arm64.sha256.json").write_bytes(json_bytes(checksum))
+    return output
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    for name in SOURCES:
+        parser.add_argument(f"--{name}", type=Path, required=True)
+    for name in ("buzz-binary", "node-binary", "node-license", "npm-root", "rust-notices", "output"):
+        parser.add_argument(f"--{name}", type=Path, required=True)
+    parser.add_argument("--node-version", required=True)
+    parser.add_argument("--npm-version", required=True)
+    parser.add_argument("--rust-version", required=True)
+    args = parser.parse_args()
+    try:
+        print(package(args))
+    except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as error:
+        parser.exit(1, f"agent preview packaging failed: {error}\n")
+
+
+if __name__ == "__main__":
+    main()
