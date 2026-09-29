@@ -1,0 +1,100 @@
+--- a/crates/buzz-acp/src/acp.rs
++++ b/crates/buzz-acp/src/acp.rs
+@@ -674,10 +674,22 @@
+ 
+     /// Send the ACP `authenticate` request for an adapter-advertised method.
+     pub async fn authenticate(&mut self, method_id: &str) -> Result<serde_json::Value, AcpError> {
++        // Browser and device-code flows can wait on a human. Keep the ordinary
++        // RPC timeout short and let only authentication use this longer bound.
++        self.authenticate_with_timeout(method_id, std::time::Duration::from_secs(10 * 60))
++            .await
++    }
++
++    async fn authenticate_with_timeout(
++        &mut self,
++        method_id: &str,
++        timeout: std::time::Duration,
++    ) -> Result<serde_json::Value, AcpError> {
+         let params = serde_json::json!({
+             "methodId": method_id,
+         });
+-        self.send_request("authenticate", params).await
++        self.send_request_with_timeout("authenticate", params, timeout)
++            .await
+     }
+ 
+     /// Send `session/new` and return the full response alongside the session ID.
+@@ -1154,6 +1166,16 @@
+         method: &str,
+         params: serde_json::Value,
+     ) -> Result<serde_json::Value, AcpError> {
++        self.send_request_with_timeout(method, params, Self::REQUEST_TIMEOUT)
++            .await
++    }
++
++    async fn send_request_with_timeout(
++        &mut self,
++        method: &str,
++        params: serde_json::Value,
++        timeout: std::time::Duration,
++    ) -> Result<serde_json::Value, AcpError> {
+         let id = self.next_id;
+         self.next_id += 1;
+ 
+@@ -1166,10 +1188,8 @@
+ 
+         tracing::debug!(target: "acp::wire", "→ {}", &serde_json::to_string(&msg).unwrap_or_default());
+ 
+-        // Wrap write + read in a single timeout so a hung agent can't block forever.
+-        // We cannot use an async block that borrows `self` mutably across two awaits
+-        // inside timeout(), so we sequence them with early-return on timeout.
+-        let timeout = Self::REQUEST_TIMEOUT;
++        // Bound both phases. The write also has its own 30-second limit;
++        // the authenticate CLI applies its ten-minute outer deadline.
+         match tokio::time::timeout(timeout, self.write_ndjson(&msg)).await {
+             Ok(result) => result?,
+             Err(_) => return Err(AcpError::Timeout(timeout)),
+@@ -3443,6 +3463,43 @@
+     }
+ 
+     #[tokio::test]
++    async fn authentication_can_wait_past_a_short_rpc_deadline() {
++        let script = r#"
++            read -t 2 _req
++            sleep 0.15
++            echo '{"jsonrpc":"2.0","id":0,"result":{}}'
++        "#;
++        let mut ordinary = spawn_script(script).await;
++        let short = std::time::Duration::from_millis(30);
++        let early = ordinary
++            .send_request_with_timeout("test/probe", serde_json::json!({}), short)
++            .await;
++        ordinary.shutdown().await;
++        assert!(matches!(early, Err(AcpError::Timeout(d)) if d == short));
++
++        let mut client = spawn_script(script).await;
++        let result = client
++            .authenticate_with_timeout("browser", std::time::Duration::from_secs(2))
++            .await;
++        client.shutdown().await;
++        assert!(result.is_ok(), "delayed auth response should succeed: {result:?}");
++    }
++
++    #[tokio::test]
++    async fn authentication_deadline_is_bounded() {
++        let script = r#"
++            read -t 2 _req
++            sleep 1
++        "#;
++        let mut client = spawn_script(script).await;
++        let timeout = std::time::Duration::from_millis(30);
++        let result = client.authenticate_with_timeout("browser", timeout).await;
++        client.shutdown().await;
++        assert!(matches!(result, Err(AcpError::Timeout(d)) if d == timeout));
++        assert_eq!(AcpClient::REQUEST_TIMEOUT, std::time::Duration::from_secs(60));
++    }
++
++    #[tokio::test]
+     async fn keepalive_resets_idle_past_deadline() {
+         // Keepalive session/update lines every 50ms against a 100ms idle deadline.
+         // The turn should survive well past the 100ms deadline (proves the fix).

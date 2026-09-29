@@ -1,0 +1,29 @@
+{
+  "date": "2026-09-29",
+  "workflowBundle": 36518401395,
+  "profileMode": "existing",
+  "codex": {
+    "guardedDiscovery": "passed",
+    "methods": [
+      "chat-gpt"
+    ],
+    "effectiveRouting": "passed",
+    "forcedChatgpt": true,
+    "defaultOrOpenaiProvider": true,
+    "customProviderDefinitions": false,
+    "customBaseUrl": false,
+    "configurationWritten": false
+  },
+  "claude": {
+    "guardedDiscovery": "passed",
+    "methods": [
+      "claude-ai-login"
+    ],
+    "syntheticExistingHookProbe": "passed",
+    "syntheticHookExecuted": false,
+    "syntheticProbeNetworkIsolated": true
+  },
+  "sessionCreated": false,
+  "modelTaskSubmitted": false,
+  "roomAgentsEnabled": false
+}

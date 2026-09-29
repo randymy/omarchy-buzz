@@ -1185,3 +1185,27 @@ Nineteen unit tests and the pinned native status fixture pass. These are native
 status reports, not model-turn billing or room-agent acceptance. Remaining work:
 validate existing-profile adapter/session behavior, upstream publication and
 permission gates, then the room-agent demo; no agent services are enabled.
+
+## Existing profiles pass adapter discovery (September 29)
+
+Both compiled guarded adapters now pass Buzz auth-methods discovery with the
+existing native profiles: chat-gpt for Codex and claude-ai-login for Claude.
+Codex requires normal host profile access for its runtime files; read-only
+sandbox startup failed and host execution passed. No config file was rewritten.
+The native config/read probe additionally confirms forced ChatGPT, default/OpenAI
+provider and absence of custom provider definitions or endpoint overrides in the
+controlled work directory. These checks send no prompt and create no session.
+
+Claude discovery with synthetic existing SessionStart hooks passed inside a
+loopback-only network namespace without executing the hook. The user-hook
+exception is now scoped to auth-status and auth-methods; login/session acceptance
+is still separate. The real existing-profile discovery then passed. Tests and
+reproduction probes are checked in. Evidence: existing-adapter-check-2026-09-29.json.
+
+Prepared an independent upstream auth-timeout patch so ordinary agent-owned
+browser login can use its advertised ten-minute window instead of the generic
+60-second transport timeout. It is uninstalled/unsubmitted; apply checks passed,
+but Rust compilation and delayed-process acceptance remain unrun. Our verified
+native-login path remains installed. No production relay or room-agent service
+changed. Next gates are real session permission/subscription admission and the
+unmerged relay publication interface; discovery alone does not complete them.

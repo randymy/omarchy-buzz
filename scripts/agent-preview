@@ -153,7 +153,7 @@ def environment(profile, bundle, ambient):
     return result
 
 
-def selected_provider(agent, mode, requested, profile, status_only=False):
+def selected_provider(agent, mode, requested, profile, allow_user_hooks=False):
     if mode == 'separate':
         if requested is not None:
             raise Refused('provider_directory_requires_existing_mode')
@@ -188,7 +188,7 @@ def selected_provider(agent, mode, requested, profile, status_only=False):
                 if not isinstance(value, dict) or any(value.get(key) for key in
                     ('apiKeyHelper', 'env', 'awsAuthRefresh', 'awsCredentialExport', 'modelOverrides')):
                     raise Refused('existing_settings_review_required')
-                if value.get('hooks') and (not status_only or settings != target / 'settings.json'):
+                if value.get('hooks') and (not allow_user_hooks or settings != target / 'settings.json'):
                     raise Refused('existing_settings_review_required')
     return target
 
@@ -338,7 +338,7 @@ def main():
             raise Refused('absolute_bundle_path_required')
         report = verify_bundle(args.bundle, args.manifest_sha256)
         profile = profile_for(args.agent, args.bundle, report)
-        provider = selected_provider(args.agent, args.profile_mode, args.provider_directory, profile, status_only=args.action == 'auth-status')
+        provider = selected_provider(args.agent, args.profile_mode, args.provider_directory, profile, allow_user_hooks=args.action in ('auth-status', 'auth-methods'))
         if args.action == 'hydrate':
             hydrate(args.bundle, report, args.agent, profile)
         if args.action in ('status', 'hydrate'):

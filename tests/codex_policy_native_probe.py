@@ -90,6 +90,11 @@ def read_native_config(node, entry, home, deadline):
     env = clean_child_env(home, node)
     env["CODEX_HOME"] = str(codex_home)
     argv = [str(node), str(entry), "-c", "forced_login_method=chatgpt", "app-server"]
+    return query_native_config(argv, env, workspace, deadline)
+
+
+def query_native_config(argv, env, workspace, deadline):
+    """Read effective config in memory; caller selects profile and launch policy."""
     try:
         process = subprocess.Popen(argv, cwd=workspace, env=env, stdin=subprocess.PIPE,
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,

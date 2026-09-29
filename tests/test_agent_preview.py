@@ -76,10 +76,10 @@ class AgentPreview(unittest.TestCase):
             (existing/'settings.json').write_text(json.dumps({'hooks':{'SessionStart':[]}}))
             with self.assertRaisesRegex(module.Refused, 'existing_settings_review_required'):
                 module.selected_provider('claude', 'existing', existing, root/'private')
-            self.assertEqual(module.selected_provider('claude', 'existing', existing, root/'private', status_only=True), existing)
+            self.assertEqual(module.selected_provider('claude', 'existing', existing, root/'private', allow_user_hooks=True), existing)
             (existing/'settings.json').write_text(json.dumps({'apiKeyHelper':'do not execute'}))
             with self.assertRaisesRegex(module.Refused, 'existing_settings_review_required'):
-                module.selected_provider('claude', 'existing', existing, root/'private', status_only=True)
+                module.selected_provider('claude', 'existing', existing, root/'private', allow_user_hooks=True)
 
     def test_status_classifies_only_subscription_evidence(self):
         self.assertTrue(module.subscription_status('codex', 0, b'Warning: fixture\nLogged in using ChatGPT\n'))
