@@ -808,3 +808,18 @@ Rollback is preserved at
 `~/.cache/omarchy-buzz/rollback/0.0.6-before-36503857736/` with the previous
 binary, hash and plugin revision (`c70d33b`). Configuration, identity, delivery
 ledger and relay deployment were preserved. No real agent/model task was run.
+
+## Normal desktop window (2026-09-28)
+
+User requested a normal window alongside the overlay. Installed plugin
+`b929332` adds a **Window / Overlay** switch and direct summon payload
+`{"mode":"window"}`. One PanelContent instance moves between native
+FloatingWindow and PanelWindow, preserving the shared service/draft/selection;
+only one presentation is shown at a time. Helper remains the validated 0.0.7
+artifact above. Native Wayland synthetic switching/host-close test and the
+existing offscreen content check passed. Native update/restart/summon passed;
+Hyprland reported a mapped, visible, tiled `Buzz for Omarchy` application window
+(836 × 986 on this session). No QML load/type/reference errors were found after
+restart. Normal window size/presentation are not persisted, and the existing
+bar/Super+B toggle closes an already-open view. Physical keyboard and
+multi-monitor interaction remain unverified. See [native behavior](NATIVE.md).
