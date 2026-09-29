@@ -4,6 +4,13 @@ Helper release artifacts are not yet published. These are development preview pa
 
 Build the helper using the repository's documented Rust toolchain and locked dependencies, then package the built executable:
 
+On Arch, install `pkgconf` and `dbus` before building. The intended system
+D-Bus linkage requires `libdbus-1.so.3` on the target machine, alongside a
+working session D-Bus and Secret Service provider for identity access. A fresh
+ARM64 build and runtime keyring test are still needed to verify this linkage;
+the earlier ARM64 package evidence describes the old vendored build. The
+source inventory and its review flags have not been remeasured for a new binary.
+
 ```sh
 cargo build --release --locked --manifest-path helper/Cargo.toml
 python3 scripts/package-helper helper/target/release/omarchy-buzz artifacts/local

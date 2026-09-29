@@ -27,7 +27,7 @@ jobs:
           test "$(uname -m)" = aarch64
           rustup toolchain install 1.95.0 --profile minimal --component rustfmt
           sudo apt-get update
-          sudo apt-get install -y pkg-config libssl-dev libdbus-1-dev
+          sudo apt-get install -y pkg-config libssl-dev libdbus-1-dev dbus gnome-keyring
       - id: cache
         uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25
         with:
@@ -48,6 +48,17 @@ jobs:
           python3 tests/helper_smoke.py helper/target/release/omarchy-buzz
           python3 tests/helper_send_ipc.py helper/target/release/omarchy-buzz
           python3 tests/helper_activation.py helper/target/release/omarchy-buzz
+      - name: Verify system D-Bus linkage and private Secret Service
+        run: |
+          python3 - <<'PYCODE'
+          import subprocess
+          binary = 'helper/target/release/omarchy-buzz'
+          dynamic = subprocess.check_output(['readelf', '-d', binary], text=True)
+          assert '[libdbus-1.so.3]' in dynamic, 'expected system D-Bus linkage'
+          PYCODE
+          command -v dbus-run-session
+          command -v gnome-keyring-daemon
+          python3 tests/helper_keyring.py helper/target/release/omarchy-buzz
       - name: Inventory locked ARM64 helper dependency notices
         run: |
           cargo +1.95.0 metadata --offline --locked --format-version 1 \
@@ -61,7 +72,7 @@ jobs:
       - name: Prepare development artifact with exact provenance
         run: |
           python3 - <<'PY'
-          import hashlib,json,os,pathlib,shutil,subprocess,tomllib
+          import hashlib,json,os,pathlib,re,shutil,subprocess,tomllib
           root=pathlib.Path.cwd()
           binary=root/'helper/target/release/omarchy-buzz'
           metadata=json.loads(subprocess.check_output([str(binary),'--version'],text=True))
@@ -74,7 +85,8 @@ jobs:
           shutil.copy2(binary,destination/'omarchy-buzz')
           report={'sourceRevision':os.environ['GITHUB_SHA'],'runId':os.environ['GITHUB_RUN_ID'],
                   'architecture':'aarch64','developmentPreview':True,
-                  'sha256':hashlib.sha256(binary.read_bytes()).hexdigest(),'metadata':metadata}
+                  'sha256':hashlib.sha256(binary.read_bytes()).hexdigest(),'metadata':metadata,
+                  'dynamicLibraries':re.findall(r'Shared library: \[([^\]]+)\]',subprocess.check_output(['readelf','-d',str(binary)],text=True))}
           (destination/'build.json').write_text(json.dumps(report,indent=2)+'\n')
           shutil.copy2(root/'LICENSE',destination/'LICENSE')
           PY

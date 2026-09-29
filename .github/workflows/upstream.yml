@@ -69,6 +69,8 @@ jobs:
         id: validation
         continue-on-error: true
         run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libdbus-1-dev
           rustup toolchain install 1.95.0 --profile minimal --component rustfmt
           cargo +1.95.0 update --manifest-path helper/Cargo.toml -p buzz-sdk -p buzz-ws-client
           python3 scripts/check-upstream --validate-lock "$REVISION" > candidate-lock.json
@@ -80,7 +82,6 @@ jobs:
           python3 tests/helper_smoke.py helper/target/debug/omarchy-buzz
           python3 tests/helper_send_ipc.py helper/target/debug/omarchy-buzz
           python3 tests/helper_activation.py helper/target/debug/omarchy-buzz
-          sudo apt-get update
           sudo apt-get install -y dbus gnome-keyring
           command -v dbus-run-session
           command -v gnome-keyring-daemon

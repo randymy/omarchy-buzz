@@ -1387,3 +1387,20 @@ DCO passed. Independent source review found no blockers. Full workspace/native
 acceptance and human test confirmation remain outstanding; the PR stays draft
 and carries no review-completed marker. The plugin/helper still pins official
 upstream, and no production relay, helper or room-agent service was changed.
+
+## Ordinary ARM64 bundle and packaging follow-through
+
+Manual ARM64 agent run 36619625452 at 0991c2f passed. The build omits the
+member-bound patch, retains subscription/key/permission/auth-timeout guards,
+and tests the ordinary single-attempt reply transport. New manifests label
+ordinary `/events` explicitly. Artifact download/digest review remains next;
+no installed bundle or agent service has changed.
+
+Helper packaging now selects system D-Bus with Rust crypto instead of keyring's
+vendored feature. Cargo's resolver removed eight unused packages, including
+OpenSSL source/bindings and foreign-types; no package version/checksum was
+added or changed. Local dependency download then hit the existing broken Hermit
+registry cache, so compilation is delegated to the fresh CI environment. The
+ARM64 workflow now checks actual libdbus linkage and isolated Secret Service
+enrollment before producing a new archive. Runtime verification remains pending
+and the installed helper is unchanged.

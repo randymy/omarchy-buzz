@@ -55,8 +55,12 @@ identity or live relay merely to test IPC.
 
 Build with Rust 1.95, the tested toolchain and inspected Buzz pin. An older
 minimum supported version has not been established for this resolved lockfile.
-Commit the generated Cargo.lock after dependency resolution. Linux Secret
-Service requires a usable session D-Bus/keyring; generic storage failures report unavailable without asserting that the store
+Keep the committed Cargo.lock pinned. The helper now selects the system D-Bus
+library through keyring's `sync-secret-service` feature. On Arch, install
+`pkgconf` and `dbus` before building; the target system must provide
+`libdbus-1.so.3` at runtime and a usable session D-Bus/Secret Service provider.
+This linkage change has not yet passed a fresh ARM64 build or runtime keyring
+test. Generic storage failures report unavailable without asserting that the store
 is locked. A lookup still pending after 15 seconds reports identity_access_pending;
 only one lookup remains active. Secret Service may itself display an unlock
 prompt and wait indefinitely. Daemon runtime shutdown is bounded to two seconds;
