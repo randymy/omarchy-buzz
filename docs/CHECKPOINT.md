@@ -1307,3 +1307,27 @@ with synthetic agents and a disposable relay. The workflow retains member-bound
 as its default and labels selected-contract evidence explicitly. Neither mode
 changes the product policy or production relay. Membership removal is not
 covered by this reply-persistence scenario.
+
+## Pause checkpoint — September 29
+
+User requested a pause for a couple of hours. Working tree was clean before
+this checkpoint; all implementation, evidence and contribution plans are saved.
+The installed messaging plugin/helper and Mac mini relay were not changed in
+this work period. No local agent service or long-running build must remain up.
+
+GitHub run [36587419111](https://github.com/randymy/omarchy-buzz/actions/runs/36587419111)
+is still in progress independently of this workstation. It tests ordinary
+publication with synthetic credentials/agents; no real subscription usage or
+production relay is involved. Leave it running. On resume, inspect its result,
+download sanitized evidence, and address any concrete failure before broadening
+tests. ARM64 package run 36584446129 and auth-deadline run 36582892134 passed.
+All 71 Python regression tests passed locally, as did five session-correlation
+tests and target packaged-helper IPC checks. Both live subscription fixed-response
+checks passed after session-correlation review.
+
+Two requested decisions remain unanswered: ordinary Buzz versus stronger atomic
+publication semantics for the product, and permission to send the prepared
+WebSocket draft PR using a contribution-only fork and signed-off commits. Do not
+interpret elapsed time as approval. No upstream fork, PR, comment, marketplace
+submission, release tag or room-agent enablement occurred. Resume with the saved
+WS_PR_SUBMISSION and KEYLESS_UPSTREAM_REVIEW plans rather than rediscovering them.
