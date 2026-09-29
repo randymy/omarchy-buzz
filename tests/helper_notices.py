@@ -25,6 +25,46 @@ packaging = load("package-helper")
 
 
 class Notices(unittest.TestCase):
+    def test_pinned_archive_tag_evidence_and_tampering(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            metadata, lock = self.fixture(base)
+            (base / "dep/LICENSE").unlink()
+            (base / "dep/vendor/NOTICE").unlink()
+            source = base / "dep/src/lib.rs"
+            source.parent.mkdir()
+            source.write_bytes(b"// SPDX-License-Identifier: CC0-1.0\n")
+            supplemental = base / "supplemental"
+            supplemental.mkdir()
+            payload = b"Exact tagged root license\n"
+            (supplemental / "LICENSE.txt").write_bytes(payload)
+            revision = "a" * 40
+            upstream = "https://raw.githubusercontent.com/example/dep/" + revision + "/"
+            item = {"name": "dep", "version": "1.0.0", "source": metadata["packages"][1]["source"],
+                    "registryChecksum": "a" * 64, "archiveSha256": "a" * 64,
+                    "manifestSha256": hashlib.sha256((base / "dep/Cargo.toml").read_bytes()).hexdigest(),
+                    "tagName": "dep-1.0.0", "revision": revision,
+                    "sourceUrl": upstream + "LICENSE", "sourcePath": "LICENSE",
+                    "matchedSourcePath": "src/lib.rs", "matchedSourceRepoPath": "dep/src/lib.rs",
+                    "matchedSourceUrl": upstream + "dep/src/lib.rs",
+                    "matchedSourceSha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+                    "file": "LICENSE.txt", "sha256": hashlib.sha256(payload).hexdigest(), "bytes": len(payload)}
+            document = {"schemaVersion": 1, "packages": [item]}
+            (supplemental / "evidence.json").write_text(json.dumps(document))
+            inventory, texts = notices.inventory(metadata, lock, "aarch64-unknown-linux-gnu", supplemental)
+            package = inventory["packages"][0]
+            self.assertEqual(texts[hashlib.sha256(payload).hexdigest()], payload)
+            self.assertIn("supplemental_notice_review", package["reviewFlags"])
+            self.assertEqual(package["licenseFiles"][0]["supplementalEvidence"]["tagName"], "dep-1.0.0")
+            source.write_bytes(b"changed")
+            with self.assertRaisesRegex(ValueError, "matched source mismatch"):
+                notices.inventory(metadata, lock, "aarch64-unknown-linux-gnu", supplemental)
+            source.write_bytes(b"// SPDX-License-Identifier: CC0-1.0\n")
+            item["archiveSha256"] = "b" * 64
+            (supplemental / "evidence.json").write_text(json.dumps(document))
+            with self.assertRaisesRegex(ValueError, "archive/tag evidence"):
+                notices.inventory(metadata, lock, "aarch64-unknown-linux-gnu", supplemental)
+
     def test_pinned_supplemental_evidence_and_tampering(self):
         with tempfile.TemporaryDirectory() as temp:
             base = Path(temp)

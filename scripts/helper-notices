@@ -64,10 +64,28 @@ def supplemental_files(directory):
             raise ValueError("supplemental content mismatch")
         if not re.fullmatch(r"[0-9a-f]{64}", item["manifestSha256"]):
             raise ValueError("invalid supplemental manifest hash")
-        if not re.fullmatch(r"[0-9a-f]{40}", item["revision"]) or not re.fullmatch(r"[0-9a-f]{64}", item["vcsInfoSha256"]):
+        if not re.fullmatch(r"[0-9a-f]{40}", item["revision"]):
             raise ValueError("invalid supplemental revision")
         if not item["sourceUrl"].startswith("https://raw.githubusercontent.com/") or not item["sourceUrl"].endswith("/" + item["revision"] + "/" + item["sourcePath"]):
             raise ValueError("supplemental URL does not match revision and source path")
+        if "vcsInfoSha256" in item:
+            if not re.fullmatch(r"[0-9a-f]{64}", item["vcsInfoSha256"]) or not isinstance(item.get("pathInVcs"), str):
+                raise ValueError("invalid supplemental VCS evidence")
+        else:
+            if not (re.fullmatch(r"[0-9a-f]{64}", item.get("archiveSha256", "")) and
+                    item["archiveSha256"] == item["registryChecksum"] and
+                    re.fullmatch(r"[A-Za-z0-9._-]{1,128}", item.get("tagName", "")) and
+                    item["tagName"] == item["name"] + "-" + item["version"] and
+                    re.fullmatch(r"[A-Za-z0-9._/-]{1,256}", item.get("matchedSourcePath", "")) and
+                    all(part not in ("", ".", "..") for part in item["matchedSourcePath"].split("/")) and
+                    re.fullmatch(r"[A-Za-z0-9._/-]{1,256}", item.get("matchedSourceRepoPath", "")) and
+                    all(part not in ("", ".", "..") for part in item["matchedSourceRepoPath"].split("/")) and
+                    re.fullmatch(r"[0-9a-f]{64}", item.get("matchedSourceSha256", ""))):
+                raise ValueError("invalid supplemental archive/tag evidence")
+            source_prefix = item["sourceUrl"].rsplit("/" + item["revision"] + "/", 1)[0]
+            expected = source_prefix + "/" + item["revision"] + "/" + item["matchedSourceRepoPath"]
+            if item.get("matchedSourceUrl") != expected:
+                raise ValueError("supplemental matched-source URL mismatch")
         evidence[key] = (item, data)
     if any(p.is_symlink() or not p.is_file() or p.name not in {"evidence.json", *(i["file"] for i in document["packages"])} for p in directory.iterdir()):
         raise ValueError("unexpected supplemental evidence file")
@@ -146,23 +164,35 @@ def inventory(metadata, lock_data, target, supplemental=None):
             files.append({"sourcePath": relative, "path": "texts/" + sha + ".txt", "sha256": sha, "bytes": len(data)})
         if key in evidence:
             item, data = evidence.pop(key)
-            vcs = manifest.parent / ".cargo_vcs_info.json"
             if (source is None or not source.startswith("registry+") or
                     item["registryChecksum"] != locked[key].get("checksum") or
-                    item["manifestSha256"] != digest(manifest.read_bytes()) or
-                    vcs.is_symlink() or not vcs.is_file() or digest(vcs.read_bytes()) != item["vcsInfoSha256"]):
+                    item["manifestSha256"] != digest(manifest.read_bytes())):
                 raise ValueError("supplemental package provenance mismatch")
-            vcs_data = json.loads(vcs.read_text())
-            if vcs_data.get("git", {}).get("sha1") != item["revision"] or vcs_data.get("path_in_vcs") != item["pathInVcs"]:
-                raise ValueError("supplemental VCS revision mismatch")
+            if "vcsInfoSha256" in item:
+                vcs = manifest.parent / ".cargo_vcs_info.json"
+                if vcs.is_symlink() or not vcs.is_file() or digest(vcs.read_bytes()) != item["vcsInfoSha256"]:
+                    raise ValueError("supplemental package provenance mismatch")
+                vcs_data = json.loads(vcs.read_text())
+                if vcs_data.get("git", {}).get("sha1") != item["revision"] or vcs_data.get("path_in_vcs") != item["pathInVcs"]:
+                    raise ValueError("supplemental VCS revision mismatch")
+                provenance = {"sourceUrl": item["sourceUrl"], "revision": item["revision"],
+                              "vcsInfoSha256": item["vcsInfoSha256"]}
+            else:
+                matched = manifest.parent / item["matchedSourcePath"]
+                if (matched.is_symlink() or not matched.is_file() or
+                        not matched.resolve().is_relative_to(manifest.parent.resolve()) or
+                        digest(matched.read_bytes()) != item["matchedSourceSha256"]):
+                    raise ValueError("supplemental matched source mismatch")
+                provenance = {"sourceUrl": item["sourceUrl"], "revision": item["revision"],
+                              "archiveSha256": item["archiveSha256"], "tagName": item["tagName"],
+                              "matchedSourceUrl": item["matchedSourceUrl"],
+                              "matchedSourceSha256": item["matchedSourceSha256"]}
             sha = digest(data)
             texts[sha] = data
             if len(texts) > 1024 or sum(map(len, texts.values())) > MAX_TOTAL:
                 raise ValueError("notice inventory exceeds bounded budget")
             files.append({"sourcePath": item["sourcePath"], "path": "texts/" + sha + ".txt",
-                          "sha256": sha, "bytes": len(data), "supplementalEvidence": {
-                              "sourceUrl": item["sourceUrl"], "revision": item["revision"],
-                              "vcsInfoSha256": item["vcsInfoSha256"]}})
+                          "sha256": sha, "bytes": len(data), "supplementalEvidence": provenance})
             issues.append("supplemental_notice_review")
         if not files:
             issues.append("no_notice_text_found")
@@ -191,7 +221,7 @@ def generate(metadata_path, lock_path, target, output, supplemental=None):
     (output / "inventory.json").write_text(json.dumps(document, sort_keys=True, indent=2) + "\n")
     (output / "README.txt").write_text(
         "Third-party source license and notice inventory (development preview).\n"
-        "Original cached source notice bytes are deduplicated by SHA256.\n"
+        "Original cached source and pinned supplemental notice bytes are deduplicated by SHA256.\n"
         "inventory.json maps packages, source/version/checksum and original paths.\n"
         "Includes non-dev runtime/build dependencies conservatively; this is not a linked-binary SBOM.\n"
         "Declared expressions are preserved; no license alternative is selected automatically.\n"

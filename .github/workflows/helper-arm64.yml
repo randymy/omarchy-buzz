@@ -48,6 +48,16 @@ jobs:
           python3 tests/helper_smoke.py helper/target/release/omarchy-buzz
           python3 tests/helper_send_ipc.py helper/target/release/omarchy-buzz
           python3 tests/helper_activation.py helper/target/release/omarchy-buzz
+      - name: Inventory locked ARM64 helper dependency notices
+        run: |
+          cargo +1.95.0 metadata --offline --locked --format-version 1 \
+            --filter-platform aarch64-unknown-linux-gnu \
+            --manifest-path helper/Cargo.toml > "$RUNNER_TEMP/helper-cargo-metadata.json"
+          python3 scripts/helper-notices "$RUNNER_TEMP/helper-cargo-metadata.json" \
+            --lock helper/Cargo.lock --target aarch64-unknown-linux-gnu \
+            --supplemental docs/evidence/notices \
+            --output "$RUNNER_TEMP/helper-notices"
+          python3 tests/helper_notices.py
       - name: Prepare development artifact with exact provenance
         run: |
           python3 - <<'PY'
@@ -68,6 +78,9 @@ jobs:
           (destination/'build.json').write_text(json.dumps(report,indent=2)+'\n')
           shutil.copy2(root/'LICENSE',destination/'LICENSE')
           PY
+          python3 scripts/package-helper helper/target/release/omarchy-buzz dist \
+            --notices "$RUNNER_TEMP/helper-notices"
+          cp -a "$RUNNER_TEMP/helper-notices" dist/notices
       - name: Upload preview for local validation; no release or install
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
