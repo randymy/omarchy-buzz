@@ -1397,7 +1397,7 @@ ordinary `/events` explicitly. Artifact download/digest review remains next;
 no installed bundle or agent service has changed.
 
 Helper packaging now selects system D-Bus with Rust crypto instead of keyring's
-vendored feature. Cargo's resolver removed eight unused packages, including
+vendored feature. Cargo's resolver removed seven unused packages, including
 OpenSSL source/bindings and foreign-types; no package version/checksum was
 added or changed. Local dependency download then hit the existing broken Hermit
 registry cache, so compilation is delegated to the fresh CI environment. The
