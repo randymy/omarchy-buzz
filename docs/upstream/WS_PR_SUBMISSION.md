@@ -1,7 +1,11 @@
 # Buzz WebSocket resource limits: upstream PR packet
 
-Status: **draft submission packet only**. No Buzz source, installed helper,
-production relay, remote branch, issue, or PR was changed. Target the locally
+Status: **submitted as [draft PR #7976](https://github.com/block/buzz/pull/7976)**
+following explicit user approval. Contribution-only fork `randymy/buzz`, branch
+`omarchy-buzz/ws-resource-limits`, signed-off head
+`7c752971a815af63ba94a3086c4a2c867a129e30`, based on `8519db1`. DCO Check passed.
+Installed helper and production relay are unchanged. The preparation history
+below records the earlier test bases. Target the locally
 available Buzz `block/buzz` commit
 `12670bd0f037c66a682272bb81c46c3f254fad74` (2026-09-28). The patch was
 written at `781d39510cf23cfe224e8f521ae06a23377e06de`; the four existing source
@@ -158,3 +162,13 @@ lists support a separate focused PR; no author contact or comment was made.
 The only requested external action after this packet is reviewed is opening
 the focused draft contribution through the permitted upstream workflow. Do not
 mark it ready for review or merge before the upstream checklist is complete.
+
+## Submitted draft review status
+
+Independent source review of 7c75297 found no blocking correctness/security
+defects. One optional observation concerns custom frame/message budgets:
+`max_frame_bytes` limits incoming frame parsing, while outbound JSON uses
+`max_message_bytes`; the equal defaults avoid a default-size discrepancy.
+No behavior change was made for that observation. Full workspace/native flow
+validation and human acceptance remain outstanding. The PR stays draft and
+does not carry `buzz-review-completed`. DCO success is not a full CI pass.

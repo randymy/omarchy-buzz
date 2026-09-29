@@ -44,5 +44,6 @@ explicit Retry. Successful matched probes reset the network failure budget.
 A concrete [upstream patch and reproducible test harness](../docs/upstream/WS_RESOURCE_LIMITS.md)
 now implement bounded transport/replay/output and operation deadlines. All 21
 isolated client/consumer tests pass. The official current client files are unchanged at
-`ebe99a46e8802b9ff20fdf6a1028ce93bdefaa43`. The patch has not been submitted,
-merged or adopted by the installed helper; this release gate remains open.
+`ebe99a46e8802b9ff20fdf6a1028ce93bdefaa43`. The patch is submitted as [draft PR #7976](https://github.com/block/buzz/pull/7976).
+It has not been merged or adopted by the installed helper; this release gate
+remains open.

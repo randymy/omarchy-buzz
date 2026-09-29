@@ -19,7 +19,7 @@ SOURCES = {
 PATCHES = {
     "buzz": ("ws-resource-limits", "acp-permission-mode", "acp-interactive-login",
              "acp-key-isolation", "acp-harness-replies", "acp-deny-tool-requests",
-             "member-bound-events", "acp-auth-timeout"),
+             "acp-auth-timeout"),
     "codex": ("codex-subscription-policy",),
     "claude": ("claude-subscription-policy",),
 }
@@ -31,6 +31,16 @@ def sha(data):
 
 def json_bytes(value):
     return (json.dumps(value, indent=2, sort_keys=True) + "\n").encode()
+
+
+def publication_metadata(buzz_patches):
+    names = tuple(patch["name"] for patch in buzz_patches)
+    if names != PATCHES["buzz"] or "member-bound-events" in names:
+        raise ValueError("Buzz patches do not match ordinary publication contract")
+    return {"publicationContract": "ordinary",
+            "relayRequirement": {"publicationRoute": "/events",
+                                 "verifiedOnTargetRelay": False,
+                                 "agentServiceAllowed": False}}
 
 
 def checked_revision(directory, expected):
@@ -214,9 +224,7 @@ def package(args):
                     "setupFromAdapterDirectory": "../../bin/node ../../runtime/npm/bin/npm-cli.js ci --omit=dev --ignore-scripts --no-audit --no-fund",
                     "claudeRedistributionReviewRequired": True,
                     "targetSetupRequired": True},
-        "relayRequirement": {"memberBoundEventsEndpoint": True,
-                             "verifiedOnTargetRelay": False,
-                             "agentServiceAllowed": False},
+        **publication_metadata(source_report["buzz"]["patches"]),
         "sources": {"plugin": {"repository": "randymy/omarchy-buzz",
                                 "revision": subprocess.check_output(
                                     ["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True).strip()},

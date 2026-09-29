@@ -5,6 +5,7 @@ import importlib.machinery
 import importlib.util
 import json
 from pathlib import Path
+import re
 import tempfile
 import unittest
 
@@ -16,6 +17,26 @@ loader.exec_module(module)
 
 
 class PackageAgentPreview(unittest.TestCase):
+    def test_ordinary_publication_matches_arm64_build_patches(self):
+        workflow = (module.ROOT / ".github/workflows/agent-arm64.yml").read_text()
+        applied = re.search(r"for patch in ([^;\n]+); do", workflow)
+        self.assertIsNotNone(applied)
+        expected = ("ws-resource-limits", "acp-permission-mode", "acp-interactive-login",
+                    "acp-key-isolation", "acp-harness-replies", "acp-deny-tool-requests",
+                    "acp-auth-timeout")
+        self.assertEqual(tuple(applied.group(1).split()), expected)
+        self.assertEqual(module.PATCHES["buzz"], expected)
+        patches = [{"name": name, "sha256": "fixture"} for name in applied.group(1).split()]
+        metadata = module.publication_metadata(patches)
+        self.assertEqual(metadata["publicationContract"], "ordinary")
+        self.assertEqual(metadata["relayRequirement"], {
+            "publicationRoute": "/events", "verifiedOnTargetRelay": False,
+            "agentServiceAllowed": False})
+        with self.assertRaises(ValueError):
+            module.publication_metadata(patches + [{"name": "member-bound-events"}])
+        with self.assertRaises(ValueError):
+            module.publication_metadata(patches[:-1])
+
     def test_arm64_elf_required(self):
         binary = bytearray(64)
         binary[:7] = b"\x7fELF\x02\x01\x01"

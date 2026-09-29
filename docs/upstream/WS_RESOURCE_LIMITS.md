@@ -1,7 +1,7 @@
 # Proposed upstream contribution: bounded Buzz WebSocket connections
 
-Status: **local patch, not submitted or adopted**. The installed helper remains
-0.0.6 against Buzz `781d39510cf23cfe224e8f521ae06a23377e06de` with the
+Status: **[draft upstream PR #7976](https://github.com/block/buzz/pull/7976), not merged or adopted**. The installed helper remains
+0.0.7 against Buzz `781d39510cf23cfe224e8f521ae06a23377e06de` with the
 existing release gate. No Buzz fork, deployed relay change or dependency-pin
 change is involved. The patch is Apache-2.0, matching Buzz and this repository.
 

@@ -13,8 +13,7 @@
   tests pass on this Omarchy machine without credentials or a relay.
 - The current package has 252 dependency records, 192 unique notice texts and
   no package without notice text. Distribution review flags remain explicit.
-- Room-agent shipping still requires upstream harness changes and the pending
-  ordinary-versus-atomic publication contract decision. See
+- Room-agent shipping still requires upstream harness changes under the approved ordinary Buzz publication contract. See
   [the contribution plan](upstream/ROOM_AGENT_SHIPPING.md).
 
 The dated sections below retain historical evidence; older installed-version
@@ -1373,3 +1372,18 @@ conformance and subsequent private-room revocation conformance passed, and the
 working changes/evidence are committed. The requested publication-contract and
 upstream contribution-fork/sign-off decisions are still pending; no upstream
 submission or production agent deployment occurred.
+
+## Approved contract and upstream draft submitted
+
+The user approved ordinary Buzz room permissions for the first release and
+the contribution-only fork/signed-off draft submission. These decisions are
+no longer pending. Stronger atomic member-bound publication is optional future
+work; no silent route fallback or weakening of the other agent boundaries is
+authorized.
+
+[Upstream draft PR #7976](https://github.com/block/buzz/pull/7976) is open from
+`randymy/buzz:omarchy-buzz/ws-resource-limits`, head 7c75297 on base 8519db1.
+DCO passed. Independent source review found no blockers. Full workspace/native
+acceptance and human test confirmation remain outstanding; the PR stays draft
+and carries no review-completed marker. The plugin/helper still pins official
+upstream, and no production relay, helper or room-agent service was changed.

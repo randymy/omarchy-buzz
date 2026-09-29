@@ -10,36 +10,38 @@ have other changes, so the relay patch needs a fresh rebase if pursued. Source
 inspection is not runtime acceptance. No Buzz, relay, adapter, or installed plugin
 is changed by this document.
 
-## Product decision still open
+## First-release publication contract approved
 
-There are two honest publication contracts. The requested product outcome is a
+The product owner approved ordinary Buzz room permissions for the first release
+on September 29, 2026. The requested product outcome is a
 subscription-authenticated agent that receives an admitted room mention and sends
 a signed reply as its own identity, without a private Buzz fork or sending the
 relay key to the adapter. The original requirement did **not** explicitly require
 the relay to reject an already-generated reply if room membership changes during
 publication. The atomic member-bound rule arose later from review of the reply
-prototype; it is a stronger guarantee and a self-imposed release gate in the
-current readiness notes. The product owner has been asked which contract to ship.
-Until that answer, do not silently select a route or enable agents.
+prototype. It remains an optional stronger future extension, not a first-release
+gate. This decision selects the existing `POST /events` route; it does not enable
+agents or waive the other gates below.
 
 | Contract | Smallest upstream contribution | Honest removal behavior |
 | --- | --- | --- |
 | Ordinary Buzz permissions | Publish signed kind-9 replies through existing `POST /events` and its NIP-98 admission. No relay API patch. Require managed room membership at launch and suppress when a removal is already observed. | A reply racing membership removal can still be accepted in an open room. Membership at send time is not guaranteed, and an HTTP acceptance does not prove it. A closed room's ordinary rejection is useful but is not an atomic membership contract for all room types. |
 | Atomic member-bound replies | Add the proposed `POST /events/member-bound` route and transaction fence, then send agent replies only there. No fallback to `/events`. | Publication and membership removal are ordered by the same lock. This covers the stated membership race, subject to the proposal's channel-deletion and future-authority limits. Relays without the route cannot accept these agent replies. |
 
-Ordinary permissions are a legitimate smaller scope only if the product accepts
-the open-room race and describes revocation as best effort. A preflight query,
+The approved ordinary contract accepts the open-room race and describes
+revocation as best effort. A preflight query,
 client-side membership cache, or added optional HTTP header cannot make that
 contract atomic. The existing [member-bound proposal](MEMBER_BOUND_EVENTS.md)
-is the reviewed stronger option; it is not an existing upstream API.
+is a reviewed stronger future option; it is not an existing upstream API.
 
 ## Manual publication-contract conformance
 
 The manual-only `acp-room-conformance.yml` workflow has a
-`publication_contract` choice. Its default, `member-bound`, applies all seven
-staged Buzz patches, including `member-bound-events.patch`. Selecting `ordinary`
-applies the same first six patches and omits only `member-bound-events.patch`,
-leaving the harness reply on upstream's existing `POST /events` route. Both
+`publication_contract` choice. Its default, `ordinary`, applies the six staged
+Buzz patches for the approved first-release contract and omits
+`member-bound-events.patch`. Selecting `member-bound` applies all seven patches,
+including the stronger optional endpoint proposal. The ordinary choice leaves
+the harness reply on upstream's existing `POST /events` route. Both
 choices build a disposable relay and run the same synthetic ACP reply fixture
 through signed receipt, persistence and thread projection. Neither choice
 changes a production relay or enables a room agent.
@@ -55,8 +57,7 @@ its stage and pass/fail fields still determine whether conformance actually
 ran. A pass establishes the signed reply and persisted-thread path for that
 selected disposable build. The messaging fixture additionally tests ordinary
 private-room HTTP acceptance before removal and rejection after owner-verified
-removal. It does not test an open-room publication race or atomic revocation,
-and it does not select the product contract.
+removal. It does not test an open-room publication race or atomic revocation.
 
 Run [36587419111](https://github.com/randymy/omarchy-buzz/actions/runs/36587419111)
 passed the ordinary variant at `5122750`: real relay messaging, synthetic ACP
@@ -106,7 +107,7 @@ Run the full rebased ACP tests and isolated prompt-to-persisted-thread acceptanc
 against a disposable relay. No production message or model turn is needed for
 these conformance checks.
 
-If the stronger contract is selected, instead rebase
+If the stronger contract is pursued later, separately rebase
 `member-bound-events.patch` on the selected upstream relay revision and retain
 its exact-route NIP-98, kind-9, authoritative membership lock, transaction, and
 no-fallback client tests. The already-passing disposable Postgres/Redis and router
@@ -144,11 +145,11 @@ does not gain secrets or an approval surface from these contributions.
 
 Before normal use, record upstream review/merge and a new pinned dependency,
 ARM64 build and adapter compatibility, a full isolated mention-to-signed-reply
-run, revocation behavior under the selected publication contract, and a
+run, ordinary revocation behavior and its documented race limit, and a
 deliberately authorized real subscription acceptance run. Existing synthetic
 acceptance and status evidence does not certify a paid/model turn, effective
 billing, same-UID isolation, or deployed relay support. Keep automatic triggers
-disabled until these gates and the product choice are resolved.
+disabled until these gates are resolved.
 
 ## Draft upstream issue (do not post)
 

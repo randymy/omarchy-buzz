@@ -7,10 +7,10 @@ on:
         description: Relay publication contract to exercise with synthetic room replies
         required: true
         type: choice
-        default: member-bound
+        default: ordinary
         options:
-          - member-bound
           - ordinary
+          - member-bound
 
 permissions:
   contents: read

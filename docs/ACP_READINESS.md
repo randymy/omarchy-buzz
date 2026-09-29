@@ -248,7 +248,9 @@ documents the next reply increment using existing Buzz signing/submission APIs.
 The [reply proposal](upstream/ACP_HARNESS_REPLIES.md) keeps generated replies on
 the harness signing path and adds bounded text capture and explicit delivery
 outcomes. It is opt-in, unsubmitted and uninstalled. Independent review identified
-a membership-removal race for open rooms; resolving that is a release gate.
+a membership-removal race for open rooms. The approved first-release ordinary
+room contract accepts this limit and treats revocation as best effort; atomic
+member-bound publication remains an optional stronger future extension.
 Pro subscription acceptance still requires actual provider login and verified
 billing behavior. Synthetic reply tests do not close either requirement.
 
@@ -308,8 +310,10 @@ no tier or billing receipt is asserted.
 
 No production room agent is enabled. Room publication, harness credential/tool
 boundaries, supervised lifecycle and end-to-end room acceptance remain separate.
-The proposed atomic membership-bound endpoint is a stronger contract than
-ordinary Buzz room permissions; whether that stronger guarantee is required
-for the first release is a pending product decision. It is not an existing
-upstream requirement. Neither a silent legacy fallback nor a production relay
-fork is authorized by these tests.
+The product owner approved ordinary Buzz room permissions for the first release
+on September 29, 2026. Harness replies therefore target the existing
+`POST /events` route, with observed-removal suppression and a documented
+open-room publication race. The proposed atomic membership-bound endpoint is
+a stronger optional future extension, not an existing upstream requirement or
+a first-release gate. This decision does not establish unmodified ACP readiness
+or authorize production agents.

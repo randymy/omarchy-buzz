@@ -131,11 +131,14 @@ the QML plugin also does not remove these separately created profiles.
 
 Real room agents additionally require tested launch isolation, verified native
 subscription admission, permission behavior, controlled agent identity and room
-membership, and the proposed membership-bound relay publication endpoint. The
-installed relay does not implement that endpoint. Current upstream Buzz at
-`12670bd0f037c66a682272bb81c46c3f254fad74` was checked on September 28, 2026 and
-still lacks it. Do not enable a legacy publication fallback or deploy a relay
-fork to conceal this dependency. See [ACP readiness](ACP_READINESS.md).
+membership, and tested harness-owned publication through ordinary Buzz room
+permissions. The product owner approved the existing `POST /events` contract for
+the first release. An observed removal must suppress a reply, but a removal
+racing publication can still be accepted in an open room; revocation is best
+effort under this contract. The proposed member-bound endpoint is an optional
+stronger future extension, not a first-release gate. Do not enable production
+agents until the remaining gates pass. See [ACP readiness](ACP_READINESS.md) and
+[the shipping plan](upstream/ROOM_AGENT_SHIPPING.md).
 
 ## Session admission evidence
 
