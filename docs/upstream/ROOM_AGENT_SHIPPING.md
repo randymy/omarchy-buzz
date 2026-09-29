@@ -101,6 +101,17 @@ no-fallback client tests. The already-passing disposable Postgres/Redis and rout
 checks in [MEMBER_BOUND_EVENTS.md](MEMBER_BOUND_EVENTS.md) are useful evidence at
 the old base, not proof that the rebased code is accepted or deployed upstream.
 
+## Existing upstream keyless work
+
+Before proposing a second long-term signing transport, align with open Buzz
+PRs #6922/#6967. The [pinned review](KEYLESS_UPSTREAM_REVIEW.md) finds a broker
+mode with tool-directed `message.reply`, but no completed-turn harness reply.
+The broker credential is deliberately provisioned to adapter/MCP processes;
+its host policy and credential scope therefore need validation. Permission
+handling and subscription routing are still separate. This unmerged stack
+changes the preferred upstream discussion, not our installed interfaces or
+production authorization.
+
 ## Gates outside publication policy
 
 Neither publication choice permits an unattended agent launch by itself. The

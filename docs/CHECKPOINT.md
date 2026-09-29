@@ -1286,3 +1286,24 @@ The user has been asked whether ordinary Buzz room permissions suffice or the
 stronger atomic membership-removal guarantee is required. No answer yet; no
 legacy fallback or patched production relay has been deployed. Release notice
 evidence and packaging validation are being completed independently.
+
+## Upstream alignment and ordinary relay conformance (September 29)
+
+Refreshed official Buzz main; it remains 12670bd. Prepared a focused WebSocket
+PR packet at `docs/upstream/WS_PR_SUBMISSION.md`, validated on that exact target
+with 21 focused Rust tests and formatting. Existing upstream PRs 4212 and 3964
+address adjacent surfaces rather than these shared-client queue bounds.
+Permission to send the draft using a contribution-only fork is pending; no
+upstream message, fork or PR has been created.
+
+Source inspection also found the open keyless broker stack #6922/#6967. The
+review is in `docs/upstream/KEYLESS_UPSTREAM_REVIEW.md`. It may supersede a
+long-term local signing-key path, but still passes scoped broker credentials
+to children and lacks a completed-turn harness reply. It does not close native
+permission or subscription-policy requirements and is not merged.
+
+Manual conformance run 36587419111 at 5122750 is testing ordinary `POST /events`
+with synthetic agents and a disposable relay. The workflow retains member-bound
+as its default and labels selected-contract evidence explicitly. Neither mode
+changes the product policy or production relay. Membership removal is not
+covered by this reply-persistence scenario.
