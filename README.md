@@ -105,7 +105,7 @@ and delivery outcomes, never message bodies, in its private state directory.
 Keep that delivery record during updates. Select recipients to attach exact mention keys; a typed `@name` alone is not
 resolved. Names are self-asserted hints beside public keys, and the roster is
 explicitly partial. Agent execution still requires separately configured Buzz ACP.
-Replies and attachments are not available through this composer yet. See [sending semantics](docs/SENDING.md).
+For a verified thread, select **Reply in thread** to compose a reply; **Back to room** restores the room draft. This requires the matching 0.0.8 helper. Attachments are not supported. See [sending semantics](docs/SENDING.md).
 
 ## Staying current
 
