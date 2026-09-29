@@ -162,6 +162,13 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual((arguments.output / "private-runner.log").stat().st_mode & 0o777, 0o600)
             return status, summary
 
+    def test_thread_failure_category_is_static(self):
+        error = runner.FixtureCommandError(["cargo", "test"], 101, b'signed thread window query: "thread_invalid_bounds"')
+        self.assertEqual(error.safe["threadErrorCategory"], "thread_invalid_bounds")
+        error = runner.FixtureCommandError(["cargo", "test"], 101, b'signed thread window query: "secret_fixture_value"')
+        self.assertNotIn("threadErrorCategory", error.safe)
+        self.assertNotIn("secret_fixture_value", json.dumps(error.safe))
+
     def test_harness_reply_mode_is_explicit_and_reported(self):
         status, report = self.run_mock(acp=True, harness_replies=True)
         self.assertEqual(status, 0)

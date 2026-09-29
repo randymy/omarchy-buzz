@@ -162,6 +162,11 @@ class FixtureCommandError(RuntimeError):
         allowed_supervisor = [value.decode("ascii") for value in observed_supervisor if value.decode("ascii") in supervisor_stages]
         if allowed_supervisor:
             self.safe["acpSupervisorStage"] = allowed_supervisor[-1]
+        thread_errors = {"thread_invalid_bounds", "thread_missing_bounds", "thread_stale_bounds", "thread_invalid_scope", "thread_invalid_shape", "thread_invalid_kind", "thread_invalid_signature", "thread_duplicate_event", "thread_oversized", "thread_invalid_origin", "thread_invalid_root", "query_invalid_response", "query_access_denied", "query_timeout", "query_unavailable", "query_invalid_event", "query_invalid_scope"}
+        # Rust test expect() prints static Result error categories, never content.
+        thread_match = re.search(rb'signed thread window query: "([a-z_]+)"', diagnostics)
+        if thread_match and thread_match[1].decode("ascii") in thread_errors:
+            self.safe["threadErrorCategory"] = thread_match[1].decode("ascii")
         super().__init__(category)
 
 
