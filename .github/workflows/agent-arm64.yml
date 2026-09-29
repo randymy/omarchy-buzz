@@ -165,6 +165,13 @@ jobs:
             --binary "$RUNNER_TEMP/agent-target/debug/buzz-acp" --node "$probe_node" \
             --codex-source "$GITHUB_WORKSPACE/codex" --claude-source "$GITHUB_WORKSPACE/claude" \
             --outside-netns "$outside_netns" --output "$RUNNER_TEMP/agent-arm64-probe.json"
+          sudo unshare --net --pid --fork --kill-child --mount-proc -- \
+            /usr/bin/setpriv --reuid="$probe_uid" --regid="$probe_gid" --clear-groups --no-new-privs \
+            --bounding-set=-all --inh-caps=-all --ambient-caps=-all \
+            /usr/bin/env -i PATH="$(dirname "$probe_node"):/usr/bin:/bin" LANG=C.UTF-8 \
+            /usr/bin/python3 tests/claude_policy_native_probe.py \
+            --adapter-source "$GITHUB_WORKSPACE/claude" --node "$probe_node" \
+            --outside-netns "$outside_netns" --output "$RUNNER_TEMP/agent-arm64-native-probe.json"
       - name: Build hashed preview archive without vendor runtime redistribution
         working-directory: plugin
         run: |
@@ -187,6 +194,7 @@ jobs:
             ${{ runner.temp }}/agent-preview/agent-preview-arm64.tar.gz
             ${{ runner.temp }}/agent-preview/agent-preview-arm64.sha256.json
             ${{ runner.temp }}/agent-arm64-probe.json
+            ${{ runner.temp }}/agent-arm64-native-probe.json
           if-no-files-found: error
           retention-days: 7
       - name: Cache successful native compilation

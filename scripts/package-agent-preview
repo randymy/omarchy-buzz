@@ -186,8 +186,14 @@ def package(args):
         raise ValueError("unexpected Codex architecture included")
     if "node_modules/@anthropic-ai/claude-agent-sdk-linux-arm64" not in {p["path"] for p in installed["claude"]}:
         raise ValueError("native Claude ARM64 package missing from CI probe")
-    if any("claude-agent-sdk-linux-" in p["path"] and p["path"] !=
-           "node_modules/@anthropic-ai/claude-agent-sdk-linux-arm64" for p in installed["claude"]):
+    # The pinned SDK marks both ARM64 libc variants optional without a libc
+    # selector. npm legitimately installs both; neither is redistributed here.
+    allowed_claude_native = {
+        "node_modules/@anthropic-ai/claude-agent-sdk-linux-arm64",
+        "node_modules/@anthropic-ai/claude-agent-sdk-linux-arm64-musl",
+    }
+    if any("claude-agent-sdk-linux-" in p["path"] and p["path"] not in
+           allowed_claude_native for p in installed["claude"]):
         raise ValueError("unexpected Claude architecture included")
     native_files = {
         "codex": native_probe_files(args.codex, "@openai/codex-linux-arm64"),
