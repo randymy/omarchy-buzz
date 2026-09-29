@@ -8,3 +8,4 @@
 - Preserve unknown, stale, partial, and delivery-unknown states. Never invent agent work states, exact unread counts, successful sends, or security approval guarantees.
 - Use synthetic fixtures and isolated test relays. Never send messages, invoke agents, place orders, or alter production systems merely to validate a UI.
 - Keep changes small and reviewable. Document material compatibility changes, test the actual boundaries, and never include secrets in diagnostics or commits.
+- GitHub workflow dispatches are paused after the user's 2026-09-28 report of excessive failed-run emails. Continue local work; do not dispatch or rerun remote workflows or enable automatic triggers until this pause is explicitly lifted. Account notification preferences have not been changed.

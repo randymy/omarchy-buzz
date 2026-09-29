@@ -849,3 +849,14 @@ cwd-aware configuration/account checks. The corresponding
 [Claude proposal](upstream/CLAUDE_SUBSCRIPTION_POLICY.md) is design-only.
 Installed plugin/helper remain 0.0.7 with the normal-window addition; no user
 configuration, provider credentials, relay or production agent changed.
+
+## GitHub notification pause (2026-09-28)
+
+The user reported excessive failed-run emails. These came from manually
+dispatched development checks, including failures corrected in later runs;
+they do not report failures of the installed desktop app. New remote workflow
+dispatches and reruns are paused. Continue local source work and feasible
+checks; do not silently resume remote CI. Account notification preferences
+have not been changed. The staged Codex policy proposal is uninstalled and
+its build/typecheck/runtime tests remain pending; saving a manual workflow
+does not constitute validation.
