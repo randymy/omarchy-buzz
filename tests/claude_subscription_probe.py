@@ -30,7 +30,7 @@ CASE_TIMEOUT = 8
 MAX_OUTPUT = 16 * 1024
 SYNTHETIC_KEY = "sk-ant-api03-" + "A" * 80
 CASES = ("empty", "apiKey", "apiKeyForcedClaudeAi")
-AUTH_METHODS = {"none", "claude.ai"}
+AUTH_METHODS = {"none", "claude.ai", "api_key"}
 PROVIDERS = {"firstParty", "bedrock", "vertex", "gateway"}
 KEY_SOURCES = {
     "ANTHROPIC_API_KEY", "apiKeyHelper", "/login managed key",

@@ -32,7 +32,7 @@ else:
     assert not (home / ".claude").exists()
 print(json.dumps({
     "loggedIn": bool(key),
-    "authMethod": "none",
+    "authMethod": "api_key" if key else "none",
     "apiProvider": "firstParty",
     "apiKeySource": "ANTHROPIC_API_KEY" if key else None,
     "email": "MUST_NOT_APPEAR_IN_RESULT@example.invalid",
@@ -59,6 +59,7 @@ class ClaudeSubscriptionProbeTests(unittest.TestCase):
             "apiProvider": "firstParty", "apiKeySource": None,
         })
         for case in ("apiKey", "apiKeyForcedClaudeAi"):
+            self.assertEqual(results[case]["authMethod"], "api_key")
             self.assertEqual(results[case]["apiKeySource"], "ANTHROPIC_API_KEY")
             self.assertTrue(results[case]["loggedIn"])
             self.assertEqual(results[case]["exitClass"], "zero")
