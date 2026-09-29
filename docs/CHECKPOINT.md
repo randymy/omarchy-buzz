@@ -769,3 +769,24 @@ A product gap was found: the installed panel queries top-level room messages,
 so these thread replies are not visible there yet. An eight-row thread view,
 signed thread-window reducer and scoped IPC are being implemented. See
 [thread design](THREAD_REPLY_READINESS.md). Installed 0.0.6 remains unchanged.
+
+## Native thread view validation (2026-09-28)
+
+Source 0.0.7 implements an eight-reply, depth-one read-only thread pane, scoped
+helper IPC, signed request-bound NIP-CW bounds, manual retry and automatic
+refresh while the panel is open. It clears on root/room/access/generation loss
+and hides with older helpers. Offscreen UI fixtures and manifest validation pass.
+Request frames remain capped at 64 KiB; bounded status responses allow 96 KiB
+for simultaneous room/thread projections. No agent execution or thread composer
+is introduced.
+
+Native ARM64 run `36502926877` passed 111 helper tests (two external fixtures
+ignored) and the actual synthetic IPC/send/activation checks. Actual relay
+thread validation initially failed because upstream ACP's signed kind-7
+reactions have only an event target and no room tag. Sanitized diagnostic run
+`36503438982` confirmed that exact shape. Commit `dc3776e` fixes both room and
+thread readers, with SDK-built reaction regressions, and `5542ad1` additionally
+checks that the root remains in room history while its reply stays in the
+thread. An independent source review found no blocker. Corrected relay run
+`36503855340` and ARM64 run `36503857736` are pending. Installed helper/plugin
+remain 0.0.6 until both pass. No production identity, relay, or account changed.
