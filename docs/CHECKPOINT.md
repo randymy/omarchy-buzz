@@ -1012,3 +1012,27 @@ Active deployment, private backup locations and recovery constraints are in
 Do not restart the old deployment or discard the newer data during rollback.
 Subscription guard proposals remain uninstalled; the pending ACP gates above
 are unchanged.
+
+## Compiled subscription adapters and Buzz discovery passed (2026-09-28)
+
+Run `36516177558` passed the compiled Claude policy checks, native CLI
+subscription-login help check, build and focused tests at `acab26f`. SDK 1.5.0's
+auth error prefix was corrected in the probe after the first run exposed the
+assertion mismatch. Native CLI is 2.1.280; SDK is 0.3.280. No login was started.
+
+Run `36516179113` passed full proposed Buzz ACP compilation/unit checks, all 10
+terminal-auth subprocess tests, and real compiled guarded-adapter discovery.
+The integration review caught missing `CODEX_HOME` / `CLAUDE_CONFIG_DIR` in the
+auth subprocess allowlist. The updated proposal preserves these controlled
+paths across discovery/login/reconnect without forwarding credential markers.
+Codex offers only ChatGPT login; Claude offers only subscription terminal login
+when requested. No session or model turn was created.
+
+Sanitized evidence is saved under `docs/evidence/{claude-policy-adapter,
+claude-policy-native}-36516177558.json`, `guarded-harness-36516179113.json`,
+and `acp-profile-auth-36516179113.json`. Proposals remain uninstalled and
+unsubmitted; production is unchanged. Next gates: target ARM64 artifacts,
+controlled profile/service lifecycle and then real subscription acceptance.
+Do not claim discovery alone completes agent room collaboration. Local disk is
+still constrained; use remote builds. The new failed local fixture build was
+removed without deleting prior caches or user data.

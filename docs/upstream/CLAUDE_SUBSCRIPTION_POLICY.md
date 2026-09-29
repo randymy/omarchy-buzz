@@ -149,3 +149,24 @@ credential selection. Native compiled-adapter conformance, controlled Buzz ACP
 integration, and an authorized account acceptance run remain separate gates.
 The patch is uninstalled and unsubmitted.
 [Sanitized evidence](../evidence/claude-policy-36510783911.json).
+
+## Compiled adapter and native CLI checks
+
+Manual run [36516177558](https://github.com/randymy/omarchy-buzz/actions/runs/36516177558)
+passed at `acab26f`: the actual compiled adapter advertises only Claude
+subscription terminal login and returns the exact SDK policy error for API and
+gateway authentication, provider changes, imported sessions and steering.
+The first run caught an incorrect probe expectation: SDK 1.5.0 prefixes the
+error message with `Authentication required:`. The assertion now matches the
+integrity-verified SDK implementation rather than accepting arbitrary errors.
+
+The bundled native Claude CLI reports version 2.1.280 and advertises
+`auth login --claudeai`. Only version/help were invoked; login was not started.
+The compiled-probe evidence's `nativeVersion` field refers to the pinned Agent
+SDK package 0.3.280, while the native-help evidence distinguishes the actual
+CLI version. All checks ran with empty profiles and isolated networking.
+
+[Compiled adapter evidence](../evidence/claude-policy-adapter-36516177558.json),
+[native interface evidence](../evidence/claude-policy-native-36516177558.json).
+No real subscription account, entitlement, model turn or effective billing was
+verified. The upstream proposal remains uninstalled and unsubmitted.

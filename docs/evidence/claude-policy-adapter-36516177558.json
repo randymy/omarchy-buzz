@@ -1,0 +1,21 @@
+{
+  "adapterVersion": "0.82.0",
+  "apiAuthRejected": true,
+  "failures": [],
+  "forkRejected": true,
+  "gatewayAuthRejected": true,
+  "initializeConformant": true,
+  "loadRejected": true,
+  "modelTurnRequested": false,
+  "nativeVersion": "0.3.280",
+  "networkIsolated": true,
+  "nodeVersion": "v22.23.3",
+  "providerDisableRejected": true,
+  "providerSetRejected": true,
+  "realAccountUsed": false,
+  "resumeRejected": true,
+  "steeringRejected": true,
+  "successful": true,
+  "runId": "36516177558",
+  "sourceRevision": "acab26ff30ea52137bfcb757efb4c2ad0c26f2de"
+}

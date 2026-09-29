@@ -264,3 +264,28 @@ removal ordering, exact-route authentication and no legacy-publication fallback.
 [Evidence](evidence/member-bound-36493588467.json). These are unsubmitted upstream
 proposals, not installed features. Provider routing, real Pro entitlement,
 effective billing and complete prompt-to-room acceptance remain open.
+
+## Guarded adapter discovery through compiled Buzz ACP
+
+Run [36516179113](https://github.com/randymy/omarchy-buzz/actions/runs/36516179113)
+passed at `acab26f`. The compiled proposed Buzz harness initializes both compiled
+subscription-policy adapters in a network-isolated environment. Codex exposes
+only its ChatGPT agent-owned login method; Claude exposes no login without
+terminal opt-in and only its Claude subscription method with opt-in.
+
+This caught a real process-boundary incompatibility before deployment:
+`terminal_auth::environment()` omitted the explicit native profile locations.
+The proposal now preserves `CODEX_HOME` and `CLAUDE_CONFIG_DIR` through
+discovery, terminal login and reconnect. Synthetic actual-harness tests verify
+those paths survive while API and Buzz credential markers remain stripped.
+All 10 terminal-auth subprocess tests passed. These variables are profile
+locations, not credentials; an eventual launcher must choose and own dedicated
+absolute profiles rather than inherit arbitrary user configuration.
+
+[Harness discovery evidence](evidence/guarded-harness-36516179113.json) and
+[profile handoff evidence](evidence/acp-profile-auth-36516179113.json).
+This proves initialization and authentication-method discovery only. It does
+not establish a real subscription login or complete room-to-model-to-room turn.
+The installed plugin/helper and production relay were not changed by these
+checks. Pending gates remain target ARM64 packaging, controlled profile/service
+lifecycle, and authorized real-account acceptance.

@@ -1,0 +1,14 @@
+{
+  "adapterVersion": "0.82.0",
+  "failures": [],
+  "loginStarted": false,
+  "modelTurnRequested": false,
+  "nativeVersion": "2.1.280",
+  "networkIsolated": true,
+  "realAccountUsed": false,
+  "sdkVersion": "0.3.280",
+  "subscriptionLoginFlagSupported": true,
+  "successful": true,
+  "runId": "36516177558",
+  "sourceRevision": "acab26ff30ea52137bfcb757efb4c2ad0c26f2de"
+}

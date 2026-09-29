@@ -1,0 +1,36 @@
+{
+  "failures": [],
+  "loginStarted": false,
+  "methods": {
+    "claude": {
+      "default": [],
+      "terminalOptIn": [
+        {
+          "id": "claude-ai-login",
+          "type": "terminal"
+        }
+      ]
+    },
+    "codex": {
+      "default": [
+        {
+          "id": "chat-gpt",
+          "type": "agent"
+        }
+      ],
+      "terminalOptIn": [
+        {
+          "id": "chat-gpt",
+          "type": "agent"
+        }
+      ]
+    }
+  },
+  "modelTurnRequested": false,
+  "networkIsolated": true,
+  "realAccountUsed": false,
+  "sessionCreated": false,
+  "successful": true,
+  "runId": "36516179113",
+  "sourceRevision": "acab26ff30ea52137bfcb757efb4c2ad0c26f2de"
+}
