@@ -1,3 +1,33 @@
+diff --git c/readme-dev.md i/readme-dev.md
+index 58dd0e8..8df4c3c 100644
+--- c/readme-dev.md
++++ i/readme-dev.md
+@@ -13,6 +13,20 @@ Set `CODEX_PATH` to run a different Codex binary; versions other than the one sp
+ - `NO_BROWSER` - hide browser-based ChatGPT auth when set.
+ - `APP_SERVER_LOGS` - directory for adapter logs.
+ 
++### Proposed ChatGPT subscription route mode
++
++`--require-chatgpt-subscription` is an opt-in proposal for controlled ACP launches.
++Launch with a dedicated, clean, absolute `CODEX_HOME` and the pinned bundled Codex.
++The mode rejects ambient API keys, adapter provider/config overrides, and custom
++provider mutations. Native Codex starts with `forced_login_method=chatgpt`; fresh
++sessions require native `account/read` to report a ChatGPT account and use the
++built-in `openai` provider. Resume, load, fork, steering, and goal controls are
++unavailable in this first version. Adapter file logging is disabled in this mode.
++An unauthenticated user must complete a separate ChatGPT login before creating
++a session. This check does not attest a paid plan, effective billing, or an
++immutable network route. The launcher must keep the profile and project config
++under its control throughout the session.
++
+ ### Quick start
+ 
+ #### Develop on Windows?
+@@ -102,4 +116,3 @@ the adapter does not rely on notices being displayed.
+ Command replies, review results, and terminal/retrying errors retain their existing response or
+ failure channels. Clients advertising session compaction support continue to receive the dedicated
+ compaction lifecycle instead of the legacy completion advisory.
+-
 diff --git c/src/CodexAcpClient.ts i/src/CodexAcpClient.ts
 index 3b3aca4..8428044 100644
 --- c/src/CodexAcpClient.ts
@@ -177,10 +207,10 @@ index 2b1cdc8..9390d72 100644
              console.error(`[SYSTEM_ERROR] ${message}: ${formattedError}`);
 diff --git c/src/SubscriptionPolicy.ts i/src/SubscriptionPolicy.ts
 new file mode 100644
-index 0000000..97bd4c3
+index 0000000..4125030
 --- /dev/null
 +++ i/src/SubscriptionPolicy.ts
-@@ -0,0 +1,81 @@
+@@ -0,0 +1,84 @@
 +import path from "node:path";
 +import type {CodexAppServerClient} from "./CodexAppServerClient";
 +
@@ -234,8 +264,11 @@ index 0000000..97bd4c3
 +
 +export class SubscriptionPolicy {
 +    private readonly sessions = new Map<string, string>();
++    private readonly native: CodexAppServerClient;
 +
-+    constructor(private readonly native: CodexAppServerClient) {}
++    constructor(native: CodexAppServerClient) {
++        this.native = native;
++    }
 +
 +    async checkWorkspace(cwd: string): Promise<void> {
 +        if (!cwd || !path.isAbsolute(cwd)) subscriptionDenied();

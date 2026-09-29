@@ -5,6 +5,7 @@ This is an **uninstalled upstream proposal** against
 whose bundled native Codex is
 [`0.158.0` at `54e1bd264b4122fe9471ee7d54c4d021a76bb8ff`](https://github.com/openai/codex/tree/54e1bd264b4122fe9471ee7d54c4d021a76bb8ff).
 Apply [`codex-subscription-policy.patch`](codex-subscription-policy.patch) to that exact adapter revision. The normal adapter path remains unchanged unless launched with `--require-chatgpt-subscription`.
+The patch also documents the flag in upstream `readme-dev.md`.
 
 The opt-in mode requires an explicit absolute `CODEX_HOME` supplied by a launcher that owns a **dedicated clean profile**. It rejects ambient adapter provider/auth overrides and API keys, starts the bundled native app-server with `-c forced_login_method=chatgpt`, and passes native Codex only a short environment allowlist. It disables adapter file logging in this mode because the pinned logger records raw native JSON-RPC. The startup restriction is carried through the adapter's native restart path.
 
