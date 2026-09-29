@@ -10,9 +10,10 @@ working session D-Bus and Secret Service provider for identity access. A fresh
 ARM64 CI build and its isolated keyring test passed in
 [run 36621010979](https://github.com/randymy/omarchy-buzz/actions/runs/36621010979)
 at source `8928adc`. Target-machine archive, linkage and keyring verification
-have also passed on Omarchy, using temporary sockets and a private Secret Service with synthetic identities. The earlier ARM64 package evidence describes the old vendored
-build. The source inventory and its review flags have not been remeasured for a
-new binary.
+have also passed on Omarchy, using temporary sockets and a private Secret
+Service with synthetic identities. The new inventory contains 245 packages and
+14 review flags; see [exact artifact evidence](evidence/helper-package-36621010979.json).
+Earlier ARM64 package evidence describes the old vendored build.
 
 ```sh
 cargo build --release --locked --manifest-path helper/Cargo.toml
