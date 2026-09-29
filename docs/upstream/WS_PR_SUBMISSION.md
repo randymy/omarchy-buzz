@@ -10,6 +10,13 @@ files it touches are byte identical between those revisions, and the new
 the target revision accepted `git apply --check` and `git apply` without edits.
 Recheck the actual upstream PR base before submission because `main` can move.
 
+September 29 refresh: upstream main advanced to
+`8519db1532efd6cda8f72bb6454c00fc3f87cfba`. Git comparison confirms the shared
+WS client and test-client source files remain unchanged from `12670bd`; the
+focused test evidence therefore covers the same source bytes. This is not a
+full workspace build at the new revision. New relay FI admission changes are
+tracked [separately](BUZZ_8519DB1_COMPATIBILITY.md).
+
 ## Proposed PR
 
 **Title:** `fix(ws-client): bound connection frames, replay queues, and deadlines`

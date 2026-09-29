@@ -1357,3 +1357,19 @@ guarantee or open-room revocation test. No product contract/default, installed
 helper, production relay or room-agent service changed. Upstream main refreshed
 to 8519db1; its new NIP-FI authentication behavior is under source review before
 any dependency update. The shared WS client and ACP paths are unchanged.
+
+## Current upstream admission review complete
+
+Source review of 8519db1 finds plain NIP-42/NIP-98 compatible in the default
+FI-off mode; FI-enforce requires an assertion the helper does not support.
+Deny-protected intentionally blocks messaging. The helper currently reads only
+the NIP-11 signer, so it does not pre-detect FI enforcement. This is not runtime
+certification or an adopted dependency update. Exact sources and limits are in
+`upstream/BUZZ_8519DB1_COMPATIBILITY.md`. Shared WS/client and ACP files remain
+unchanged, preserving the focused contribution's source basis.
+
+No GitHub test remains running from this work period. Both ordinary reply
+conformance and subsequent private-room revocation conformance passed, and the
+working changes/evidence are committed. The requested publication-contract and
+upstream contribution-fork/sign-off decisions are still pending; no upstream
+submission or production agent deployment occurred.
