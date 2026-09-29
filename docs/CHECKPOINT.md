@@ -860,3 +860,19 @@ checks; do not silently resume remote CI. Account notification preferences
 have not been changed. The staged Codex policy proposal is uninstalled and
 its build/typecheck/runtime tests remain pending; saving a manual workflow
 does not constitute validation.
+
+## Local subscription policy work (2026-09-28)
+
+Saved an uninstalled [Codex adapter proposal](upstream/CODEX_SUBSCRIPTION_POLICY.md)
+against the exact pinned upstream revision, with native ChatGPT-only startup,
+controlled child environment, per-prompt account/config checks and explicit
+denial of provider mutation and imported sessions. Dependency-free execution
+of its policy module passed locally on Node 26.9.0, along with 20 existing
+Python authentication/routing fixture tests. These checks use synthetic data
+and establish neither adapter integration nor actual Pro-account acceptance.
+
+The manual `codex-policy.yml` workflow is saved for future typecheck/build and
+adapter tests, but has not been dispatched. Remote CI remains paused. Local
+disk has about 160 MB free (and `/tmp` about 19 MB), so dependency installation
+and full builds remain deferred; no user files were removed. The installed
+plugin/helper, relay and provider accounts are unchanged.
