@@ -1,8 +1,15 @@
 # Room replies: read-path readiness
 
-When the synthetic ACP acceptance passes, it will prove that a signed kind-9
-reply is stored in the room. It will **not** prove that the panel displays it.
-The current helper asks
+Source preview 0.0.7 now implements the bounded read-only thread view described
+below. Helper unit tests and offscreen QML checks pass. The synthetic ACP
+acceptance proves a signed reply is persisted, but the subsequent actual
+thread-window read currently fails closed with `query_invalid_scope`
+([run 36502787674](https://github.com/randymy/omarchy-buzz/actions/runs/36502787674)).
+That mismatch must be resolved before installing this preview. Installed 0.0.6
+is unchanged. The following design describes the intended contract, not a
+claim that the live-relay thread read has passed.
+
+The installed 0.0.6 helper asks
 `POST /query` for `top_level: true` in `helper/src/query.rs::RoomHistory`.
 `helper/src/history.rs` materializes only that channel-window response and
 requires a signed `39006` head bounds event. `helper/src/protocol.rs::History`
@@ -102,6 +109,6 @@ refresh. A separate, user-triggered fetch is sufficient for this increment.
   and panel model expose `AE-ACK:<positive>` while the top-level snapshot still
   contains only the prompt.
 
-This is a source-level proposal against pinned Buzz revision
-`781d39510cf23cfe224e8f521ae06a23377e06de`; no plugin thread-read path
-has been implemented or runtime-verified yet.
+The implementation targets pinned Buzz revision
+`781d39510cf23cfe224e8f521ae06a23377e06de`. Release gates remain the actual
+relay thread-read conformance and a passing native ARM64 helper build/IPC check.
