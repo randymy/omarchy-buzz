@@ -398,6 +398,13 @@ FocusScope {
                     font.family: Style.font.family
                     font.pixelSize: Style.font.caption
                   }
+                  Ui.Button {
+                    text: "Reply in thread"
+                    focusable: true
+                    visible: root.service && root.service.threadSendSupported
+                    enabled: root.service && !root.service.recipientPickerLocked && root.service.canReplyTo(messageRow.modelData.id)
+                    onClicked: if (root.service.composeReply(messageRow.modelData.id)) composer.forceActiveFocus()
+                  }
                   Repeater {
                     model: parent.visible && root.service ? root.service.threadRows : []
                     delegate: Column {
@@ -458,8 +465,28 @@ FocusScope {
             font.family: Style.font.family
             font.pixelSize: Style.font.body
           }
+          RowLayout {
+            Layout.fillWidth: true
+            Text {
+              Layout.fillWidth: true
+              text: root.service ? root.service.composerLabel : ""
+              textFormat: Text.PlainText
+              wrapMode: Text.WordWrap
+              color: Color.accent
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+            }
+            Ui.Button {
+              text: "Back to room"
+              focusable: true
+              visible: root.service && root.service.replyRootId !== ""
+              enabled: root.service && !root.service.recipientPickerLocked
+              onClicked: root.service.composeRoom()
+            }
+          }
           Controls.TextArea {
             id: composer
+            objectName: "buzzComposer"
             Layout.fillWidth: true
             Layout.preferredHeight: Style.space(70)
             visible: root.service && root.service.selectedRoom !== null && root.service.connection === "authenticated"
@@ -486,7 +513,7 @@ FocusScope {
           RowLayout {
             visible: root.service && root.service.selectedRoom !== null && root.service.connection === "authenticated"
             Ui.Button {
-              text: "Send message"
+              text: root.service && root.service.replyRootId ? "Send reply" : "Send message"
               focusable: true
               enabled: root.service && root.service.canSend
               onClicked: if (root.service) root.service.submitDraft()

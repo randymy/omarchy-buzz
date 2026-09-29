@@ -101,11 +101,19 @@ Item {
   property bool sendSupported: false
   property var drafts: ({})
   property string draftScopeKey: ""
-  readonly property string draftText: drafts[selectedRoomId] || ""
+  property bool threadSendSupported: false
+  property var replyTargets: ({})
+  readonly property string replyRootId: replyTargets[selectedRoomId] || ""
+  readonly property string composerKey: selectedRoomId + (replyRootId ? ":" + replyRootId : "")
+  readonly property string draftText: drafts[composerKey] || ""
+  readonly property bool replyReady: !replyRootId || canReplyTo(replyRootId)
+  readonly property string composerLabel: replyRootId ? (replyReady ? "Replying in this thread" : "Reply target unavailable · reopen its replies or return to the room") : "Message this room"
   property string deliveryState: "idle"
   property string deliveryCategory: ""
   property string submissionId: ""
   property string submissionRoom: ""
+  property string submissionRoot: ""
+  property string submissionDraftKey: ""
   property string submissionText: ""
   property int submissionGeneration: 0
   property string submissionInstance: ""
@@ -117,7 +125,7 @@ Item {
   property var recipientEntries: []
   property var agentProfiles: []
   property var recipientDrafts: ({})
-  readonly property var selectedRecipients: recipientDrafts[selectedRoomId] || []
+  readonly property var selectedRecipients: recipientDrafts[composerKey] || []
   readonly property var unavailableRecipients: selectedRecipients.filter(function(key) {
     return recipientsState !== "snapshot" || !recipientEntries.some(function(entry) { return entry.key === key })
   })
@@ -130,7 +138,7 @@ Item {
 
   readonly property bool canSend: sendSupported && !sampleMode && !sessionFailed && connection === "authenticated"
     && selectedRoom !== null && deliveryState !== "sending" && deliveryState !== "unknown" && deliveryState !== "rejected" && deliveryCategory !== "send_request_reused"
-    && recipientIntentValid && draftText.trim().length > 0 && draftText.indexOf("\u0000") === -1 && utf8Size(draftText) <= 4096
+    && replyReady && recipientIntentValid && draftText.trim().length > 0 && draftText.indexOf("\u0000") === -1 && utf8Size(draftText) <= 4096
   readonly property string deliveryLabel: deliveryCategory === "send_request_reused" ? "Submission ID cannot be reused. Start a new submission explicitly." : deliveryCategory === "send_ledger_unavailable" ? "Local send ledger unavailable. Check state directory permissions and free space, then retry." : ({idle:"",sending:"Sending…",acknowledged:"Acknowledged by relay",rejected:"Message rejected. Start a new submission explicitly to retry; this receipt will not send again.",failed:"Send failed · draft retained",unknown:"Outcome unknown. Sending again may create a duplicate. Start a new draft explicitly to continue."})[deliveryState] || ""
 
   readonly property var sample: sampleMode ? SampleData.snapshot().payload : null
@@ -200,7 +208,7 @@ Item {
   function updateDraft(text) {
     if (!selectedRoom || typeof text !== "string" || text.length > 4096 || text === draftText) return
     var copy = Object.assign({}, drafts)
-    copy[selectedRoomId] = text
+    copy[composerKey] = text
     drafts = copy
     if (deliveryState !== "sending" && deliveryState !== "unknown") {
       deliveryState = "idle"
@@ -211,7 +219,7 @@ Item {
   function newDraft(preserveText) {
     if (deliveryState === "sending") return
     var copy = Object.assign({}, drafts)
-    copy[selectedRoomId] = preserveText === true ? draftText : ""
+    copy[composerKey] = preserveText === true ? draftText : ""
     drafts = copy
     deliveryState = "idle"
     deliveryCategory = ""
@@ -226,7 +234,7 @@ Item {
     else if (recipientsState === "snapshot" && recipientEntries.some(function(entry) { return entry.key === key }) && copy.length < 20) copy.push(key)
     else return
     var intents = Object.assign({}, recipientDrafts)
-    intents[selectedRoomId] = copy
+    intents[composerKey] = copy
     recipientDrafts = intents
     submissionId = ""
     deliveryState = "idle"
@@ -241,16 +249,20 @@ Item {
   }
   function prepareSubmission() {
     if (!canSend) return null
-    if (!submissionId || submissionRoom !== selectedRoomId || submissionText !== draftText || JSON.stringify(submissionMentions) !== JSON.stringify(selectedRecipients)) submissionId = correlationUuid()
+    if (!submissionId || submissionRoom !== selectedRoomId || submissionRoot !== replyRootId || submissionText !== draftText || JSON.stringify(submissionMentions) !== JSON.stringify(selectedRecipients)) submissionId = correlationUuid()
     submissionRoom = selectedRoomId
+    submissionRoot = replyRootId
+    submissionDraftKey = composerKey
     submissionText = draftText
     submissionMentions = selectedRecipients.slice()
     submissionGeneration = generation
     submissionInstance = instanceId
     deliveryState = "sending"
     deliveryCategory = ""
-    return {version:1,id:submissionId,type:"send_message",roomId:submissionRoom,text:submissionText,
+    var request = {version:1,id:submissionId,type:"send_message",roomId:submissionRoom,text:submissionText,
       mentions:submissionMentions.slice(),generation:generation,instanceId:instanceId}
+    if (submissionRoot) request.rootId = submissionRoot
+    return request
   }
   function submitDraft() {
     if (!bridge.running) return false
@@ -284,16 +296,43 @@ Item {
     deliveryCategory = delivery.category || ""
     if (deliveryState !== "sending") deliveryTimeout.stop()
     if (deliveryState === "acknowledged") {
-      if (drafts[submissionRoom] === submissionText) {
+      if (drafts[submissionDraftKey] === submissionText) {
         var copy = Object.assign({}, drafts)
-        copy[submissionRoom] = ""
+        copy[submissionDraftKey] = ""
         drafts = copy
       }
       if (acknowledgedRefreshId !== submissionId) {
         acknowledgedRefreshId = submissionId
-        if (selectedRoomId === submissionRoom) refreshHistory()
+        if (selectedRoomId === submissionRoom) {
+          if (!submissionRoot) refreshHistory()
+          else if (threadRootId === submissionRoot) refreshThread()
+        }
       }
     }
+  }
+  function canReplyTo(id) {
+    return threadSendSupported && sendSupported && canOpenThread(id)
+      && threadRootId === id && threadState === "snapshot"
+  }
+  function composeReply(id) {
+    if (recipientPickerLocked || !canReplyTo(id)) return false
+    var targets = Object.assign({}, replyTargets)
+    targets[selectedRoomId] = id
+    replyTargets = targets
+    submissionId = ""
+    deliveryState = "idle"
+    deliveryCategory = ""
+    return true
+  }
+  function composeRoom() {
+    if (recipientPickerLocked) return false
+    var targets = Object.assign({}, replyTargets)
+    delete targets[selectedRoomId]
+    replyTargets = targets
+    submissionId = ""
+    deliveryState = "idle"
+    deliveryCategory = ""
+    return true
   }
   function clearHistory() {
     clearThread()
@@ -423,10 +462,10 @@ Item {
     if (!sampleMode) selectedRoomId = ""
   }
   function validCapabilities(capabilities) {
-    return Array.isArray(capabilities) && capabilities.length >= 1 && capabilities.length <= 9
+    return Array.isArray(capabilities) && capabilities.length >= 1 && capabilities.length <= 10
       && capabilities.indexOf("connection_status") !== -1
       && capabilities.every(function(cap, index) {
-        return ["connection_status", "room_catalog", "room_history", "message_send", "room_recipients", "history_auto_refresh", "room_activity", "agent_profiles", "thread_replies"].indexOf(cap) !== -1 && capabilities.indexOf(cap) === index
+        return ["connection_status", "room_catalog", "room_history", "message_send", "room_recipients", "history_auto_refresh", "room_activity", "agent_profiles", "thread_replies", "thread_send"].indexOf(cap) !== -1 && capabilities.indexOf(cap) === index
       })
   }
   function validatedCatalog(catalog) {
@@ -481,6 +520,7 @@ Item {
     sessionFailed = false
     historySupported = false
     threadSupported = false
+    threadSendSupported = false
     recipientsSupported = false
     generation = 0
     connection = "connecting"
@@ -494,6 +534,7 @@ Item {
     sessionFailed = true
     historySupported = false
     threadSupported = false
+    threadSendSupported = false
     recipientsSupported = false
     relay = ""
     connection = "unavailable"
@@ -585,6 +626,7 @@ Item {
       clearThread()
       drafts = ({})
       recipientDrafts = ({})
+      replyTargets = ({})
       submissionText = ""
     }
     draftScopeKey = incomingScope
@@ -617,6 +659,7 @@ Item {
         if (observed.notify && !supportsActivity && !panelOpen) notifyActivity()
       } else if (history.state === "unavailable") activityObservation = ActivityObserver.fresh()
     }
+    threadSendSupported = supportsThread && frame.capabilities.indexOf("message_send") !== -1 && frame.capabilities.indexOf("thread_send") !== -1
     threadSupported = supportsThread
     if (!supportsThread || state.connection !== "authenticated" || historyState !== "snapshot"
         || !historyRows.some(function(row) { return row.id === root.threadRootId && !row.unavailable })) clearThread()
@@ -742,6 +785,7 @@ Item {
       root.clearCatalog()
       root.historySupported = false
       root.threadSupported = false
+      root.threadSendSupported = false
       root.recipientsSupported = false
       root.sessionFailed = true
       root.relay = ""

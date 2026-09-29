@@ -65,7 +65,7 @@ pub fn request(bytes: &[u8]) -> Result<Request, &'static str> {
     } else if room_present {
         return Err("invalid_request");
     }
-    if r.kind == "fetch_thread" {
+    if r.kind == "fetch_thread" || (r.kind == "send_message" && root_present) {
         let root = r.root_id.as_deref().ok_or("invalid_request")?;
         if root.len() != 64
             || !root
@@ -122,6 +122,7 @@ pub fn request(bytes: &[u8]) -> Result<Request, &'static str> {
 pub struct SendIntent {
     pub request_id: String,
     pub room: String,
+    pub root_id: Option<String>,
     pub text: String,
     pub mentions: Vec<String>,
     pub generation: u64,
@@ -299,7 +300,7 @@ impl Status {
     }
 }
 pub fn envelope(kind: &str, id: Option<&str>, instance: &str, s: &Status) -> serde_json::Value {
-    serde_json::json!({"version":1,"type":kind,"id":id,"instanceId":instance,"generation":s.generation,"capabilities":["connection_status","room_catalog","room_history","message_send","room_recipients","history_auto_refresh","room_activity","agent_profiles","thread_replies"],"backendRevision":crate::compatibility::BUZZ_REVISION,"status":s})
+    serde_json::json!({"version":1,"type":kind,"id":id,"instanceId":instance,"generation":s.generation,"capabilities":["connection_status","room_catalog","room_history","message_send","thread_send","room_recipients","history_auto_refresh","room_activity","agent_profiles","thread_replies"],"backendRevision":crate::compatibility::BUZZ_REVISION,"status":s})
 }
 pub async fn read_line<R: tokio::io::AsyncBufRead + Unpin>(
     r: &mut R,
@@ -396,6 +397,7 @@ mod state_tests {
                 "room_catalog",
                 "room_history",
                 "message_send",
+                "thread_send",
                 "room_recipients",
                 "history_auto_refresh",
                 "room_activity",
@@ -485,6 +487,15 @@ mod state_tests {
             "instanceId":"test-instance", "generation":1
         });
         assert!(request(&serde_json::to_vec(&valid).unwrap()).is_ok());
+        let mut reply = valid.clone();
+        reply["rootId"] = serde_json::json!("a".repeat(64));
+        assert!(request(&serde_json::to_vec(&reply).unwrap()).is_ok());
+        for root in ["A".repeat(64), "a".repeat(63), "g".repeat(64)] {
+            reply["rootId"] = serde_json::json!(root);
+            assert!(request(&serde_json::to_vec(&reply).unwrap()).is_err());
+        }
+        reply["rootId"] = serde_json::Value::Null;
+        assert!(request(&serde_json::to_vec(&reply).unwrap()).is_err());
         for field in ["roomId", "text", "mentions", "instanceId", "generation"] {
             let mut invalid = valid.clone();
             invalid.as_object_mut().unwrap().remove(field);

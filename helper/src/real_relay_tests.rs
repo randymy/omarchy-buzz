@@ -1,7 +1,9 @@
 //! Opt-in component conformance against a disposable pinned Buzz server.
 //! The runner bootstraps the public key of the explicitly synthetic owner below.
 //! No production config, keyring, external host, or SQL connection is used here.
-use crate::{catalog, config, history, ledger::Ledger, protocol, recipients, sending::Sender};
+use crate::{
+    catalog, config, history, ledger::Ledger, protocol, recipients, sending::Sender, thread,
+};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use buzz_sdk::builders::{build_add_member, build_create_channel, build_remove_member};
 use buzz_ws_client::{NostrWsConnection, RelayMessage};
@@ -214,6 +216,7 @@ async fn real_relay_messaging_conformance() {
         let intent = protocol::SendIntent {
             request_id: Uuid::new_v4().to_string(),
             room: room.to_string(),
+            root_id: None,
             text: text.clone(),
             mentions: vec![mentioned.clone()],
             generation: status.generation,
@@ -253,7 +256,7 @@ async fn real_relay_messaging_conformance() {
         );
         eprintln!("OMARCHY_CONFORMANCE_STAGE=history");
         let mut history_error = "message_not_observed";
-        timeout(Duration::from_secs(12), async {
+        let current_history = timeout(Duration::from_secs(12), async {
             loop {
                 match history::fetch(&relay, &user, discovered.signer, room).await {
                     Ok(h)
@@ -263,7 +266,7 @@ async fn real_relay_messaging_conformance() {
                                 && r.author_pubkey == user.public_key().to_hex()
                         }) =>
                     {
-                        break
+                        break h
                     }
                     Ok(_) => history_error = "message_not_observed",
                     Err(category) => history_error = category,
@@ -306,6 +309,110 @@ async fn real_relay_messaging_conformance() {
         .await
         .expect("persisted mention query deadline");
         client.send_raw(&json!(["CLOSE", sid])).await.unwrap();
+        // A reply can only use the root selected from a verified room history
+        // and its matching relay-signed thread snapshot.
+        status.history = protocol::History {
+            state: "snapshot".into(),
+            room_id: Some(current_history.room),
+            rows: current_history
+                .rows
+                .into_iter()
+                .map(|row| protocol::HistoryRow {
+                    id: row.id,
+                    author: row.author_pubkey,
+                    time: row.timestamp,
+                    text: row.text,
+                    edited: row.edited,
+                    truncated: row.truncated,
+                    unavailable: row.unavailable,
+                })
+                .collect(),
+            has_more: Some(current_history.has_more),
+            category: Some(current_history.category.into()),
+        };
+        let initial_thread = thread::fetch(&relay, &user, discovered.signer, room, &event_id)
+            .await
+            .expect("verified initial thread snapshot");
+        assert_eq!(initial_thread.root, event_id);
+        assert_eq!(initial_thread.room, room.to_string());
+        status.thread = protocol::Thread {
+            state: "snapshot".into(),
+            room_id: Some(initial_thread.room),
+            root_id: Some(initial_thread.root),
+            rows: vec![],
+            has_more: Some(initial_thread.has_more),
+            category: Some(initial_thread.category.into()),
+        };
+        let reply_text = format!("synthetic thread reply {}", Uuid::new_v4());
+        let reply_intent = protocol::SendIntent {
+            request_id: Uuid::new_v4().to_string(),
+            room: room.to_string(),
+            root_id: Some(event_id.clone()),
+            text: reply_text.clone(),
+            mentions: vec![],
+            generation: status.generation,
+        };
+        let (reply_receipt, reply_event) =
+            sender.prepare(reply_intent.clone(), &relay, &user, &status, true, true);
+        assert_eq!(reply_receipt.state, "sending");
+        let reply_event = reply_event.expect("durably reserved SDK thread reply");
+        reply_event.verify().unwrap();
+        let reply_id = reply_event.id.to_hex();
+        assert!(reply_event
+            .tags
+            .iter()
+            .any(|tag| tag.as_slice() == ["e", event_id.as_str(), "", "reply"]));
+        client
+            .send_raw(&json!(["EVENT", reply_event]))
+            .await
+            .unwrap();
+        let reply_ack = timeout(Duration::from_secs(15), async {
+            loop {
+                if let RelayMessage::Ok(ok) =
+                    client.next_event(Duration::from_secs(5)).await.unwrap()
+                {
+                    if ok.event_id == reply_id {
+                        break ok;
+                    }
+                }
+            }
+        })
+        .await
+        .expect("exact-ID thread reply acknowledgement");
+        assert!(
+            reply_ack.accepted,
+            "real thread reply rejected: {}",
+            reply_ack.message
+        );
+        assert_eq!(
+            sender.acknowledge(&reply_ack.event_id, true).unwrap().state,
+            "acknowledged"
+        );
+        let (replayed, duplicate) =
+            sender.prepare(reply_intent, &relay, &user, &status, true, true);
+        assert!(duplicate.is_none());
+        assert_eq!(replayed.event_id.as_deref(), Some(reply_id.as_str()));
+        let mut thread_error = "reply_not_observed";
+        timeout(Duration::from_secs(12), async {
+            loop {
+                match thread::fetch(&relay, &user, discovered.signer, room, &event_id).await {
+                    Ok(snapshot)
+                        if snapshot.rows.iter().any(|row| {
+                            row.id == reply_id
+                                && row.text == reply_text
+                                && row.author_pubkey == user.public_key().to_hex()
+                        }) =>
+                    {
+                        break
+                    }
+                    Ok(_) => thread_error = "reply_not_observed",
+                    Err(category) => thread_error = category,
+                }
+                sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("thread reply persistence deadline: {thread_error}"));
         eprintln!("OMARCHY_CONFORMANCE_STAGE=http_member_write");
         let active = buzz_sdk::builders::build_message(
             room,
@@ -406,6 +513,7 @@ async fn real_relay_messaging_conformance() {
             protocol::SendIntent {
                 request_id: Uuid::new_v4().to_string(),
                 room: room.to_string(),
+                root_id: None,
                 text: "locally blocked revoked write".into(),
                 mentions: vec![],
                 generation: status.generation,

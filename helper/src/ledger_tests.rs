@@ -30,9 +30,30 @@ fn record(n: u128) -> Record {
             .public_key()
             .to_hex(),
         room: uuid::Uuid::from_u128(42).to_string(),
+        root_id: None,
         event_id: format!("{n:064x}"),
         outcome: Outcome::Pending,
     }
+}
+#[test]
+fn legacy_top_level_record_stays_unchanged_and_reply_root_is_durable() {
+    let top = record(10);
+    let value = serde_json::to_value(&top).unwrap();
+    assert!(value.get("root_id").is_none());
+    assert_eq!(serde_json::from_value::<Record>(value).unwrap(), top);
+    let temp = Temp::new();
+    let mut reply = record(11);
+    reply.root_id = Some("a".repeat(64));
+    {
+        let mut ledger = Ledger::open(temp.path()).unwrap();
+        ledger.reserve(reply.clone()).unwrap();
+    }
+    let loaded = Ledger::open(temp.path())
+        .unwrap()
+        .lookup(&reply.request_id)
+        .unwrap();
+    assert_eq!(loaded.root_id, reply.root_id);
+    assert_eq!(loaded.outcome, Outcome::Unknown);
 }
 #[test]
 fn restart_preserves_binding_and_never_reserves_an_existing_request_again() {

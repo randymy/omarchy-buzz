@@ -78,6 +78,7 @@ async fn scenario(accept: Option<bool>) {
     let intent = SendIntent {
         request_id: uuid::Uuid::new_v4().to_string(),
         room: uuid::Uuid::new_v4().to_string(),
+        root_id: None,
         text: "synthetic only".into(),
         mentions: vec![],
         generation: 1,

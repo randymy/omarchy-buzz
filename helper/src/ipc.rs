@@ -117,7 +117,7 @@ async fn client(
                     "close_thread"=>Some(protocol::Command::CloseThread),
                     "fetch_recipients"=>Some(protocol::Command::FetchRecipients(r.room_id.clone().unwrap())),
                     "send_message"=>{let (reply,receiver)=tokio::sync::oneshot::channel();send_reply=Some(receiver);Some(protocol::Command::SendChecked(protocol::SendIntent {
-                        request_id:r.id.clone(),room:r.room_id.clone().unwrap(),text:r.text.clone().unwrap(),
+                        request_id:r.id.clone(),room:r.room_id.clone().unwrap(),root_id:r.root_id.clone(),text:r.text.clone().unwrap(),
                         mentions:r.mentions.clone().unwrap(),generation:r.generation.unwrap(),
                     },reply))},
                     _=>None,

@@ -2,7 +2,9 @@
 
 A community-first, native Omarchy surface for collaboration with people and AI agents through [Block's Buzz](https://github.com/block/buzz).
 
-**Status: messaging development preview (`0.0.7`), not yet a community release.** The native bar and panel provide authenticated room discovery, recent messages, a bounded read-only reply view, plain-text sending, and exact public-key mentions. Local activity badges cover the monitored joined rooms. A verified signed profile can identify a participant as a *self-described agent*; execution state remains unknown. Production UI never displays synthetic activity.
+**Status: messaging development preview (`0.0.8`), not yet a community release.** The native bar and panel provide authenticated room discovery, recent messages, a bounded reply view with thread composition, plain-text sending, and exact public-key mentions. Local activity badges cover the monitored joined rooms. A verified signed profile can identify a participant as a *self-described agent*; execution state remains unknown. Production UI never displays synthetic activity.
+
+Open **View replies**, then **Reply in thread** to compose a reply. Room and thread drafts are kept separately. **Back to room** returns to a top-level message. A missing thread target disables sending until it can be verified again; it never silently turns your reply into a room message. Update the helper and plugin together for this feature.
 
 Selected-room history refreshes about five seconds after a request finishes. A separate bounded worker checks other rooms in rotation, one every five seconds after completion, up to the catalog's 20-room limit. Slow requests and catalog refreshes increase that interval. Badges count newly observed messages since the local baseline, **not Buzz-synchronized unread messages**. Opening a room's snapshot clears its local badge. Counts are session-only and reset on gaps, failures, or reconnects; missed activity is possible.
 
@@ -60,7 +62,7 @@ Linux. On Arch, install `pkgconf` and `dbus`; the target also needs
 cargo build --release --locked --manifest-path helper/Cargo.toml
 ```
 
-Install the resulting `helper/target/release/omarchy-buzz` binary at `~/.local/bin/omarchy-buzz`, and follow [helper supervision](service/README.md) to install and enable its user socket. Review existing files before replacement. There is no automatic binary download. A functioning Linux Secret Service is required for enrollment and authentication.
+Package the local build and use the [helper installer](service/README.md) to preview and install or upgrade the binary and its user socket. It keeps rollback copies during upgrades. There is no automatic binary download. A functioning Linux Secret Service is required for enrollment and authentication.
 
 You do not need to run a relay. Choose **Buzz hosted** to create or join a
 Block-hosted community through [buzz.xyz](https://buzz.xyz), or **Custom relay**
@@ -120,7 +122,7 @@ omarchy plugin disable community.buzz
 omarchy plugin remove community.buzz
 ```
 
-The native manager unloads the plugin and removes its Git checkout. Commit or save any development changes first. If you installed the helper separately, follow its [service cleanup instructions](service/README.md) too. Plugin removal does not remove the helper units or identity. Preserve credentials and configuration unless you explicitly choose to delete them. The source repository is retained.
+The native manager unloads the plugin and removes its Git checkout. Commit or save any development changes first. If you installed the helper separately, use its [preview and uninstall commands](service/README.md) too. Plugin removal does not remove the helper units or identity. The helper uninstaller preserves credentials, configuration, and the delivery ledger. The source repository is retained.
 
 ## Architecture and next work
 

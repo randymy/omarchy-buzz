@@ -3,7 +3,7 @@ use crate::{
     ledger::{Ledger, Outcome, Record},
     protocol::{Delivery, SendIntent, Status},
 };
-use nostr::{Event, Keys, PublicKey};
+use nostr::{Event, EventId, Keys, PublicKey};
 use tokio::time::{Duration, Instant};
 
 pub struct Sender {
@@ -46,6 +46,7 @@ impl Sender {
             return Some("send_busy");
         }
         if active.room != intent.room
+            || active.root_id != intent.root_id
             || active.text != intent.text
             || active.mentions != intent.mentions
             || active.generation != intent.generation
@@ -92,6 +93,21 @@ impl Sender {
         {
             return (fail("send_access_denied"), None);
         }
+        if let Some(root) = intent.root_id.as_deref() {
+            if status.thread.state != "snapshot"
+                || status.thread.room_id.as_deref() != Some(intent.room.as_str())
+                || status.thread.root_id.as_deref() != Some(root)
+                || status.history.state != "snapshot"
+                || status.history.room_id.as_deref() != Some(intent.room.as_str())
+                || !status
+                    .history
+                    .rows
+                    .iter()
+                    .any(|row| row.id == root && !row.unavailable)
+            {
+                return (fail("send_access_denied"), None);
+            }
+        }
         if !intent.mentions.is_empty()
             && (status.recipients.state != "snapshot"
                 || status.recipients.room_id.as_deref() != Some(intent.room.as_str())
@@ -108,6 +124,7 @@ impl Sender {
         if let Some(last) = &self.last {
             if last.request_id == intent.request_id
                 && (last.room != intent.room
+                    || last.root_id != intent.root_id
                     || last.text != intent.text
                     || last.mentions != intent.mentions
                     || last.generation != intent.generation)
@@ -122,12 +139,14 @@ impl Sender {
             if record.origin != relay
                 || record.identity != keys.public_key().to_hex()
                 || record.room != intent.room
+                || record.root_id != intent.root_id
             {
                 return (fail("send_request_reused"), None);
             }
             if !self.last.as_ref().is_some_and(|last| {
                 last.request_id == intent.request_id
                     && last.room == intent.room
+                    && last.root_id == intent.root_id
                     && last.text == intent.text
                     && last.mentions == intent.mentions
                     && last.generation == intent.generation
@@ -168,6 +187,7 @@ impl Sender {
                 origin: relay.into(),
                 identity: keys.public_key().to_hex(),
                 room: intent.room.clone(),
+                root_id: intent.root_id.clone(),
                 event_id: id.clone(),
                 outcome: Outcome::Pending,
             })
@@ -238,11 +258,30 @@ fn build_event(
 ) -> Result<Event, &'static str> {
     let room = uuid::Uuid::parse_str(&intent.room).map_err(|_| "send_invalid")?;
     let mentions: Vec<&str> = intent.mentions.iter().map(String::as_str).collect();
+    let thread = intent
+        .root_id
+        .as_deref()
+        .map(|root| {
+            let id = EventId::from_hex(root).map_err(|_| "send_invalid")?;
+            Ok::<_, &'static str>(buzz_sdk::ThreadRef {
+                root_event_id: id,
+                parent_event_id: id,
+            })
+        })
+        .transpose()?;
     let correlation = nostr::Tag::parse(["omarchy-buzz-request", intent.request_id.as_str()])
         .map_err(|_| "send_invalid")?;
-    let mut builder = buzz_sdk::build_message(room, &intent.text, None, &mentions, false, &[], &[])
-        .map_err(|_| "send_invalid")?
-        .tag(correlation);
+    let mut builder = buzz_sdk::build_message(
+        room,
+        &intent.text,
+        thread.as_ref(),
+        &mentions,
+        false,
+        &[],
+        &[],
+    )
+    .map_err(|_| "send_invalid")?
+    .tag(correlation);
     if let Some(timestamp) = created_at {
         builder = builder.custom_created_at(timestamp);
     }
@@ -272,6 +311,10 @@ fn delivery(
 fn valid(intent: &SendIntent) -> bool {
     uuid::Uuid::parse_str(&intent.request_id).is_ok_and(|id| id.to_string() == intent.request_id)
         && uuid::Uuid::parse_str(&intent.room).is_ok_and(|id| id.to_string() == intent.room)
+        && intent
+            .root_id
+            .as_deref()
+            .is_none_or(|root| EventId::from_hex(root).is_ok_and(|id| id.to_hex() == root))
         && !intent.text.trim().is_empty()
         && !intent.text.contains('\0')
         && intent.text.len() <= 4096

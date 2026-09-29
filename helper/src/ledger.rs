@@ -27,6 +27,8 @@ pub struct Record {
     pub origin: String,
     pub identity: String,
     pub room: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_id: Option<String>,
     pub event_id: String,
     pub outcome: Outcome,
 }
@@ -80,6 +82,13 @@ fn validate(record: &Record) -> Result<(), &'static str> {
             .map_err(|_| "ledger_invalid_record")?
             .to_hex()
             != record.event_id
+    {
+        return Err("ledger_invalid_record");
+    }
+    if record
+        .root_id
+        .as_deref()
+        .is_some_and(|root| !nostr::EventId::from_hex(root).is_ok_and(|id| id.to_hex() == root))
     {
         return Err("ledger_invalid_record");
     }

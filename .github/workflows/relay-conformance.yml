@@ -62,7 +62,8 @@ jobs:
             ${{ runner.temp }}/helper-target
           key: buzz-relay-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.pin.outputs.revision }}-${{ hashFiles('plugin/helper/Cargo.lock') }}-${{ inputs.synthetic_acp && 'acp' || 'messaging' }}
           restore-keys: |
-            buzz-relay-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.pin.outputs.revision }}-${{ hashFiles('plugin/helper/Cargo.lock') }}
+            buzz-relay-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.pin.outputs.revision }}-
+            buzz-relay-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.pin.outputs.revision }}-
       - name: Install the tested toolchain and native build dependencies
         run: |
           rustup toolchain install 1.95.0 --profile minimal --component rustfmt

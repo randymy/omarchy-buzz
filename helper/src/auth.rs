@@ -30,11 +30,13 @@ fn publish_status(tx: &watch::Sender<Status>, change: impl FnOnce(&mut Status)) 
         if status.thread.root_id.is_some()
             && (status.history.state != "snapshot"
                 || status.thread.room_id != status.history.room_id
-                || !status
-                    .thread
-                    .root_id
-                    .as_ref()
-                    .is_some_and(|root| status.history.rows.iter().any(|row| &row.id == root))
+                || !status.thread.root_id.as_ref().is_some_and(|root| {
+                    status
+                        .history
+                        .rows
+                        .iter()
+                        .any(|row| &row.id == root && !row.unavailable)
+                })
                 || !status
                     .thread
                     .room_id
@@ -264,7 +266,11 @@ fn thread_allowed(
         && status.catalog.rooms.iter().any(|r| r.id == room)
         && status.history.state == "snapshot"
         && status.history.room_id.as_deref() == Some(room)
-        && status.history.rows.iter().any(|r| r.id == root)
+        && status
+            .history
+            .rows
+            .iter()
+            .any(|r| r.id == root && !r.unavailable)
 }
 fn thread_result_allowed(
     status: &Status,
@@ -437,6 +443,16 @@ async fn observe_inner(
                         if let Some(reply)=reply {let _=reply.send(Some(category));}
                         // Keep the active watch receipt intact for every rejected replay.
                         continue;
+                    }
+                    if let Some(root)=intent.root_id.as_deref() {
+                        let status=tx.borrow();
+                        if !thread_allowed(&status,selected_history.as_deref(),&intent.room,root,fresh,relay_pin.is_some())
+                            || status.thread.state!="snapshot"
+                            || status.thread.room_id.as_deref()!=Some(intent.room.as_str())
+                            || status.thread.root_id.as_deref()!=Some(root) {
+                            if let Some(reply)=reply {let _=reply.send(Some("send_access_denied"));}
+                            continue;
+                        }
                     }
                     let (delivery,event)=sender.prepare(intent,relay,keys,&tx.borrow(),fresh,relay_pin.is_some());
                     if reply.is_some() && delivery.state=="failed" {

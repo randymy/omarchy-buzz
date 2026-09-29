@@ -61,3 +61,18 @@ a header to see the exact public key. Names are self-asserted labels, not unique
 identities; mentions continue to target exact keys. Missing profile names use a
 short key. The current recipient snapshot is bounded to 20 members, so historical
 authors outside that snapshot may still display a key.
+
+## Thread composition (0.0.8)
+
+Open **View replies**, then choose **Reply in thread**. The composer changes to
+**Send reply**; **Back to room** restores the room draft. Draft text and exact
+mention selections are separate for each room/thread. While delivery is pending
+or unknown, changing the send destination is blocked until the outcome is known
+or you explicitly start a new submission.
+
+Reply composition requires a matching helper advertising `thread_send` and a
+current verified root plus thread snapshot. If the root disappears or the helper
+loses access, the draft remains a reply and sending is disabled. A successful
+receipt clears only that reply draft and refreshes its thread. The current view
+still shows at most eight recent replies; older history and attachments are not
+part of this compact client.

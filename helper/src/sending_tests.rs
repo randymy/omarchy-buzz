@@ -6,6 +6,7 @@ fn fixture() -> (Sender, SendIntent, Keys, Status, std::path::PathBuf) {
     let intent = SendIntent {
         request_id: uuid::Uuid::new_v4().to_string(),
         room: uuid::Uuid::new_v4().to_string(),
+        root_id: None,
         text: "synthetic message".into(),
         mentions: vec![],
         generation: 1,
@@ -18,6 +19,149 @@ fn fixture() -> (Sender, SendIntent, Keys, Status, std::path::PathBuf) {
         description: String::new(),
     });
     (Sender::new(Some(ledger)), intent, keys, status, path)
+}
+fn selected_root(status: &mut Status, room: &str, root: &str) {
+    status.history = crate::protocol::History {
+        state: "snapshot".into(),
+        room_id: Some(room.into()),
+        rows: vec![crate::protocol::HistoryRow {
+            id: root.into(),
+            author: "synthetic".into(),
+            time: 1,
+            text: "root".into(),
+            edited: false,
+            truncated: false,
+            unavailable: false,
+        }],
+        has_more: Some(false),
+        category: None,
+    };
+    status.thread = crate::protocol::Thread {
+        state: "snapshot".into(),
+        room_id: Some(room.into()),
+        root_id: Some(root.into()),
+        rows: vec![],
+        has_more: Some(false),
+        category: None,
+    };
+}
+#[test]
+fn reply_requires_current_verified_root_and_signs_sdk_direct_reply_tags() {
+    let (mut sender, mut intent, keys, mut status, path) = fixture();
+    let root = "a".repeat(64);
+    intent.root_id = Some(root.clone());
+    assert_eq!(
+        sender
+            .prepare(
+                intent.clone(),
+                "ws://127.0.0.1/",
+                &keys,
+                &status,
+                true,
+                true
+            )
+            .0
+            .category
+            .as_deref(),
+        Some("send_access_denied")
+    );
+    selected_root(&mut status, &intent.room, &root);
+    status.thread.state = "unavailable".into();
+    assert_eq!(
+        sender
+            .prepare(
+                intent.clone(),
+                "ws://127.0.0.1/",
+                &keys,
+                &status,
+                true,
+                true
+            )
+            .0
+            .category
+            .as_deref(),
+        Some("send_access_denied")
+    );
+    status.thread.state = "snapshot".into();
+    status.history.room_id = Some(uuid::Uuid::new_v4().to_string());
+    assert_eq!(
+        sender
+            .prepare(
+                intent.clone(),
+                "ws://127.0.0.1/",
+                &keys,
+                &status,
+                true,
+                true
+            )
+            .0
+            .category
+            .as_deref(),
+        Some("send_access_denied")
+    );
+    status.history.room_id = Some(intent.room.clone());
+    status.history.rows[0].unavailable = true;
+    assert_eq!(
+        sender
+            .prepare(
+                intent.clone(),
+                "ws://127.0.0.1/",
+                &keys,
+                &status,
+                true,
+                true
+            )
+            .0
+            .category
+            .as_deref(),
+        Some("send_access_denied")
+    );
+    status.history.rows[0].unavailable = false;
+    let (delivery, event) = sender.prepare(
+        intent.clone(),
+        "ws://127.0.0.1/",
+        &keys,
+        &status,
+        true,
+        true,
+    );
+    assert_eq!(delivery.state, "sending");
+    let event = event.unwrap();
+    event.verify().unwrap();
+    let id = event.id.to_hex();
+    let tags: Vec<_> = event
+        .tags
+        .iter()
+        .filter(|tag| tag.as_slice()[0] == "e")
+        .collect();
+    assert_eq!(tags.len(), 1);
+    assert_eq!(tags[0].as_slice(), ["e", root.as_str(), "", "reply"]);
+    let mut changed = intent.clone();
+    changed.root_id = Some("b".repeat(64));
+    assert_eq!(sender.pending_error(&changed), Some("send_request_reused"));
+    sender.acknowledge(&id, true).unwrap();
+    let (replay, event) = sender.prepare(
+        intent.clone(),
+        "ws://127.0.0.1/",
+        &keys,
+        &status,
+        true,
+        true,
+    );
+    assert!(event.is_none());
+    assert_eq!(replay.event_id, Some(id));
+    assert_eq!(replay.state, "acknowledged");
+    drop(sender);
+    let mut sender = Sender::new(Some(Ledger::open(path.join("ledger.json")).unwrap()));
+    let mut changed = intent;
+    let other = "b".repeat(64);
+    selected_root(&mut status, &changed.room, &other);
+    changed.root_id = Some(other);
+    let (denied, event) = sender.prepare(changed, "ws://127.0.0.1/", &keys, &status, true, true);
+    assert!(event.is_none());
+    assert_eq!(denied.category.as_deref(), Some("send_request_reused"));
+    drop(sender);
+    std::fs::remove_dir_all(path).unwrap();
 }
 #[test]
 fn signed_once_exact_ack_and_conflicting_request() {
