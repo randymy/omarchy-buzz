@@ -2,8 +2,8 @@
 
 ## Latest verified state
 
-- Installed messaging preview remains 0.0.7. Native rooms, sends, usernames,
-  bounded thread reads, overlay and normal window are available. No room agent
+- Installed messaging preview is 0.0.8. Native rooms, sends, usernames,
+  thread reading and reply composition, overlay, normal window and application-search launcher are available. No room agent
   service is enabled and no public release or marketplace listing exists.
 - Both Codex/ChatGPT and Claude native-subscription fixed-response model tests
   pass through guarded ACP adapters, including session-correlated responses and
@@ -19,7 +19,7 @@
 The dated sections below retain historical evidence; older installed-version
 and pending-test statements are superseded by this summary and later entries.
 
-Current source version: **0.0.7 thread-view development preview**, not a community release.
+Current source version: **0.0.8 thread-composition development preview**, not a community release.
 Implemented: source-grounded design; native hosted/custom setup; Rust daemon and
 QML bridge; Secret Service identity enrollment; bounded local IPC and systemd
 units; exact-ID connection freshness; signed room discovery; conservative recent
@@ -1457,3 +1457,33 @@ integrated subscription room acceptance; distribution review and remaining
 desktop acceptance. Normal room permissions and contribution-only fork/sign-off
 are approved and must not be asked again. The existing installed messaging
 client remains available. Do not claim the full agent product is released.
+
+## 0.0.8 installed — September 29 afternoon
+
+ARM64 run 36627997783 and x86-64 validation 36627997557 passed at
+31c6fe649f61a4d234836a2b06ca2561c902c21f. The isolated real-relay messaging
+run 36627466468 passed at fd0b77a, including signed thread replies, exact ACK,
+idempotent replay and persisted thread history. No production test messages
+were sent. See the corresponding JSON in `docs/evidence/`.
+
+The downloaded ARM64 package passed checksum, package metadata and version
+checks, then actual local IPC, send-scope, inherited-socket lifecycle and private
+Secret Service tests. The native UI was updated first, then `scripts/helper-install`
+installed the helper with a backup at
+`~/.local/share/omarchy-buzz/backups/20260929T204731.462590Z`.
+The live helper subsequently reported authenticated with `thread_send` capability.
+MemoryMax remains 256 MiB and core dumps are disabled. Identity and relay config
+were preserved. The installed optional desktop entry passed actual GIO argument
+parsing and launch; Hyprland confirmed the Buzz normal window was mapped.
+
+Thread composition keeps independent room/thread drafts. Delivery receipts identify
+the original scope; discarding an uncertain draft clears only that draft, even
+when another room is selected. Unavailable roots disable replies without changing
+the destination. New thread ledger entries require 0.0.8; preserve the ledger and
+do not downgrade to 0.0.7 after sending thread replies.
+
+Usable today: the messaging development preview. Still not shipped: supervised
+subscription room agents, a public release, or a community marketplace listing.
+The upstream WS draft is PR 7976. The permission contribution now includes four
+passing real ACP session-path fake-peer tests; the seven staged patches apply in
+order, but they are contribution prototypes, not installed production dependencies.

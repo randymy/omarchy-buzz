@@ -1,6 +1,6 @@
 # 0.0.8 — thread composition and simpler helper setup
 
-Development candidate; not yet a public release or full room-agent product.
+Installed and tested development preview; not yet a public release or full room-agent product.
 
 - Reply inside a verified thread from the native panel or normal window.
 - Keep room and thread drafts/mention selections separate; ambiguous delivery
@@ -8,6 +8,7 @@ Development candidate; not yet a public release or full room-agent product.
 - Install, upgrade or uninstall a trusted local helper package with
   `scripts/helper-install`; preview operations with `--dry-run`. Upgrades retain
   rollback copies, and uninstall preserves identity/configuration/message state.
+- Open Buzz from application search using the optional [desktop launcher](NATIVE_LAUNCHER.md).
 - Use system D-Bus rather than vendoring it in the helper binary.
 
 Install the matching UI and helper together. The newer UI can display threads

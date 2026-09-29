@@ -1,0 +1,37 @@
+{
+  "sourceRevision": "31c6fe649f61a4d234836a2b06ca2561c902c21f",
+  "runId": "36627997783",
+  "architecture": "aarch64",
+  "developmentPreview": true,
+  "sha256": "8f5d5177b025f2c6810274447690d1c73d6b9a7bab3d870a8428b23d4ca8b489",
+  "metadata": {
+    "backendRevision": "781d39510cf23cfe224e8f521ae06a23377e06de",
+    "helperVersion": "0.0.8",
+    "protocolVersion": 1
+  },
+  "dynamicLibraries": [
+    "libdbus-1.so.3",
+    "libgcc_s.so.1",
+    "libm.so.6",
+    "libc.so.6",
+    "ld-linux-aarch64.so.1"
+  ],
+  "runUrl": "https://github.com/randymy/omarchy-buzz/actions/runs/36627997783",
+  "archive": {
+    "bytes": 5340997,
+    "filename": "omarchy-buzz-0.0.8-linux-aarch64.tar.gz",
+    "sha256": "e2018d9c70ef57fd3e679179c0bbf5646568914326e699d3b717815a0d3d92eb"
+  },
+  "targetChecks": {
+    "smoke": true,
+    "sendIpc": true,
+    "socketActivation": true,
+    "isolatedKeyring": true,
+    "installed": true,
+    "liveConnection": "authenticated",
+    "threadSendAdvertised": true,
+    "normalWindowMapped": true,
+    "productionTestMessagesSent": false
+  },
+  "backup": "/home/randymy/.local/share/omarchy-buzz/backups/20260929T204731.462590Z"
+}
