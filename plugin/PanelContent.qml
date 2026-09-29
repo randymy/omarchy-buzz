@@ -8,7 +8,10 @@ FocusScope {
   id: root
   property var service: null
   property bool recipientPickerExpanded: false
+  property bool presentationSwitchEnabled: false
+  property bool windowMode: false
   signal closeRequested()
+  signal presentationRequested()
   Keys.onEscapePressed: closeRequested()
 
   Rectangle {
@@ -46,6 +49,12 @@ FocusScope {
         }
       }
       Item { Layout.fillWidth: true }
+      Ui.Button {
+        visible: root.presentationSwitchEnabled
+        text: root.windowMode ? "Overlay" : "Window"
+        focusable: true
+        onClicked: root.presentationRequested()
+      }
       Ui.Button {
         text: root.service && root.service.notificationsEnabled ? "Alerts: on" : "Alerts: off"
         focusable: true

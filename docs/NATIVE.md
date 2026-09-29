@@ -1,5 +1,27 @@
 # Optional native shortcut
 
+Buzz supports two presentations of the same view. Open it from the bar or
+Super+B, then choose **Window** for a normal resizable, tilable desktop window.
+Choose **Overlay** to return to the quick panel. The same content instance and
+helper service preserve the selected room, thread and in-memory draft while
+switching. This is one view in either mode, not two independent chat clients.
+
+To open directly as a normal window:
+
+```sh
+omarchy-shell shell summon community.buzz '{"mode":"window"}'
+```
+
+The native window close control and **Close · Esc** both close the view through
+Omarchy's panel lifecycle. The bar/shortcut keeps its existing toggle behavior:
+if Buzz is already open it closes it; the next fresh open defaults to the
+overlay. Window size and presentation preference are not persisted yet.
+
+The short native fixture `scripts/preview --presentation` requires a running
+Wayland session and briefly displays synthetic content. It uses isolated
+configuration/state and no helper, relay, or identity. It checks switching and
+host close behavior; it does not certify physical keyboard or multi-monitor UX.
+
 After installing and enabling the plugin, run these from its checkout:
 
 ```sh

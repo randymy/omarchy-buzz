@@ -21,6 +21,8 @@ if [[ ${1:-} == --send-bridge ]]; then
   printf '{"sends":[],"fetches":0}\n' > "$BUZZ_SEND_RECORD"
 elif [[ ${1:-} == --thread-replies ]]; then
   cp "$project_root/tests/ThreadReplies.qml" "$preview_dir/shell.qml"
+elif [[ ${1:-} == --presentation ]]; then
+  cp "$project_root/tests/Presentation.qml" "$preview_dir/shell.qml"
 elif [[ ${1:-} == --activity ]]; then
   cp "$project_root/tests/Activity.qml" "$preview_dir/shell.qml"
   mkdir -m 700 "$preview_dir/fake-bin"
@@ -47,7 +49,15 @@ fi
 ln -s "$omarchy_source/shell/Commons" "$preview_dir/Commons"
 ln -s "$omarchy_source/shell/Ui" "$preview_dir/Ui"
 
-QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software QT_QPA_PLATFORMTHEME=basic \
+preview_platform=offscreen
+if [[ ${1:-} == --presentation ]]; then
+  # The real PanelWindow backend requires Wayland. Show only a short-lived
+  # synthetic view, with isolated config/state and no helper connection.
+  [[ -n ${WAYLAND_DISPLAY:-} && -n ${XDG_RUNTIME_DIR:-} ]] || { echo "preview: presentation check requires Wayland" >&2; exit 1; }
+  if [[ $WAYLAND_DISPLAY != /* ]]; then export WAYLAND_DISPLAY="$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"; fi
+  preview_platform=wayland
+fi
+QT_QPA_PLATFORM="$preview_platform" QT_QUICK_BACKEND=software QT_QPA_PLATFORMTHEME=basic \
   XDG_RUNTIME_DIR="$preview_dir/runtime" \
   XDG_CONFIG_HOME="$preview_dir/config" \
   XDG_STATE_HOME="$preview_dir/state" \

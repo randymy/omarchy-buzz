@@ -38,6 +38,10 @@ Git refuses to replace an existing destination. Keep any existing plugin of this
 Click **Buzz** to toggle the panel, then use **Close** or Escape. An optional,
 reversible [Super+B shortcut](docs/NATIVE.md) checks for conflicts before installation. Without the separately installed helper/socket, the panel shows an unavailable state. No menu entry, shortcut, service, or credentials are installed by the plugin itself. Omarchy's enable command changes its plugin configuration through the native manager.
 
+Use **Window** in the panel to keep Buzz open as a normal resizable desktop
+window, or **Overlay** to switch back. Both presentations share the same view,
+draft and helper. See [native window and shortcut behavior](docs/NATIVE.md).
+
 ## Install the development helper
 
 Build with Rust 1.95, a C compiler, and pkg-config on Linux:
