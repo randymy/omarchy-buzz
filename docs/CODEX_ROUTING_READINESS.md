@@ -1,5 +1,16 @@
 # Codex ACP subscription routing readiness
 
+Runtime follow-through: [manual run 36506274738](https://github.com/randymy/omarchy-buzz/actions/runs/36506274738)
+passed against actual adapter 2.0.0 and a scripted native app-server peer in a
+non-root network namespace with no external interface. It observed plain
+`thread/start`, accepted ACP `providers/set`, and then observed
+`modelProvider: custom-gateway` with the supplied synthetic URL in native
+thread configuration. The peer rejected thread creation, so no prompt or model
+turn occurred. This proves the adapter mutation path, not native routing or
+subscription entitlement. [Sanitized evidence](evidence/codex-routing-36506274738.json).
+The probe and seven synthetic boundary tests are in `tests/codex_routing_probe.py`
+and `tests/test_codex_routing_probe.py`.
+
 Reviewed 2026-09-28 against
 [`codex-acp` `2eebebc35441e03cd466003b40a75953b221b886`](https://github.com/agentclientprotocol/codex-acp/tree/2eebebc35441e03cd466003b40a75953b221b886)
 and its locked native Codex 0.158.0 source,

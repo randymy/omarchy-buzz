@@ -1,0 +1,37 @@
+{
+  "adapterVersion": "0.82.0",
+  "cases": {
+    "apiKey": {
+      "apiKeySource": "ANTHROPIC_API_KEY",
+      "apiProvider": "firstParty",
+      "authMethod": "api_key",
+      "exitClass": "zero",
+      "loggedIn": true
+    },
+    "apiKeyForcedClaudeAi": {
+      "apiKeySource": "ANTHROPIC_API_KEY",
+      "apiProvider": "firstParty",
+      "authMethod": "api_key",
+      "exitClass": "zero",
+      "loggedIn": true
+    },
+    "empty": {
+      "apiKeySource": null,
+      "apiProvider": "firstParty",
+      "authMethod": "none",
+      "exitClass": "one",
+      "loggedIn": false
+    }
+  },
+  "characterizationOnly": true,
+  "failures": [],
+  "modelTurnRequested": false,
+  "networkIsolated": true,
+  "nodeVersion": "v22.23.3",
+  "realAccountUsed": false,
+  "sdkVersion": "0.3.280",
+  "successful": true,
+  "runId": 36506274738,
+  "runUrl": "https://github.com/randymy/omarchy-buzz/actions/runs/36506274738",
+  "pluginRevision": "ce4a0ca5a2d588cd78578e96de796e0da84a5242"
+}

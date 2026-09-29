@@ -1,5 +1,16 @@
 # Claude ACP subscription-only readiness
 
+Native follow-through: [manual run 36506274738](https://github.com/randymy/omarchy-buzz/actions/runs/36506274738)
+passed the account-free status probe through actual adapter 0.82.0 and its
+bundled SDK 0.3.280 native CLI. An empty home reports logged out. A synthetic
+`ANTHROPIC_API_KEY` reports `authMethod: api_key` and that environment key as
+the source, including when the disposable home contains
+`forceLoginMethod: claudeai`. Thus the setting alone does not make this status
+path subscription-only. No model call was made, so this is not proof of what a
+subsequent turn would do. All cases ran non-root with no external network
+interface, no real credential and bounded output. [Evidence](evidence/claude-subscription-36506274738.json).
+See the [concrete adapter policy proposal](upstream/CLAUDE_SUBSCRIPTION_POLICY.md).
+
 Reviewed 2026-09-28 against `claude-agent-acp` 0.82.0 source at
 [`18de37624071b48e95aed9ec5382823e2d72cd39`](https://github.com/agentclientprotocol/claude-agent-acp/tree/18de37624071b48e95aed9ec5382823e2d72cd39),
 which pins `@anthropic-ai/claude-agent-sdk` 0.3.280 in

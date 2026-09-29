@@ -823,3 +823,29 @@ Hyprland reported a mapped, visible, tiled `Buzz for Omarchy` application window
 restart. Normal window size/presentation are not persisted, and the existing
 bar/Super+B toggle closes an already-open view. Physical keyboard and
 multi-monitor interaction remain unverified. See [native behavior](NATIVE.md).
+
+## Subscription routing characterization (2026-09-28)
+
+Manual run [36506274738](https://github.com/randymy/omarchy-buzz/actions/runs/36506274738)
+passed both new account-free probes at `ce4a0ca`, with 11 synthetic fixture
+tests. Actual Codex ACP 2.0.0 accepted a provider mutation and sent the custom
+provider/URL to a scripted native peer; the peer rejected thread creation.
+Actual Claude ACP 0.82.0 / SDK 0.3.280 native auth status reports the synthetic
+API key even when the disposable home sets `forceLoginMethod: claudeai`.
+The first run caught an unrecognized `api_key` status label in our parser;
+corrected without treating any status as subscription approval. Both probes
+run non-root without an external network interface and with fresh homes.
+No login, real credential or model turn was used.
+
+Evidence: [Codex routing](evidence/codex-routing-36506274738.json) and
+[Claude native status](evidence/claude-subscription-36506274738.json).
+These characterize the controls we need; they are not real Pro acceptance.
+The contract is subscription authentication with no automatic API/provider
+fallback, not unlimited plan usage or per-turn billing attestation.
+
+A fresh-session-only Codex subscription policy is being prepared as a staged,
+uninstalled upstream proposal, using native startup restrictions and supported
+cwd-aware configuration/account checks. The corresponding
+[Claude proposal](upstream/CLAUDE_SUBSCRIPTION_POLICY.md) is design-only.
+Installed plugin/helper remain 0.0.7 with the normal-window addition; no user
+configuration, provider credentials, relay or production agent changed.

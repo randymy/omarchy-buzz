@@ -1,0 +1,19 @@
+{
+  "actualAdapter": true,
+  "adapterVersion": "2.0.0",
+  "characterizationOnly": true,
+  "failures": [],
+  "gatewayThreadStartObserved": true,
+  "modelTurnRequested": false,
+  "nativePackageVersion": "0.158.0",
+  "nativePeer": "scripted",
+  "networkIsolated": true,
+  "nodeVersion": "v22.23.3",
+  "plainThreadStartObserved": true,
+  "providerMutationAccepted": true,
+  "realAccountUsed": false,
+  "successful": true,
+  "runId": 36506274738,
+  "runUrl": "https://github.com/randymy/omarchy-buzz/actions/runs/36506274738",
+  "pluginRevision": "ce4a0ca5a2d588cd78578e96de796e0da84a5242"
+}

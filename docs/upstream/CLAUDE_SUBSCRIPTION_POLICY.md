@@ -90,8 +90,12 @@ against that residual case needs a supported native fresh-effective-credential
 check or query recreation before every turn, with the resulting behavior
 validated against the pinned native binary. No `forceLoginMethod` setting or
 equivalent guarantee was found in the pinned adapter source; no unpacked SDK
-package was available locally to verify such a setting. Do not treat an
-unverified setting name as a shortcut.
+package was available locally during that source review. A subsequent native
+status probe in [run 36506274738](https://github.com/randymy/omarchy-buzz/actions/runs/36506274738)
+reports the synthetic API key as active even with `forceLoginMethod: claudeai`
+in the disposable home settings. That status-only result does not test a model
+turn, but confirms that setting is not a substitute for validating credentials
+and route inputs. [Evidence](../evidence/claude-subscription-36506274738.json).
 
 ## Offline acceptance fixtures
 
