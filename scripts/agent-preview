@@ -1,0 +1,266 @@
+#!/usr/bin/env python3
+"""Opt-in subscription authentication preview. Does not start room agents."""
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import platform
+import selectors
+import re
+import resource
+import signal
+import time
+import stat
+import subprocess
+import sys
+import tempfile
+
+PINS = {'buzz': '781d39510cf23cfe224e8f521ae06a23377e06de',
+        'codex': '2eebebc35441e03cd466003b40a75953b221b886',
+        'claude': '18de37624071b48e95aed9ec5382823e2d72cd39'}
+GUARDS = {'codex': '--require-chatgpt-subscription', 'claude': '--require-claude-subscription'}
+ENTRIES = {'buzzAcp': 'bin/buzz-acp', 'node': 'bin/node',
+           'npm': 'runtime/npm/bin/npm-cli.js', 'codex': 'adapters/codex/dist/index.js',
+           'claude': 'adapters/claude/dist/index.js'}
+
+
+class Refused(Exception):
+    pass
+
+
+def digest(path):
+    with path.open('rb') as stream:
+        return hashlib.file_digest(stream, 'sha256').hexdigest()
+
+
+def member(root, name):
+    path = Path(name)
+    if path.is_absolute() or not path.parts or any(p in ('.', '..') for p in path.parts):
+        raise Refused('unsafe_bundle_path')
+    target = root
+    for part in path.parts:
+        target = target / part
+        if target.is_symlink():
+            raise Refused('linked_bundle_file')
+    if not target.resolve().is_relative_to(root.resolve()):
+        raise Refused('unsafe_bundle_path')
+    return target
+
+
+def verify_bundle(bundle, expected_manifest_sha=None):
+    if bundle.is_symlink() or not bundle.is_dir():
+        raise Refused('bundle_directory_required')
+    document = member(bundle, 'manifest.json')
+    if document.stat().st_size > 8 * 1024 * 1024:
+        raise Refused('manifest_too_large')
+    if (not isinstance(expected_manifest_sha, str) or
+            not re.fullmatch('[0-9a-f]{64}', expected_manifest_sha) or
+            digest(document) != expected_manifest_sha):
+        raise Refused('trusted_manifest_hash_required')
+    report = json.loads(document.read_text())
+    if (report.get('schemaVersion') != 1 or report.get('entrypoints') != ENTRIES or
+            report.get('guardArguments') != GUARDS or
+            report.get('platform') != {'os': 'linux', 'architecture': 'aarch64', 'libc': 'glibc'}):
+        raise Refused('unsupported_bundle')
+    preview = report.get('preview', {})
+    if preview.get('experimental') is not True or preview.get('releaseReady') is not False:
+        raise Refused('preview_contract_required')
+    if any(report['sources'][name]['revision'] != revision for name, revision in PINS.items()):
+        raise Refused('source_revision_mismatch')
+    files = report['files']
+    if not isinstance(files, dict) or not files or len(files) > 50000:
+        raise Refused('file_manifest_invalid')
+    if not set(ENTRIES.values()).issubset(files):
+        raise Refused('entrypoint_not_covered')
+    for name, expected in files.items():
+        target = member(bundle, name)
+        if (not target.is_file() or target.stat().st_size != expected['bytes'] or
+                digest(target) != expected['sha256']):
+            raise Refused('bundle_hash_mismatch')
+    if platform.system() != 'Linux' or platform.machine() not in ('aarch64', 'arm64'):
+        raise Refused('linux_arm64_required')
+    return report
+
+
+def private_dir(path):
+    if path.is_symlink():
+        raise Refused('linked_profile_directory')
+    path.mkdir(mode=0o700, exist_ok=True)
+    details = path.stat()
+    if not stat.S_ISDIR(details.st_mode) or details.st_uid != os.getuid() or details.st_mode & 0o077:
+        raise Refused('profile_permissions_unsafe')
+    return path
+
+
+def profile_for(agent):
+    # Explicit local profile; never borrow normal native credentials/configuration.
+    home = Path.home()
+    anchor = home / '.local' / 'state'
+    for path in (home / '.local', anchor):
+        if path.is_symlink():
+            raise Refused('linked_state_directory')
+        path.mkdir(mode=0o700, exist_ok=True)
+    base = private_dir(anchor / 'omarchy-buzz-agent-preview')
+    profile = private_dir(base / agent)
+    for name in ('home', 'provider', 'config', 'data', 'cache', 'state', 'runtime', 'work'):
+        private_dir(profile / name)
+    for directory in ('home', 'provider', 'config'):
+        for current, dirs, files in os.walk(profile / directory, followlinks=False):
+            for name in dirs + files:
+                item = Path(current) / name
+                if item.is_symlink() or item.stat().st_uid != os.getuid():
+                    raise Refused('profile_tree_unsafe')
+    return profile
+
+
+def environment(profile, bundle, ambient):
+    result = {'HOME': str(profile / 'home'), 'PATH': str(bundle / 'bin') + ':/usr/bin:/bin',
+              'LANG': 'C.UTF-8', 'TERM': ambient.get('TERM', 'xterm')}
+    for key, directory in (('XDG_CONFIG_HOME', 'config'), ('XDG_DATA_HOME', 'data'),
+                           ('XDG_CACHE_HOME', 'cache'), ('XDG_STATE_HOME', 'state'),
+                           ('XDG_RUNTIME_DIR', 'runtime')):
+        result[key] = str(profile / directory)
+    # Only local session/display handles; no provider, relay, proxy or shell options.
+    for key in ('DBUS_SESSION_BUS_ADDRESS', 'DISPLAY', 'WAYLAND_DISPLAY'):
+        if key in ambient:
+            result[key] = ambient[key]
+    return result
+
+
+def verify_runtime(bundle, report, agent):
+    source = bundle / 'adapters' / agent
+    for package in report['npmProbePackages'][agent]:
+        path = member(source, package['path'] + '/package.json')
+        if not path.is_file() or json.loads(path.read_text()).get('version') != package['version']:
+            raise Refused('runtime_setup_required')
+    for name, expected in report['nativeProbeFiles'][agent].items():
+        target = member(source, name)
+        if not target.is_file() or digest(target) != expected:
+            raise Refused('native_runtime_hash_mismatch')
+
+
+def hydrate(bundle, report, agent, profile):
+    env = environment(profile, bundle, {})
+    # Empty npm config and a disposable installer HOME prevent ambient npm tokens.
+    with tempfile.TemporaryDirectory(prefix='installer-', dir=profile / 'cache') as temporary:
+        scratch = Path(temporary)
+        (scratch / 'user.npmrc').touch(mode=0o600)
+        (scratch / 'global.npmrc').touch(mode=0o600)
+        env['HOME'] = str(scratch)
+        command = [str(bundle / ENTRIES['node']), str(bundle / ENTRIES['npm']), 'ci',
+                   '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund',
+                   '--registry=https://registry.npmjs.org/',
+                   '--userconfig=' + str(scratch / 'user.npmrc'),
+                   '--globalconfig=' + str(scratch / 'global.npmrc'),
+                   '--cache=' + str(scratch / 'npm-cache')]
+        result = subprocess.run(command, cwd=bundle / 'adapters' / agent, env=env,
+                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL, timeout=600)
+        if result.returncode:
+            raise Refused('runtime_install_failed')
+    verify_runtime(bundle, report, agent)
+
+
+def auth_command(bundle, agent, login=False):
+    command = [str(bundle / ENTRIES['buzzAcp']), 'authenticate' if login else 'auth-methods',
+               '--agent-command', str(bundle / ENTRIES['node']), '--agent-args',
+               str(bundle / ENTRIES[agent]) + ',' + GUARDS[agent]]
+    if login:
+        command += ['--method-id', 'chat-gpt' if agent == 'codex' else 'claude-ai-login']
+    else:
+        command += ['--json', '--terminal-auth']
+    return command
+
+
+def capture_discovery(command, env, cwd):
+    process = subprocess.Popen(command, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
+                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                               start_new_session=True)
+    selector = selectors.DefaultSelector()
+    selector.register(process.stdout, selectors.EVENT_READ)
+    data = bytearray()
+    deadline = time.monotonic() + 40
+    try:
+        while selector.get_map():
+            if time.monotonic() >= deadline:
+                raise Refused('auth_discovery_timeout')
+            for key, _ in selector.select(0.2):
+                chunk = os.read(key.fileobj.fileno(), 4096)
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                    continue
+                data.extend(chunk)
+                if len(data) > 65536:
+                    raise Refused('auth_discovery_output_limit')
+        if process.wait(timeout=max(0.01, deadline-time.monotonic())):
+            raise Refused('auth_discovery_failed')
+        return bytes(data)
+    finally:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.wait(timeout=3)
+        selector.close()
+        process.stdout.close()
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('action', choices=['prepare', 'hydrate', 'status', 'auth-methods', 'login'])
+    parser.add_argument('--bundle', type=Path, required=True)
+    parser.add_argument('--agent', choices=tuple(GUARDS), required=True)
+    parser.add_argument('--manifest-sha256', required=True,
+                        help='Manifest digest from the independently verified workflow artifact')
+    args = parser.parse_args()
+    os.umask(0o077)
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    try:
+        if os.geteuid() == 0:
+            raise Refused('root_forbidden')
+        if ',' in str(args.bundle) or not args.bundle.is_absolute():
+            raise Refused('absolute_bundle_path_required')
+        report = verify_bundle(args.bundle, args.manifest_sha256)
+        profile = profile_for(args.agent)
+        if args.action == 'hydrate':
+            hydrate(args.bundle, report, args.agent, profile)
+        if args.action in ('status', 'hydrate'):
+            try:
+                verify_runtime(args.bundle, report, args.agent)
+                ready = True
+            except Refused:
+                ready = False
+            print(json.dumps({'agent': args.agent, 'runtimeReady': ready,
+                              'authentication': 'not_checked', 'roomAgentsEnabled': False}))
+            return 0 if ready else 1
+        if args.action == 'prepare':
+            print(json.dumps({'agent': args.agent, 'profilePrepared': True,
+                              'authentication': 'not_checked', 'roomAgentsEnabled': False}))
+            return 0
+        verify_runtime(args.bundle, report, args.agent)
+        if args.action == 'login' and not all(os.isatty(fd) for fd in (0, 1, 2)):
+            raise Refused('login_requires_local_terminal')
+        env = environment(profile, args.bundle, os.environ)
+        env['CODEX_HOME' if args.agent == 'codex' else 'CLAUDE_CONFIG_DIR'] = str(profile / 'provider')
+        if args.action == 'login':
+            # Native upstream interactive output goes directly to the user, never QML/logs.
+            os.chdir(profile / 'work')
+            os.execve(str(args.bundle / ENTRIES['buzzAcp']), auth_command(args.bundle, args.agent, True), env)
+        raw = capture_discovery(auth_command(args.bundle, args.agent), env, profile / 'work')
+        methods = json.loads(raw)['methods']
+        allowed = {'chat-gpt', 'chat-gpt-device-code'} if args.agent == 'codex' else {'claude-ai-login'}
+        if (not isinstance(methods, list) or not methods or len(methods) > 8 or
+                any(not isinstance(m, dict) or m.get('id') not in allowed for m in methods)):
+            raise Refused('unexpected_auth_method')
+        print(json.dumps({'agent': args.agent, 'methods': [m['id'] for m in methods],
+                          'authentication': 'not_checked', 'roomAgentsEnabled': False}))
+        return 0
+    except (Refused, OSError, ValueError, KeyError, TypeError, AttributeError, subprocess.TimeoutExpired) as error:
+        category = str(error) if isinstance(error, Refused) else 'preview_setup_failed'
+        print(json.dumps({'error': category}), file=sys.stderr)
+        return 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

@@ -33,7 +33,7 @@ omarchy plugin enable community.buzz --section right
 omarchy-shell shell summon community.buzz '{}'
 ```
 
-Git refuses to replace an existing destination. Keep any existing plugin of this ID; do not overwrite it. `community.buzz` is a development ID pending marketplace uniqueness review. This repository has not been published or submitted to the marketplace.
+Git refuses to replace an existing destination. Keep any existing plugin of this ID; do not overwrite it. `community.buzz` is a development ID pending marketplace uniqueness review. Source is public on GitHub; the plugin has not been submitted to the marketplace.
 
 Click **Buzz** to toggle the panel, then use **Close** or Escape. An optional,
 reversible [Super+B shortcut](docs/NATIVE.md) checks for conflicts before installation. Without the separately installed helper/socket, the panel shows an unavailable state. No menu entry, shortcut, service, or credentials are installed by the plugin itself. Omarchy's enable command changes its plugin configuration through the native manager.
@@ -120,7 +120,11 @@ Real-relay messaging components and synthetic ACP mention routing have passed on
 
 Upstream review artifacts are ready for the [WebSocket resource limits](docs/upstream/WS_RESOURCE_LIMITS.md)
 and [ACP interactive authentication](docs/upstream/ACP_INTERACTIVE_LOGIN.md).
-They are isolated proposals, not installed dependency patches. Subscription support
+They are isolated proposals, not installed dependency patches. The
+[authentication preview setup](docs/AGENT_PREVIEW_SETUP.md) keeps dedicated
+provider profiles and native login outside the shell; it does not enable room
+agents. The [prepared marketplace submission](docs/MARKETPLACE_SUBMISSION.md)
+describes only the messaging preview. Subscription support
 is a first-class requirement; the [authentication matrix](docs/AGENT_AUTH_COMPATIBILITY.md)
 separates native product support from actual ACP verification. The current
 [checkpoint](docs/CHECKPOINT.md) tracks harness-owned replies, tool-request denial,
