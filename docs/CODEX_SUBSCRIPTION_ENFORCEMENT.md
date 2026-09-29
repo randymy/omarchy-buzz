@@ -93,3 +93,12 @@ No thread or model task was started. Four synthetic probe-boundary tests also
 passed. See [evidence](evidence/acp-policy-subscription-36492581585.json).
 This closes the narrow startup API-login rejection check, not provider routing,
 real Pro login/entitlement, or per-turn billing verification.
+
+## Actual ACP adapter result
+
+[Run 36501374029](https://github.com/randymy/omarchy-buzz/actions/runs/36501374029)
+passes the same rejection through actual Codex ACP 2.0.0, with no session or
+model prompt. The locked ACP SDK 1.5.0 wraps the native error as `-32603`,
+`Internal error`, with the exact policy sentence in `data.details`. The test
+requires that exact shape; a generic failure cannot pass. [Evidence](evidence/codex-adapter-subscription-36501374029.json).
+Provider-routing constraints remain separate: see [routing readiness](CODEX_ROUTING_READINESS.md).

@@ -1,0 +1,29 @@
+{
+  "acpApiAuthRejected": true,
+  "adapterBinaryVersion": "2.0.0",
+  "adapterPackageVersion": "2.0.0",
+  "failures": [],
+  "nativeBinaryVersion": "0.158.0",
+  "nativePackageVersion": "0.158.0",
+  "networkIsolated": true,
+  "nodeVersion": "v22.23.3",
+  "rejectionShape": {
+    "codeClass": "internal_error",
+    "dataContainsPolicySentence": true,
+    "hasData": true,
+    "messageContainsPolicySentence": false,
+    "messageIsString": true
+  },
+  "startupPolicy": "chatgpt",
+  "successful": true,
+  "runId": 36501374029,
+  "runUrl": "https://github.com/randymy/omarchy-buzz/actions/runs/36501374029",
+  "pluginRevision": "738e57574a64cfce124d142b19a6de2513a07a33",
+  "realAccountUsed": false,
+  "modelTaskRun": false,
+  "effectiveBillingVerified": false,
+  "priorAttempt": {
+    "runId": 36500148161,
+    "failure": "Exact native policy denial was wrapped in ACP SDK error.data.details; assertion corrected using locked SDK1.5.0 source"
+  }
+}
