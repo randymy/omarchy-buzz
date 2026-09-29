@@ -961,3 +961,32 @@ blank names fall back to a short key. Explicit recipient room scope prevents
 labels carrying into another room. The synthetic author-name test and full
 offscreen panel check passed. This UI-only change does not require a new helper
 binary. The helper still limits recipient profiles to 20 current members.
+
+## Installed reply styling and confirmed relay blocker (2026-09-28)
+
+Installed plugin `665603d` uses native `Ui.Button` for View/Hide replies and
+Refresh replies. Thread and full-panel offscreen checks passed. Username lookup
+on the actual selected room returned its signed profile name; neither names nor
+keys are hard-coded in the UI.
+
+ARM64 workflow [36511830911](https://github.com/randymy/omarchy-buzz/actions/runs/36511830911)
+passed formatting, release tests, build and isolated IPC/send/activation checks.
+Its exact `665603d5158e2a94e44851ca4e9e679ca1e157da` helper was verified against
+artifact provenance and SHA-256
+`d51d64cbbe86a0b9104e551b38313c1a2693ab541abcfbbb38484eb28d8afa7f`,
+installed, and the service restarted. Previous binary is preserved locally under
+`~/.cache/omarchy-buzz/rollback/before-36511830911/`. Version remains 0.0.7;
+this is a diagnostic development build, not a release.
+
+An authenticated read of an existing thread now confirms the exact static error
+`thread_missing_bounds`. No message or agent task was sent. Deployed Buzz
+`8342dfc` has no NIP-CW thread-window implementation: it interprets the query as
+a legacy depth-limited query and never emits signed kind-39007 bounds. The
+plugin must not turn this into an empty thread or silently weaken validation.
+Replies remain unavailable on this deployment.
+
+Next: prepare and rehearse the upstream relay upgrade described in
+[RELAY_UPGRADE.md](RELAY_UPGRADE.md). The source gap contains 22 migrations, so
+production must not be upgraded by blindly pulling the mutable main image.
+Only container names/images/health were inspected remotely; no relay, database,
+identity, environment or proxy configuration was changed.
