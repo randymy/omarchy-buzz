@@ -175,3 +175,15 @@ own upstream-supported migration and trust review.
 The local helper and activation socket have been stopped temporarily. The relay
 continues running unchanged. A human public key is pending; no membership
 transfer, identity deletion, secret export or relay upgrade has occurred.
+
+## Thread-compatible relay cutover, 2026-09-28
+
+The old `8342dfc` relay lacked signed thread-window bounds. Following isolated
+migration, startup and restore rehearsals, it was replaced by the exact tested
+`781d395` ARM64 image on separate copied volumes with a consistent private
+backup. URL and signing identity are unchanged; HTTPS now proxies to a
+loopback-only backend. Old volumes and containers are retained and stopped.
+Both recent roots now produce validated helper thread snapshots, including two
+existing replies on one root. Completeness remains explicitly unknown. See
+[RELAY_UPGRADE.md](RELAY_UPGRADE.md) for evidence, active deployment location
+and recovery constraints.

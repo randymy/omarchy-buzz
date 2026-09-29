@@ -990,3 +990,25 @@ Next: prepare and rehearse the upstream relay upgrade described in
 production must not be upgraded by blindly pulling the mutable main image.
 Only container names/images/health were inspected remotely; no relay, database,
 identity, environment or proxy configuration was changed.
+
+## Relay upgraded; live replies verified (2026-09-28)
+
+Completed the reviewed relay upgrade to upstream `781d395` using its immutable
+ARM64 image. Database migrations and both target startup and old-image restore
+were rehearsed privately first. Production cutover used a consistent backup and
+separate copied volumes, preserving the community URL and relay identity.
+Backup checksums, all four service health checks and 49 successful migrations
+passed. The original project remains stopped with its data retained.
+
+The installed helper now reads both recent thread roots successfully: snapshots
+contain zero and two replies, replacing `thread_missing_bounds`. These reads
+sent no messages or agent tasks. `thread_completeness_unknown` remains honest;
+thread composition, pagination and nested-reply coverage are not implemented.
+Native themed reply buttons and verified profile-name labels remain installed.
+
+Active deployment, private backup locations and recovery constraints are in
+[RELAY_UPGRADE.md](RELAY_UPGRADE.md); sanitized production evidence is in
+[evidence/relay-cutover-2026-09-28.json](evidence/relay-cutover-2026-09-28.json).
+Do not restart the old deployment or discard the newer data during rollback.
+Subscription guard proposals remain uninstalled; the pending ACP gates above
+are unchanged.

@@ -1,0 +1,41 @@
+{
+  "date": "2026-09-28",
+  "targetRevision": "781d39510cf23cfe224e8f521ae06a23377e06de",
+  "arm64ImageDigest": "sha256:6fefdc16bd34348941057f043a7de6e4aeb5f22e1eb2de543d165f99d56bc053",
+  "rehearsalDatabaseMigrationPassed": true,
+  "rehearsalTargetStartupPassed": true,
+  "rehearsalOldDatabaseRestoreAndImageStartupPassed": true,
+  "consistentBackupChecksumsVerified": [
+    "database",
+    "git",
+    "minio",
+    "redis",
+    "configuration",
+    "proxyConfiguration"
+  ],
+  "originalVolumesRetained": true,
+  "communityUrlUnchanged": true,
+  "relaySignerUnchanged": true,
+  "publicFunnelEnabled": false,
+  "backendBinding": "loopback-only",
+  "productionServicesHealthy": 4,
+  "productionMigrationCount": 49,
+  "productionMigrationsSuccessful": true,
+  "authenticatedHistoryState": "snapshot",
+  "recentRootsChecked": 2,
+  "threadStates": [
+    "snapshot",
+    "snapshot"
+  ],
+  "replyCounts": [
+    0,
+    2
+  ],
+  "threadCategories": [
+    "thread_completeness_unknown",
+    "thread_completeness_unknown"
+  ],
+  "productionMessagesSent": 0,
+  "agentTasksInvoked": 0,
+  "threadPaginationOrCompleteHistoryClaimed": false
+}
