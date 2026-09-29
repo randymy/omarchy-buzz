@@ -41,6 +41,15 @@ def fixture_bundle(root):
 
 
 class AgentPreview(unittest.TestCase):
+    def test_low_disk_refuses_before_npm_or_profile_mutation(self):
+        from types import SimpleNamespace
+        with patch.object(module.shutil, 'disk_usage', return_value=SimpleNamespace(free=300*1024**2)), patch.object(module.subprocess, 'run') as run, patch.object(module.tempfile, 'TemporaryDirectory') as temporary:
+            for agent in ('codex', 'claude'):
+                with self.assertRaisesRegex(module.Refused, 'runtime_setup_insufficient_disk'):
+                    module.hydrate(Path('/bundle'), {}, agent, Path('/profile'))
+            run.assert_not_called()
+            temporary.assert_not_called()
+
     def test_bundle_rejects_file_change_and_linked_entrypoint(self):
         with tempfile.TemporaryDirectory() as temporary:
             bundle, _ = fixture_bundle(Path(temporary))

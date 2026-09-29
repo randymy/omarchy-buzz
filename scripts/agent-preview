@@ -10,6 +10,7 @@ import selectors
 import re
 import resource
 import signal
+import shutil
 import time
 import stat
 import subprocess
@@ -141,6 +142,11 @@ def verify_runtime(bundle, report, agent):
 
 
 def hydrate(bundle, report, agent, profile):
+    # Conservative setup headroom, not an exact upstream package-size promise.
+    # npm ci removes an existing node_modules tree: refuse before invoking it.
+    required = (2 if agent == 'claude' else 1) * 1024 ** 3
+    if any(shutil.disk_usage(path).free < required for path in (bundle, profile)):
+        raise Refused('runtime_setup_insufficient_disk')
     env = environment(profile, bundle, {})
     # Empty npm config and a disposable installer HOME prevent ambient npm tokens.
     with tempfile.TemporaryDirectory(prefix='installer-', dir=profile / 'cache') as temporary:

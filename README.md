@@ -22,7 +22,15 @@ Manifest validation, a native sample-panel render, ARM64 helper tests, isolated 
 
 ## Try the local development preview
 
-Use a disposable Omarchy session first. From a **committed checkout** of this repository:
+Use a disposable Omarchy session first. Get the public source (Git refuses to
+replace an existing directory):
+
+```bash
+git clone https://github.com/randymy/omarchy-buzz.git
+cd omarchy-buzz
+```
+
+From this **committed checkout**, validate and install the UI:
 
 ```bash
 omarchy plugin validate .

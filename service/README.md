@@ -12,7 +12,29 @@ helper failures; they do not make the shared Omarchy QML process a sandbox.
 
 After building and testing the helper, install its binary at
 `~/.local/bin/omarchy-buzz` and these two unit files at
-`~/.config/systemd/user/`. Review existing files before replacing them. Then:
+`~/.config/systemd/user/`. From the repository root, this fresh-install function
+refuses to replace an existing binary or either unit (including symlinks):
+
+```bash
+install_buzz_helper() {
+  for path in "$HOME/.local/bin/omarchy-buzz" \
+    "$HOME/.config/systemd/user/omarchy-buzz.service" \
+    "$HOME/.config/systemd/user/omarchy-buzz.socket"; do
+    if [ -e "$path" ] || [ -L "$path" ]; then
+      printf 'Already exists; review before upgrading: %s\n' "$path"
+      return 1
+    fi
+  done
+  install -Dm755 helper/target/release/omarchy-buzz "$HOME/.local/bin/omarchy-buzz" &&
+  install -Dm644 service/omarchy-buzz.service "$HOME/.config/systemd/user/omarchy-buzz.service" &&
+  install -Dm644 service/omarchy-buzz.socket "$HOME/.config/systemd/user/omarchy-buzz.socket"
+}
+install_buzz_helper
+```
+
+Continue only if all three files installed successfully. For an upgrade, retain
+the previous binary/units and deliberately replace them with a helper built
+from the same source revision as the plugin. Then:
 
 ```bash
 systemctl --user daemon-reload

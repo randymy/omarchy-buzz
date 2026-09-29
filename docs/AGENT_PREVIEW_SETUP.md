@@ -32,7 +32,11 @@ scripts/agent-preview auth-methods --agent codex --bundle /absolute/bundle \
 ```
 
 Use `--agent claude` for Claude. Hydration performs a locked upstream download;
-it does not log in. It validates installed package versions and native package
+setup requires at least 1 GiB free for Codex or 2 GiB for Claude on both the
+bundle and profile filesystems. These are conservative working-space floors,
+not promises about future package sizes. Low space is rejected before npm can
+replace an existing runtime. Free space or move the bundle before retrying.
+Hydration does not log in. It validates installed package versions and native package
 hashes recorded by the ARM64 runner. It is not a continuous integrity monitor
 for every transitive JavaScript file. `status` reports runtime readiness and
 explicitly leaves authentication `not_checked`.

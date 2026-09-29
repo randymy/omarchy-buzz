@@ -1,0 +1,67 @@
+{
+  "workflowRun": 36518401395,
+  "sourceRevision": "043668cd35f77ff7fe004d16dc7043d9a42ac598",
+  "result": "success",
+  "artifact": {
+    "artifact": "agent-preview-arm64.tar.gz",
+    "bytes": 58877568,
+    "manifestSha256": "dccd9e9a0659f53a7c910a0cfc8fe1bb000277213447284d7f1090f7e450b2f9",
+    "sha256": "a20fa2f9249312d1b9e1ffc37cee3beb62489798360abcabca7e58329f325c15"
+  },
+  "archiveAndManifestVerified": true,
+  "proposalHashesVerified": true,
+  "profilesPrepared": [
+    "codex",
+    "claude"
+  ],
+  "targetRuntimeHydration": "blocked_insufficient_disk",
+  "targetAuthentication": "not_checked",
+  "roomAgentsEnabled": false,
+  "productionChanged": false,
+  "discovery": {
+    "failures": [],
+    "loginStarted": false,
+    "methods": {
+      "claude": {
+        "default": [],
+        "terminalOptIn": [
+          {
+            "id": "claude-ai-login",
+            "type": "terminal"
+          }
+        ]
+      },
+      "codex": {
+        "default": [
+          {
+            "id": "chat-gpt",
+            "type": "agent"
+          }
+        ],
+        "terminalOptIn": [
+          {
+            "id": "chat-gpt",
+            "type": "agent"
+          }
+        ]
+      }
+    },
+    "modelTurnRequested": false,
+    "networkIsolated": true,
+    "realAccountUsed": false,
+    "sessionCreated": false,
+    "successful": true
+  },
+  "nativeClaude": {
+    "adapterVersion": "0.82.0",
+    "failures": [],
+    "loginStarted": false,
+    "modelTurnRequested": false,
+    "nativeVersion": "2.1.280",
+    "networkIsolated": true,
+    "realAccountUsed": false,
+    "sdkVersion": "0.3.280",
+    "subscriptionLoginFlagSupported": true,
+    "successful": true
+  }
+}

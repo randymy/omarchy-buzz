@@ -91,20 +91,23 @@ passed in run 36278075520. The daily update workflow is on the default branch;
 a completed scheduled check or successful draft creation is not yet established. Plugin/QML updates
 do not replace the helper binary. See [UPDATES.md](UPDATES.md).
 
-## Next release gates
+## Next release gates (updated September 28)
 
-1. Validate against an actual isolated Buzz relay, following
-   [RELAY_TESTING.md](RELAY_TESTING.md), and resolve upstream WS resource bounds
-   described in `helper/WS_UPSTREAM.md`.
-2. Resolve missing third-party notice texts and review the generated dependency
-   inventory before distributing binaries. Current local archives remain
-   development previews. See [PACKAGING.md](PACKAGING.md).
-3. Run remote CI and target-platform checks; verify physical keyboard and
-   multi-monitor behavior. Complete local unread and native notifications.
-4. Add separately supervised upstream ACP, truthful agent state and the first
-   end-to-end human/agent demo. Do not use the production relay as a test fixture.
-5. Publish the independent repository and submit the community listing when
-   release gates pass. vPerps consumes the same plugin; no fork is required.
+1. Resolve upstream WebSocket resource bounds described in
+   `helper/WS_UPSTREAM.md`. Isolated relay tests and authenticated production
+   messaging/thread reads have passed; they do not establish hostile-load bounds.
+2. Review dependency notices before public binary distribution. Source remains
+   available with manual helper build/setup; experimental archives are not releases.
+3. Finish target desktop acceptance (physical shortcut, multi-monitor, lock/DND
+   and failure states) and target architecture coverage. Local activity badges
+   and optional content-free notifications are implemented.
+4. Review and approve the prepared messaging-only community submission in
+   [MARKETPLACE_SUBMISSION.md](MARKETPLACE_SUBMISSION.md). The repository is public;
+   a marketplace listing has not been submitted.
+5. Separately advance the ACP preview through upstream contributions, real
+   subscription acceptance and supervised room-agent validation. These are not
+   prerequisites for a messaging-only listing. No Buzz/Omarchy fork or legacy
+   publication fallback is authorized.
 
 ## Shutdown-safe build recovery
 
@@ -1036,3 +1039,35 @@ controlled profile/service lifecycle and then real subscription acceptance.
 Do not claim discovery alone completes agent room collaboration. Local disk is
 still constrained; use remote builds. The new failed local fixture build was
 removed without deleting prior caches or user data.
+
+## ARM64 authentication preview staged (September 28)
+
+Manual workflow `36518401395` passed at
+`043668cd35f77ff7fe004d16dc7043d9a42ac598`: patched Buzz ACP unit checks,
+compiled Codex/Claude guarded discovery and the actual ARM64 Claude native
+subscription-login help check. All seven Buzz proposals are included, including
+membership-bound publication; there is no legacy endpoint fallback. The bundle
+contains notices and provenance and omits vendor runtimes pending locked setup.
+
+Downloaded and verified archive/manifest digests, source revision and all nine
+proposal hashes against this checkout. Bundle is staged beneath
+`~/.cache/omarchy-buzz/agent-previews/36518401395/agent-preview/agent-preview-arm64`.
+Both private profiles were prepared with the launcher on this ARM64 machine.
+No credentials were imported, login started, account verified, session created,
+model invoked or room-agent service enabled. Production messaging is unchanged.
+Sanitized evidence: [agent-arm64-preview-36518401395.json](evidence/agent-arm64-preview-36518401395.json).
+
+Target hydration is blocked by approximately 300 MiB free disk. Added a tested
+preflight floor (1 GiB Codex / 2 GiB Claude on bundle/profile filesystems) before
+npm can replace a runtime. The actual target invocation safely refused with
+`runtime_setup_insufficient_disk`. Do not repeatedly retry or fill the disk.
+GitHub download needed a home-cache TMPDIR because /tmp is also full. No further
+user files or caches were removed in this staging pass.
+
+Fresh source checkout and non-overwriting helper/unit installation are now
+explicit in the public documentation. The current release-gate list distinguishes
+messaging from later ACP work. Nine launcher tests, four packaging tests, native
+manifest validation and shell syntax validation passed. Marketplace submission
+remains prepared but unsubmitted; resource-bound, notice and desktop acceptance
+gates remain. Next: obtain disk headroom, hydrate/verify target runtimes, then
+interactive subscription acceptance; independently finish messaging release gates.
