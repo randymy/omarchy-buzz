@@ -1,4 +1,24 @@
-# Development checkpoint — 2026-09-28
+# Development checkpoint — 2026-09-29
+
+## Latest verified state
+
+- Installed messaging preview remains 0.0.7. Native rooms, sends, usernames,
+  bounded thread reads, overlay and normal window are available. No room agent
+  service is enabled and no public release or marketplace listing exists.
+- Both Codex/ChatGPT and Claude native-subscription fixed-response model tests
+  pass through guarded ACP adapters, including session-correlated responses and
+  explicit API-auth rejection. This is separate from room-agent acceptance.
+- ARM64 helper package run 36584446129 passed; archive digest and all notice
+  texts were checked. The artifact's helper smoke, send-scope and inherited-socket
+  tests pass on this Omarchy machine without credentials or a relay.
+- The current package has 252 dependency records, 192 unique notice texts and
+  no package without notice text. Distribution review flags remain explicit.
+- Room-agent shipping still requires upstream harness changes and the pending
+  ordinary-versus-atomic publication contract decision. See
+  [the contribution plan](upstream/ROOM_AGENT_SHIPPING.md).
+
+The dated sections below retain historical evidence; older installed-version
+and pending-test statements are superseded by this summary and later entries.
 
 Current source version: **0.0.7 thread-view development preview**, not a community release.
 Implemented: source-grounded design; native hosted/custom setup; Rust daemon and

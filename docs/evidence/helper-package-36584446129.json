@@ -1,0 +1,78 @@
+{
+  "runUrl": "https://github.com/randymy/omarchy-buzz/actions/runs/36584446129",
+  "runId": "36584446129",
+  "sourceRevision": "07a822e7ac0e67f6aff3ba8007148c6a06b39420",
+  "artifact": "helper-arm64-preview",
+  "helperVersion": "0.0.7",
+  "backendRevision": "781d39510cf23cfe224e8f521ae06a23377e06de",
+  "architecture": "aarch64",
+  "developmentPreview": true,
+  "archive": {
+    "filename": "omarchy-buzz-0.0.7-linux-aarch64.tar.gz",
+    "bytes": 5468106,
+    "sha256": "ba859a8714c5ec275cbabaa3645540fc1eccd35bd5f5a73837abfbeaf827411a",
+    "sidecarVerified": true,
+    "binarySha256": "d51d64cbbe86a0b9104e551b38313c1a2693ab541abcfbbb38484eb28d8afa7f",
+    "archiveVersionAndBinaryMatchSidecar": true,
+    "archiveNoticeFilesMatchDirectArtifact": true,
+    "archiveMembers": 201
+  },
+  "notices": {
+    "target": "aarch64-unknown-linux-gnu",
+    "lockSha256": "2234d195242ad008ecc00659040d7051183f868da0c128fd3939bac2428f956d",
+    "inventorySha256": "13603b9b49923191ab70cd1d146c85b1928a93dcb8f3f3e65236afc3c06dd7ab",
+    "packages": 252,
+    "uniqueTexts": 192,
+    "textChecksumsVerified": true,
+    "packagesWithoutNoticeText": 0,
+    "flaggedPackages": 19,
+    "flagCounts": {
+      "compound_or_legacy_expression_review": 14,
+      "supplemental_notice_review": 5
+    },
+    "supplementedPackages": [
+      "bitcoin-consensus-encoding 1.3.0",
+      "bitcoin-internals 0.7.0",
+      "bitcoin-io 0.1.101",
+      "bitcoin_hashes 0.14.101",
+      "nostr 0.44.8"
+    ],
+    "compoundOrLegacyPackages": [
+      "aws-lc-rs 1.18.1",
+      "aws-lc-sys 0.45.0",
+      "dbus 0.9.12",
+      "foreign-types 0.3.2",
+      "foreign-types-shared 0.1.1",
+      "libdbus-sys 0.2.7",
+      "linux-raw-sys 0.12.1",
+      "openssl-macros 0.1.1",
+      "openssl-src 300.6.1+3.6.3",
+      "ring 0.17.14",
+      "rustix 1.1.5",
+      "unicode-ident 1.0.26",
+      "vcpkg 0.2.15",
+      "version_check 0.9.5"
+    ],
+    "reviewRequired": true
+  },
+  "binaryDynamicLibraries": [
+    "libgcc_s.so.1",
+    "libm.so.6",
+    "libc.so.6",
+    "ld-linux-aarch64.so.1"
+  ],
+  "observations": [
+    "Every resolved package has at least one bundled license or notice text; no filename-inventory text is missing.",
+    "The libdbus-sys vendor/dbus/COPYING text offers AFL-2.1 or GPL-2.0-or-later for vendored D-Bus code; the helper requests keyring's vendored feature and has no dynamic libdbus dependency. Confirm the applicable choice and source/header obligations for the actual static code.",
+    "AWS-LC, OpenSSL, ring, Linux/raw-sys, rustix and Unicode compound terms have bundled root or nested texts, but exact applicable choices and source-level attributions remain unreviewed.",
+    "The inventory is a conservative Cargo source graph, not a linked-binary component analysis. External GNU runtime libraries are named by readelf but their license texts are not in the Rust inventory."
+  ],
+  "omarchyTargetChecks": {
+    "version": true,
+    "helperSmoke": true,
+    "sendIpcScopeFences": true,
+    "inheritedSocketActivation": true,
+    "credentialsUsed": false,
+    "relayContacted": false
+  }
+}

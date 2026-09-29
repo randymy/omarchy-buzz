@@ -44,6 +44,11 @@ jobs:
           ref: 18de37624071b48e95aed9ec5382823e2d72cd39
           path: claude
           persist-credentials: false
+      - name: Test preview launcher and session correlation without accounts
+        working-directory: plugin
+        run: |
+          python3 tests/test_agent_preview.py
+          python3 tests/test_session_admission_probe.py
       - name: Require native ARM64 and pinned toolchains
         run: |
           test "$(uname -m)" = aarch64
