@@ -19,7 +19,7 @@ SOURCES = {
 PATCHES = {
     "buzz": ("ws-resource-limits", "acp-permission-mode", "acp-interactive-login",
              "acp-key-isolation", "acp-harness-replies", "acp-deny-tool-requests",
-             "member-bound-events"),
+             "member-bound-events", "acp-auth-timeout"),
     "codex": ("codex-subscription-policy",),
     "claude": ("claude-subscription-policy",),
 }

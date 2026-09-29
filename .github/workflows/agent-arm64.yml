@@ -55,7 +55,7 @@ jobs:
           node-version: '22.23.3'
       - name: Apply exact proposals only to disposable upstream checkouts
         run: |
-          for patch in ws-resource-limits acp-permission-mode acp-interactive-login acp-key-isolation acp-harness-replies acp-deny-tool-requests member-bound-events; do
+          for patch in ws-resource-limits acp-permission-mode acp-interactive-login acp-key-isolation acp-harness-replies acp-deny-tool-requests member-bound-events acp-auth-timeout; do
             git -C buzz apply --check "$GITHUB_WORKSPACE/plugin/docs/upstream/$patch.patch"
             git -C buzz apply "$GITHUB_WORKSPACE/plugin/docs/upstream/$patch.patch"
           done
@@ -79,6 +79,14 @@ jobs:
           cargo +1.95.0 test --locked -p buzz-acp --lib terminal_auth::tests --target-dir "$RUNNER_TEMP/agent-target"
           cargo +1.95.0 test --locked -p buzz-acp --lib deny_tool_policy --target-dir "$RUNNER_TEMP/agent-target"
           cargo +1.95.0 test --locked -p buzz-acp --lib key_isolation_tests:: --target-dir "$RUNNER_TEMP/agent-target"
+      - name: Verify authentication deadlines with synthetic peers
+        working-directory: buzz
+        run: |
+          cargo +1.95.0 test --locked -p buzz-acp --lib authentication_can_wait_past_a_short_rpc_deadline --target-dir "$RUNNER_TEMP/agent-target"
+          cargo +1.95.0 test --locked -p buzz-acp --lib authentication_deadline_is_bounded --target-dir "$RUNNER_TEMP/agent-target"
+          python3 ../plugin/tests/acp_auth_deadline_probe.py \
+            --binary "$RUNNER_TEMP/agent-target/debug/buzz-acp" \
+            --output "$RUNNER_TEMP/agent-auth-deadline-probe.json"
       - name: Inventory ARM64 Rust dependency notices from the locked ACP graph
         working-directory: buzz
         run: |
@@ -195,6 +203,7 @@ jobs:
             ${{ runner.temp }}/agent-preview/agent-preview-arm64.sha256.json
             ${{ runner.temp }}/agent-arm64-probe.json
             ${{ runner.temp }}/agent-arm64-native-probe.json
+            ${{ runner.temp }}/agent-auth-deadline-probe.json
           if-no-files-found: error
           retention-days: 7
       - name: Cache successful native compilation
