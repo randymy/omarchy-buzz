@@ -1,6 +1,6 @@
 name: Manual Codex subscription policy proposal
 
-# Dispatch is paused; see AGENTS.md. This file is saved for future validation.
+# Manual runs only; the user resumed focused remote validation on 2026-09-28.
 
 on:
   workflow_dispatch:

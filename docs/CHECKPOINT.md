@@ -885,3 +885,10 @@ initial subscription mode. Its advertised login/session/MCP capabilities now
 match those restrictions. These fixes still need the full adapter and pinned
 native configuration fixtures; static review and policy-module checks are not
 a substitute for those gates.
+
+## Remote validation resumed (2026-09-28)
+
+The user explicitly authorized remote tests again. The earlier dispatch pause
+is lifted; workflows remain manual-only and account notification settings are
+unchanged. First gate: build/typecheck and isolated tests of the Codex policy
+proposal against the pinned adapter. No real account or model task is implied.
