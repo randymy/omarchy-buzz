@@ -33,10 +33,13 @@ an explicit retry. Retry reloads configuration after setup. A pending keyring op
 
 Protocol version 1 requests are JSON lines with `version`, `id`, `type`;
 allowed types are `get_snapshot`, `subscribe`, `retry_connection`, and
-`fetch_recent`, `fetch_recipients`, and `send_message`. Room requests require a canonical UUID
+`fetch_recent`, `fetch_thread`, `close_thread`, `fetch_recipients`, and `send_message`. Room requests require a canonical UUID
 `roomId` from the current discovered catalog. Sending also requires a canonical
 request UUID, current helper `instanceId`/`generation`, text of at most 4096 UTF-8
-bytes, and at most 20 distinct canonical mention public keys. Nonempty mentions must appear in the current selected-room recipient snapshot;
+bytes, and at most 20 distinct canonical mention public keys. An optional `rootId`
+requires the current verified selected-room root and matching thread snapshot;
+it produces an upstream SDK direct thread reply and is bound in the delivery
+ledger. Omit it for a top-level message. Nonempty mentions must appear in the current selected-room recipient snapshot;
 the native composer supplies exact keys selected from that list. Typed names
 alone are not resolved. Request IDs
 are 1–128 ASCII alphanumeric, underscore or hyphen. Lines including newline
@@ -44,7 +47,7 @@ are capped at 64 KiB. Eight clients maximum; output writes time out after ten
 seconds. Invalid requests receive a category-only error and the connection closes.
 Hello/status responses expose public identity/origin, helper instance/generation,
 connection category, and capabilities `connection_status`, `room_catalog`,
-`room_history`, `message_send`, `room_recipients`, `history_auto_refresh`, `room_activity`, `agent_profiles`. At most twenty rooms and twenty projected message rows are
+`room_history`, `message_send`, `thread_send`, `thread_replies`, `room_recipients`, `history_auto_refresh`, `room_activity`, `agent_profiles`. At most twenty rooms and twenty projected message rows are
 returned. Message previews are plain text capped at 768 UTF-8 bytes, with
 explicit truncation. No raw events, backend errors or credential material is forwarded. UI EOF closes the bridge connection.
 

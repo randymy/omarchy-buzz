@@ -251,3 +251,22 @@ the panel is open. Failed reads pause refresh until an explicit retry. The exist
 inside a thread, automatic thread notifications and detailed execution state
 are separate increments. Responses are bounded to 96 KiB; incoming commands
 remain bounded to 64 KiB. Install matching helper/plugin versions together.
+
+## Thread composition and installation (0.0.8)
+
+The new `thread_send` capability enables optional `rootId` on `send_message`.
+The helper checks the selected, verified, available history root and matching
+thread snapshot; SDK signing and durable request identity bind the destination.
+Existing top-level ledger records remain readable. An old helper cannot parse
+new thread records; downgrade disables sending instead of forgetting receipts.
+
+Run `scripts/preview --thread-send` for the rendered composer's destination,
+draft, receipt, stale-root and older-helper checks. `--send-bridge` verifies
+actual process framing and ordinary-send regression behavior. Rust sender tests
+cover signed reply tags and root-bound replays, and the isolated real-relay
+fixture now publishes and queries a thread reply. It uses synthetic identities.
+
+`tests/helper_install.py` tests trusted-package validation, unit ownership,
+target loadability, dry runs and rollback after partial service activation.
+Use `scripts/helper-install install --dry-run ARCHIVE` before a local install.
+The installer requires this checkout's exact version and Buzz dependency pin.
