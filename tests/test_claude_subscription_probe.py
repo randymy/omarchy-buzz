@@ -81,7 +81,7 @@ class ClaudeSubscriptionProbeTests(unittest.TestCase):
     def test_unknown_status_and_bad_exit_fail_closed(self):
         with self.assertRaises(ProbeFailure) as caught:
             classify_status(b'{"loggedIn":true,"apiProvider":"newBackend"}', "zero")
-        self.assertEqual(caught.exception.category, "status_field_unrecognized")
+        self.assertEqual(caught.exception.category, "status_apiProvider_unrecognized")
         with tempfile.TemporaryDirectory() as temporary:
             script = self.fake_cli(temporary, "raise SystemExit(2)\n")
             with self.assertRaises(ProbeFailure) as caught:

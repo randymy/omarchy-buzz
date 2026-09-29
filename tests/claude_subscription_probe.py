@@ -109,7 +109,7 @@ def classify_status(raw, exit_class):
     ):
         value = payload.get(field)
         if value is not None and (not isinstance(value, str) or value not in allowed):
-            raise ProbeFailure("status_field_unrecognized")
+            raise ProbeFailure("status_" + field + "_unrecognized")
         result[field] = value
     return result
 
@@ -149,7 +149,12 @@ def main():
     summary = {
         "successful": False,
         "characterizationOnly": True,
+        "realAccountUsed": False,
+        "modelTurnRequested": False,
         "networkIsolated": False,
+        "adapterVersion": None,
+        "sdkVersion": None,
+        "nodeVersion": None,
         "cases": {},
         "failures": [],
     }
@@ -165,8 +170,10 @@ def main():
             raise ProbeFailure("node_binary_unavailable")
         if installed_version(packages, "@agentclientprotocol/claude-agent-acp") != ADAPTER_VERSION:
             raise ProbeFailure("adapter_version_mismatch")
+        summary["adapterVersion"] = ADAPTER_VERSION
         if installed_version(packages, "@anthropic-ai/claude-agent-sdk") != SDK_VERSION:
             raise ProbeFailure("sdk_version_mismatch")
+        summary["sdkVersion"] = SDK_VERSION
         adapter = adapter_executable(packages, "claude-agent-acp")
         with tempfile.TemporaryDirectory(prefix="claude-node-version-") as temporary:
             home = Path(temporary)
@@ -177,6 +184,7 @@ def main():
         version = raw.decode("ascii", errors="ignore").strip()
         if not VERSION.fullmatch(version) or int(version[1:].split(".", 1)[0]) < 22:
             raise ProbeFailure("node_version_unsupported")
+        summary["nodeVersion"] = version
         for active_case in CASES:
             summary["cases"][active_case] = run_case(node, adapter, active_case, deadline)
         active_case = None
