@@ -1060,6 +1060,9 @@ mod thread_policy_tests {
             true,
             true
         ));
+        status.history.rows[0].unavailable = true;
+        assert!(!allowed(&status, Some(room), true, true));
+        status.history.rows[0].unavailable = false;
         status.thread = Thread {
             state: "loading".into(),
             room_id: Some(room.into()),
