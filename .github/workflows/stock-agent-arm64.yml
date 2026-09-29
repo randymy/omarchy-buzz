@@ -1,0 +1,79 @@
+name: Manual stock ARM64 room-agent binaries
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: stock-agent-arm64
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          path: plugin
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: block/buzz
+          ref: 781d39510cf23cfe224e8f521ae06a23377e06de
+          persist-credentials: false
+          path: buzz
+      - run: echo "CARGO_HOME=$RUNNER_TEMP/buzz-cargo" >> "$GITHUB_ENV"
+      - uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25
+        with:
+          path: |
+            ${{ runner.temp }}/buzz-cargo
+            ${{ runner.temp }}/agent-target
+          key: stock-agent-arm64-781d395-v1
+          restore-keys: |
+            buzz-agent-arm64-ordinary-v2-
+      - name: Install native build dependencies
+        run: |
+          test "$(uname -m)" = aarch64
+          rustup toolchain install 1.95.0 --profile minimal
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libssl-dev libdbus-1-dev protobuf-compiler
+      - name: Build unchanged upstream executables
+        working-directory: buzz
+        run: |
+          test -z "$(git status --porcelain)"
+          cargo +1.95.0 build --locked -p buzz-acp -p buzz-cli --target-dir "$RUNNER_TEMP/agent-target"
+          test -z "$(git status --porcelain)"
+          "$RUNNER_TEMP/agent-target/debug/buzz-acp" --help > "$RUNNER_TEMP/acp-help.txt"
+          "$RUNNER_TEMP/agent-target/debug/buzz" --help > "$RUNNER_TEMP/cli-help.txt"
+      - name: Stage private-test artifacts and provenance
+        run: |
+          mkdir -p stock-agent/bin
+          cp "$RUNNER_TEMP/agent-target/debug/buzz-acp" "$RUNNER_TEMP/agent-target/debug/buzz" stock-agent/bin/
+          cp buzz/LICENSE stock-agent/LICENSE
+          cp "$RUNNER_TEMP/acp-help.txt" "$RUNNER_TEMP/cli-help.txt" stock-agent/
+          python3 - <<'PY'
+          import hashlib,json,os,pathlib,subprocess
+          root=pathlib.Path('stock-agent')
+          data={'developmentArtifact':True,'productionInstalled':False,'patchesApplied':[],
+                'sourceRevision':subprocess.check_output(['git','-C','buzz','rev-parse','HEAD'],text=True).strip(),
+                'workflowRevision':os.environ['GITHUB_SHA'],'runId':os.environ['GITHUB_RUN_ID'],
+                'architecture':'aarch64','files':{}}
+          for path in sorted(root.rglob('*')):
+              if path.is_file():data['files'][str(path.relative_to(root))]=hashlib.sha256(path.read_bytes()).hexdigest()
+          (root/'build.json').write_text(json.dumps(data,indent=2)+'\n')
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: stock-agent-arm64
+          path: stock-agent
+          retention-days: 14
+      - uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25
+        if: success()
+        with:
+          path: |
+            ${{ runner.temp }}/buzz-cargo
+            ${{ runner.temp }}/agent-target
+          key: stock-agent-arm64-781d395-v1
