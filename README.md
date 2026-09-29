@@ -22,6 +22,8 @@ Development targets the built-in Omarchy bar and the shell interfaces inspected 
 
 Manifest validation, a native sample-panel render, ARM64 helper tests, isolated Secret Service enrollment, inherited-socket idle reactivation, and actual QML/helper process integration have passed locally. The installed native setup panel and systemd socket activation also passed a live desktop check. Native plugin removal/reinstall and conflict-aware shortcut installation/removal passed. Physical keyboard and multi-monitor verification remain pending. Do not infer support for every 4.x snapshot from the package version.
 
+For another user, see [sharing and room access](docs/SHARING.md).
+
 ## Try the local development preview
 
 Use a disposable Omarchy session first. Get the public source (Git refuses to
