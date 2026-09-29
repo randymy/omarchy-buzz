@@ -1,0 +1,468 @@
+diff --git c/src/CodexAcpClient.ts i/src/CodexAcpClient.ts
+index 3b3aca4..8428044 100644
+--- c/src/CodexAcpClient.ts
++++ i/src/CodexAcpClient.ts
+@@ -136,7 +136,8 @@ export class CodexAcpClient {
+     private configPath: string | null = null;
+ 
+ 
+-    constructor(codexClient: CodexAppServerClient, codexConfig?: JsonObject, modelProvider?: string) {
++    constructor(codexClient: CodexAppServerClient, codexConfig?: JsonObject, modelProvider?: string,
++                private readonly requireChatgptSubscription = false) {
+         this.codexClient = codexClient;
+         this.config = codexConfig ?? {};
+         this.modelProvider = modelProvider ?? null;
+@@ -176,6 +177,10 @@ export class CodexAcpClient {
+         authRequest: acp.AuthenticateRequest,
+         urlElicitationRequester?: UrlElicitationRequester,
+     ): Promise<Boolean> {
++        if (this.requireChatgptSubscription && authRequest.methodId !== "chat-gpt"
++            && authRequest.methodId !== "chat-gpt-device-code") {
++            throw new Error("subscription_policy_denied");
++        }
+         if (!isCodexAuthRequest(authRequest)) {
+             throw RequestError.invalidRequest();
+         }
+@@ -448,6 +453,7 @@ export class CodexAcpClient {
+      * provider. Rejects unknown provider ids with `invalid_params`.
+      */
+     setProvider(request: acp.SetProviderRequest): void {
++        if (this.requireChatgptSubscription) throw new Error("subscription_policy_denied");
+         if (request.providerId !== OPENAI_PROVIDER_ID) {
+             throw RequestError.invalidParams(
+                 {providerId: request.providerId},
+@@ -472,6 +478,7 @@ export class CodexAcpClient {
+      * unknown provider id is idempotent success (RFD behavior §7).
+      */
+     disableProvider(request: acp.DisableProviderRequest): void {
++        if (this.requireChatgptSubscription) throw new Error("subscription_policy_denied");
+         const overrideWasActive = this.gatewayConfig !== null;
+         if (request.providerId === OPENAI_PROVIDER_ID) {
+             this.gatewayConfig = null;
+@@ -588,6 +595,7 @@ export class CodexAcpClient {
+     }
+ 
+     async resumeSession(request: acp.ResumeSessionRequest, onSubscribed?: () => void): Promise<SessionMetadata> {
++        if (this.requireChatgptSubscription) throw new Error("subscription_policy_denied");
+         const additionalDirectories = readAdditionalDirectories(request.cwd, request.additionalDirectories, request._meta);
+         await this.refreshSkills(request.cwd, additionalDirectories);
+ 
+@@ -614,6 +622,7 @@ export class CodexAcpClient {
+     }
+ 
+     async forkSession(request: acp.ForkSessionRequest): Promise<SessionMetadata> {
++        if (this.requireChatgptSubscription) throw new Error("subscription_policy_denied");
+         const additionalDirectories = readAdditionalDirectories(request.cwd, request.additionalDirectories, request._meta);
+         return await runForkSession(request, additionalDirectories, {
+             codexClient: this.codexClient,
+@@ -629,6 +638,7 @@ export class CodexAcpClient {
+     }
+ 
+     async loadSession(request: acp.LoadSessionRequest, onSubscribed?: () => void): Promise<SessionMetadataWithThread> {
++        if (this.requireChatgptSubscription) throw new Error("subscription_policy_denied");
+         const additionalDirectories = readAdditionalDirectories(request.cwd, request.additionalDirectories, request._meta);
+         await this.refreshSkills(request.cwd, additionalDirectories);
+ 
+@@ -705,6 +715,9 @@ export class CodexAcpClient {
+             modelProvider: this.getModelProvider(),
+             cwd: request.cwd,
+         });
++        if (this.requireChatgptSubscription && response.modelProvider !== "openai") {
++            throw new Error("subscription_policy_denied");
++        }
+ 
+         const codexModels = await this.fetchAvailableModels();
+         if (codexModels.length === 0) {
+@@ -901,7 +914,7 @@ export class CodexAcpClient {
+     }
+ 
+     getModelProvider(): string | null {
+-        return this.gatewayConfig?.modelProvider ?? this.modelProvider;
++        return this.requireChatgptSubscription ? "openai" : this.gatewayConfig?.modelProvider ?? this.modelProvider;
+     }
+ 
+     private async getResumeModelProvider(): Promise<string> {
+diff --git c/src/CodexAcpServer.ts i/src/CodexAcpServer.ts
+index 3b79ee4..55047aa 100644
+--- c/src/CodexAcpServer.ts
++++ i/src/CodexAcpServer.ts
+@@ -54,6 +54,7 @@ import {CodexCommands, GOAL_CONTINUATION_PROMPT} from "./CodexCommands";
+ import {SteeringQueue} from "./SteeringQueue";
+ import type {QuotaMeta} from "./QuotaMeta";
+ import {logger} from "./Logger";
++import {subscriptionChildEnv} from "./SubscriptionPolicy";
+ import {sanitizeMcpServerName} from "./McpServerName";
+ import type {ToolCallReports} from "./ToolCallReports";
+ import {ToolCallReportingConnection} from "./ToolCallReportingConnection";
+@@ -277,6 +278,7 @@ export interface CodexProcessState {
+     codexPath: string | undefined;
+     config: JsonObject | undefined;
+     modelProvider: string | undefined;
++    requireChatgptSubscription?: boolean;
+     stderr: string;
+     stderrProcess?: CodexConnection["process"];
+ }
+@@ -1205,13 +1207,16 @@ export class CodexAcpServer {
+         clearTimeout(forceKill);
+ 
+         state.stderr = "";
+-        state.connection = startCodexConnection(state.codexPath);
++        state.connection = startCodexConnection(state.codexPath,
++            state.requireChatgptSubscription ? subscriptionChildEnv(process.env) : undefined,
++            state.requireChatgptSubscription);
+         this.captureStderr();
+         this.observeCodexProcess();
+         return new CodexAcpClient(
+             new CodexAppServerClient(state.connection.connection),
+             state.config,
+             state.modelProvider,
++            state.requireChatgptSubscription,
+         );
+     }
+ 
+diff --git c/src/CodexJsonRpcConnection.ts i/src/CodexJsonRpcConnection.ts
+index 0f79117..ce4b0d8 100644
+--- c/src/CodexJsonRpcConnection.ts
++++ i/src/CodexJsonRpcConnection.ts
+@@ -12,17 +12,20 @@ export interface CodexConnection {
+     readonly process: ChildProcessWithoutNullStreams;
+ }
+ 
+-export function startCodexConnection(codexPath?: string, env?: NodeJS.ProcessEnv): CodexConnection {
++export function startCodexConnection(codexPath?: string, env?: NodeJS.ProcessEnv, requireChatgptSubscription = false): CodexConnection {
+     const spawnEnv = env ?? process.env;
++    const args = requireChatgptSubscription
++        ? ['-c', 'forced_login_method=chatgpt', 'app-server']
++        : ['app-server'];
+ 
+     let codex: ChildProcessWithoutNullStreams;
+     if (codexPath) {
+         codex = process.platform === 'win32'
+-            ? spawn(`"${codexPath}" app-server`, { shell: true, env: spawnEnv })
+-            : spawn(codexPath, ['app-server'], { env: spawnEnv });
++            ? spawn(`"${codexPath}" ${args.join(' ')}`, { shell: true, env: spawnEnv })
++            : spawn(codexPath, args, { env: spawnEnv });
+     } else {
+         const bundledCodexPath = createRequire(import.meta.url).resolve("@openai/codex/bin/codex.js");
+-        codex = spawn(process.execPath, [bundledCodexPath, 'app-server'], {env: spawnEnv});
++        codex = spawn(process.execPath, [bundledCodexPath, ...args], {env: spawnEnv});
+     }
+ 
+     attachLogs(codex);
+diff --git c/src/Logger.ts i/src/Logger.ts
+index 2b1cdc8..9390d72 100644
+--- c/src/Logger.ts
++++ i/src/Logger.ts
+@@ -9,7 +9,9 @@ class Logger {
+     private readonly logFilePath: string | null;
+ 
+     constructor() {
+-        const logDir = process.env["APP_SERVER_LOGS"];
++        // Subscription mode must not persist raw app-server JSON-RPC or prompts.
++        const logDir = process.argv.includes("--require-chatgpt-subscription")
++            ? undefined : process.env["APP_SERVER_LOGS"];
+         if (!logDir) {
+             this.logFilePath = null;
+             return;
+@@ -26,6 +28,10 @@ class Logger {
+     }
+ 
+     error(message: string, err: unknown) {
++        if (process.argv.includes("--require-chatgpt-subscription")) {
++            console.error("[SYSTEM_ERROR] subscription_mode_error");
++            return;
++        }
+         const formattedError = this.formatError(err);
+         if (!this.logFilePath) {
+             console.error(`[SYSTEM_ERROR] ${message}: ${formattedError}`);
+diff --git c/src/SubscriptionPolicy.ts i/src/SubscriptionPolicy.ts
+new file mode 100644
+index 0000000..97bd4c3
+--- /dev/null
++++ i/src/SubscriptionPolicy.ts
+@@ -0,0 +1,81 @@
++import path from "node:path";
++import type {CodexAppServerClient} from "./CodexAppServerClient";
++
++const DENIED = "subscription_policy_denied";
++
++export function subscriptionDenied(): never {
++    throw new Error(DENIED);
++}
++
++function record(value: unknown): Record<string, unknown> | null {
++    return value !== null && typeof value === "object" && !Array.isArray(value)
++        ? value as Record<string, unknown> : null;
++}
++
++/** Checks the supported config/read(cwd) surface, not a billing receipt. */
++export function validSubscriptionConfig(value: unknown): boolean {
++    const config = record(value);
++    if (!config || config["forced_login_method"] !== "chatgpt") return false;
++    if (config["model_provider"] !== null && config["model_provider"] !== undefined
++        && config["model_provider"] !== "openai") return false;
++    for (const key of ["openai_base_url", "chatgpt_base_url", "model_catalog_url",
++        "experimental_bearer_token"]) {
++        if (config[key] !== null && config[key] !== undefined) return false;
++    }
++    const providers = config["model_providers"];
++    const providerEntries = record(providers);
++    if (providers !== null && providers !== undefined
++        && (!providerEntries || Object.keys(providerEntries).length !== 0)) return false;
++    return true;
++}
++
++const FORBIDDEN_ENV = ["CODEX_PATH", "CODEX_CONFIG", "MODEL_PROVIDER", "DEFAULT_AUTH_REQUEST",
++    "OPENAI_API_KEY", "CODEX_API_KEY", "OPENAI_BASE_URL", "CHATGPT_BASE_URL",
++    "CODEX_BASE_URL", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NODE_OPTIONS", "NODE_PATH"];
++
++export function validateSubscriptionStartup(env: NodeJS.ProcessEnv): void {
++    if (!env["CODEX_HOME"] || !path.isAbsolute(env["CODEX_HOME"])) subscriptionDenied();
++    if (FORBIDDEN_ENV.some(key => env[key] !== undefined)) subscriptionDenied();
++}
++
++/** Only explicit process basics reach the native app-server in this mode. */
++export function subscriptionChildEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
++    const child: NodeJS.ProcessEnv = {};
++    for (const key of ["HOME", "USER", "LOGNAME", "PATH", "TMPDIR", "LANG", "LC_ALL",
++        "TERM", "CODEX_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME",
++        "XDG_STATE_HOME", "XDG_RUNTIME_DIR", "SSL_CERT_FILE", "SSL_CERT_DIR"]) {
++        if (env[key] !== undefined) child[key] = env[key];
++    }
++    return child;
++}
++
++export class SubscriptionPolicy {
++    private readonly sessions = new Map<string, string>();
++
++    constructor(private readonly native: CodexAppServerClient) {}
++
++    async checkWorkspace(cwd: string): Promise<void> {
++        if (!cwd || !path.isAbsolute(cwd)) subscriptionDenied();
++        try {
++            const [config, account] = await Promise.all([
++                this.native.configRead({cwd, includeLayers: false}),
++                this.native.accountRead({refreshToken: false}),
++            ]);
++            if (!validSubscriptionConfig(config.config) || account.account?.type !== "chatgpt") {
++                subscriptionDenied();
++            }
++        } catch {
++            subscriptionDenied();
++        }
++    }
++
++    remember(sessionId: string, cwd: string): void {
++        this.sessions.set(sessionId, cwd);
++    }
++
++    async checkPrompt(sessionId: string): Promise<void> {
++        const cwd = this.sessions.get(sessionId);
++        if (!cwd) subscriptionDenied();
++        await this.checkWorkspace(cwd);
++    }
++}
+diff --git c/src/__tests__/SubscriptionPolicy.test.ts i/src/__tests__/SubscriptionPolicy.test.ts
+new file mode 100644
+index 0000000..e87c537
+--- /dev/null
++++ i/src/__tests__/SubscriptionPolicy.test.ts
+@@ -0,0 +1,69 @@
++import {describe, expect, it, vi} from "vitest";
++import type {CodexAppServerClient} from "../CodexAppServerClient";
++import {CodexAcpClient} from "../CodexAcpClient";
++import {createCodexMockTestFixture} from "./acp-test-utils";
++import {SubscriptionPolicy, subscriptionChildEnv, validSubscriptionConfig,
++    validateSubscriptionStartup} from "../SubscriptionPolicy";
++
++const cleanConfig = {forced_login_method: "chatgpt", model_provider: null};
++
++describe("opt-in ChatGPT subscription routing policy", () => {
++    it("rejects route-bearing effective config without exposing values", () => {
++        expect(validSubscriptionConfig(cleanConfig)).toBe(true);
++        for (const config of [
++            {...cleanConfig, forced_login_method: "api"},
++            {...cleanConfig, model_provider: "proxy"},
++            {...cleanConfig, openai_base_url: "https://elsewhere.invalid"},
++            {...cleanConfig, chatgpt_base_url: "https://elsewhere.invalid"},
++            {...cleanConfig, model_providers: {proxy: {base_url: "https://elsewhere.invalid"}}},
++        ]) expect(validSubscriptionConfig(config)).toBe(false);
++        expect(validSubscriptionConfig(null)).toBe(false);
++    });
++
++    it("requires a dedicated home and rejects ambient route inputs", () => {
++        expect(() => validateSubscriptionStartup({CODEX_HOME: "/isolated/codex"})).not.toThrow();
++        for (const env of [{}, {CODEX_HOME: "relative"},
++            {CODEX_HOME: "/isolated/codex", MODEL_PROVIDER: "proxy"},
++            {CODEX_HOME: "/isolated/codex", OPENAI_API_KEY: "synthetic"},
++        ]) expect(() => validateSubscriptionStartup(env)).toThrow("subscription_policy_denied");
++        expect(subscriptionChildEnv({CODEX_HOME: "/isolated/codex", HOME: "/isolated",
++            OTHER_TOKEN: "synthetic"})).toEqual({CODEX_HOME: "/isolated/codex", HOME: "/isolated"});
++    });
++
++    it("checks cwd-aware config and ChatGPT account at creation and before prompt", async () => {
++        const configRead = vi.fn().mockResolvedValue({config: cleanConfig});
++        const accountRead = vi.fn().mockResolvedValue({account: {type: "chatgpt"}});
++        const native = {configRead, accountRead} as unknown as CodexAppServerClient;
++        const policy = new SubscriptionPolicy(native);
++        await policy.checkWorkspace("/workspace");
++        expect(configRead).toHaveBeenCalledWith({cwd: "/workspace", includeLayers: false});
++        policy.remember("fresh", "/workspace");
++        await policy.checkPrompt("fresh");
++        expect(configRead).toHaveBeenCalledTimes(2);
++        await expect(policy.checkPrompt("imported")).rejects.toThrow("subscription_policy_denied");
++        accountRead.mockResolvedValue({account: {type: "apiKey"}});
++        await expect(policy.checkPrompt("fresh")).rejects.toThrow("subscription_policy_denied");
++    });
++
++    it("fails closed with a static error on native read failures", async () => {
++        const native = {configRead: vi.fn().mockRejectedValue(new Error("sensitive native failure")),
++            accountRead: vi.fn().mockResolvedValue({account: null})} as unknown as CodexAppServerClient;
++        await expect(new SubscriptionPolicy(native).checkWorkspace("/workspace"))
++            .rejects.toThrow("subscription_policy_denied");
++    });
++
++    it("pins the client provider and denies internal route and import methods", async () => {
++        const fixture = createCodexMockTestFixture();
++        const client = new CodexAcpClient(fixture.getCodexAppServerClient(), {}, undefined, true);
++        expect(client.getModelProvider()).toBe("openai");
++        expect(() => client.setProvider({providerId: "openai", apiType: "openai",
++            baseUrl: "https://elsewhere.invalid"})).toThrow("subscription_policy_denied");
++        expect(() => client.disableProvider({providerId: "openai"}))
++            .toThrow("subscription_policy_denied");
++        await expect(client.authenticate({methodId: "api-key"} as never))
++            .rejects.toThrow("subscription_policy_denied");
++        await expect(client.resumeSession({} as never)).rejects.toThrow("subscription_policy_denied");
++        await expect(client.forkSession({} as never)).rejects.toThrow("subscription_policy_denied");
++        await expect(client.loadSession({} as never)).rejects.toThrow("subscription_policy_denied");
++    });
++});
+diff --git c/src/index.ts i/src/index.ts
+index 1975930..6b8ff56 100644
+--- c/src/index.ts
++++ i/src/index.ts
+@@ -17,6 +17,14 @@ import {
+     SESSION_STEERING_METHOD,
+ } from "./AcpExtensions";
+ import {ASYNC_TASK_STOP_METHOD} from "./async-tasks/AsyncTaskExtension";
++import {SubscriptionPolicy, subscriptionChildEnv, subscriptionDenied,
++    validateSubscriptionStartup} from "./SubscriptionPolicy";
++
++const requireChatgptSubscription = process.argv.includes("--require-chatgpt-subscription");
++if (requireChatgptSubscription && process.argv[2] !== "--require-chatgpt-subscription") {
++    console.error("subscription_policy_denied");
++    process.exit(2);
++}
+ 
+ const emptyExtensionParamsParser = z.preprocess(
+     (params) => params ?? {},
+@@ -76,6 +84,10 @@ if (process.argv[2] === "login") {
+ }
+ 
+ function startAcpServer() {
++    if (requireChatgptSubscription) {
++        try { validateSubscriptionStartup(process.env); }
++        catch { console.error("subscription_policy_denied"); process.exit(2); }
++    }
+     const codexPath = process.env["CODEX_PATH"];
+     const configString = process.env["CODEX_CONFIG"];
+     const authRequestString = process.env["DEFAULT_AUTH_REQUEST"];
+@@ -84,7 +96,7 @@ function startAcpServer() {
+     const parsedAuthRequest = authRequestString ? JSON.parse(authRequestString) : undefined;
+     const defaultAuthRequest = parsedAuthRequest && isCodexAuthRequest(parsedAuthRequest) ? parsedAuthRequest : undefined;
+ 
+-    logger.log("Startup", {
++    if (!requireChatgptSubscription) logger.log("Startup", {
+         name: packageJson.name,
+         version: packageJson.version,
+         codexPath: codexPath,
+@@ -95,10 +107,13 @@ function startAcpServer() {
+     });
+ 
+     const codexProcessState: CodexProcessState = {
+-        connection: startCodexConnection(codexPath),
++        connection: startCodexConnection(codexPath,
++            requireChatgptSubscription ? subscriptionChildEnv(process.env) : undefined,
++            requireChatgptSubscription),
+         codexPath,
+         config,
+         modelProvider,
++        requireChatgptSubscription,
+         stderr: "",
+     };
+ 
+@@ -115,9 +130,11 @@ function startAcpServer() {
+ 
+     const acpJsonStream = createJsonStream(process.stdin, process.stdout);
+ 
++    let policy: SubscriptionPolicy | null = null;
+     function createAgent(connection: acp.AgentContext): CodexAcpServer {
+         const appServerClient = new CodexAppServerClient(codexProcessState.connection.connection);
+-        const codexClient = new CodexAcpClient(appServerClient, config, modelProvider);
++        const codexClient = new CodexAcpClient(appServerClient, config, modelProvider, requireChatgptSubscription);
++        policy = requireChatgptSubscription ? new SubscriptionPolicy(appServerClient) : null;
+         return new CodexAcpServer(
+             connection,
+             codexClient,
+@@ -135,6 +152,7 @@ function startAcpServer() {
+         }
+         return codexAcpServer;
+     };
++    const guarded = (): SubscriptionPolicy => policy ?? subscriptionDenied();
+ 
+     acp.agent({name: packageJson.name})
+         .onConnect((connection) => {
+@@ -147,27 +165,43 @@ function startAcpServer() {
+             });
+         })
+         .onRequest(acp.methods.agent.initialize, (ctx) => getAgent().initialize(ctx.params))
+-        .onRequest(acp.methods.agent.session.new, (ctx) => getAgent().newSession(ctx.params))
+-        .onRequest(acp.methods.agent.session.load, (ctx) => getAgent().loadSession(ctx.params))
+-        .onRequest(acp.methods.agent.session.fork, (ctx) => getAgent().forkSession(ctx.params))
++        .onRequest(acp.methods.agent.session.new, async (ctx) => {
++            if (requireChatgptSubscription) {
++                // The server's generic getOrCreateSession treats a sessionId field as resume.
++                if ("sessionId" in ctx.params) subscriptionDenied();
++                await guarded().checkWorkspace(ctx.params.cwd);
++            }
++            const result = await getAgent().newSession(ctx.params);
++            if (requireChatgptSubscription) guarded().remember(result.sessionId, ctx.params.cwd);
++            return result;
++        })
++        .onRequest(acp.methods.agent.session.load, (ctx) => requireChatgptSubscription ? subscriptionDenied() : getAgent().loadSession(ctx.params))
++        .onRequest(acp.methods.agent.session.fork, (ctx) => requireChatgptSubscription ? subscriptionDenied() : getAgent().forkSession(ctx.params))
+         .onRequest(acp.methods.agent.session.list, (ctx) => getAgent().listSessions(ctx.params))
+         .onRequest(acp.methods.agent.session.delete, (ctx) => getAgent().deleteSession(ctx.params))
+-        .onRequest(acp.methods.agent.session.resume, (ctx) => getAgent().resumeSession(ctx.params))
++        .onRequest(acp.methods.agent.session.resume, (ctx) => requireChatgptSubscription ? subscriptionDenied() : getAgent().resumeSession(ctx.params))
+         .onRequest(acp.methods.agent.session.close, (ctx) => getAgent().closeSession(ctx.params))
+         .onRequest(acp.methods.agent.session.setMode, (ctx) => getAgent().setSessionMode(ctx.params))
+         .onRequest(acp.methods.agent.session.setConfigOption, (ctx) => getAgent().setSessionConfigOption(ctx.params))
+-        .onRequest(acp.methods.agent.authenticate, (ctx) => getAgent().authenticate(ctx.params, ctx.requestId))
++        .onRequest(acp.methods.agent.authenticate, (ctx) => {
++            if (requireChatgptSubscription && ctx.params.methodId !== "chat-gpt"
++                && ctx.params.methodId !== "chat-gpt-device-code") subscriptionDenied();
++            return getAgent().authenticate(ctx.params, ctx.requestId);
++        })
+         .onRequest(acp.methods.agent.logout, (ctx) => getAgent().logout(ctx.params))
+         .onRequest(acp.methods.agent.providers.list, (ctx) => getAgent().listProviders(ctx.params))
+-        .onRequest(acp.methods.agent.providers.set, (ctx) => getAgent().setProvider(ctx.params))
+-        .onRequest(acp.methods.agent.providers.disable, (ctx) => getAgent().disableProvider(ctx.params))
+-        .onRequest(acp.methods.agent.session.prompt, (ctx) => getAgent().prompt(ctx.params, ctx.signal))
++        .onRequest(acp.methods.agent.providers.set, (ctx) => requireChatgptSubscription ? subscriptionDenied() : getAgent().setProvider(ctx.params))
++        .onRequest(acp.methods.agent.providers.disable, (ctx) => requireChatgptSubscription ? subscriptionDenied() : getAgent().disableProvider(ctx.params))
++        .onRequest(acp.methods.agent.session.prompt, async (ctx) => {
++            if (requireChatgptSubscription) await guarded().checkPrompt(ctx.params.sessionId);
++            return getAgent().prompt(ctx.params, ctx.signal);
++        })
+         .onNotification(acp.methods.agent.session.cancel, (ctx) => getAgent().cancel(ctx.params))
+         .onRequest("authentication/status", emptyExtensionParamsParser, (ctx) => getAgent().extMethod("authentication/status", ctx.params))
+         .onRequest("authentication/logout", emptyExtensionParamsParser, (ctx) => getAgent().extMethod("authentication/logout", ctx.params))
+         .onRequest(LEGACY_SET_SESSION_MODEL_METHOD, legacySetSessionModelParamsParser, (ctx) => getAgent().extMethod(LEGACY_SET_SESSION_MODEL_METHOD, ctx.params))
+-        .onRequest(SESSION_STEERING_METHOD, sessionSteerParamsParser, (ctx) => getAgent().extMethod(SESSION_STEERING_METHOD, ctx.params))
++        .onRequest(SESSION_STEERING_METHOD, sessionSteerParamsParser, (ctx) => requireChatgptSubscription ? subscriptionDenied() : getAgent().extMethod(SESSION_STEERING_METHOD, ctx.params))
+         .onRequest(ASYNC_TASK_STOP_METHOD, asyncTaskStopParamsParser, (ctx) => getAgent().extMethod(ASYNC_TASK_STOP_METHOD, ctx.params))
+-        .onRequest(GOAL_CONTROL_METHOD, goalControlParamsParser, (ctx) => getAgent().extMethod(GOAL_CONTROL_METHOD, ctx.params))
++        .onRequest(GOAL_CONTROL_METHOD, goalControlParamsParser, (ctx) => requireChatgptSubscription ? subscriptionDenied() : getAgent().extMethod(GOAL_CONTROL_METHOD, ctx.params))
+         .connect(acpJsonStream);
+ }
