@@ -912,3 +912,19 @@ rejected through the compiled adapter. Evidence is saved under
 model turn or installed agent was used. Next: equivalent Claude policy work,
 then the controlled harness/adapter integration; real Pro acceptance remains
 unverified. Installed plugin/helper remain unchanged.
+
+## Claude subscription policy proposal (2026-09-28)
+
+Saved an uninstalled adapter proposal against Claude ACP 0.82.0 / SDK 0.3.280.
+It admits subscription accounts only, removes provider/API login paths, limits
+the first version to fresh sessions and rejects steering, imported sessions and
+client routing overrides. Independent review caught and closed the direct
+steering input path. Native login uses a restricted child environment.
+
+Run [36510233749](https://github.com/randymy/omarchy-buzz/actions/runs/36510233749)
+passed TypeScript build and 163 focused tests at `bd43cd4`. These were isolated,
+account-free tests, not real Pro acceptance. Additional guarded session
+creation/prompt tests and native status/logout environment checks are underway.
+The SDK account read is cached per query; the policy requires controlled profile
+configuration and does not prove credentials stayed unchanged externally.
+[Evidence](evidence/claude-policy-36510233749.json). Nothing is installed.
