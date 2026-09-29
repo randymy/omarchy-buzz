@@ -62,7 +62,10 @@ Run [36587419111](https://github.com/randymy/omarchy-buzz/actions/runs/365874191
 passed the ordinary variant at `5122750`: real relay messaging, synthetic ACP
 routing, signed reply receipt, persistence and plugin thread projection.
 [Recorded evidence](../evidence/ordinary-replies-36587419111.json) preserves
-the exact build and limits. Removal semantics remain a separate test.
+the exact build and limits. The later [run 36611201645](https://github.com/randymy/omarchy-buzz/actions/runs/36611201645)
+passed sequential private-room HTTP admission and post-removal rejection; see
+[its evidence](../evidence/private-room-revocation-36611201645.json). Open-room
+and concurrent-removal semantics remain separate.
 
 ## Smallest upstream patch series for ordinary room replies
 

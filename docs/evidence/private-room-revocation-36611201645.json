@@ -1,0 +1,63 @@
+{
+  "schemaVersion": 1,
+  "runId": 36611201645,
+  "runUrl": "https://github.com/randymy/omarchy-buzz/actions/runs/36611201645",
+  "pluginRevision": "fde56e607bf62c276a58dd27033705fe8f7ba5ed",
+  "conclusion": "success",
+  "downloadedSummarySha256": "4c8c3f485b6551d6b37a2ab955208b82bbd539194f16f493885c1a4ab549468a",
+  "summary": {
+    "acp": {
+      "replyMode": "harness",
+      "state": "passed",
+      "syntheticOnly": true,
+      "tests": {
+        "passed": 1,
+        "requiredTest": "acp_relay_tests::acp_relay_synthetic_routing"
+      }
+    },
+    "cleanupComplete": true,
+    "durationSeconds": 32.49,
+    "images": {
+      "postgres": "sha256:79bd7c99e923138f136f8009d6bffa66e21e9d4fda5c0c561b00fc9c90cfe537",
+      "redis": "sha256:f84b0c4678011602b9b98c227a4dcd5468bf8b088b02fdd4165cb7758bad8058",
+      "relay": "sha256:889b3c0b7490c91de24d69911951d2a0745a724931be25ea9962d7954f996f21"
+    },
+    "loopbackOnly": true,
+    "membershipRemovalConformance": "concurrent_removal_not_tested",
+    "messaging": {
+      "state": "passed",
+      "tests": {
+        "passed": 1,
+        "requiredTest": "real_relay_tests::real_relay_messaging_conformance"
+      }
+    },
+    "objectStoreProbe": false,
+    "ordinaryPrivateRoomMembership": "passed",
+    "productionStateUsed": false,
+    "publicationContractSelected": "ordinary",
+    "publicationRouteSelected": "/events",
+    "relayBinarySha256": "6cb2039e6df0436954e0f27cda311f94c473e5c700b0bfe8da0aa2f96c4f8745",
+    "relayEgressBlocked": false,
+    "runtimeBaseReference": "ubuntu:24.04",
+    "runtimeRecipeSha256": "10bcbef4b99bd5c19accf84953b1433e5e7cfa5c7945ee34f2fb3c2338f47c51",
+    "schemaVersion": 1,
+    "stage": "complete",
+    "state": "passed",
+    "tests": {
+      "passed": 1,
+      "requiredTest": "real_relay_tests::real_relay_messaging_conformance"
+    },
+    "upstreamRevision": "781d39510cf23cfe224e8f521ae06a23377e06de",
+    "validationScope": "messaging-only"
+  },
+  "assertions": [
+    "Active private-room member: HTTP 200, exact event ID, accepted=true",
+    "Owner-visible removal followed by fresh signed POST: HTTP 400 and exact restricted: not a channel member error",
+    "Synthetic ACP reply signed, persisted and projected into plugin thread view"
+  ],
+  "limits": [
+    "No concurrent removal or open-room race tested",
+    "No production state or real model account used",
+    "Unmerged ACP contribution patches; production agents remain disabled"
+  ]
+}

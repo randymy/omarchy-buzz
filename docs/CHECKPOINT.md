@@ -1342,3 +1342,18 @@ member-bound relay patch. Fixture cleanup completed. Evidence is in
 `evidence/ordinary-replies-36587419111.json`. This closes ordinary-route
 reply-persistence conformance, not removal semantics, real-provider integration
 with a room, or upstream adoption. No production changes were made.
+
+## Ordinary private-room HTTP revocation passed
+
+Run 36611201645 at fde56e6 passed both messaging and synthetic harness-reply
+conformance. A current private-room member received HTTP 200 with the exact
+accepted event ID. After owner-visible removal, a freshly signed request received
+HTTP 400 with the exact membership rejection. Transport errors cannot satisfy
+the negative assertion. Signed reply persistence/thread projection and cleanup
+also passed. See `evidence/private-room-revocation-36611201645.json`.
+
+This is sequential ordinary membership enforcement, not a concurrent-removal
+guarantee or open-room revocation test. No product contract/default, installed
+helper, production relay or room-agent service changed. Upstream main refreshed
+to 8519db1; its new NIP-FI authentication behavior is under source review before
+any dependency update. The shared WS client and ACP paths are unchanged.
