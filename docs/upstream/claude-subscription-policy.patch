@@ -22,7 +22,7 @@ index 704c7f6..040fb59 100644
  `preview` channel — every push to `main` publishes one. See
  [`docs/RELEASES.md`](docs/RELEASES.md#preview-releases).
 diff --git c/src/acp-agent.ts i/src/acp-agent.ts
-index 83bae1d..f348f50 100644
+index 83bae1d..d912e49 100644
 --- c/src/acp-agent.ts
 +++ i/src/acp-agent.ts
 @@ -177,6 +177,9 @@ import { buildClaudePermissionOptions } from "./permissions/options.js";
@@ -190,17 +190,22 @@ index 83bae1d..f348f50 100644
      if (params.providerId === PROVIDER_ID) {
        this.logger.log(`[providers/disable] sessions=${Object.keys(this.sessions).length}`);
        await this.enqueueProviderUpdate(undefined);
-@@ -2996,7 +3014,8 @@ export class ClaudeAcpAgent {
+@@ -2996,7 +3014,13 @@ export class ClaudeAcpAgent {
      // `claude auth logout` is non-interactive and idempotent.
      const cliPath = await claudeCliPath();
      try {
 -      await execFileAsync(cliPath, ["auth", "logout"]);
-+      await execFileAsync(cliPath, ["auth", "logout"],
-+        requiresClaudeSubscription() ? { env: subscriptionChildEnv(process.env) } : undefined);
++      if (requiresClaudeSubscription()) {
++        await execFileAsync(cliPath, ["auth", "logout"], {
++          env: subscriptionChildEnv(process.env),
++        });
++      } else {
++        await execFileAsync(cliPath, ["auth", "logout"]);
++      }
      } catch (error) {
        const stderr =
          typeof error === "object" && error && "stderr" in error
-@@ -3024,6 +3043,16 @@ export class ClaudeAcpAgent {
+@@ -3024,6 +3048,16 @@ export class ClaudeAcpAgent {
      if (!session) {
        throw new Error("Session not found");
      }
@@ -217,7 +222,7 @@ index 83bae1d..f348f50 100644
      // The one re-read per user prompt, fired here and never awaited: a prompt
      // must not wait on a CLI process, and its result is pushed on change
      // whenever it lands, mid-turn included. It runs BEFORE the guard on
-@@ -3284,6 +3313,7 @@ export class ClaudeAcpAgent {
+@@ -3284,6 +3318,7 @@ export class ClaudeAcpAgent {
    }
  
    async goal(params: GoalRequest): Promise<GoalControlResponse> {
@@ -225,7 +230,7 @@ index 83bae1d..f348f50 100644
      const command = params.action === "set" ? `/goal ${params.objective}` : "/goal clear";
      const prompt = [{ type: "text" as const, text: command }];
      const steering = await this.steer({
-@@ -3386,6 +3416,7 @@ export class ClaudeAcpAgent {
+@@ -3386,6 +3421,7 @@ export class ClaudeAcpAgent {
     *  `session/prompt`. Without the opt-in, the existing detached `prompt()` and
     *  `startedNewTurn` result are preserved for compatibility. */
    async steer(params: SteerRequest): Promise<SteerResponse> {
@@ -233,7 +238,7 @@ index 83bae1d..f348f50 100644
      const sessionId = params.sessionId;
      let session = this.sessions[sessionId];
      if (!session) {
-@@ -8415,6 +8446,19 @@ export class ClaudeAcpAgent {
+@@ -8415,6 +8451,19 @@ export class ClaudeAcpAgent {
      } = {},
    ): Promise<NewSessionResponse> {
      const createStartedAt = performance.now();
@@ -253,7 +258,7 @@ index 83bae1d..f348f50 100644
      // Validate `cwd` up front. The ACP spec requires an absolute path, and the
      // directory must actually exist on the machine running the agent. Without
      // this check a session is created against a missing directory and the
-@@ -8461,8 +8505,17 @@ export class ClaudeAcpAgent {
+@@ -8461,8 +8510,17 @@ export class ClaudeAcpAgent {
  
      const settingsManager = new SettingsManager(params.cwd, {
        logger: this.logger,
@@ -271,7 +276,7 @@ index 83bae1d..f348f50 100644
      timing.phase("settings");
  
      const mcpServers: Record<string, McpServerConfig> = {};
-@@ -8645,6 +8698,9 @@ export class ClaudeAcpAgent {
+@@ -8645,6 +8703,9 @@ export class ClaudeAcpAgent {
        // Opt-in to session state events like when the agent is idle
        CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1",
      };
@@ -281,7 +286,7 @@ index 83bae1d..f348f50 100644
      // Scopes the context-window cache to this query's backend (see
      // `contextWindowCache`). Derived from the same `env` object handed to the
      // SDK, so per-session `_meta` env routing and ambient process-env routing
-@@ -8656,7 +8712,7 @@ export class ClaudeAcpAgent {
+@@ -8656,7 +8717,7 @@ export class ClaudeAcpAgent {
  
      const options: Options = {
        systemPrompt,
@@ -290,7 +295,7 @@ index 83bae1d..f348f50 100644
        ...(thinking !== undefined && { thinking }),
        ...userProvidedOptions,
        // Claude Code uses the same checkpoint store for /rewind. Enable it only
-@@ -8664,7 +8720,9 @@ export class ClaudeAcpAgent {
+@@ -8664,7 +8725,9 @@ export class ClaudeAcpAgent {
        // snapshot I/O for every other session.
        ...(fileChangeReporter ? { enableFileCheckpointing: true } : {}),
        ...(settings && { settings }),
@@ -301,7 +306,7 @@ index 83bae1d..f348f50 100644
        // Override certain fields that must be controlled by ACP
        cwd: params.cwd,
        includePartialMessages: true,
-@@ -8845,6 +8903,10 @@ export class ClaudeAcpAgent {
+@@ -8845,6 +8908,10 @@ export class ClaudeAcpAgent {
        }
        timing.phase("sdk-initialize");
  
