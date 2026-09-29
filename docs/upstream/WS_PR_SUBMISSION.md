@@ -21,6 +21,17 @@ focused test evidence therefore covers the same source bytes. This is not a
 full workspace build at the new revision. New relay FI admission changes are
 tracked [separately](BUZZ_8519DB1_COMPATIBILITY.md).
 
+## Submitted workspace validation
+
+Manual [run 36621707596](https://github.com/randymy/omarchy-buzz/actions/runs/36621707596)
+passed at exact submitted head `7c752971a815af63ba94a3086c4a2c867a129e30`.
+Rust 1.95.0 on Linux x86-64 resolved the real locked Buzz workspace and passed
+16 shared-client and 5 test-client library tests with no failures or ignored
+cases. Command: `cargo +1.95.0 test --locked -p buzz-ws-client -p buzz-test-client --lib`.
+See [exact evidence](../evidence/ws-workspace-36621707596.json). This closes
+the focused workspace-library check, not full `just ci`, desktop/mobile,
+relay E2E, native flow or human confirmation. The PR remains draft.
+
 ## Proposed PR
 
 **Title:** `fix(ws-client): bound connection frames, replay queues, and deadlines`
@@ -74,7 +85,7 @@ The PR contains exactly these five Buzz files:
 | `crates/buzz-ws-client/src/resource_tests.rs` | Production-seam loopback regression cases for AUTH/OK floods, frame and fragmented-message bounds, challenge handling and deadlines. |
 | `crates/buzz-test-client/src/lib.rs` | Preserve the two new errors in exhaustive conversion and test the mapping. |
 
-The patch has 732 insertions and 85 deletions. It adds no relay endpoint,
+The submitted commit has 728 insertions and 81 deletions. It adds no relay endpoint,
 database migration, adapter policy, or plugin code. Keep it separate from the
 ACP room-agent series. The public API defaults and typed errors deserve explicit
 maintainer review; large legitimate payloads may require configured larger

@@ -1,0 +1,29 @@
+{
+  "runId": "36621707596",
+  "runUrl": "https://github.com/randymy/omarchy-buzz/actions/runs/36621707596",
+  "contributionRepository": "randymy/buzz",
+  "contributionRevision": "7c752971a815af63ba94a3086c4a2c867a129e30",
+  "upstreamBase": "8519db1532efd6cda8f72bb6454c00fc3f87cfba",
+  "toolchain": "1.95.0",
+  "architecture": "x86_64",
+  "command": "cargo +1.95.0 test --locked -p buzz-ws-client -p buzz-test-client --lib",
+  "completeWorkspaceResolution": true,
+  "librarySuites": {
+    "buzz-ws-client": {
+      "passed": 16,
+      "failed": 0,
+      "ignored": 0
+    },
+    "buzz-test-client": {
+      "passed": 5,
+      "failed": 0,
+      "ignored": 0
+    }
+  },
+  "fullWorkspaceCi": false,
+  "nativeClientFlow": false,
+  "humanTestConfirmation": false,
+  "productionRelayContacted": false,
+  "upstreamPullRequest": "https://github.com/block/buzz/pull/7976",
+  "draft": true
+}

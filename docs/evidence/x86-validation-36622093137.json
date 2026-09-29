@@ -1,0 +1,25 @@
+{
+  "runId": "36622093137",
+  "runUrl": "https://github.com/randymy/omarchy-buzz/actions/runs/36622093137",
+  "sourceRevision": "b96d140",
+  "architecture": "x86_64",
+  "runner": "ubuntu-24.04",
+  "conclusion": "success",
+  "jobs": {
+    "manifest": "success",
+    "helper": "success",
+    "upstream-ws-proposal": "success"
+  },
+  "helperChecks": [
+    "format",
+    "locked Rust test suite",
+    "build with system D-Bus development dependency",
+    "unconfigured IPC",
+    "send scope fences",
+    "inherited socket activation",
+    "private Secret Service enrollment"
+  ],
+  "productionCredentialsUsed": false,
+  "productionRelayContacted": false,
+  "omarchyDesktopAcceptance": false
+}

@@ -1425,3 +1425,15 @@ archive using safe tar extraction; no dependency upgrade was performed.
 Manual run 36621707596 tests the exact submitted WS contribution 7c75297 in
 Buzz's actual workspace. Check its result before claiming workspace validation.
 The upstream PR remains draft pending its documented review gates.
+
+## Workspace and x86-64 checks passed
+
+Run 36621707596 passed all 21 affected library tests in the real locked Buzz
+workspace at submitted contribution head 7c75297. The draft upstream PR body
+now links this evidence; full workspace CI/native/human confirmation remain
+outstanding. Run 36622093137 at b96d140 passed all three validation jobs,
+including x86-64 helper Rust/IPC/private keyring tests with the system D-Bus
+change, native manifest validation and isolated WS/ACP policy/terminal fixtures.
+Neither run used real provider credentials or production relays. Evidence is
+in `evidence/ws-workspace-36621707596.json` and
+`evidence/x86-validation-36622093137.json`.
