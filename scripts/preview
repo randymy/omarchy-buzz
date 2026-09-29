@@ -19,6 +19,8 @@ if [[ ${1:-} == --send-bridge ]]; then
   export BUZZ_TEST_HELPER="$preview_dir/helper-fixture"
   export BUZZ_SEND_RECORD="$preview_dir/send-record.json"
   printf '{"sends":[],"fetches":0}\n' > "$BUZZ_SEND_RECORD"
+elif [[ ${1:-} == --thread-replies ]]; then
+  cp "$project_root/tests/ThreadReplies.qml" "$preview_dir/shell.qml"
 elif [[ ${1:-} == --activity ]]; then
   cp "$project_root/tests/Activity.qml" "$preview_dir/shell.qml"
   mkdir -m 700 "$preview_dir/fake-bin"

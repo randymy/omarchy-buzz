@@ -22,8 +22,11 @@ Keep the existing channel window, its `39006` check, and its 20-row snapshot
 unchanged. The helper should issue one separate, bounded NIP-CW thread-window
 query for the selected room/root:
 
+The thread page is capped at eight rows so a simultaneous 20-row channel
+snapshot and thread snapshot fit the helper's bounded IPC status frame.
+
 ```json
-[{"thread_window":true,"#h":["<canonical room UUID>"],"#e":["<lowercase root event ID>"],"kinds":[9],"depth_limit":1,"limit":20,"include_aux":true}]
+[{"thread_window":true,"#h":["<canonical room UUID>"],"#e":["<lowercase root event ID>"],"kinds":[9],"depth_limit":1,"limit":8,"include_aux":true}]
 ```
 
 Depth one is enough for a harness reply directly under the human prompt and
@@ -39,7 +42,7 @@ useful), and a distinct `thread` view model/`fetch_thread` IPC command in
 `helper/src/protocol.rs` and `helper/src/auth.rs`. The command must accept only
 a canonical room UUID and lowercase 64-hex root ID that is currently present
 in the selected, validated channel snapshot. The status should carry both
-room and root, loading/snapshot/unavailable state, at most 20 rows, `hasMore`,
+room and root, loading/snapshot/unavailable state, at most 8 rows, `hasMore`,
 and a completeness-unknown category. Expose this via a new advertised helper
 capability; older helpers should simply leave the action hidden. The QML
 should validate all fields, clear thread state on root/room change, catalog
@@ -51,7 +54,7 @@ The reducer must verify every event signature and room scope, and require
 exactly one fresh relay-signed kind-39007 bounds event. Verify its sole `d`,
 `h`, and `e` tags; `d` must equal the NIP-CW `tw:1:` SHA-256 binding over the
 normalized request, trusted relay authority, enrolled reader key, room, root,
-limit 20, depth 1, kinds `[9]`, null cursor, and `include_aux: true`. Check
+limit 8, depth 1, kinds `[9]`, null cursor, and `include_aux: true`. Check
 `version:1`, `direction:"older"`, and cursor/`has_more` consistency. Reject
 missing, stale, duplicate, forged, or mismatched bounds; an empty array is
 unavailable, not signed exhaustion. Use the configured canonical relay

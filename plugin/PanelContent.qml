@@ -334,6 +334,7 @@ FocusScope {
             Repeater {
               model: root.service ? root.service.messages : []
               delegate: Column {
+                id: messageRow
                 required property var modelData
                 width: parent.width
                 spacing: Style.space(6)
@@ -357,6 +358,59 @@ FocusScope {
                   color: Color.foreground
                   font.family: Style.font.family
                   font.pixelSize: Style.font.body
+                }
+                Controls.Button {
+                  visible: root.service && root.service.canOpenThread(messageRow.modelData.id)
+                  text: root.service && root.service.threadRootId === messageRow.modelData.id ? "Hide replies" : "View replies"
+                  onClicked: {
+                    if (root.service.threadRootId === messageRow.modelData.id) root.service.closeThread()
+                    else root.service.openThread(messageRow.modelData.id)
+                  }
+                }
+                Column {
+                  visible: root.service && root.service.threadRootId === messageRow.modelData.id
+                  width: parent.width
+                  spacing: Style.space(8)
+                  Text {
+                    width: parent.width
+                    text: root.service ? root.service.threadLabel : ""
+                    textFormat: Text.PlainText
+                    wrapMode: Text.WordWrap
+                    color: Color.foreground
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.caption
+                  }
+                  Repeater {
+                    model: parent.visible && root.service ? root.service.threadRows : []
+                    delegate: Column {
+                      required property var modelData
+                      width: parent.width
+                      spacing: Style.space(4)
+                      Text {
+                        width: parent.width
+                        text: modelData.author.slice(0, 12) + "… · " + root.service.participantLabel(modelData.author) + " · " + root.service.formatTimestamp(modelData.time)
+                        textFormat: Text.PlainText
+                        wrapMode: Text.WordWrap
+                        color: Color.accent
+                        font.family: Style.font.family
+                        font.pixelSize: Style.font.caption
+                      }
+                      Text {
+                        width: parent.width
+                        text: modelData.unavailable ? "Content unavailable" : modelData.text + (modelData.edited ? "\n[edited]" : "") + (modelData.truncated ? "\n[truncated]" : "")
+                        textFormat: Text.PlainText
+                        wrapMode: Text.WordWrap
+                        color: Color.foreground
+                        font.family: Style.font.family
+                        font.pixelSize: Style.font.body
+                      }
+                    }
+                  }
+                  Controls.Button {
+                    text: "Refresh replies"
+                    enabled: root.service && root.service.threadState !== "loading"
+                    onClicked: root.service.refreshThread()
+                  }
                 }
               }
             }

@@ -26,7 +26,7 @@ encryption and availability depend on the user's OS store. Unlock prompts can
 remain pending; the daemon bounds shutdown and does not duplicate key lookups.
 
 The bridge and daemon communicate over a private same-UID Unix socket. Messages
-are limited to 64 KiB, the daemon limits clients and write deadlines, and QML
+use separate limits: 64 KiB requests and 96 KiB responses, the daemon limits clients and write deadlines, and QML
 validates protocol version, helper instance, generation, categories, and public
 fields. Allowed requests read status, subscribe, retry, fetch a current
 catalog room’s history, or submit a bounded plain-text message for that room.

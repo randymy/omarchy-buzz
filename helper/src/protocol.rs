@@ -1,5 +1,8 @@
 use serde::{Deserialize, Serialize};
 pub const LIMIT: usize = 65536;
+// Status frames can contain one channel page and one bounded thread page.
+// Incoming commands retain the smaller LIMIT; only projected output uses this.
+pub const RESPONSE_LIMIT: usize = 98304;
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Request {
@@ -9,6 +12,8 @@ pub struct Request {
     pub kind: String,
     #[serde(rename = "roomId")]
     pub room_id: Option<String>,
+    #[serde(rename = "rootId")]
+    pub root_id: Option<String>,
     pub text: Option<String>,
     pub mentions: Option<Vec<String>>,
     pub generation: Option<u64>,
@@ -20,6 +25,9 @@ pub fn request(bytes: &[u8]) -> Result<Request, &'static str> {
         return Err("oversized_request");
     }
     let r: Request = serde_json::from_slice(bytes).map_err(|_| "invalid_request")?;
+    let raw: serde_json::Value = serde_json::from_slice(bytes).map_err(|_| "invalid_request")?;
+    let room_present = raw.get("roomId").is_some();
+    let root_present = raw.get("rootId").is_some();
     if r.version != 1 {
         return Err("incompatible_protocol");
     }
@@ -38,6 +46,8 @@ pub fn request(bytes: &[u8]) -> Result<Request, &'static str> {
             | "retry_connection"
             | "subscribe"
             | "fetch_recent"
+            | "fetch_thread"
+            | "close_thread"
             | "fetch_recipients"
             | "send_message"
     ) {
@@ -45,14 +55,26 @@ pub fn request(bytes: &[u8]) -> Result<Request, &'static str> {
     }
     if matches!(
         r.kind.as_str(),
-        "fetch_recent" | "fetch_recipients" | "send_message"
+        "fetch_recent" | "fetch_thread" | "fetch_recipients" | "send_message"
     ) {
         let room = r.room_id.as_deref().ok_or("invalid_request")?;
         let parsed = uuid::Uuid::parse_str(room).map_err(|_| "invalid_request")?;
         if parsed.to_string() != room {
             return Err("invalid_request");
         }
-    } else if r.room_id.is_some() {
+    } else if room_present {
+        return Err("invalid_request");
+    }
+    if r.kind == "fetch_thread" {
+        let root = r.root_id.as_deref().ok_or("invalid_request")?;
+        if root.len() != 64
+            || !root
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return Err("invalid_request");
+        }
+    } else if root_present {
         return Err("invalid_request");
     }
     if r.kind == "send_message" {
@@ -107,6 +129,8 @@ pub struct SendIntent {
 pub enum Command {
     Retry,
     FetchRecent(String),
+    FetchThread(String, String),
+    CloseThread,
     FetchRecipients(String),
     // Trusted fixture path; external IPC always uses the checked reply boundary.
     #[allow(dead_code)]
@@ -194,6 +218,28 @@ impl History {
     }
 }
 #[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Thread {
+    pub state: String,
+    pub room_id: Option<String>,
+    pub root_id: Option<String>,
+    pub rows: Vec<HistoryRow>,
+    pub has_more: Option<bool>,
+    pub category: Option<String>,
+}
+impl Thread {
+    pub fn unavailable(room: Option<String>, root: Option<String>, category: Option<&str>) -> Self {
+        Self {
+            state: "unavailable".into(),
+            room_id: room,
+            root_id: root,
+            rows: Vec::new(),
+            has_more: None,
+            category: category.map(str::to_owned),
+        }
+    }
+}
+#[derive(Clone, Serialize)]
 pub struct Room {
     pub id: String,
     pub name: String,
@@ -230,6 +276,7 @@ pub struct Status {
     pub category: Option<String>,
     pub catalog: Catalog,
     pub history: History,
+    pub thread: Thread,
     pub delivery: Delivery,
     pub recipients: RecipientsView,
     pub activity: Vec<crate::activity::Summary>,
@@ -244,6 +291,7 @@ impl Status {
             category: None,
             catalog: Catalog::unavailable(None),
             history: History::unavailable(None, None),
+            thread: Thread::unavailable(None, None, None),
             delivery: Delivery::default(),
             recipients: RecipientsView::unavailable(None, None),
             activity: Vec::new(),
@@ -251,18 +299,30 @@ impl Status {
     }
 }
 pub fn envelope(kind: &str, id: Option<&str>, instance: &str, s: &Status) -> serde_json::Value {
-    serde_json::json!({"version":1,"type":kind,"id":id,"instanceId":instance,"generation":s.generation,"capabilities":["connection_status","room_catalog","room_history","message_send","room_recipients","history_auto_refresh","room_activity","agent_profiles"],"backendRevision":crate::compatibility::BUZZ_REVISION,"status":s})
+    serde_json::json!({"version":1,"type":kind,"id":id,"instanceId":instance,"generation":s.generation,"capabilities":["connection_status","room_catalog","room_history","message_send","room_recipients","history_auto_refresh","room_activity","agent_profiles","thread_replies"],"backendRevision":crate::compatibility::BUZZ_REVISION,"status":s})
 }
 pub async fn read_line<R: tokio::io::AsyncBufRead + Unpin>(
     r: &mut R,
 ) -> Result<Option<Vec<u8>>, &'static str> {
     read_line_buffered(r, &mut Vec::new()).await
 }
+pub async fn read_response_line<R: tokio::io::AsyncBufRead + Unpin>(
+    r: &mut R,
+) -> Result<Option<Vec<u8>>, &'static str> {
+    read_line_bounded(r, &mut Vec::new(), RESPONSE_LIMIT).await
+}
 // Retain partial input across select! cancellation; a future-local buffer
 // would discard a split request whenever a status update wins the selection.
 pub async fn read_line_buffered<R: tokio::io::AsyncBufRead + Unpin>(
     r: &mut R,
     line: &mut Vec<u8>,
+) -> Result<Option<Vec<u8>>, &'static str> {
+    read_line_bounded(r, line, LIMIT).await
+}
+async fn read_line_bounded<R: tokio::io::AsyncBufRead + Unpin>(
+    r: &mut R,
+    line: &mut Vec<u8>,
+    limit: usize,
 ) -> Result<Option<Vec<u8>>, &'static str> {
     use tokio::io::AsyncBufReadExt;
     loop {
@@ -279,7 +339,7 @@ pub async fn read_line_buffered<R: tokio::io::AsyncBufRead + Unpin>(
             .position(|x| *x == b'\n')
             .map(|p| p + 1)
             .unwrap_or(b.len());
-        if line.len() + n > LIMIT {
+        if line.len() + n > limit {
             return Err("oversized_request");
         }
         let end = b[n - 1] == b'\n';
@@ -309,6 +369,17 @@ mod tests {
         let mut r = tokio::io::BufReader::new(data.as_slice());
         assert!(read_line(&mut r).await.is_err());
     }
+    #[tokio::test]
+    async fn response_frame_has_separate_bounded_budget() {
+        let data = vec![b'a'; LIMIT + 1];
+        let mut framed = data.clone();
+        framed.push(b'\n');
+        let mut reader = tokio::io::BufReader::new(framed.as_slice());
+        assert_eq!(read_response_line(&mut reader).await.unwrap(), Some(data));
+        let oversized = vec![b'a'; RESPONSE_LIMIT + 1];
+        let mut reader = tokio::io::BufReader::new(oversized.as_slice());
+        assert!(read_response_line(&mut reader).await.is_err());
+    }
 }
 #[cfg(test)]
 mod state_tests {
@@ -328,7 +399,8 @@ mod state_tests {
                 "room_recipients",
                 "history_auto_refresh",
                 "room_activity",
-                "agent_profiles"
+                "agent_profiles",
+                "thread_replies"
             ])
         );
         assert_eq!(v["status"]["catalog"]["state"], "unavailable");
@@ -354,6 +426,56 @@ mod state_tests {
         ] {
             assert!(request(&serde_json::to_vec(&value).unwrap()).is_err());
         }
+    }
+    #[test]
+    fn thread_requests_require_exact_scope_and_no_authority_fields() {
+        let room = "00000000-0000-4000-8000-000000000001";
+        let root = "a".repeat(64);
+        let valid = serde_json::json!({"version":1,"id":"thread-1","type":"fetch_thread","roomId":room,"rootId":root});
+        assert!(request(&serde_json::to_vec(&valid).unwrap()).is_ok());
+        for (field, value) in [
+            ("rootId", serde_json::json!("A".repeat(64))),
+            ("rootId", serde_json::json!("a".repeat(63))),
+            ("rootId", serde_json::json!("g".repeat(64))),
+            ("roomId", serde_json::json!("../room")),
+            ("text", serde_json::json!("unauthorized")),
+        ] {
+            let mut bad = valid.clone();
+            bad[field] = value;
+            assert!(
+                request(&serde_json::to_vec(&bad).unwrap()).is_err(),
+                "{field}"
+            );
+        }
+        let mut missing = valid.clone();
+        missing.as_object_mut().unwrap().remove("rootId");
+        assert!(request(&serde_json::to_vec(&missing).unwrap()).is_err());
+        for kind in [
+            "fetch_recent",
+            "fetch_recipients",
+            "send_message",
+            "close_thread",
+            "get_snapshot",
+        ] {
+            let mut bad = valid.clone();
+            bad["type"] = serde_json::json!(kind);
+            assert!(
+                request(&serde_json::to_vec(&bad).unwrap()).is_err(),
+                "{kind}"
+            );
+        }
+        assert!(request(br#"{"version":1,"id":"close-1","type":"close_thread"}"#).is_ok());
+        assert!(request(
+            &serde_json::to_vec(
+                &serde_json::json!({"version":1,"id":"close-1","type":"close_thread","roomId":room})
+            )
+            .unwrap()
+        )
+        .is_err());
+        assert!(
+            request(br#"{"version":1,"id":"close-1","type":"close_thread","rootId":null}"#)
+                .is_err()
+        );
     }
     #[test]
     fn sender_contract_rejects_unscoped_or_oversized_intents() {
@@ -417,6 +539,9 @@ mod state_tests {
                 unavailable: false,
             })
             .collect();
+        status.thread.room_id = Some("00000000-0000-4000-8000-000000000001".into());
+        status.thread.root_id = Some("a".repeat(64));
+        status.thread.rows = status.history.rows.iter().take(8).cloned().collect();
         status.recipients.entries = (0..20)
             .map(|_| Recipient {
                 key: "c".repeat(64),
@@ -452,7 +577,11 @@ mod state_tests {
             &status,
         ))
         .unwrap();
-        assert!(encoded.len() + 1 <= LIMIT, "{} byte frame", encoded.len());
+        assert!(
+            encoded.len() + 1 <= RESPONSE_LIMIT,
+            "{} byte frame",
+            encoded.len()
+        );
     }
     #[tokio::test]
     async fn requires_complete_frames() {

@@ -1,6 +1,6 @@
 use crate::{
     config,
-    protocol::{Command, History, Status},
+    protocol::{Command, History, Status, Thread},
 };
 use buzz_ws_client::{NostrWsConnection, RelayMessage, WsClientError};
 use tokio::{
@@ -27,6 +27,22 @@ pub fn read_keys(c: &config::Config) -> Result<nostr::Keys, &'static str> {
 fn publish_status(tx: &watch::Sender<Status>, change: impl FnOnce(&mut Status)) {
     tx.send_modify(|status| {
         change(status);
+        if status.thread.root_id.is_some()
+            && (status.history.state != "snapshot"
+                || status.thread.room_id != status.history.room_id
+                || !status
+                    .thread
+                    .root_id
+                    .as_ref()
+                    .is_some_and(|root| status.history.rows.iter().any(|row| &row.id == root))
+                || !status
+                    .thread
+                    .room_id
+                    .as_ref()
+                    .is_some_and(|room| status.catalog.rooms.iter().any(|entry| &entry.id == room)))
+        {
+            status.thread = Thread::unavailable(None, None, None);
+        }
         #[cfg(test)]
         assert!(
             status.activity.iter().all(|entry| status
@@ -45,6 +61,7 @@ fn update(tx: &watch::Sender<Status>, state: &str, category: Option<&str>) {
         if state != "authenticated" {
             s.catalog = crate::protocol::Catalog::unavailable(None);
             s.history = History::unavailable(None, None);
+            s.thread = Thread::unavailable(None, None, None);
             s.activity.clear();
             s.recipients = crate::protocol::RecipientsView::unavailable(None, None);
         }
@@ -90,6 +107,7 @@ fn apply_loaded_config(
                     s.category = None;
                     s.catalog = crate::protocol::Catalog::unavailable(None);
                     s.history = History::unavailable(None, None);
+                    s.thread = Thread::unavailable(None, None, None);
                     s.activity.clear();
                     s.recipients = crate::protocol::RecipientsView::unavailable(None, None);
                 }
@@ -213,6 +231,58 @@ fn history_category(error: &str) -> &'static str {
         _ => "history_unavailable",
     }
 }
+fn thread_category(error: &str) -> &'static str {
+    match error {
+        "thread_timeout" | "query_timeout" => "thread_timeout",
+        "query_access_denied" => "thread_access_denied",
+        e if e.starts_with("thread_")
+            || matches!(
+                e,
+                "query_oversized"
+                    | "query_invalid_response"
+                    | "query_invalid_signature"
+                    | "query_invalid_scope"
+                    | "query_redirect_rejected"
+            ) =>
+        {
+            "thread_invalid"
+        }
+        _ => "thread_unavailable",
+    }
+}
+fn thread_allowed(
+    status: &Status,
+    selected_history: Option<&str>,
+    room: &str,
+    root: &str,
+    fresh: bool,
+    pinned: bool,
+) -> bool {
+    fresh
+        && pinned
+        && selected_history == Some(room)
+        && status.catalog.rooms.iter().any(|r| r.id == room)
+        && status.history.state == "snapshot"
+        && status.history.room_id.as_deref() == Some(room)
+        && status.history.rows.iter().any(|r| r.id == root)
+}
+fn thread_result_allowed(
+    status: &Status,
+    selected_history: Option<&str>,
+    room: &str,
+    root: &str,
+    fresh: bool,
+    pinned: bool,
+    ticket: u64,
+    current_ticket: u64,
+    generation: u64,
+) -> bool {
+    ticket == current_ticket
+        && generation == status.generation
+        && thread_allowed(status, selected_history, room, root, fresh, pinned)
+        && status.thread.room_id.as_deref() == Some(room)
+        && status.thread.root_id.as_deref() == Some(root)
+}
 fn send_category(category: &str) -> Option<&'static str> {
     match category {
         "send_invalid" => Some("send_invalid"),
@@ -329,6 +399,8 @@ async fn observe_inner(
         tokio::task::JoinSet::new();
     let mut history_jobs = tokio::task::JoinSet::new();
     let mut history_ticket = 0_u64;
+    let mut thread_jobs = tokio::task::JoinSet::new();
+    let mut thread_ticket = 0_u64;
     let mut selected_history: Option<String> = None;
     let mut history_due = tokio::time::Instant::now();
     let mut activity = crate::activity::Tracker::default();
@@ -405,7 +477,31 @@ async fn observe_inner(
                         (ticket,generation,room,result)
                     });
                 },
+                Some(Command::CloseThread)=> {
+                    thread_jobs.abort_all();thread_jobs=tokio::task::JoinSet::new();thread_ticket=thread_ticket.wrapping_add(1);
+                    publish_status(tx,|s|s.thread=Thread::unavailable(None,None,None));
+                },
+                Some(Command::FetchThread(room,root))=> {
+                    thread_jobs.abort_all();thread_jobs=tokio::task::JoinSet::new();thread_ticket=thread_ticket.wrapping_add(1);
+                    let status=tx.borrow();
+                    let allowed=thread_allowed(&status,selected_history.as_deref(),&room,&root,fresh,relay_pin.is_some());
+                    drop(status);
+                    let parsed=uuid::Uuid::parse_str(&room).ok().filter(|id|id.to_string()==room);
+                    let valid_root=root.len()==64 && root.bytes().all(|b|b.is_ascii_digit()||(b'a'..=b'f').contains(&b));
+                    if !allowed || parsed.is_none() || !valid_root {
+                        publish_status(tx,|s|s.thread=Thread::unavailable(None,None,Some("thread_access_denied")));
+                        continue;
+                    }
+                    publish_status(tx,|s|s.thread=Thread{state:"loading".into(),..Thread::unavailable(Some(room.clone()),Some(root.clone()),None)});
+                    let ticket=thread_ticket;let generation=tx.borrow().generation;let relay=relay.to_owned();let keys=keys.clone();let pin=relay_pin.unwrap();let id=parsed.unwrap();
+                    thread_jobs.spawn(async move {
+                        let result=match timeout(Duration::from_secs(15),crate::thread::fetch(&relay,&keys,pin,id,&root)).await {Ok(r)=>r,Err(_)=>Err("thread_timeout")};
+                        (ticket,generation,room,root,result)
+                    });
+                },
                 Some(Command::FetchRecent(room))=> {
+                    thread_jobs.abort_all();thread_jobs=tokio::task::JoinSet::new();thread_ticket=thread_ticket.wrapping_add(1);
+                    publish_status(tx,|s|s.thread=Thread::unavailable(None,None,None));
                     history_jobs.abort_all(); history_jobs=tokio::task::JoinSet::new();
                     history_ticket=history_ticket.wrapping_add(1);
                     selected_history=None;
@@ -524,6 +620,40 @@ async fn observe_inner(
                 } else {
                     // A task panic cannot leave a stale activity claim visible.
                     activity=crate::activity::Tracker::default();publish_status(tx, |s|s.activity.clear());
+                }
+            },
+            result=thread_jobs.join_next(), if !thread_jobs.is_empty()=> {
+                if matches!(&result,Some(Err(e)) if !e.is_cancelled()) {
+                    thread_jobs.abort_all();thread_jobs=tokio::task::JoinSet::new();thread_ticket=thread_ticket.wrapping_add(1);
+                    publish_status(tx,|s|s.thread=Thread::unavailable(None,None,Some("thread_unavailable")));
+                }
+                if let Some(Ok((ticket,generation,room,root,result)))=result {
+                    let status=tx.borrow();
+                    let allowed=thread_result_allowed(&status,selected_history.as_deref(),&room,&root,fresh,relay_pin.is_some(),ticket,thread_ticket,generation);
+                    drop(status);
+                    if allowed {
+                        if result.as_ref().is_err_and(|error|thread_category(error)=="thread_access_denied") {
+                            selected_history=None;
+                            history_jobs.abort_all();history_jobs=tokio::task::JoinSet::new();history_ticket=history_ticket.wrapping_add(1);
+                            let revoked_delivery=sender.revoke_room(&room);
+                            publish_status(tx,|s| {
+                                s.catalog.rooms.retain(|entry|entry.id!=room);
+                                s.history=History::unavailable(Some(room),Some("history_access_denied"));
+                                s.thread=Thread::unavailable(None,None,Some("thread_access_denied"));
+                                if let Some(delivery)=revoked_delivery {s.delivery=delivery;}
+                            });
+                            continue;
+                        }
+                        publish_status(tx,|s|s.thread=match result {
+                            Ok(thread) if thread.room==room && thread.root==root && thread.rows.len()<=8=>Thread {
+                                state:"snapshot".into(),room_id:Some(room),root_id:Some(root),
+                                has_more:Some(thread.has_more),category:Some(thread.category.into()),
+                                rows:thread.rows.into_iter().map(|r|crate::protocol::HistoryRow{id:r.id,author:r.author_pubkey,time:r.timestamp,text:r.text,edited:r.edited,truncated:r.truncated,unavailable:r.unavailable}).collect(),
+                            },
+                            Ok(_)=>Thread::unavailable(None,None,Some("thread_invalid")),
+                            Err(error)=>Thread::unavailable(None,None,Some(thread_category(error))),
+                        });
+                    }
                 }
             },
             result=history_jobs.join_next(), if !history_jobs.is_empty()=> {
@@ -857,6 +987,148 @@ mod catalog_integration_tests;
 #[cfg(test)]
 #[path = "auth_history_tests.rs"]
 mod history_integration_tests;
+#[cfg(test)]
+mod thread_policy_tests {
+    use super::*;
+    #[test]
+    fn thread_fetch_requires_current_signed_history_root_and_membership() {
+        let room = "00000000-0000-4000-8000-000000000001";
+        let root = "a".repeat(64);
+        let mut status = Status::new(&config::Config::default());
+        status.catalog.rooms.push(crate::protocol::Room {
+            id: room.into(),
+            name: "room".into(),
+            description: String::new(),
+        });
+        status.history = History {
+            state: "snapshot".into(),
+            room_id: Some(room.into()),
+            rows: vec![crate::protocol::HistoryRow {
+                id: root.clone(),
+                author: "b".repeat(64),
+                time: 1,
+                text: "signed".into(),
+                edited: false,
+                truncated: false,
+                unavailable: false,
+            }],
+            has_more: Some(false),
+            category: Some("history_completeness_unknown".into()),
+        };
+        let allowed = |s: &Status, selected: Option<&str>, fresh, pinned| {
+            thread_allowed(s, selected, room, &root, fresh, pinned)
+        };
+        assert!(allowed(&status, Some(room), true, true));
+        assert!(!allowed(&status, Some(room), false, true));
+        assert!(!allowed(&status, Some(room), true, false));
+        assert!(!allowed(&status, None, true, true));
+        assert!(!thread_allowed(
+            &status,
+            Some(room),
+            room,
+            &"c".repeat(64),
+            true,
+            true
+        ));
+        status.thread = Thread {
+            state: "loading".into(),
+            room_id: Some(room.into()),
+            root_id: Some(root.clone()),
+            rows: Vec::new(),
+            has_more: None,
+            category: None,
+        };
+        assert!(thread_result_allowed(
+            &status,
+            Some(room),
+            room,
+            &root,
+            true,
+            true,
+            3,
+            3,
+            status.generation
+        ));
+        assert!(!thread_result_allowed(
+            &status,
+            Some(room),
+            room,
+            &root,
+            true,
+            true,
+            2,
+            3,
+            status.generation
+        ));
+        assert!(!thread_result_allowed(
+            &status,
+            Some(room),
+            room,
+            &root,
+            true,
+            true,
+            3,
+            3,
+            status.generation + 1
+        ));
+        status.thread.root_id = Some("c".repeat(64));
+        assert!(!thread_result_allowed(
+            &status,
+            Some(room),
+            room,
+            &root,
+            true,
+            true,
+            3,
+            3,
+            status.generation
+        ));
+        status.history.rows.clear();
+        assert!(!allowed(&status, Some(room), true, true));
+        status.history.state = "loading".into();
+        assert!(!allowed(&status, Some(room), true, true));
+        status.catalog.rooms.clear();
+        assert!(!allowed(&status, Some(room), true, true));
+    }
+    #[test]
+    fn publishing_history_loss_clears_thread_atomically() {
+        let room = "00000000-0000-4000-8000-000000000001";
+        let root = "a".repeat(64);
+        let mut status = Status::new(&config::Config::default());
+        status.catalog.rooms.push(crate::protocol::Room {
+            id: room.into(),
+            name: "room".into(),
+            description: String::new(),
+        });
+        status.history = History {
+            state: "snapshot".into(),
+            room_id: Some(room.into()),
+            rows: vec![crate::protocol::HistoryRow {
+                id: root.clone(),
+                author: "b".repeat(64),
+                time: 1,
+                text: "signed".into(),
+                edited: false,
+                truncated: false,
+                unavailable: false,
+            }],
+            has_more: Some(false),
+            category: Some("history_completeness_unknown".into()),
+        };
+        status.thread = Thread {
+            state: "snapshot".into(),
+            room_id: Some(room.into()),
+            root_id: Some(root),
+            rows: Vec::new(),
+            has_more: Some(false),
+            category: Some("thread_completeness_unknown".into()),
+        };
+        let (tx, rx) = watch::channel(status);
+        publish_status(&tx, |s| s.history.rows.clear());
+        assert_eq!(rx.borrow().thread.state, "unavailable");
+        assert!(rx.borrow().thread.root_id.is_none());
+    }
+}
 
 #[cfg(test)]
 #[path = "auth_send_tests.rs"]

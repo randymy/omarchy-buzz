@@ -1,6 +1,6 @@
 # Development checkpoint — 2026-09-28
 
-Current source version: **0.0.6 messaging development preview**, not a community release.
+Current source version: **0.0.7 thread-view development preview**, not a community release.
 Implemented: source-grounded design; native hosted/custom setup; Rust daemon and
 QML bridge; Secret Service identity enrollment; bounded local IPC and systemd
 units; exact-ID connection freshness; signed room discovery; conservative recent
@@ -746,3 +746,26 @@ tests and five discovery tests pass locally. No account or installed component c
 Next: constrain subscription provider routing and validate the complete synthetic
 prompt-to-room lifecycle before any real Pro task. Codex and Claude are the
 first supported-agent targets, Goose next; these are goals, not certified integrations.
+
+## Full synthetic reply and adapter login rejection (2026-09-28)
+
+[Run 36501371837](https://github.com/randymy/omarchy-buzz/actions/runs/36501371837)
+passes the actual patched ACP/relay lifecycle: owner mention, fresh read-only
+session, synthetic tool permission rejection, thought exclusion, signed kind-9
+reply to the admitted root, and a separate persisted event query. Messaging
+conformance and owned-process cleanup also passed. [Evidence](evidence/harness-room-36501371837.json).
+The initial run caught a Python path-type error before supervisor startup; fixed
+and covered by a full mock startup check. No vendor model was used.
+
+[Run 36501374029](https://github.com/randymy/omarchy-buzz/actions/runs/36501374029)
+also passes actual Codex ACP 2.0.0 authentication rejection under native 0.158.0
+ChatGPT-only startup config. The ACP SDK wraps the exact native policy denial
+in error data; the test now verifies that exact wrapper using locked SDK source.
+Native rejection, four vendor-discovery cases and previous ACP regressions also
+pass. [Evidence](evidence/codex-adapter-subscription-36501374029.json).
+No real account or paid task was used; effective routing/billing remains open.
+
+A product gap was found: the installed panel queries top-level room messages,
+so these thread replies are not visible there yet. An eight-row thread view,
+signed thread-window reducer and scoped IPC are being implemented. See
+[thread design](THREAD_REPLY_READINESS.md). Installed 0.0.6 remains unchanged.

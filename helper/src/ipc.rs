@@ -59,7 +59,7 @@ async fn write<W: tokio::io::AsyncWrite + Unpin>(
     v: &serde_json::Value,
 ) -> Result<(), &'static str> {
     let mut b = serde_json::to_vec(v).map_err(|_| "invalid_response")?;
-    if b.len() + 1 > protocol::LIMIT {
+    if b.len() + 1 > protocol::RESPONSE_LIMIT {
         return Err("oversized_response");
     }
     b.push(b'\n');
@@ -113,6 +113,8 @@ async fn client(
                 let command=match r.kind.as_str() {
                     "retry_connection"=>Some(protocol::Command::Retry),
                     "fetch_recent"=>Some(protocol::Command::FetchRecent(r.room_id.clone().unwrap())),
+                    "fetch_thread"=>Some(protocol::Command::FetchThread(r.room_id.clone().unwrap(),r.root_id.clone().unwrap())),
+                    "close_thread"=>Some(protocol::Command::CloseThread),
                     "fetch_recipients"=>Some(protocol::Command::FetchRecipients(r.room_id.clone().unwrap())),
                     "send_message"=>{let (reply,receiver)=tokio::sync::oneshot::channel();send_reply=Some(receiver);Some(protocol::Command::SendChecked(protocol::SendIntent {
                         request_id:r.id.clone(),room:r.room_id.clone().unwrap(),text:r.text.clone().unwrap(),
@@ -225,7 +227,7 @@ pub async fn bridge() -> Result<(), &'static str> {
     let receive = async {
         let mut input = BufReader::new(incoming);
         let mut output = tokio::io::stdout();
-        while let Some(line) = protocol::read_line(&mut input).await? {
+        while let Some(line) = protocol::read_response_line(&mut input).await? {
             let v: serde_json::Value =
                 serde_json::from_slice(&line).map_err(|_| "invalid_response")?;
             write(&mut output, &v).await?;

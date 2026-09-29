@@ -147,6 +147,16 @@ Item {
   property bool historySupported: false
   property bool automaticHistorySupported: false
   property var historyHasMore: null
+  property bool threadSupported: false
+  property string threadRootId: ""
+  property string threadState: "unavailable"
+  property string threadCategory: ""
+  property var threadRows: []
+  property var threadHasMore: null
+  property string pendingThreadRequestId: ""
+  readonly property string threadLabel: threadState === "loading" ? "Loading replies" : threadState === "snapshot"
+    ? (threadRows.length ? "Replies" : "No replies in this snapshot") + (threadHasMore ? " · older replies available" : "")
+    : threadCategory === "thread_access_denied" ? "Replies unavailable for this room" : "Replies unavailable · try Refresh replies"
   readonly property var messages: sample ? sample.messages.filter(function(message) { return message.roomId === root.selectedRoomId }) : historyRows
   readonly property string historyLabel: historyState === "loading" ? "Loading recent snapshot" : historyState === "snapshot"
     ? (automaticHistorySupported ? "Auto-refreshing snapshot" : "Snapshot") + " · completeness unknown" + (historyHasMore ? " · older history available" : "") : ({request_busy: "Helper busy · refresh again", history_timeout: "History request timed out", history_invalid: "History response could not be validated", history_access_denied: "History unavailable for this room"})[historyCategory] || "History not available yet"
@@ -285,6 +295,7 @@ Item {
     }
   }
   function clearHistory() {
+    clearThread()
     activityObservation = ActivityObserver.fresh()
     pendingHistoryRequestId = ""
     historyRows = []
@@ -297,6 +308,40 @@ Item {
     if (sampleMode || !historySupported || connection !== "authenticated" || !selectedRoom) return
     historyState = "loading"
     send("fetch_recent", selectedRoomId)
+  }
+  function clearThread() {
+    threadRootId = ""
+    threadState = "unavailable"
+    threadCategory = ""
+    threadRows = []
+    threadHasMore = null
+    pendingThreadRequestId = ""
+  }
+  function canOpenThread(id) {
+    return !sampleMode && threadSupported && connection === "authenticated" && historyState === "snapshot"
+      && historyRows.some(function(row) { return row.id === id && !row.unavailable })
+  }
+  function openThread(id) {
+    if (!canOpenThread(id)) return
+    clearThread()
+    threadRootId = id
+    threadState = "loading"
+    send("fetch_thread", selectedRoomId, id)
+  }
+  function refreshThread() { if (threadRootId) openThread(threadRootId) }
+  function closeThread() { clearThread(); if (threadSupported) send("close_thread") }
+  function validatedThread(value) {
+    var categories = ["thread_unavailable", "thread_timeout", "thread_invalid", "thread_access_denied", "thread_completeness_unknown"]
+    if (!value || !Array.isArray(value.rows) || value.rows.length > 8 || (value.category !== null && categories.indexOf(value.category) === -1)
+        || (value.rootId !== null && (typeof value.rootId !== "string" || !/^[a-f0-9]{64}$/.test(value.rootId)))
+        || ((value.roomId === null) !== (value.rootId === null))
+        || (value.state !== "unavailable" && value.rootId === null)) return null
+    var checked = validatedHistory({state:value.state, roomId:value.roomId, rows:value.rows, hasMore:value.hasMore,
+      category:value.category === null ? null : value.category.replace(/^thread_/, "history_")})
+    if (!checked || checked.rows.some(function(row) { return row.id === value.rootId })) return null
+    checked.rootId = value.rootId
+    checked.category = value.category || ""
+    return checked
   }
   function formatTimestamp(seconds) { return Qt.formatDateTime(new Date(seconds * 1000), "yyyy-MM-dd HH:mm:ss t") }
   function clearRecipients() {
@@ -362,10 +407,10 @@ Item {
     if (!sampleMode) selectedRoomId = ""
   }
   function validCapabilities(capabilities) {
-    return Array.isArray(capabilities) && capabilities.length >= 1 && capabilities.length <= 8
+    return Array.isArray(capabilities) && capabilities.length >= 1 && capabilities.length <= 9
       && capabilities.indexOf("connection_status") !== -1
       && capabilities.every(function(cap, index) {
-        return ["connection_status", "room_catalog", "room_history", "message_send", "room_recipients", "history_auto_refresh", "room_activity", "agent_profiles"].indexOf(cap) !== -1 && capabilities.indexOf(cap) === index
+        return ["connection_status", "room_catalog", "room_history", "message_send", "room_recipients", "history_auto_refresh", "room_activity", "agent_profiles", "thread_replies"].indexOf(cap) !== -1 && capabilities.indexOf(cap) === index
       })
   }
   function validatedCatalog(catalog) {
@@ -419,6 +464,7 @@ Item {
     relay = ""
     sessionFailed = false
     historySupported = false
+    threadSupported = false
     recipientsSupported = false
     generation = 0
     connection = "connecting"
@@ -431,6 +477,7 @@ Item {
     clearCatalog()
     sessionFailed = true
     historySupported = false
+    threadSupported = false
     recipientsSupported = false
     relay = ""
     connection = "unavailable"
@@ -440,7 +487,7 @@ Item {
   function boundedString(value, limit) { return typeof value === "string" && value.length <= limit }
   function acceptFrame(line) {
     if (sessionFailed) return false
-    if (!boundedString(line, 65536)) { fail("invalid_response"); return false }
+    if (!boundedString(line, 98304)) { fail("invalid_response"); return false }
     var frame
     try { frame = JSON.parse(line) } catch (_) { fail("invalid_response"); return false }
     if (frame && frame.version === 1 && frame.type === "error" && ["request_busy", "send_busy", "send_scope_changed", "send_request_reused", "send_invalid", "send_unavailable", "send_access_denied", "send_ledger_unavailable", "delivery_unknown"].indexOf(frame.category) !== -1) {
@@ -454,6 +501,12 @@ Item {
       if (frame.id === pendingHistoryRequestId) {
         clearHistory()
         historyCategory = "request_busy"
+      }
+      if (frame.id === pendingThreadRequestId) {
+        threadRows = []
+        threadState = "unavailable"
+        threadCategory = "thread_unavailable"
+        pendingThreadRequestId = ""
       }
       if (frame.id === pendingRecipientsRequestId) {
         clearRecipients()
@@ -493,6 +546,9 @@ Item {
       history = validatedHistory(state.history)
       if (!history) { fail("invalid_response"); return false }
     }
+    var supportsThread = frame.capabilities.indexOf("thread_replies") !== -1
+    var thread = supportsThread ? validatedThread(state.thread) : null
+    if (supportsThread && (!supportsHistory || !thread)) { fail("invalid_response"); return false }
     var supportsRecipients = frame.capabilities.indexOf("room_recipients") !== -1
     var recipients = supportsRecipients ? validatedRecipients(state.recipients) : null
     if (supportsRecipients && !recipients) { fail("invalid_response"); return false }
@@ -544,6 +600,15 @@ Item {
         if (observed.notify && !supportsActivity && !panelOpen) notifyActivity()
       } else if (history.state === "unavailable") activityObservation = ActivityObserver.fresh()
     }
+    threadSupported = supportsThread
+    if (!supportsThread || state.connection !== "authenticated" || historyState !== "snapshot"
+        || !historyRows.some(function(row) { return row.id === root.threadRootId && !row.unavailable })) clearThread()
+    else if (thread && thread.roomId === selectedRoomId && thread.rootId === threadRootId) {
+      threadRows = thread.rows
+      threadState = thread.state
+      threadCategory = thread.category
+      threadHasMore = thread.hasMore
+    } else if (thread && thread.rootId === null && threadState !== "loading") clearThread()
     if (state.connection !== "authenticated" || !supportsRecipients || ["loading", "unavailable"].indexOf(catalogState) !== -1) clearRecipients()
     else if (recipients && recipients.roomId === selectedRoomId && selectedRoomId !== "") {
       recipientEntries = recipients.entries
@@ -582,11 +647,12 @@ Item {
         && recipientsState !== "snapshot") refreshRecipients()
     return true
   }
-  function send(kind, roomId) {
+  function send(kind, roomId, rootId) {
     if (!sessionFailed && bridge.running && instanceId !== "") {
       requestSequence++
       var request = { version: 1, id: "ui-" + requestSequence, type: kind }
       if (kind === "fetch_recent") { request.roomId = roomId; pendingHistoryRequestId = request.id }
+      if (kind === "fetch_thread") { request.roomId = roomId; request.rootId = rootId; pendingThreadRequestId = request.id }
       if (kind === "fetch_recipients") { request.roomId = roomId; pendingRecipientsRequestId = request.id }
       bridge.write(JSON.stringify(request) + "\n")
     }
@@ -641,6 +707,7 @@ Item {
       handshake.stop()
       root.clearCatalog()
       root.historySupported = false
+      root.threadSupported = false
       root.recipientsSupported = false
       root.sessionFailed = true
       root.relay = ""

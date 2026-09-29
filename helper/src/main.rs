@@ -17,6 +17,7 @@ mod query;
 mod real_relay_tests;
 mod recipients;
 mod sending;
+mod thread;
 // Network fixtures share the production concurrency budgets. Serialize fixtures,
 // while individual tests still exercise multiple simultaneous requests explicitly.
 #[cfg(test)]

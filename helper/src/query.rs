@@ -3,7 +3,7 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use nostr::{
     hashes::{sha256, Hash},
     nips::nip98::{HttpData, HttpMethod},
-    Event, EventBuilder, JsonUtil, Keys, Tag,
+    Event, EventBuilder, EventId, JsonUtil, Keys, Tag,
 };
 use reqwest::{
     header::{HeaderValue, AUTHORIZATION, CONTENT_TYPE},
@@ -23,6 +23,7 @@ pub enum QueryRequest {
     JoinedRooms { limit: u16 },
     RoomMetadata { rooms: Vec<Uuid> },
     RoomHistory { room: Uuid, limit: u16 },
+    ThreadReplies { room: Uuid, root: EventId },
     RoomMembers { room: Uuid },
     Profiles { authors: Vec<nostr::PublicKey> },
     AgentProfiles { authors: Vec<nostr::PublicKey> },
@@ -47,6 +48,9 @@ impl QueryRequest {
             }
             Self::RoomHistory { room, limit } if (1..=20).contains(limit) => {
                 serde_json::json!({"kinds":[9,40002],"#h":[room.to_string()],"limit":limit,"top_level":true,"include_aux":true,"include_summaries":false})
+            }
+            Self::ThreadReplies { room, root } => {
+                serde_json::json!({"thread_window":true,"#h":[room.to_string()],"#e":[root.to_hex()],"kinds":[9],"depth_limit":1,"limit":8,"include_aux":true})
             }
             _ => return Err("invalid_query"),
         };
@@ -76,6 +80,17 @@ impl QueryRequest {
             Self::RoomHistory { room, .. } => {
                 let kind = event.kind.as_u16();
                 matches!(kind, 9 | 40002 | 40003 | 5 | 9005 | 7 | 39006)
+                    && (matches!(kind, 5 | 9005)
+                        || event.tags.iter().any(|t| {
+                            t.as_slice().first().map(String::as_str) == Some("h")
+                                && t.as_slice()
+                                    .get(1)
+                                    .is_some_and(|id| *id == room.to_string())
+                        }))
+            }
+            Self::ThreadReplies { room, .. } => {
+                let kind = event.kind.as_u16();
+                matches!(kind, 9 | 40003 | 5 | 9005 | 7 | 39007)
                     && (matches!(kind, 5 | 9005)
                         || event.tags.iter().any(|t| {
                             t.as_slice().first().map(String::as_str) == Some("h")

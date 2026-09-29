@@ -29,7 +29,7 @@ class Frames:
                 data = os.read(self.fd, 8192)
                 assert data, "unexpected response EOF"
                 self.buffer += data
-                assert len(self.buffer) <= 65536, "oversized response"
+                assert len(self.buffer) <= 98304, "oversized response"
         line, self.buffer = self.buffer.split(b"\n", 1)
         return json.loads(line)
 

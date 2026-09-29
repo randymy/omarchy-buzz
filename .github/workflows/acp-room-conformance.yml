@@ -92,9 +92,9 @@ jobs:
         id: build
         working-directory: buzz
         run: cargo +1.95.0 build --locked -p buzz-relay -p buzz-acp --target-dir "$RUNNER_TEMP/relay-target"
-      - name: Compile the helper conformance tests
+      - name: Test helper boundaries and compile conformance tests
         working-directory: plugin
-        run: cargo +1.95.0 test --locked --no-run --manifest-path helper/Cargo.toml --target-dir "$RUNNER_TEMP/helper-target"
+        run: cargo +1.95.0 test --locked --manifest-path helper/Cargo.toml --target-dir "$RUNNER_TEMP/helper-target"
       - name: Pull public fixture images before creating any test credentials
         run: |
           python3 - <<'PYCODE'

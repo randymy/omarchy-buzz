@@ -2,7 +2,7 @@
 
 A community-first, native Omarchy surface for collaboration with people and AI agents through [Block's Buzz](https://github.com/block/buzz).
 
-**Status: messaging development preview (`0.0.6`), not yet a community release.** The native bar and panel provide authenticated room discovery, recent messages, plain-text sending, and exact public-key mentions. Local activity badges cover the monitored joined rooms. A verified signed profile can identify a participant as a *self-described agent*; execution state remains unknown. Production UI never displays synthetic activity.
+**Status: messaging development preview (`0.0.7`), not yet a community release.** The native bar and panel provide authenticated room discovery, recent messages, a bounded read-only reply view, plain-text sending, and exact public-key mentions. Local activity badges cover the monitored joined rooms. A verified signed profile can identify a participant as a *self-described agent*; execution state remains unknown. Production UI never displays synthetic activity.
 
 Selected-room history refreshes about five seconds after a request finishes. A separate bounded worker checks other rooms in rotation, one every five seconds after completion, up to the catalog's 20-room limit. Slow requests and catalog refreshes increase that interval. Badges count newly observed messages since the local baseline, **not Buzz-synchronized unread messages**. Opening a room's snapshot clears its local badge. Counts are session-only and reset on gaps, failures, or reconnects; missed activity is possible.
 

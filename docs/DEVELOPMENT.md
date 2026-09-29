@@ -236,3 +236,18 @@ The offscreen notification fixtures shadow the native notifier and assert fixed
 argv without producing a real desktop alert. Rust tests validate signed agent
 profile scope, spoofed identity/status fields, malformed latest profiles,
 access-denied revocation, and bounded activity counters.
+
+## Thread preview development (0.0.7)
+
+`scripts/preview --thread-replies` exercises synthetic QML frames: exact root
+selection, stale-root rejection, disconnect/generation clearing, unsupported
+helpers and malformed rows. `scripts/preview` checks the native panel components.
+The helper tests validate signed, request-bound NIP-CW thread windows and scoped
+IPC; the manual harness room workflow also fetches its persisted reply through
+the same thread reducer. No production relay is used by these tests.
+
+The first view is read-only, depth one, with up to eight replies and manual
+refresh. The existing composer sends top-level messages. Pagination, replying
+inside a thread, automatic thread notifications and detailed execution state
+are separate increments. Responses are bounded to 96 KiB; incoming commands
+remain bounded to 64 KiB. Install matching helper/plugin versions together.
