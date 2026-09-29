@@ -3,9 +3,13 @@
 Source preview 0.0.7 now implements the bounded read-only thread view described
 below. Helper unit tests and offscreen QML checks pass. The synthetic ACP
 acceptance proves a signed reply is persisted, but the subsequent actual
-thread-window read currently fails closed with `query_invalid_scope`
-([run 36502787674](https://github.com/randymy/omarchy-buzz/actions/runs/36502787674)).
-That mismatch must be resolved before installing this preview. Installed 0.0.6
+thread-window read caught a `query_invalid_scope` compatibility error.
+[Diagnostic run 36503438982](https://github.com/randymy/omarchy-buzz/actions/runs/36503438982)
+identified a signed kind-7 reaction without an `h` tag, matching upstream
+`buzz_sdk::build_reaction`. Commit `dc3776e` allows those auxiliary reactions
+with validated event targets while rejecting explicit wrong-room tags and
+forged events; reactions never become rows or execution-state evidence.
+The corrected actual-relay test is pending. Installed 0.0.6
 is unchanged. The following design describes the intended contract, not a
 claim that the live-relay thread read has passed.
 
@@ -108,6 +112,10 @@ refresh. A separate, user-triggered fetch is sufficient for this increment.
   ACP reply in a thread-window result, then assert the helper thread status
   and panel model expose `AE-ACK:<positive>` while the top-level snapshot still
   contains only the prompt.
+
+The initial ARM64 build passed 111 tests plus synthetic IPC checks in
+[run 36502926877](https://github.com/randymy/omarchy-buzz/actions/runs/36502926877).
+The reaction correction is undergoing a fresh native build.
 
 The implementation targets pinned Buzz revision
 `781d39510cf23cfe224e8f521ae06a23377e06de`. Release gates remain the actual
