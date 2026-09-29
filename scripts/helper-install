@@ -1,0 +1,318 @@
+#!/usr/bin/env python3
+"""Install, upgrade, or remove a locally packaged Buzz helper and user units."""
+import argparse
+import hashlib
+import io
+import json
+import os
+from pathlib import Path
+import platform
+import re
+import shutil
+import subprocess
+import tarfile
+import tempfile
+import tomllib
+from datetime import datetime, timezone
+
+ROOT = Path(__file__).resolve().parents[1]
+FILES = {
+    "bin/omarchy-buzz": (".local/bin/omarchy-buzz", 0o755),
+    "service/omarchy-buzz.service": (".config/systemd/user/omarchy-buzz.service", 0o644),
+    "service/omarchy-buzz.socket": (".config/systemd/user/omarchy-buzz.socket", 0o644),
+}
+MAX_ARCHIVE = 32 * 1024 * 1024
+MAX_BINARY = 24 * 1024 * 1024
+
+
+def regular(path):
+    return not path.is_symlink() and path.is_file()
+
+
+def safe_directory(path, create=True):
+    missing = []
+    current = path
+    while not current.exists() and not current.is_symlink():
+        missing.append(current)
+        current = current.parent
+    while current != current.parent:
+        if current.is_symlink() or not current.is_dir():
+            raise ValueError(f"unsafe directory: {current}")
+        current = current.parent
+    if create:
+        for directory in reversed(missing):
+            directory.mkdir(mode=0o700)
+
+
+def destinations(home):
+    if not home.is_absolute() or home.is_symlink() or not home.is_dir():
+        raise ValueError("HOME must be an ordinary absolute directory")
+    return {name: home / relative for name, (relative, _) in FILES.items()}
+
+
+def systemctl(*args, check=True):
+    result = subprocess.run(["systemctl", "--user", *args], capture_output=True, text=True, timeout=15)
+    if check and result.returncode:
+        raise RuntimeError(f"systemctl --user {' '.join(args)} failed: {result.stderr.strip()[:300]}")
+    return result.returncode == 0
+
+
+def architecture(data):
+    if len(data) < 64 or data[:7] != b"\x7fELF\x02\x01\x01":
+        raise ValueError("package binary is not a little-endian 64-bit ELF")
+    machine = int.from_bytes(data[18:20], "little")
+    if machine not in (62, 183) or int.from_bytes(data[16:18], "little") not in (2, 3):
+        raise ValueError("unsupported ELF executable")
+    return {62: "x86_64", 183: "aarch64"}[machine]
+
+
+def read_package(archive, sidecar):
+    if (not regular(archive) or not regular(sidecar) or archive.stat().st_size > MAX_ARCHIVE
+            or sidecar.stat().st_size > 65536):
+        raise ValueError("package and checksum must be regular, bounded files")
+    payload = archive.read_bytes()
+    checksum = json.loads(sidecar.read_text())
+    if not isinstance(checksum, dict):
+        raise ValueError("invalid checksum document")
+    artifacts = checksum.get("artifacts")
+    if (type(checksum.get("schemaVersion")) is not int or checksum["schemaVersion"] != 1
+            or not isinstance(artifacts, list) or len(artifacts) != 1
+            or not isinstance(artifacts[0], dict)
+            or artifacts[0].get("filename") != archive.name or artifacts[0].get("bytes") != len(payload)
+            or artifacts[0].get("sha256") != hashlib.sha256(payload).hexdigest()):
+        raise ValueError("package checksum mismatch")
+    stem = archive.name.removesuffix(".tar.gz")
+    if stem == archive.name or not re.fullmatch(r"omarchy-buzz-[0-9][A-Za-z0-9.-]*-linux-(?:x86_64|aarch64)", stem):
+        raise ValueError("unexpected package name")
+    content = {}
+    total = 0
+    with tarfile.open(fileobj=io.BytesIO(payload), mode="r:gz") as tar:
+        members = tar.getmembers()
+        if len(members) > 1033:
+            raise ValueError("too many package members")
+        for member in members:
+            prefix = stem + "/"
+            if (not member.isfile() or not member.name.startswith(prefix) or member.size > MAX_BINARY
+                    or ".." in Path(member.name).parts):
+                raise ValueError("unsafe package member")
+            name = member.name[len(prefix):]
+            if name in content:
+                raise ValueError("duplicate package member")
+            if name not in FILES and name not in ("version.json", "LICENSE", "service/README.md", "helper/README.md") and not name.startswith("third-party/"):
+                raise ValueError("unexpected package member")
+            total += member.size
+            if total > MAX_ARCHIVE:
+                raise ValueError("expanded package is too large")
+            content[name] = tar.extractfile(member).read()
+    if not set(FILES).issubset(content) or "version.json" not in content:
+        raise ValueError("package is missing required files")
+    metadata = json.loads(content["version.json"])
+    if not isinstance(metadata, dict):
+        raise ValueError("invalid package version metadata")
+    if (metadata != checksum.get("version") or type(metadata.get("protocolVersion")) is not int
+            or metadata["protocolVersion"] != 1):
+        raise ValueError("package version metadata mismatch")
+    binary = content["bin/omarchy-buzz"]
+    arch = architecture(binary)
+    if (metadata.get("architecture") != arch or metadata.get("os") != "linux"
+            or metadata.get("binarySha256") != hashlib.sha256(binary).hexdigest()
+            or not re.fullmatch(r"[0-9a-f]{40}", str(metadata.get("backendRevision")))
+            or stem != f"omarchy-buzz-{metadata.get('helperVersion')}-linux-{arch}"):
+        raise ValueError("package binary metadata mismatch")
+    if arch != {"aarch64": "aarch64", "arm64": "aarch64", "x86_64": "x86_64"}.get(platform.machine()):
+        raise ValueError("package architecture differs from this machine")
+    manifest = json.loads((ROOT / "manifest.json").read_text())
+    cargo = tomllib.loads((ROOT / "helper/Cargo.toml").read_text())
+    pins = [cargo["dependencies"][name]["rev"] for name in ("buzz-sdk", "buzz-ws-client")]
+    compatibility = (ROOT / "helper/src/compatibility.rs").read_text()
+    pin = re.search(r'BUZZ_REVISION\s*:\s*&str\s*=\s*"([0-9a-f]{40})"', compatibility)
+    if (metadata["helperVersion"] != manifest.get("version")
+            or metadata["helperVersion"] != cargo["package"]["version"]
+            or pins[0] != pins[1] or pin is None
+            or metadata["backendRevision"] != pins[0] or metadata["backendRevision"] != pin[1]):
+        raise ValueError("package does not match checkout version and Buzz pin")
+    for name in ("service/omarchy-buzz.service", "service/omarchy-buzz.socket"):
+        if content[name] != (ROOT / name).read_bytes():
+            raise ValueError("package unit does not match reviewed local unit")
+    return {name: content[name] for name in FILES}, metadata
+
+
+def probe_binary(data, expected):
+    """Run only the explicitly trusted local package's version command in private temp space."""
+    with tempfile.TemporaryDirectory(prefix="omarchy-buzz-probe-") as temporary:
+        binary = Path(temporary) / "omarchy-buzz"
+        binary.write_bytes(data)
+        binary.chmod(0o700)
+        result = subprocess.run([str(binary), "--version"], capture_output=True, timeout=10,
+                                cwd=temporary)
+    if result.returncode or result.stderr or len(result.stdout) > 4096:
+        raise ValueError("packaged helper failed target --version probe")
+    try:
+        version = json.loads(result.stdout)
+    except (ValueError, UnicodeDecodeError) as error:
+        raise ValueError("packaged helper returned invalid version metadata") from error
+    if (not isinstance(version, dict)
+            or type(version.get("protocolVersion")) is not int
+            or any(version.get(key) != expected[key] for key in
+                   ("helperVersion", "protocolVersion", "backendRevision"))):
+        raise ValueError("packaged helper version differs from package metadata")
+
+
+def inspect_existing(paths, create=True):
+    present = []
+    for name, path in paths.items():
+        safe_directory(path.parent, create=create)
+        if path.is_symlink() or (path.exists() and not path.is_file()):
+            raise ValueError(f"unexpected installed path: {path}")
+        present.append(path.exists())
+    if any(present) and not all(present):
+        raise ValueError("partial installation; review installed files manually")
+    if all(present):
+        for name in ("service/omarchy-buzz.service", "service/omarchy-buzz.socket"):
+            if paths[name].read_bytes() != (ROOT / name).read_bytes():
+                raise ValueError(f"modified or unrecognized unit: {paths[name]}")
+        if paths["bin/omarchy-buzz"].stat().st_size > MAX_BINARY:
+            raise ValueError("installed binary is too large")
+        if architecture(paths["bin/omarchy-buzz"].read_bytes()[:64]) != {"arm64":"aarch64", "aarch64":"aarch64", "x86_64":"x86_64"}.get(platform.machine()):
+            raise ValueError("installed binary architecture mismatch")
+        result = subprocess.run([str(paths["bin/omarchy-buzz"]), "--version"],
+                                capture_output=True, timeout=10)
+        if result.returncode or result.stderr or len(result.stdout) > 4096:
+            raise ValueError("unrecognized installed helper")
+        version = json.loads(result.stdout)
+        if (not isinstance(version, dict) or version.get("protocolVersion") != 1
+                or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?", str(version.get("helperVersion")))
+                or not re.fullmatch(r"[0-9a-f]{40}", str(version.get("backendRevision")))):
+            raise ValueError("unrecognized installed helper")
+    return all(present)
+
+
+def backup(paths, home):
+    base = home / ".local/share/omarchy-buzz/backups"
+    safe_directory(base)
+    target = base / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+    target.mkdir(mode=0o700)
+    for name, path in paths.items():
+        copy = target / name
+        safe_directory(copy.parent)
+        shutil.copy2(path, copy, follow_symlinks=False)
+    return target
+
+
+def put(path, data, mode):
+    descriptor, staged = tempfile.mkstemp(prefix=".omarchy-buzz-", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "wb") as output:
+            output.write(data)
+            output.flush()
+            os.fsync(output.fileno())
+        os.chmod(staged, mode)
+        os.replace(staged, path)
+    finally:
+        if os.path.exists(staged):
+            os.unlink(staged)
+
+
+def restore(paths, saved):
+    for name, path in paths.items():
+        if saved is None:
+            path.unlink(missing_ok=True)
+        else:
+            put(path, (saved / name).read_bytes(), FILES[name][1])
+    systemctl("daemon-reload")
+
+
+def install(home, archive, sidecar, dry_run=False):
+    content, metadata = read_package(archive, sidecar)
+    paths = destinations(home)
+    existing = inspect_existing(paths, create=False)
+    if dry_run:
+        print(("Upgrade" if existing else "Install") + " preview:")
+        for path in paths.values():
+            print(f"  {path}")
+        print("  systemctl --user: stop existing units if upgrading; daemon-reload; enable --now socket")
+        if existing:
+            print(f"  backup under {home / '.local/share/omarchy-buzz/backups'}")
+        return
+    probe_binary(content["bin/omarchy-buzz"], metadata)
+    for path in paths.values():
+        safe_directory(path.parent)
+    was_enabled = systemctl("is-enabled", "omarchy-buzz.socket", check=False) if existing else False
+    was_active = systemctl("is-active", "omarchy-buzz.socket", check=False) if existing else False
+    saved = backup(paths, home) if existing else None
+    try:
+        if existing:
+            systemctl("stop", "omarchy-buzz.socket", "omarchy-buzz.service")
+        for name, path in paths.items():
+            put(path, content[name], FILES[name][1])
+        systemctl("daemon-reload")
+        systemctl("enable", "--now", "omarchy-buzz.socket")
+    except Exception:
+        systemctl("stop", "omarchy-buzz.socket", "omarchy-buzz.service", check=False)
+        if not existing:
+            systemctl("disable", "--now", "omarchy-buzz.socket", check=False)
+        restore(paths, saved)
+        if existing and was_enabled:
+            systemctl("enable", "omarchy-buzz.socket")
+        elif existing:
+            systemctl("disable", "--now", "omarchy-buzz.socket")
+        if existing and was_active:
+            systemctl("start", "omarchy-buzz.socket")
+        raise
+    print(("Upgraded" if existing else "Installed") + f" helper; rollback: {saved or 'not needed'}")
+
+
+def uninstall(home, dry_run=False):
+    paths = destinations(home)
+    if not inspect_existing(paths, create=not dry_run):
+        raise ValueError("helper is not installed")
+    if dry_run:
+        print("Uninstall preview:")
+        for path in paths.values():
+            print(f"  {path}")
+        print("  systemctl --user: disable --now socket; stop service; daemon-reload")
+        print(f"  backup under {home / '.local/share/omarchy-buzz/backups'}")
+        return
+    saved = backup(paths, home)
+    was_enabled = systemctl("is-enabled", "omarchy-buzz.socket", check=False)
+    was_active = systemctl("is-active", "omarchy-buzz.socket", check=False)
+    try:
+        systemctl("disable", "--now", "omarchy-buzz.socket")
+        systemctl("stop", "omarchy-buzz.service")
+        for path in paths.values():
+            path.unlink()
+        systemctl("daemon-reload")
+    except Exception:
+        restore(paths, saved)
+        if was_enabled:
+            systemctl("enable", "omarchy-buzz.socket")
+        if was_active:
+            systemctl("start", "omarchy-buzz.socket")
+        raise
+    print(f"Removed helper files; rollback: {saved}")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest="command", required=True)
+    add = sub.add_parser("install", help="install or upgrade from a local package")
+    add.add_argument("archive", type=Path)
+    add.add_argument("--checksum", type=Path, help="matching .sha256.json (default: beside archive)")
+    add.add_argument("--dry-run", action="store_true", help="validate and preview without changing files or units")
+    remove = sub.add_parser("uninstall", help="remove only installed helper files and units")
+    remove.add_argument("--dry-run", action="store_true", help="preview without changing files or units")
+    args = parser.parse_args()
+    try:
+        home = Path(os.environ["HOME"])
+        if args.command == "install":
+            sidecar = args.checksum or args.archive.with_name(args.archive.name.removesuffix(".tar.gz") + ".sha256.json")
+            install(home, args.archive, sidecar, args.dry_run)
+        else:
+            uninstall(home, args.dry_run)
+    except (ValueError, OSError, RuntimeError, KeyError, json.JSONDecodeError,
+            tarfile.TarError, subprocess.SubprocessError) as error:
+        parser.exit(1, f"helper installation failed: {error}\n")
+
+
+if __name__ == "__main__":
+    main()

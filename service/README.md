@@ -10,35 +10,40 @@ Normal idle exits do not restart the daemon. Failed processes restart at most
 three times per minute. Memory, task, descriptor, and shutdown limits constrain
 helper failures; they do not make the shared Omarchy QML process a sandbox.
 
-After building and testing the helper, install its binary at
-`~/.local/bin/omarchy-buzz` and these two unit files at
-`~/.config/systemd/user/`. From the repository root, this fresh-install function
-refuses to replace an existing binary or either unit (including symlinks):
+Build and test the helper, then package the trusted local build from the same
+checkout as the plugin. The package command verifies its version, pinned Buzz
+revision, and architecture. Review third-party notices before distribution.
 
 ```bash
-install_buzz_helper() {
-  for path in "$HOME/.local/bin/omarchy-buzz" \
-    "$HOME/.config/systemd/user/omarchy-buzz.service" \
-    "$HOME/.config/systemd/user/omarchy-buzz.socket"; do
-    if [ -e "$path" ] || [ -L "$path" ]; then
-      printf 'Already exists; review before upgrading: %s\n' "$path"
-      return 1
-    fi
-  done
-  install -Dm755 helper/target/release/omarchy-buzz "$HOME/.local/bin/omarchy-buzz" &&
-  install -Dm644 service/omarchy-buzz.service "$HOME/.config/systemd/user/omarchy-buzz.service" &&
-  install -Dm644 service/omarchy-buzz.socket "$HOME/.config/systemd/user/omarchy-buzz.socket"
-}
-install_buzz_helper
+python3 scripts/package-helper helper/target/release/omarchy-buzz /tmp/buzz-helper-package
+python3 scripts/helper-install install --dry-run /tmp/buzz-helper-package/omarchy-buzz-*-linux-*.tar.gz
+python3 scripts/helper-install install /tmp/buzz-helper-package/omarchy-buzz-*-linux-*.tar.gz
 ```
 
-Continue only if all three files installed successfully. For an upgrade, retain
-the previous binary/units and deliberately replace them with a helper built
-from the same source revision as the plugin. Then:
+Use an empty package output directory and one matching archive at a time. The
+installer reads the adjacent `.sha256.json` sidecar, validates package members,
+binary hash, architecture and reviewed unit templates, then installs the binary
+and both user units. A sidecar detects accidental corruption; it does not prove
+who created the package. Only install an artifact you built or obtained through
+a trusted, independently verified channel. No download is performed.
+`--dry-run` checks package structure and previews installed paths without running
+the new binary. Actual installation first runs its bounded `--version` command
+from a private temporary directory and checks the reported version and Buzz pin;
+this checks target loadability before stopping the old service.
+
+The same `install` command upgrades an existing complete installation. It
+rejects symlinks, partial installations, edited units, unexpected directories,
+and architecture mismatches. It stops the old helper before replacement and
+keeps copies of all three previous files under
+`~/.local/share/omarchy-buzz/backups/`. The tool reloads systemd and enables
+the socket. If activation fails, it restores the old files and prior socket
+state. Review an error before retrying; no configuration or identity is changed.
+
+To remove only the helper and owned user units:
 
 ```bash
-systemctl --user daemon-reload
-systemctl --user enable --now omarchy-buzz.socket
+python3 scripts/helper-install uninstall --dry-run
+python3 scripts/helper-install uninstall
 ```
 
 No relay connection is attempted without an explicitly enrolled identity.
@@ -49,17 +54,11 @@ enable upstream payload logging in a unit override.
 After changing helper configuration, select Retry in the panel. A service restart
 is an alternative when no UI is connected.
 
-To uninstall, first disable/remove the QML plugin, then:
-
-```bash
-systemctl --user disable --now omarchy-buzz.socket
-systemctl --user stop omarchy-buzz.service
-```
-
-Remove only this project's two installed unit files and helper binary, then run
-`systemctl --user daemon-reload`. Preserve configuration and Secret Service
-entries unless the user explicitly chooses to delete them. Omarchy's native
-plugin removal cannot remove these separately installed files.
+Disable/remove the QML plugin first. Uninstall preserves a rollback copy of the
+three removed files and leaves configuration, Secret Service identity, and the
+delivery ledger in place. Omarchy's native plugin removal cannot remove these
+separately installed files. The installer never uses root privileges or changes
+system units.
 
 Validation so far: installed systemd socket activation passed with unconfigured
 public status, and an isolated inherited-socket test passed idle exit/reactivation.
