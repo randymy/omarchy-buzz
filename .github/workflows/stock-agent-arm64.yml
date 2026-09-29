@@ -44,14 +44,14 @@ jobs:
         working-directory: buzz
         run: |
           test -z "$(git status --porcelain)"
-          cargo +1.95.0 build --locked -p buzz-acp -p buzz-cli --target-dir "$RUNNER_TEMP/agent-target"
+          cargo +1.95.0 build --locked -p buzz-acp -p buzz-cli -p buzz-admin --target-dir "$RUNNER_TEMP/agent-target"
           test -z "$(git status --porcelain)"
           "$RUNNER_TEMP/agent-target/debug/buzz-acp" --help > "$RUNNER_TEMP/acp-help.txt"
           "$RUNNER_TEMP/agent-target/debug/buzz" --help > "$RUNNER_TEMP/cli-help.txt"
       - name: Stage private-test artifacts and provenance
         run: |
           mkdir -p stock-agent/bin
-          cp "$RUNNER_TEMP/agent-target/debug/buzz-acp" "$RUNNER_TEMP/agent-target/debug/buzz" stock-agent/bin/
+          cp "$RUNNER_TEMP/agent-target/debug/buzz-acp" "$RUNNER_TEMP/agent-target/debug/buzz" "$RUNNER_TEMP/agent-target/debug/buzz-admin" stock-agent/bin/
           cp buzz/LICENSE stock-agent/LICENSE
           cp "$RUNNER_TEMP/acp-help.txt" "$RUNNER_TEMP/cli-help.txt" stock-agent/
           python3 - <<'PY'
