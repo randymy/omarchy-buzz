@@ -3,9 +3,15 @@
 Source basis: `@agentclientprotocol/claude-agent-acp` 0.82.0 at
 `18de37624071b48e95aed9ec5382823e2d72cd39` (local checkout
 `/tmp/claude-agent-acp-source-review`), which pins Claude Agent SDK 0.3.280.
-This is an **unimplemented upstream proposal**, not a native CLI patch, login
+The [adapter patch](claude-subscription-policy.patch) is an **uninstalled
+upstream proposal** against that exact revision, not a native CLI patch, login
 result, model run, or billing attestation. No account or local Claude settings
-were read.
+were read. The patch adds `--require-claude-subscription` and synthetic tests;
+the ordinary adapter mode is unchanged. Build and tests still need to run on
+the patched checkout.
+The synthetic tests currently cover policy predicates and direct method denials;
+fake SDK tests for successful creation, lost account at prompt, and cleanup
+after admission failure remain an acceptance gate.
 
 ## Narrow objective
 
@@ -74,8 +80,12 @@ not a new ACP protocol or a replacement native CLI:
    information; they are not the admission check (`src/auth-status.ts:1-47`,
    `src/acp-agent.ts:2698-2827`).
 
-The policy must be repeated at session creation, load/resume/fork, query
-recreation, and prompt. The normal adapter's `settings` and `env` assembly
+The first patch refuses load/resume/fork and automatic query recreation, so it
+checks fresh creation and each prompt rather than importing an existing query.
+It refuses client MCP servers, additional roots, and all
+`_meta.claudeCode.options`; uses SDK `settingSources: []` for managed-only
+settings; and validates both resolved settings and the exact child environment.
+The normal adapter's `settings` and `env` assembly
 merges process, client, and provider inputs and enables user/project/local
 setting sources (`src/acp-agent.ts:8531-8703`); a launch-only check is
 insufficient. The native SDK account read is the strongest supported local

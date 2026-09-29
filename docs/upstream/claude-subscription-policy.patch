@@ -1,0 +1,528 @@
+diff --git c/README.md i/README.md
+index 704c7f6..040fb59 100644
+--- c/README.md
++++ i/README.md
+@@ -26,6 +26,18 @@ This tool implements an ACP agent by using the official [Claude Agent SDK](https
+ 
+ Learn more about the [Agent Client Protocol](https://agentclientprotocol.com/).
+ 
++### Proposed subscription route mode
++
++`--require-claude-subscription` is an opt-in adapter admission policy for a
++controlled, dedicated `CLAUDE_CONFIG_DIR` and `HOME`. It is mutually exclusive
++with `--hide-claude-auth`. The mode offers only local `claude-ai-login`, rejects
++API/gateway/provider and client session overrides, and permits fresh sessions
++only. It checks the SDK's first-party subscription account at query creation
++and before each prompt. The SDK account view is cached for the query lifetime;
++this policy cannot attest a fresh credential, a paid plan's billing terms, or
++an immutable route after an out-of-band credential change. Do not treat it as a
++billing receipt.
++
+ To try changes that have landed on `main` but are not released yet, install from the
+ `preview` channel — every push to `main` publishes one. See
+ [`docs/RELEASES.md`](docs/RELEASES.md#preview-releases).
+diff --git c/src/acp-agent.ts i/src/acp-agent.ts
+index 83bae1d..06bd0ff 100644
+--- c/src/acp-agent.ts
++++ i/src/acp-agent.ts
+@@ -177,6 +177,9 @@ import { buildClaudePermissionOptions } from "./permissions/options.js";
+ import { buildClaudePermissionPresentation } from "./permissions/presentation.js";
+ import { decodeClaudePermissionResponse } from "./permissions/response.js";
+ import { SettingsManager } from "./settings.js";
++import { checkSubscriptionSettings, isSubscriptionAccount, requiresClaudeSubscription,
++  subscriptionChildEnv, subscriptionDenied, validateSubscriptionEnvironment,
++  validateSubscriptionSettings } from "./subscription-policy.js";
+ import {
+   activeUsageLimitMessage,
+   airSessionFailureCapabilityMeta,
+@@ -2412,7 +2415,8 @@ export class ClaudeAcpAgent {
+         };
+       }
+ 
+-      if (!shouldHideClaudeAuth() && (supportsTerminalAuth || supportsMetaTerminalAuth)) {
++      if (!requiresClaudeSubscription() && !shouldHideClaudeAuth() &&
++          (supportsTerminalAuth || supportsMetaTerminalAuth)) {
+         terminalAuthMethods.push(remoteLoginMethod);
+       }
+     } else {
+@@ -2421,7 +2425,10 @@ export class ClaudeAcpAgent {
+         name: "Claude Subscription",
+         id: "claude-ai-login",
+         type: "terminal",
+-        args: ["--cli", "auth", "login", "--claudeai"],
++        args: [
++          ...(requiresClaudeSubscription() ? ["--require-claude-subscription"] : []),
++          "--cli", "auth", "login", "--claudeai",
++        ],
+       };
+ 
+       const consoleLoginMethod: AuthMethod = {
+@@ -2453,12 +2460,14 @@ export class ClaudeAcpAgent {
+       if (!shouldHideClaudeAuth() && (supportsTerminalAuth || supportsMetaTerminalAuth)) {
+         terminalAuthMethods.push(claudeLoginMethod);
+       }
+-      if (supportsTerminalAuth || supportsMetaTerminalAuth) {
++      if (!requiresClaudeSubscription() && (supportsTerminalAuth || supportsMetaTerminalAuth)) {
+         terminalAuthMethods.push(consoleLoginMethod);
+       }
+     }
+ 
+-    const sessionCapabilities: SubagentAwareSessionCapabilities = {
++    const sessionCapabilities: SubagentAwareSessionCapabilities = requiresClaudeSubscription()
++      ? { close: {}, delete: {}, list: {} }
++      : {
+       additionalDirectories: {},
+       close: {},
+       delete: {},
+@@ -2486,8 +2495,8 @@ export class ClaudeAcpAgent {
+           embeddedContext: true,
+         },
+         mcpCapabilities: {
+-          http: true,
+-          sse: true,
++          http: !requiresClaudeSubscription(),
++          sse: !requiresClaudeSubscription(),
+         },
+         auth: {
+           logout: {},
+@@ -2495,8 +2504,7 @@ export class ClaudeAcpAgent {
+         // Client-managed LLM routing via `providers/list`, `providers/set`, and
+         // `providers/disable`. Advertised unconditionally; there is no client
+         // capability prerequisite for the provider methods.
+-        providers: {},
+-        loadSession: true,
++        ...(!requiresClaudeSubscription() && { providers: {}, loadSession: true }),
+         sessionCapabilities,
+       },
+       agentInfo: {
+@@ -2506,7 +2514,8 @@ export class ClaudeAcpAgent {
+       },
+       authMethods: [
+         ...terminalAuthMethods,
+-        ...(supportsGatewayAuth ? [gatewayAuthMethod, gatewayBedrockAuthMethod] : []),
++        ...(!requiresClaudeSubscription() && supportsGatewayAuth
++          ? [gatewayAuthMethod, gatewayBedrockAuthMethod] : []),
+       ],
+       // Top-level `_meta` (sibling of `agentCapabilities`), per the existing ACP
+       // steering extension contract: advertises the `_session/steering` request
+@@ -2514,7 +2523,7 @@ export class ClaudeAcpAgent {
+       // Only AIR gets the AIR capabilities and the goal capability, under
+       // `jetbrains.air`.
+       _meta: {
+-        ...(this.toolCallCapabilities.air.client
++        ...(!requiresClaudeSubscription() && this.toolCallCapabilities.air.client
+           ? withAirMeta(
+               airSessionFailureCapabilityMeta(
+                 AGENT_FILE_CHANGE_REPORT_CAPABILITY,
+@@ -2532,14 +2541,16 @@ export class ClaudeAcpAgent {
+               } satisfies GoalCapability,
+             )
+           : {}),
+-        steering: {
+-          supported: true,
+-        },
++        ...(!requiresClaudeSubscription() && { steering: { supported: true } }),
+       },
+     };
+   }
+ 
+   async newSession(params: NewSessionRequest): Promise<NewSessionResponse> {
++    if (requiresClaudeSubscription() &&
++        ((params._meta as NewSessionMeta | undefined)?.claudeCode?.options?.resume !== undefined)) {
++      subscriptionDenied();
++    }
+     if (this.providerUpdate) await this.providerUpdate;
+     const response = await this.createSession(params, {
+       // Revisit these meta values once we support resume
+@@ -2554,6 +2565,7 @@ export class ClaudeAcpAgent {
+   }
+ 
+   async unstable_forkSession(params: ForkSessionRequest): Promise<ForkSessionResponse> {
++    if (requiresClaudeSubscription()) subscriptionDenied();
+     if (this.providerUpdate) await this.providerUpdate;
+     return forkSession(params, {
+       liveMessageIdToUuid: this.sessions[params.sessionId]?.messageIdToUuid,
+@@ -2563,6 +2575,7 @@ export class ClaudeAcpAgent {
+   }
+ 
+   async resumeSession(params: ResumeSessionRequest): Promise<ResumeSessionResponse> {
++    if (requiresClaudeSubscription()) subscriptionDenied();
+     if (this.providerUpdate) await this.providerUpdate;
+     const result = await this.getOrCreateSession(params);
+ 
+@@ -2575,6 +2588,7 @@ export class ClaudeAcpAgent {
+   }
+ 
+   async loadSession(params: LoadSessionRequest): Promise<LoadSessionResponse> {
++    if (requiresClaudeSubscription()) subscriptionDenied();
+     const timing = new SessionTiming(this.logger, "load", params.sessionId);
+     if (this.providerUpdate) await this.providerUpdate;
+     const resumedSession = await readResumedSession(params.sessionId, this.logger);
+@@ -2634,6 +2648,7 @@ export class ClaudeAcpAgent {
+    * working. Only a payload that IS present has to be usable.
+    */
+   async authenticate(_params: AuthenticateRequest): Promise<void> {
++    if (requiresClaudeSubscription()) subscriptionDenied();
+     if (_params.methodId === "gateway" || _params.methodId === "gateway-bedrock") {
+       const gateway = (_params as GatewayAuthRequest)._meta?.gateway;
+       if (gateway !== undefined && gateway !== null) {
+@@ -2880,6 +2895,7 @@ export class ClaudeAcpAgent {
+    * loaded after this call.
+    */
+   async unstable_setProvider(params: SetProviderRequest): Promise<SetProviderResponse> {
++    if (requiresClaudeSubscription()) subscriptionDenied();
+     if (params.providerId !== PROVIDER_ID) {
+       throw RequestError.invalidParams(
+         { providerId: params.providerId },
+@@ -2936,6 +2952,7 @@ export class ClaudeAcpAgent {
+    * backend slot and restores the agent's native routing state.
+    */
+   async unstable_disableProvider(params: DisableProviderRequest): Promise<DisableProviderResponse> {
++    if (requiresClaudeSubscription()) subscriptionDenied();
+     if (params.providerId === PROVIDER_ID) {
+       this.logger.log(`[providers/disable] sessions=${Object.keys(this.sessions).length}`);
+       await this.enqueueProviderUpdate(undefined);
+@@ -3024,6 +3041,16 @@ export class ClaudeAcpAgent {
+     if (!session) {
+       throw new Error("Session not found");
+     }
++    if (requiresClaudeSubscription()) {
++      validateSubscriptionEnvironment(process.env);
++      validateSubscriptionSettings(session.settingsManager.getSettings());
++      await checkSubscriptionSettings(session.settingsManager.getCwd());
++      try {
++        if (!isSubscriptionAccount(await session.query.accountInfo())) subscriptionDenied();
++      } catch {
++        subscriptionDenied();
++      }
++    }
+     // The one re-read per user prompt, fired here and never awaited: a prompt
+     // must not wait on a CLI process, and its result is pushed on change
+     // whenever it lands, mid-turn included. It runs BEFORE the guard on
+@@ -3284,6 +3311,7 @@ export class ClaudeAcpAgent {
+   }
+ 
+   async goal(params: GoalRequest): Promise<GoalControlResponse> {
++    if (requiresClaudeSubscription()) subscriptionDenied();
+     const command = params.action === "set" ? `/goal ${params.objective}` : "/goal clear";
+     const prompt = [{ type: "text" as const, text: command }];
+     const steering = await this.steer({
+@@ -3386,6 +3414,7 @@ export class ClaudeAcpAgent {
+    *  `session/prompt`. Without the opt-in, the existing detached `prompt()` and
+    *  `startedNewTurn` result are preserved for compatibility. */
+   async steer(params: SteerRequest): Promise<SteerResponse> {
++    if (requiresClaudeSubscription()) subscriptionDenied();
+     const sessionId = params.sessionId;
+     let session = this.sessions[sessionId];
+     if (!session) {
+@@ -8415,6 +8444,19 @@ export class ClaudeAcpAgent {
+     } = {},
+   ): Promise<NewSessionResponse> {
+     const createStartedAt = performance.now();
++    if (requiresClaudeSubscription()) {
++      if (creationOpts.resume !== undefined || creationOpts.forkSession ||
++          creationOpts.publicSessionId || creationOpts.reuseSessionId ||
++          (params.mcpServers?.length ?? 0) > 0 ||
++          (params.additionalDirectories?.length ?? 0) > 0 ||
++          (params._meta as NewSessionMeta | undefined)?.additionalRoots?.length ||
++          (params._meta as NewSessionMeta | undefined)?.claudeCode?.options) {
++        subscriptionDenied();
++      }
++      validateSubscriptionEnvironment(process.env);
++      await checkSubscriptionSettings(params.cwd);
++      if (this.resolveProviderConfig() !== null) subscriptionDenied();
++    }
+     // Validate `cwd` up front. The ACP spec requires an absolute path, and the
+     // directory must actually exist on the machine running the agent. Without
+     // this check a session is created against a missing directory and the
+@@ -8461,8 +8503,17 @@ export class ClaudeAcpAgent {
+ 
+     const settingsManager = new SettingsManager(params.cwd, {
+       logger: this.logger,
++      failOnError: requiresClaudeSubscription(),
+     });
+     await settingsManager.initialize();
++    if (requiresClaudeSubscription()) {
++      try {
++        validateSubscriptionSettings(settingsManager.getSettings());
++      } catch {
++        settingsManager.dispose();
++        subscriptionDenied();
++      }
++    }
+     timing.phase("settings");
+ 
+     const mcpServers: Record<string, McpServerConfig> = {};
+@@ -8645,6 +8696,9 @@ export class ClaudeAcpAgent {
+       // Opt-in to session state events like when the agent is idle
+       CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1",
+     };
++    if (requiresClaudeSubscription()) {
++      validateSubscriptionEnvironment(env);
++    }
+     // Scopes the context-window cache to this query's backend (see
+     // `contextWindowCache`). Derived from the same `env` object handed to the
+     // SDK, so per-session `_meta` env routing and ambient process-env routing
+@@ -8656,7 +8710,7 @@ export class ClaudeAcpAgent {
+ 
+     const options: Options = {
+       systemPrompt,
+-      settingSources: ["user", "project", "local"],
++      settingSources: requiresClaudeSubscription() ? [] : ["user", "project", "local"],
+       ...(thinking !== undefined && { thinking }),
+       ...userProvidedOptions,
+       // Claude Code uses the same checkpoint store for /rewind. Enable it only
+@@ -8664,7 +8718,9 @@ export class ClaudeAcpAgent {
+       // snapshot I/O for every other session.
+       ...(fileChangeReporter ? { enableFileCheckpointing: true } : {}),
+       ...(settings && { settings }),
+-      env,
++      env: requiresClaudeSubscription()
++        ? { ...subscriptionChildEnv(env), CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1" }
++        : env,
+       // Override certain fields that must be controlled by ACP
+       cwd: params.cwd,
+       includePartialMessages: true,
+@@ -8845,6 +8901,10 @@ export class ClaudeAcpAgent {
+       }
+       timing.phase("sdk-initialize");
+ 
++      if (requiresClaudeSubscription() && !isSubscriptionAccount(initializationResult.account)) {
++        subscriptionDenied();
++      }
++
+       // Publish the identity BEFORE the guard can refuse this session. A
+       // refusal is exactly when the client most needs to know which account it
+       // was refused for.
+diff --git c/src/index.ts i/src/index.ts
+index 530598b..3f06ecc 100644
+--- c/src/index.ts
++++ i/src/index.ts
+@@ -5,14 +5,29 @@ import { applyManagedPolicyEnv } from "./managed-policy.js";
+ import packageJson from "../package.json" with { type: "json" };
+ import { appendFileSync, mkdirSync } from "node:fs";
+ import { join } from "node:path";
++import { requiresClaudeSubscription, subscriptionChildEnv, subscriptionDenied,
++  validateSubscriptionEnvironment } from "./subscription-policy.js";
++
++if (requiresClaudeSubscription() && process.argv.includes("--hide-claude-auth")) {
++  subscriptionDenied();
++}
+ 
+ // `--cli` is checked first so that `--version`/`-v` (and any other flags) are
+ // forwarded to the wrapped native CLI rather than swallowed by our own version
+ // handler below. Our version flag only applies when not delegating.
+ if (process.argv.includes("--cli")) {
+   const { spawn } = await import("node:child_process");
+-  const args = process.argv.slice(2).filter((arg) => arg !== "--cli");
+-  const child = spawn(await claudeCliPath(), args, { stdio: "inherit" });
++  const args = process.argv.slice(2).filter((arg) =>
++    arg !== "--cli" && arg !== "--require-claude-subscription");
++  if (requiresClaudeSubscription() &&
++      JSON.stringify(args) !== JSON.stringify(["auth", "login", "--claudeai"])) {
++    subscriptionDenied();
++  }
++  if (requiresClaudeSubscription()) validateSubscriptionEnvironment(process.env);
++  const child = spawn(await claudeCliPath(), args, {
++    stdio: "inherit",
++    env: requiresClaudeSubscription() ? subscriptionChildEnv(process.env) : process.env,
++  });
+ 
+   const signals =
+     process.platform === "win32"
+@@ -48,6 +63,7 @@ if (process.argv.includes("--cli")) {
+   // failure leaves the agent running with no policy env instead of aborting
+   // module evaluation here, before any ACP traffic.
+   await applyManagedPolicyEnv();
++  if (requiresClaudeSubscription()) validateSubscriptionEnvironment(process.env);
+ 
+   // stdout is used to send messages to the client
+   // we redirect everything else to stderr to make sure it doesn't interfere with ACP
+@@ -60,7 +76,7 @@ if (process.argv.includes("--cli")) {
+     console.error("Unhandled Rejection at:", promise, "reason:", reason);
+   });
+ 
+-  const logDirectory = process.env.CLAUDE_AGENT_LOGS;
++  const logDirectory = requiresClaudeSubscription() ? undefined : process.env.CLAUDE_AGENT_LOGS;
+   const logger = logDirectory
+     ? (() => {
+         mkdirSync(logDirectory, { recursive: true });
+diff --git c/src/settings.ts i/src/settings.ts
+index 687578f..25ecb94 100644
+--- c/src/settings.ts
++++ i/src/settings.ts
+@@ -35,6 +35,7 @@ function getManagedSettingsPath(): string {
+ export interface SettingsManagerOptions {
+   onChange?: () => void;
+   logger?: { log: (...args: any[]) => void; error: (...args: any[]) => void };
++  failOnError?: boolean;
+ }
+ 
+ /**
+@@ -54,6 +55,7 @@ export class SettingsManager {
+   private logger: { log: (...args: any[]) => void; error: (...args: any[]) => void };
+   private initialized = false;
+   private disposed = false;
++  private failOnError: boolean;
+   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
+   private initPromise: Promise<void> | null = null;
+ 
+@@ -61,6 +63,7 @@ export class SettingsManager {
+     this.cwd = cwd;
+     this.onChange = options?.onChange;
+     this.logger = options?.logger ?? console;
++    this.failOnError = options?.failOnError ?? false;
+   }
+ 
+   /**
+@@ -107,6 +110,7 @@ export class SettingsManager {
+       const resolved = await resolveSettings({ cwd: this.cwd });
+       this.effective = filterEscalatingDefaultMode(resolved);
+     } catch (error) {
++      if (this.failOnError) throw new Error("subscription_policy_denied");
+       this.logger.error("Failed to resolve settings:", error);
+       this.effective = {};
+     }
+diff --git c/src/subscription-policy.ts i/src/subscription-policy.ts
+new file mode 100644
+index 0000000..ba50854
+--- /dev/null
++++ i/src/subscription-policy.ts
+@@ -0,0 +1,70 @@
++import { isAbsolute } from "node:path";
++import { RequestError } from "@agentclientprotocol/sdk";
++import { resolveSettings, type AccountInfo } from "@anthropic-ai/claude-agent-sdk";
++import type { Settings } from "@anthropic-ai/claude-agent-sdk";
++
++export function requiresClaudeSubscription(): boolean {
++  return process.argv.includes("--require-claude-subscription");
++}
++
++export function subscriptionDenied(): never {
++  throw RequestError.authRequired(
++    { reason: "claude_subscription_route_unavailable" },
++    "Claude subscription route is unavailable.",
++  );
++}
++
++/** Positive SDK account allowlist; the SDK account read is cached per Query. */
++export function isSubscriptionAccount(account: AccountInfo | undefined): boolean {
++  return !!account && account.apiProvider === "firstParty" &&
++    typeof account.subscriptionType === "string" && account.subscriptionType.trim().length > 0 &&
++    !account.tokenSource && (account.apiKeySource === undefined || account.apiKeySource === "none");
++}
++
++const FORBIDDEN_ENV = new Set([
++  "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL",
++  "ANTHROPIC_BEDROCK_BASE_URL", "ANTHROPIC_VERTEX_BASE_URL", "ANTHROPIC_CUSTOM_HEADERS",
++  "ANTHROPIC_VERTEX_PROJECT_ID", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN_FD",
++  "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_EXECUTABLE",
++  "CLAUDE_MODEL_CONFIG", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
++  "GOOGLE_APPLICATION_CREDENTIALS", "CLOUD_ML_REGION", "NODE_OPTIONS", "NODE_PATH",
++  "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
++]);
++
++export function validateSubscriptionEnvironment(env: NodeJS.ProcessEnv): void {
++  if (!env.CLAUDE_CONFIG_DIR || !isAbsolute(env.CLAUDE_CONFIG_DIR) ||
++      !env.HOME || !isAbsolute(env.HOME)) subscriptionDenied();
++  for (const key of FORBIDDEN_ENV) {
++    if (env[key]) subscriptionDenied();
++  }
++}
++
++/** An explicit child environment prevents unknown future ambient route vars. */
++export function subscriptionChildEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
++  const child: NodeJS.ProcessEnv = {};
++  for (const key of ["HOME", "USER", "LOGNAME", "PATH", "TMPDIR", "LANG", "LC_ALL",
++    "TERM", "CLAUDE_CONFIG_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME",
++    "XDG_STATE_HOME", "XDG_RUNTIME_DIR", "SSL_CERT_FILE", "SSL_CERT_DIR"]) {
++    if (env[key] !== undefined) child[key] = env[key];
++  }
++  return child;
++}
++
++/** Managed settings still apply when SDK settingSources is empty. */
++export async function checkSubscriptionSettings(cwd: string): Promise<void> {
++  try {
++    const resolved = await resolveSettings({ cwd, settingSources: [] });
++    validateSubscriptionSettings(resolved.effective);
++  } catch {
++    subscriptionDenied();
++  }
++}
++
++export function validateSubscriptionSettings(settings: Settings): void {
++  const values = settings as unknown as Record<string, unknown>;
++  if (settings.apiKeyHelper || Object.values(settings.env ?? {}).some(Boolean) ||
++      ["awsAuthRefresh", "awsCredentialExport", "modelOverrides"].some((key) =>
++        values[key] !== undefined && values[key] !== null)) {
++    subscriptionDenied();
++  }
++}
+diff --git c/src/tests/subscription-policy.test.ts i/src/tests/subscription-policy.test.ts
+new file mode 100644
+index 0000000..2e22279
+--- /dev/null
++++ i/src/tests/subscription-policy.test.ts
+@@ -0,0 +1,61 @@
++import { afterEach, describe, expect, it, vi } from "vitest";
++import type { AccountInfo, Settings } from "@anthropic-ai/claude-agent-sdk";
++import { ClaudeAcpAgent, type AcpClient } from "../acp-agent.js";
++import { isSubscriptionAccount, subscriptionChildEnv, validateSubscriptionEnvironment,
++  validateSubscriptionSettings } from "../subscription-policy.js";
++
++describe("opt-in Claude subscription admission policy", () => {
++  afterEach(() => vi.restoreAllMocks());
++
++  it("uses a positive first-party, plan and no-key account allowlist", () => {
++    const good = { apiProvider: "firstParty", subscriptionType: "pro", apiKeySource: "none" };
++    expect(isSubscriptionAccount(good as AccountInfo)).toBe(true);
++    expect(isSubscriptionAccount({ ...good, apiKeySource: undefined } as AccountInfo)).toBe(true);
++    for (const account of [undefined, { ...good, subscriptionType: "" },
++      { ...good, apiProvider: "bedrock" }, { ...good, tokenSource: "oauth" },
++      { ...good, apiKeySource: "ANTHROPIC_API_KEY" },
++      { ...good, apiKeySource: "apiKeyHelper" },
++      { ...good, apiKeySource: "future-unknown" }]) {
++      expect(isSubscriptionAccount(account as AccountInfo | undefined)).toBe(false);
++    }
++  });
++
++  it("rejects ambient route inputs and only forwards environment basics", () => {
++    const clean = { HOME: "/isolated", CLAUDE_CONFIG_DIR: "/isolated/claude" };
++    expect(() => validateSubscriptionEnvironment(clean)).not.toThrow();
++    for (const env of [{ ...clean, ANTHROPIC_API_KEY: "synthetic" },
++      { ...clean, CLAUDE_CODE_OAUTH_TOKEN: "synthetic" },
++      { ...clean, CLAUDE_CODE_USE_BEDROCK: "1" },
++      { ...clean, CLAUDE_CODE_EXECUTABLE: "/other/claude" },
++      { ...clean, HTTPS_PROXY: "https://elsewhere.invalid" }]) {
++      expect(() => validateSubscriptionEnvironment(env)).toThrow();
++    }
++    expect(subscriptionChildEnv({ ...clean, OTHER_SECRET: "synthetic" })).toEqual(clean);
++  });
++
++  it("rejects managed or project settings with keys or injected env", () => {
++    expect(() => validateSubscriptionSettings({} as Settings)).not.toThrow();
++    expect(() => validateSubscriptionSettings({ apiKeyHelper: "key-command" } as Settings))
++      .toThrow();
++    expect(() => validateSubscriptionSettings({ env: { ANTHROPIC_BASE_URL: "https://elsewhere.invalid" } } as Settings))
++      .toThrow();
++  });
++
++  it("rejects provider and imported-session methods before mutation", async () => {
++    const argv = process.argv;
++    process.argv = [...argv, "--require-claude-subscription"];
++    try {
++      const agent = new ClaudeAcpAgent({ sessionUpdate: vi.fn() } as unknown as AcpClient);
++      await expect(agent.authenticate({ methodId: "gateway" } as never)).rejects.toThrow();
++      await expect(agent.unstable_setProvider({} as never)).rejects.toThrow();
++      await expect(agent.unstable_disableProvider({} as never)).rejects.toThrow();
++      await expect(agent.resumeSession({} as never)).rejects.toThrow();
++      await expect(agent.loadSession({} as never)).rejects.toThrow();
++      await expect(agent.unstable_forkSession({} as never)).rejects.toThrow();
++      await expect(agent.steer({} as never)).rejects.toThrow();
++      await expect(agent.goal({} as never)).rejects.toThrow();
++    } finally {
++      process.argv = argv;
++    }
++  });
++});
