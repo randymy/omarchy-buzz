@@ -1,0 +1,2 @@
+#!/bin/sh
+exec /opt/agent/adapter/node_modules/@openai/codex-linux-arm64/vendor/aarch64-unknown-linux-musl/bin/codex -c forced_login_method=chatgpt "$@"

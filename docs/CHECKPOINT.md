@@ -3,8 +3,8 @@
 ## Latest verified state
 
 - Installed messaging preview is 0.0.8. Native rooms, sends, usernames,
-  thread reading and reply composition, overlay, normal window and application-search launcher are available. No room agent
-  service is enabled and no public release or marketplace listing exists.
+  thread reading and reply composition, overlay, normal window and application-search launcher are available. A separate isolated Codex room service now passes real subscription
+  acceptance and is running manually; no public release or marketplace listing exists.
 - Both Codex/ChatGPT and Claude native-subscription fixed-response model tests
   pass through guarded ACP adapters, including session-correlated responses and
   explicit API-auth rejection. This is separate from room-agent acceptance.
@@ -13,8 +13,8 @@
   tests pass on this Omarchy machine without credentials or a relay.
 - The current package has 252 dependency records, 192 unique notice texts and
   no package without notice text. Distribution review flags remain explicit.
-- Room-agent shipping still requires upstream harness changes under the approved ordinary Buzz publication contract. See
-  [the contribution plan](upstream/ROOM_AGENT_SHIPPING.md).
+- The approved stock Codex path now works without upstream patches. Broader agent UI, Claude room acceptance and distribution remain unfinished. See
+  [isolated room agents](ROOM_AGENTS.md).
 
 The dated sections below retain historical evidence; older installed-version
 and pending-test statements are superseded by this summary and later entries.
@@ -1487,3 +1487,33 @@ subscription room agents, a public release, or a community marketplace listing.
 The upstream WS draft is PR 7976. The permission contribution now includes four
 passing real ACP session-path fake-peer tests; the seven staged patches apply in
 order, but they are contribution prototypes, not installed production dependencies.
+
+## Stock Codex room acceptance passed — September 29 evening
+
+The owner approved an isolated-workspace first agent. Build 36639519388 passed
+for unchanged Buzz 781d395 (buzz-acp, buzz CLI and buzz-admin). Official npm
+Codex ACP 2.0.0 and Codex 0.158.0 were installed with scripts disabled. The native
+wrapper forces ChatGPT login and reuses the already signed-in separate profile.
+No provider API credentials or normal HOME/desktop session enter the sandbox.
+
+A dedicated Buzz identity was generated using upstream buzz-admin, stored in
+Secret Service and added to the approved private room. One startup attempt failed
+before agent execution because this bwrap lacks --preserve-fds. The corrected
+launcher uses a memfd containing --args options; synthetic checks cover the
+key handoff without putting its value in process arguments or disk files.
+
+The successful owner mention asked the agent to read a harmless workspace marker.
+It returned the exact marker in a signed reply to the same thread. The installed
+0.0.8 helper verified and projected that exact reply. Evidence is
+`evidence/stock-codex-room-2026-09-29.json`. This is actual subscription room
+acceptance, not the earlier independent provider and synthetic-relay checks.
+
+The transient test unit was stopped and replaced with the manually started
+`omarchy-buzz-codex.service`, memory-limited to 2 GiB and 128 tasks, with core
+dumps disabled and whole-cgroup cleanup. It is not enabled at login. Per-turn
+limits are 180 seconds absolute and 60 seconds idle. It has its own workspace,
+not the vPerps checkout. Stock agent tools hold their dedicated Buzz signing key;
+room/owner filters route input and do not restrict all possible signed events.
+Shared network and provider credentials inside the dedicated profile remain
+explicit trust limits. Do not present this as a hostile-code or network sandbox,
+a future vMachine authority layer, human approval UI, or full agent-state dashboard.

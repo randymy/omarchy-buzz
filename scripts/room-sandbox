@@ -1,0 +1,130 @@
+#!/usr/bin/env python3
+"""Run an explicitly supplied room-agent command in a private filesystem view.
+
+The caller owns authentication, room authorization, resource limits and process
+supervision. This launcher only constrains the filesystem and inherited session.
+The host network is shared for provider and relay access; egress is unrestricted.
+"""
+import argparse
+import os
+from pathlib import Path
+import shutil
+import stat
+import sys
+import urllib.parse
+
+
+class Refused(Exception):
+    pass
+
+
+PROFILE_DIRS = ("home", "provider", "config", "data", "cache", "state")
+
+
+def private_directory(path):
+    if not path.is_absolute() or ".." in path.parts:
+        raise Refused("absolute_private_directory_required")
+    for part in (path, *path.parents):
+        if part.is_symlink():
+            raise Refused("linked_directory_path")
+    try:
+        info = path.stat()
+    except OSError as exc:
+        raise Refused("private_directory_missing") from exc
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+        raise Refused("private_directory_permissions_unsafe")
+    return path
+
+
+def validate(profile, workspace, bundle):
+    if os.geteuid() == 0:
+        raise Refused("root_forbidden")
+    private_directory(profile)
+    private_directory(workspace)
+    for name in PROFILE_DIRS:
+        private_directory(profile / name)
+    if workspace == profile or workspace.is_relative_to(profile) or profile.is_relative_to(workspace):
+        raise Refused("workspace_profile_overlap")
+    if not bundle.is_absolute() or ".." in bundle.parts or any(p.is_symlink() for p in (bundle, *bundle.parents)):
+        raise Refused("bundle_path_unsafe")
+    if not bundle.is_dir():
+        raise Refused("bundle_directory_missing")
+    if any(a == b or a.is_relative_to(b) or b.is_relative_to(a)
+           for a, b in ((bundle, profile), (bundle, workspace))):
+        raise Refused("bundle_private_mount_overlap")
+    if shutil.which("bwrap") is None:
+        raise Refused("bubblewrap_unavailable")
+
+
+def relay_url(value):
+    parsed = urllib.parse.urlsplit(value)
+    if (parsed.scheme not in ("ws", "wss") or not parsed.hostname or
+            parsed.username or parsed.password or parsed.query or parsed.fragment or
+            parsed.path not in ("", "/")):
+        raise Refused("relay_origin_required")
+    try:
+        parsed.port
+    except ValueError as exc:
+        raise Refused("relay_port_invalid") from exc
+    return value.rstrip("/")
+
+
+def build_command(profile, workspace, bundle, command, relay=None, bwrap="/usr/bin/bwrap"):
+    """Return the exact argv; command paths must name files inside the sandbox."""
+    if not command or not command[0].startswith("/"):
+        raise Refused("absolute_sandbox_command_required")
+    args = [bwrap, "--unshare-all", "--unshare-user", "--share-net", "--disable-userns",
+            "--new-session", "--die-with-parent", "--clearenv",
+            "--ro-bind", "/usr", "/usr", "--symlink", "usr/bin", "/bin",
+            "--symlink", "usr/lib", "/lib", "--dev", "/dev", "--proc", "/proc",
+            "--tmpfs", "/tmp", "--dir", "/etc", "--dir", "/opt",
+            "--dir", "/profile", "--ro-bind", str(bundle), "/opt/agent",
+            "--bind", str(workspace), "/workspace"]
+    # DNS and TLS trust are needed for provider traffic. Bind only these public
+    # runtime files, never the host /etc, /run, home, keyring or session sockets.
+    for source, target in (("/etc/resolv.conf", "/etc/resolv.conf"),
+                           ("/etc/hosts", "/etc/hosts"),
+                           ("/etc/ca-certificates", "/etc/ca-certificates"),
+                           ("/etc/ssl/certs", "/etc/ssl/certs")):
+        path = Path(source)
+        if path.exists():
+            args += ["--ro-bind", str(path.resolve()), target]
+    for name in PROFILE_DIRS:
+        args += ["--bind", str(profile / name), "/profile/" + name]
+    args += ["--tmpfs", "/run", "--dir", "/run/user", "--dir", "/run/user/" + str(os.getuid())]
+    env = {"HOME": "/profile/home", "CODEX_HOME": "/profile/provider",
+           "XDG_CONFIG_HOME": "/profile/config", "XDG_DATA_HOME": "/profile/data",
+           "XDG_CACHE_HOME": "/profile/cache", "XDG_STATE_HOME": "/profile/state",
+           "XDG_RUNTIME_DIR": "/run/user/" + str(os.getuid()),
+           "PATH": "/opt/agent/bin:/usr/bin:/bin", "LANG": "C.UTF-8",
+           "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null",
+           "GIT_TERMINAL_PROMPT": "0"}
+    if Path("/etc/ca-certificates/extracted/tls-ca-bundle.pem").is_file():
+        env["SSL_CERT_FILE"] = "/etc/ca-certificates/extracted/tls-ca-bundle.pem"
+    if relay is not None:
+        env["BUZZ_RELAY_URL"] = relay_url(relay)
+    for key, value in env.items():
+        args += ["--setenv", key, value]
+    return args + ["--chdir", "/workspace", "--", *command]
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--profile", type=Path, required=True,
+                        help="dedicated agent-preview profile, never the normal ~/.codex")
+    parser.add_argument("--workspace", type=Path, required=True)
+    parser.add_argument("--bundle", type=Path, required=True)
+    parser.add_argument("--relay-url", help="explicit WebSocket relay origin")
+    parser.add_argument("command", nargs=argparse.REMAINDER)
+    args = parser.parse_args()
+    command = args.command[1:] if args.command[:1] == ["--"] else args.command
+    try:
+        validate(args.profile, args.workspace, args.bundle)
+        argv = build_command(args.profile, args.workspace, args.bundle, command, args.relay_url)
+    except Refused as exc:
+        parser.error(str(exc))
+    os.execv(argv[0], argv)
+
+
+if __name__ == "__main__":
+    main()

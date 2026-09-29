@@ -10,3 +10,5 @@
 - Use synthetic fixtures and isolated test relays. Never send messages, invoke agents, place orders, or alter production systems merely to validate a UI.
 - Keep changes small and reviewable. Document material compatibility changes, test the actual boundaries, and never include secrets in diagnostics or commits.
 - The user explicitly resumed remote tests on 2026-09-28 after the notification pause. Run focused manual workflows as needed; keep automatic triggers disabled. Account notification preferences have not been changed.
+
+- September 29: the user explicitly approved the first stock Codex subscription room agent in an isolated workspace. This authorizes the bounded real acceptance task and dedicated identity, not unrestricted host access or provider API fallback. Stock signing with the agent’s own key and auto tool decisions are confined to the documented filesystem sandbox; harness room/owner filters are routing controls, not a signing authority. Do not reintroduce optional harness-only signing as an implicit blocker for this approved path.

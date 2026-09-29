@@ -1,0 +1,48 @@
+{
+  "date": "2026-09-29",
+  "userAuthorized": true,
+  "stockUpstream": true,
+  "patchesApplied": [],
+  "buildRun": "https://github.com/randymy/omarchy-buzz/actions/runs/36639519388",
+  "buzzSource": "781d39510cf23cfe224e8f521ae06a23377e06de",
+  "binaryHashes": {
+    "bin/buzz": "54aa3ad0bd672d36ca03747390fc1f41df5cb454545d5424d2d20329588433c3",
+    "bin/buzz-acp": "9323cea933acf782a6976c1f4aa6484948de9876a70b1b3a11720e533daec4f4",
+    "bin/buzz-admin": "7fc7ef31dfdbdfe425cbca1280e406e4dce96c44baba28b67536557f72804c80"
+  },
+  "packages": {
+    "node_modules/@agentclientprotocol/codex-acp": {
+      "version": "2.0.0",
+      "integrity": "sha512-dho7RRXP+7Ur813qKgPVoAKjr4x3A8IcOoBOTYJRkcCNgcGraP5x3/5lPcZ0QgcVm0ErdYXRPYjwdSzvZHaKqw==",
+      "resolved": "https://registry.npmjs.org/@agentclientprotocol/codex-acp/-/codex-acp-2.0.0.tgz"
+    },
+    "node_modules/@openai/codex": {
+      "version": "0.158.0",
+      "integrity": "sha512-GBhcKpQmVLsCtEP5mUf6WFye6QQgTKotwsXrYPM0GFmEsoOSahik6hkf2FHabX9kZBl0Y0/PQowLu7uYMKT8dg==",
+      "resolved": "https://registry.npmjs.org/@openai/codex/-/codex-0.158.0.tgz"
+    },
+    "node_modules/@openai/codex-linux-arm64": {
+      "version": "0.158.0-linux-arm64",
+      "integrity": "sha512-T9AgGcoU7HNsxJ4prT/R9YvztyEmz9kWP/VlT2cbCop4PVwiqfG9YMJtLo4j2ScewvSaTl4sQFwla+fwGpoRZg==",
+      "resolved": "https://registry.npmjs.org/@openai/codex/-/codex-0.158.0-linux-arm64.tgz"
+    }
+  },
+  "nativeAuthentication": "Logged in using ChatGPT",
+  "nativeForcedLoginMethod": "chatgpt",
+  "apiCredentialsForwarded": false,
+  "dedicatedBuzzIdentity": true,
+  "filesystemSandbox": "bubblewrap",
+  "sharedNetwork": true,
+  "toolPermissions": "stock automatic, inside filesystem sandbox",
+  "routing": "one configured room, owner-only mentions",
+  "requestEvent": "9916122ed3b9189f0ebd4c99bb5251e5598d0fadaa816dbdcd4c49e0a20a710c",
+  "replyEvent": "a9202d8a65bac192e168e62b5c778ab2941203884aab50f0570467b0f78e2d0f",
+  "replyText": "BUZZ_ISOLATED_WORKSPACE_READY",
+  "sameThread": true,
+  "dedicatedAuthor": true,
+  "installedHelperVerifiedReply": true,
+  "tierOrBillingReceiptIndependentlyVerified": false,
+  "earlierStartupAttempt": "unsupported bwrap option; no task ran; corrected with tested memfd --args handoff",
+  "service": "omarchy-buzz-codex.service",
+  "enabledAtLogin": false
+}

@@ -1,0 +1,56 @@
+#!/usr/bin/python3
+"""Launch one explicitly configured, filesystem-isolated stock Buzz Codex agent.
+
+Use a systemd user unit for resource bounds and whole-cgroup cleanup. This is
+not a QML command interface. Enrollment is a separate owner operation.
+"""
+import argparse
+import importlib.machinery
+import importlib.util
+import os
+from pathlib import Path
+import re
+import resource
+import subprocess
+import uuid
+
+loader = importlib.machinery.SourceFileLoader('room_sandbox', str(Path(__file__).with_name('room-sandbox')))
+spec = importlib.util.spec_from_loader(loader.name, loader)
+sandbox = importlib.util.module_from_spec(spec)
+loader.exec_module(sandbox)
+
+def main():
+    p=argparse.ArgumentParser(description=__doc__)
+    for name in ('profile','workspace','bundle'):
+        p.add_argument('--'+name,type=Path,required=True)
+    for name in ('relay','room','owner','identity'):
+        p.add_argument('--'+name,required=True)
+    a=p.parse_args()
+    resource.setrlimit(resource.RLIMIT_CORE,(0,0))
+    sandbox.validate(a.profile,a.workspace,a.bundle)
+    sandbox.relay_url(a.relay)
+    if any(not re.fullmatch('[0-9a-f]{64}', x) for x in (a.owner,a.identity)) or a.owner==a.identity:
+        p.error('separate_agent_and_owner_required')
+    if str(uuid.UUID(a.room))!=a.room:
+        p.error('canonical_room_required')
+    result=subprocess.run(['/usr/bin/secret-tool','lookup','service','omarchy-buzz.room-agent.v1','account',a.identity],capture_output=True,timeout=15)
+    key=result.stdout.strip()
+    if result.returncode or not re.fullmatch(rb'[0-9a-f]{64}',key):
+        p.error('agent_identity_unavailable')
+    fd=os.memfd_create('buzz-agent-identity',0)
+    os.write(fd,b"--setenv\0BUZZ_PRIVATE_KEY\0"+key+b"\0")
+    os.lseek(fd,0,os.SEEK_SET)
+    if fd!=3:
+        os.dup2(fd,3);os.close(fd)
+    os.set_inheritable(3,True)
+    command=['/opt/agent/bin/room-agent-entry','--agent-command','codex-acp',
+             '--agent-owner',a.owner,'--channels',a.room,'--subscribe','mentions',
+             '--respond-to','owner-only','--permission-mode','default','--agents','1',
+             '--heartbeat-interval','0','--max-turn-duration','180','--idle-timeout','60']
+    argv=sandbox.build_command(a.profile,a.workspace,a.bundle,command,a.relay)
+    position=argv.index('--chdir')
+    argv[position:position]=['--args','3']
+    os.execv(argv[0],argv)
+
+if __name__=='__main__':
+    main()

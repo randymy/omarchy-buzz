@@ -1,0 +1,7 @@
+#!/usr/bin/python3
+"""Inside the filesystem sandbox: exec Buzz with its dedicated environment identity."""
+import os
+import sys
+
+os.environ['INITIAL_AGENT_MODE'] = 'agent-full-access'
+os.execv('/opt/agent/bin/buzz-acp', ['/opt/agent/bin/buzz-acp', *sys.argv[1:]])
