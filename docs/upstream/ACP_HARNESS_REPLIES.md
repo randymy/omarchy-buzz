@@ -78,3 +78,11 @@ removal. Its real router/database checks pass in [run 36493588467](https://githu
 This addresses the removal race in the combined prototype. The fifth patch alone
 and currently deployed relays do not gain that guarantee. All proposals remain
 unsubmitted/uninstalled; complete prompt-to-room acceptance remains outstanding.
+
+The [ARM64 run 36623681719](https://github.com/randymy/omarchy-buzz/actions/runs/36623681719)
+also passed a handler-level observed-removal regression. It drives a completed
+reply through the actual `handle_prompt_result`, asserts synchronous suppression
+for an already-removed room and no loopback HTTP publication, then confirms an
+active-room control reaches `/events` once. The fixture registers the upstream
+pool's active task and scope ownership. This tests the observed-removal guard,
+not the accepted race with a later removal. [Exact evidence](../evidence/observed-removal-36623681719.json).

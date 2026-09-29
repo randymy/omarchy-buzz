@@ -1,0 +1,38 @@
+{
+  "runId": "36623681719",
+  "runUrl": "https://github.com/randymy/omarchy-buzz/actions/runs/36623681719",
+  "sourceRevision": "d7369291c6d4c1391b0b9f3c98627410a87c75ae",
+  "conclusion": "success",
+  "architecture": "aarch64",
+  "upstreamRevision": "781d39510cf23cfe224e8f521ae06a23377e06de",
+  "publicationContract": "ordinary",
+  "publicationRoute": "/events",
+  "harnessReplyPatchSha256": "6a47c146ee00c73dbf9c3a3ca605ad7d82135d14f065c510f12d8959f5568985",
+  "test": "error_outcome_emission_tests::observed_room_removal_suppresses_completed_reply_submission",
+  "assertions": [
+    "actual handle_prompt_result receives correctly scoped completed reply",
+    "observed room removal synchronously emits suppression",
+    "removed-room reply does not reach loopback HTTP sink",
+    "active-room positive control reaches ordinary publication sink once"
+  ],
+  "additionalWorkflowChecks": [
+    "terminal auth",
+    "tool-request denial",
+    "key isolation",
+    "bounded single-attempt HTTP reply transport",
+    "authentication deadlines",
+    "guarded adapter discovery",
+    "preview archive packaging"
+  ],
+  "priorRun": {
+    "id": "36623181009",
+    "failure": "new test fixture omitted in-flight TaskMeta; upstream debug assertion caught invalid fixture",
+    "correction": "register task and scope ownership before invoking handler"
+  },
+  "syntheticOnly": true,
+  "atomicMembershipGuarantee": false,
+  "realProviderUsed": false,
+  "productionRelayContacted": false,
+  "productionAgentEnabled": false,
+  "artifactDownloadedOrInstalled": false
+}

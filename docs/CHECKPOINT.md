@@ -1437,3 +1437,23 @@ change, native manifest validation and isolated WS/ACP policy/terminal fixtures.
 Neither run used real provider credentials or production relays. Evidence is
 in `evidence/ws-workspace-36621707596.json` and
 `evidence/x86-validation-36622093137.json`.
+
+## Observed-removal regression passed; work saved
+
+Added a handler-level completed-reply suppression test to the staged harness
+reply contribution. Initial run 36623181009 caught an invalid fixture missing
+its in-flight TaskMeta; correction d736929 registers the task and scope owner.
+Run 36623681719 passed the corrected regression, existing security/transport
+checks, auth deadlines, adapter probes and preview packaging. It uses the
+approved ordinary seven-patch series; no member-bound endpoint. Evidence is
+`evidence/observed-removal-36623681719.json`. Five package-preview tests pass
+locally. No new production relay/helper/agent installation or model use occurred.
+
+All manual runs from this work period have finished. Current upstream draft
+is https://github.com/block/buzz/pull/7976, with exact workspace evidence in
+its description. Remaining product work: upstream review/adoption of WS and
+ACP/adapter interfaces; supervised room-agent lifecycle and execution scope;
+integrated subscription room acceptance; distribution review and remaining
+desktop acceptance. Normal room permissions and contribution-only fork/sign-off
+are approved and must not be asked again. The existing installed messaging
+client remains available. Do not claim the full agent product is released.
