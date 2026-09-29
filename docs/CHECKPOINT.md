@@ -892,3 +892,10 @@ The user explicitly authorized remote tests again. The earlier dispatch pause
 is lifted; workflows remain manual-only and account notification settings are
 unchanged. First gate: build/typecheck and isolated tests of the Codex policy
 proposal against the pinned adapter. No real account or model task is implied.
+
+Codex policy run [36508544990](https://github.com/randymy/omarchy-buzz/actions/runs/36508544990)
+passed typecheck, build, module smoke and 42 tests across three selected adapter
+files at `c2e2307`. All tests ran in an isolated network namespace without real
+accounts or model turns. [Evidence](evidence/codex-policy-36508544990.json).
+The next focused run adds actual native config/read compatibility and compiled
+adapter denial checks; these are still account-free conformance checks.

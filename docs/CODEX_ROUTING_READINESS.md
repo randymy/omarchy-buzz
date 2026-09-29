@@ -1,5 +1,12 @@
 # Codex ACP subscription routing readiness
 
+An uninstalled [adapter policy proposal](upstream/CODEX_SUBSCRIPTION_POLICY.md)
+now implements the narrower controlled-profile approach below. Remote run
+[36508544990](https://github.com/randymy/omarchy-buzz/actions/runs/36508544990)
+passed its build, typecheck and 42 focused tests. This does not change the
+stock-adapter findings or certify a real Pro subscription. The installed Buzz
+plugin has not enabled this proposed agent launch mode.
+
 Runtime follow-through: [manual run 36506274738](https://github.com/randymy/omarchy-buzz/actions/runs/36506274738)
 passed against actual adapter 2.0.0 and a scripted native app-server peer in a
 non-root network namespace with no external interface. It observed plain
