@@ -1,0 +1,54 @@
+{
+  "runUrl": "https://github.com/randymy/omarchy-buzz/actions/runs/36621010979",
+  "sourceRevision": "8928adc2d7c5525a56e87920f1f3737512aec394",
+  "runId": "36621010979",
+  "architecture": "aarch64",
+  "developmentPreview": true,
+  "sha256": "7d04496d2091afba6c1c7b5a965807b9e36e9c5cb441c9dfebb7d61b4e83c9f8",
+  "metadata": {
+    "backendRevision": "781d39510cf23cfe224e8f521ae06a23377e06de",
+    "helperVersion": "0.0.7",
+    "protocolVersion": 1
+  },
+  "dynamicLibraries": [
+    "libdbus-1.so.3",
+    "libgcc_s.so.1",
+    "libm.so.6",
+    "libc.so.6",
+    "ld-linux-aarch64.so.1"
+  ],
+  "archive": {
+    "bytes": 5343923,
+    "filename": "omarchy-buzz-0.0.7-linux-aarch64.tar.gz",
+    "sha256": "d7497af764747eee846a5384be9fa78c0250c2dcd77342ce05b0b8ebf5884b63",
+    "sidecarVerified": true,
+    "archiveVersionAndBinaryMatchSidecar": true,
+    "archiveNoticeFilesMatchDirectArtifact": true,
+    "archiveMembers": 194
+  },
+  "notices": {
+    "target": "aarch64-unknown-linux-gnu",
+    "lockSha256": "57ac1e5f794f15705aaff47dfee5599c5bf39e0891b9844dc81ebdd9820ff33a",
+    "inventorySha256": "17bbb3125ca87dde88df4e70ec0f425fb92b4c579d45c46204a61a179cf3247d",
+    "packages": 245,
+    "uniqueTexts": 185,
+    "textChecksumsVerified": true,
+    "packagesWithoutNoticeText": 0,
+    "flaggedPackages": 14,
+    "flagCounts": {
+      "compound_or_legacy_expression_review": 9,
+      "supplemental_notice_review": 5
+    },
+    "reviewRequired": true
+  },
+  "omarchyTargetChecks": {
+    "version": true,
+    "helperSmoke": true,
+    "sendIpcScopeFences": true,
+    "inheritedSocketActivation": true,
+    "isolatedSecretServiceEnrollmentAndRetrieval": true,
+    "productionCredentialsUsed": false,
+    "productionRelayContacted": false,
+    "installed": false
+  }
+}

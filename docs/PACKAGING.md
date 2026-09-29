@@ -7,9 +7,12 @@ Build the helper using the repository's documented Rust toolchain and locked dep
 On Arch, install `pkgconf` and `dbus` before building. The intended system
 D-Bus linkage requires `libdbus-1.so.3` on the target machine, alongside a
 working session D-Bus and Secret Service provider for identity access. A fresh
-ARM64 build and runtime keyring test are still needed to verify this linkage;
-the earlier ARM64 package evidence describes the old vendored build. The
-source inventory and its review flags have not been remeasured for a new binary.
+ARM64 CI build and its isolated keyring test passed in
+[run 36621010979](https://github.com/randymy/omarchy-buzz/actions/runs/36621010979)
+at source `8928adc`. Target-machine archive, linkage and keyring verification
+have also passed on Omarchy, using temporary sockets and a private Secret Service with synthetic identities. The earlier ARM64 package evidence describes the old vendored
+build. The source inventory and its review flags have not been remeasured for a
+new binary.
 
 ```sh
 cargo build --release --locked --manifest-path helper/Cargo.toml

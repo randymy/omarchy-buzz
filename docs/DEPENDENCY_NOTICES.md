@@ -39,3 +39,24 @@ The fresh graph again contains **252 packages and 19 flagged packages**. Every p
 The most specific remaining distribution question is vendored D-Bus. The helper requests keyring's `vendored` feature, and the ARM64 binary has no dynamic `libdbus` dependency. The bundled `libdbus-sys/vendor/dbus/COPYING` offers an Academic Free License 2.1 or GPL 2-or-later choice for that vendored code; the crate's Apache/MIT texts alone do not describe it. Establish which code was compiled, choose the applicable path, and preserve any source copyright and notice terms that the filename inventory does not collect. `aws-lc-sys`, `openssl-src` and `ring` likewise include nested cryptographic source with multiple terms; check the compiled source and its attribution files. The 18 Unicode-3.0 packages and two CDLA-Permissive-2.0 root-store packages have their named texts bundled. Common MIT and Apache texts are also bundled by package, but their attribution and NOTICE requirements still need an actual distribution review. See the [Apache 2.0 redistribution terms](https://www.apache.org/licenses/LICENSE-2.0.html), [MIT text](https://spdx.org/licenses/MIT.html), [Unicode 3.0 text](https://spdx.org/licenses/Unicode-3.0.html) and [CDLA Permissive 2.0 text](https://spdx.org/licenses/CDLA-Permissive-2.0.html).
 
 The binary names only `libgcc_s.so.1`, `libm.so.6`, `libc.so.6` and the AArch64 loader as dynamic dependencies; these system runtime licenses are outside the Rust source inventory. The inventory is conservatively overinclusive and does not show exact linked source, source-header notices, generated assets or selected alternatives. This verified archive remains a development preview, with `reviewRequired: true`, and gives no legal assurance or public-distribution approval.
+
+## System D-Bus ARM64 package, September 29
+
+Run [36621010979](https://github.com/randymy/omarchy-buzz/actions/runs/36621010979)
+built source `8928adc` with system D-Bus and Rust crypto. The actual ARM64
+binary now names `libdbus-1.so.3`; its Omarchy IPC, socket reactivation and
+private Secret Service enrollment/retrieval tests passed with synthetic identities.
+The prior vendored-build discussion above is historical. Seven dependency
+packages disappeared, including OpenSSL source/bindings, without changing
+remaining package versions or checksums.
+
+The fresh archive, embedded binary/version, inventory and all **185 unique
+notice texts** were checked against their hashes and direct artifact copies.
+There are **245 packages, 14 flagged packages, and zero packages without
+filename-inventory notice text**. Nine compound/legacy expression flags and
+five supplemental evidence flags remain. Exact digests and target checks are
+recorded in [package evidence](evidence/helper-package-36621010979.json).
+The conservative source inventory still includes vendored D-Bus notice files,
+even though this binary dynamically links the system D-Bus library. This
+change reduces bundled code; it does not certify remaining distribution terms
+or remove the system runtime review. No public release or installation occurred.

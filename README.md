@@ -52,7 +52,9 @@ draft and helper. See [native window and shortcut behavior](docs/NATIVE.md).
 
 ## Install the development helper
 
-Build with Rust 1.95, a C compiler, and pkg-config on Linux:
+Build with Rust 1.95, a C compiler, pkg-config and D-Bus development headers on
+Linux. On Arch, install `pkgconf` and `dbus`; the target also needs
+`libdbus-1.so.3` and a working session Secret Service provider:
 
 ```bash
 cargo build --release --locked --manifest-path helper/Cargo.toml

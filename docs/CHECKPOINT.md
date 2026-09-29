@@ -1404,3 +1404,24 @@ registry cache, so compilation is delegated to the fresh CI environment. The
 ARM64 workflow now checks actual libdbus linkage and isolated Secret Service
 enrollment before producing a new archive. Runtime verification remains pending
 and the installed helper is unchanged.
+
+## Verified ordinary bundle and system D-Bus helper
+
+Ordinary agent bundle 36619625452 has verified archive/manifest checksums and
+explicit `/events` metadata; evidence is saved in
+`evidence/ordinary-agent-arm64-36619625452.json`. It remains a synthetic
+experimental build, not an installed production agent.
+
+Helper ARM64 run 36621010979 at 8928adc passed all build, IPC, private keyring
+and system D-Bus checks. Its downloaded artifact passed version, actual
+libdbus linkage, IPC, inherited-socket restart and private Secret Service
+enrollment/retrieval tests on Omarchy. Tests used temporary resources and
+synthetic identities. Archive and all notice-text hashes match; inventory is
+245 packages/14 review flags, down from 252/19. See
+`evidence/helper-package-36621010979.json`. The installed helper is unchanged.
+The dangling Hermit registry cache was restored from the saved September 26
+archive using safe tar extraction; no dependency upgrade was performed.
+
+Manual run 36621707596 tests the exact submitted WS contribution 7c75297 in
+Buzz's actual workspace. Check its result before claiming workspace validation.
+The upstream PR remains draft pending its documented review gates.
