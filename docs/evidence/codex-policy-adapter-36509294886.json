@@ -1,0 +1,22 @@
+{
+  "adapterVersion": "2.0.0",
+  "apiAuthRejected": true,
+  "failures": [],
+  "forkRejected": true,
+  "initializeConformant": true,
+  "loadRejected": true,
+  "modelTurnRequested": false,
+  "nativeVersion": "0.158.0",
+  "networkIsolated": true,
+  "nodeVersion": "v22.23.3",
+  "provenance": {
+    "adapterRevision": "2eebebc35441e03cd466003b40a75953b221b886",
+    "pluginRevision": "e733acf48ee4e9a2742c12b179dba313a4c578c3",
+    "runId": 36509294886,
+    "url": "https://github.com/randymy/omarchy-buzz/actions/runs/36509294886"
+  },
+  "providerSetRejected": true,
+  "realAccountUsed": false,
+  "resumeRejected": true,
+  "successful": true
+}

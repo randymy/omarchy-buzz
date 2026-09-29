@@ -899,3 +899,16 @@ files at `c2e2307`. All tests ran in an isolated network namespace without real
 accounts or model turns. [Evidence](evidence/codex-policy-36508544990.json).
 The next focused run adds actual native config/read compatibility and compiled
 adapter denial checks; these are still account-free conformance checks.
+
+## Codex native policy conformance (2026-09-28)
+
+Run [36509294886](https://github.com/randymy/omarchy-buzz/actions/runs/36509294886)
+passed build/typecheck, focused tests, actual native config compatibility and
+compiled ACP policy denials at `e733acf`. The preceding run caught the native
+default ChatGPT URL being rejected; the corrected guard admits only its exact
+pinned value. API login, provider mutation and imported-session requests are
+rejected through the compiled adapter. Evidence is saved under
+`docs/evidence/codex-policy-{native,adapter}-36509294886.json`. No real account,
+model turn or installed agent was used. Next: equivalent Claude policy work,
+then the controlled harness/adapter integration; real Pro acceptance remains
+unverified. Installed plugin/helper remain unchanged.

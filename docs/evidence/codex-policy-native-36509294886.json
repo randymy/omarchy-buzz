@@ -1,0 +1,29 @@
+{
+  "configReadObserved": true,
+  "failures": [],
+  "flags": {
+    "chatgptBaseUrlCanonical": true,
+    "chatgptBaseUrlExactDefault": true,
+    "chatgptBaseUrlPresent": true,
+    "defaultOrOpenaiProvider": true,
+    "experimentalBearerTokenAbsent": true,
+    "forcedChatgpt": true,
+    "modelCatalogUrlAbsent": true,
+    "noCustomProviderDefinitions": true,
+    "openaiBaseUrlAbsent": true
+  },
+  "nativeBinaryVersion": "0.158.0",
+  "nativePackageVersion": "0.158.0",
+  "networkIsolated": true,
+  "noAccountRead": true,
+  "noThreadOrModelRequest": true,
+  "nodeVersion": "v22.23.3",
+  "policyModuleAccepted": true,
+  "provenance": {
+    "adapterRevision": "2eebebc35441e03cd466003b40a75953b221b886",
+    "pluginRevision": "e733acf48ee4e9a2742c12b179dba313a4c578c3",
+    "runId": 36509294886,
+    "url": "https://github.com/randymy/omarchy-buzz/actions/runs/36509294886"
+  },
+  "successful": true
+}
