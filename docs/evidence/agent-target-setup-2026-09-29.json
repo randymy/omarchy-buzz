@@ -12,7 +12,9 @@
     "methods": [
       "chat-gpt"
     ],
-    "authentication": "not_checked"
+    "authentication": "native_status_chatgpt_confirmed",
+    "subscriptionTier": "not_verified",
+    "modelTurnVerified": false
   },
   "claude": {
     "runtimeReady": true,
@@ -23,7 +25,7 @@
     "authentication": "not_checked"
   },
   "nativeSignInTerminalLaunched": true,
-  "signInCompletion": "not_observed",
+  "signInCompletion": "codex_confirmed_claude_unverified",
   "roomAgentsEnabled": false,
   "modelTaskSubmitted": false,
   "messagingSocket": "active",

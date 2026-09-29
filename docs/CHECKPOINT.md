@@ -1134,3 +1134,12 @@ home/.cache and config/chromium directories; their roots cannot be links. Provid
 configuration links remain rejected. This is not isolation from same-user code.
 Fifteen tests and target profile/status recheck pass. A fresh native sign-in
 terminal was opened. Login completion/account entitlement still unverified.
+
+## Codex ChatGPT login confirmed (September 29)
+
+User completed native sign-in. The verified bundled Codex binary, run with the
+same dedicated CODEX_HOME and forced ChatGPT login setting, returned success
+and the native ChatGPT-login status. Only the classified boolean was reported;
+no credential files or raw account output were inspected or saved. This confirms
+the authentication route, not a specific Pro tier or successful model execution.
+Claude sign-in and room-agent acceptance remain unverified.
