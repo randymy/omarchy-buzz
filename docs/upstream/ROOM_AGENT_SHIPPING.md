@@ -10,6 +10,34 @@ have other changes, so the relay patch needs a fresh rebase if pursued. Source
 inspection is not runtime acceptance. No Buzz, relay, adapter, or installed plugin
 is changed by this document.
 
+## Existing managed agents: alternative to plugin-owned execution
+
+September 29 follow-up: official Buzz Desktop already manages a dedicated
+agent identity and starts its ACP child. Relevant inspected source is
+`desktop/src-tauri/src/commands/personas/snapshot/import.rs` (fresh identity),
+`desktop/src-tauri/src/managed_agents/runtime.rs` (ACP launch), and
+`crates/buzz-acp/src/base_prompt.md` (agent-side `buzz messages send`).
+Official `TESTING.md` documents room membership, mention and signed reply.
+Fetched upstream `14a752f` has no changes to the inspected ACP/managed-agent
+paths relative to our source base. This is source evidence, not a successful
+stock subscription room deployment on this machine.
+
+The Omarchy plugin could communicate with those agents without owning their
+processes or receiving their credentials. Harness-only key handling and
+harness-generated replies are stronger optional designs; they are not intrinsic
+to QML credential isolation. Stock Buzz intentionally gives the dedicated
+agent identity to its local harness/tool path. Do not use the human identity.
+
+A real product concern remains: stock defaults to bypass permissions, silently
+skips unsupported requested modes, and automatically chooses `allow_once` for
+ACP tool requests. Changing the mode alone does not create human approvals.
+Upstream PR 7797 proposes owner decisions and is not an adopted interface.
+Any stock-agent rollout must explicitly settle this execution policy and limit
+the workspace; do not silently grant unattended access to the user's machine.
+Stock subscription routing must also be tested rather than inferred from our
+guarded adapter smoke tests. Prefer a channel acceptance test: PR 7910 records
+Claude DM response loss in the current agent-side reply flow.
+
 ## First-release publication contract approved
 
 The product owner approved ordinary Buzz room permissions for the first release
