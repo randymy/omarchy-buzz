@@ -27,16 +27,12 @@ reply delivery are separate outcomes.
 ## Release blockers and deliberate limits
 
 - **Removal race:** the main loop suppresses replies for removals already received,
-  but the detached submission is not atomically fenced against later membership
-  changes. Buzz upstream permits nonmember posting to open rooms. Relay acceptance
-  does not prove current room membership. Resolve this with an upstream authority
-  check/fence or an explicitly narrower supported room policy before release.
-  A preflight membership query alone cannot close this race. Preferred upstream
-  work is an opt-in publication precondition, enforced atomically at ingest,
-  requiring the signing identity to remain a room member even in open rooms.
-  The client must detect support and fail closed when unavailable; a new header
-  silently ignored by old relays would not provide that guarantee. This is a
-  proposal, not an existing Buzz interface.
+  but detached submission is not atomically fenced against later membership
+  changes. The product owner approved ordinary Buzz permissions on September 29:
+  first release uses `/events` and explicitly accepts this open-room race. Relay
+  acceptance does not prove current membership. The stronger member-bound
+  proposal is optional future work, not a first-release prerequisite. See
+  [the approved contract](ROOM_AGENT_SHIPPING.md).
 - No guarantee against a same-UID agent reading harness memory/configuration.
   These proposals prevent known credential handoff, not local privilege isolation.
 - Existing upstream agent wire/observer logs are not globally redacted. Do not
@@ -47,8 +43,9 @@ reply delivery are separate outcomes.
 - Tool auto-approval/default bypass remains unresolved. This proposal neither
   grants policy authority nor proves safe agent execution.
 - Pro subscription is the required real-account acceptance path. This change does
-  not select or verify billing. Actual Pro login and no-API-fallback enforcement
-  remain unverified; offline authentication discovery is a separate result.
+  not select or verify billing. Separate September 29 Codex/Claude subscription fixed-response checks passed,
+  including guarded API-auth rejection. They do not certify an integrated
+  room-agent run or independently audit the plan tier/billing receipt.
 
 ## Validation scope
 
@@ -59,7 +56,10 @@ acceptance, mismatched ID, malformed/oversized response, forbidden response,
 redirect and service failure; request counts assert no retry/redirect following.
 Two additional real ACP-client stdio tests cover session filtering, thought/tool
 exclusion, incomplete turns and rejected session-ID reuse. These are synthetic
-checks, not a real-relay membership proof or a full ACP prompt-to-room acceptance test. Both are still required. Earlier auth
+checks. Later ordinary-route runs 36587419111 and 36611201645 passed synthetic
+ACP-to-persisted-thread acceptance and sequential private-room HTTP removal
+rejection; see [the current evidence](ROOM_AGENT_SHIPPING.md). They do not
+prove atomic/open-room revocation or real-provider room execution. Earlier auth
 and key-boundary tests remain in the manual workflow. No automatic triggers.
 
 
