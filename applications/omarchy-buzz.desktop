@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Buzz
+Comment=Open Buzz in a desktop window
+Exec=omarchy-shell shell summon community.buzz "{\\"mode\\":\\"window\\"}"
+TryExec=omarchy-shell
+Terminal=false
+Categories=Network;InstantMessaging;
+StartupNotify=false
