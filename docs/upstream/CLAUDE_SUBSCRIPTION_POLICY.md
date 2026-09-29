@@ -12,6 +12,9 @@ the patched checkout.
 The synthetic tests currently cover policy predicates and direct method denials;
 fake SDK tests for successful creation, lost account at prompt, and cleanup
 after admission failure remain an acceptance gate.
+The adapter's separate informational `auth status` probe and `auth logout`
+subprocesses still inherit the parent environment; their scoped-mode child
+environment needs review before deployment. Neither admits a model turn.
 
 ## Narrow objective
 
