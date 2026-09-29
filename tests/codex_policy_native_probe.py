@@ -22,8 +22,13 @@ from vendor_adapter_discovery import (
 )
 
 NATIVE_VERSION = "0.158.0"
+CANONICAL_CHATGPT_BASE_URL = "https://chatgpt.com/backend-api/"
 TOTAL_TIMEOUT = 45
 LINE_LIMIT = MAX_CAPTURE
+REQUIRED_FLAGS = ("forcedChatgpt", "defaultOrOpenaiProvider",
+                  "noCustomProviderDefinitions", "openaiBaseUrlAbsent",
+                  "chatgptBaseUrlCanonical", "modelCatalogUrlAbsent",
+                  "experimentalBearerTokenAbsent")
 POLICY_SCRIPT = """import {readFileSync} from 'node:fs';
 import {pathToFileURL} from 'node:url';
 const policy = await import(pathToFileURL(process.argv[1]).href);
@@ -60,13 +65,18 @@ def _response(message, expected_id):
 
 def _flags(config):
     providers = config.get("model_providers")
+    chatgpt_base_url = config.get("chatgpt_base_url")
     return {
         "forcedChatgpt": config.get("forced_login_method") == "chatgpt",
         "defaultOrOpenaiProvider": config.get("model_provider") in (None, "openai"),
         "noCustomProviderDefinitions": providers is None or providers == {},
-        "noUrlOverrides": all(config.get(key) is None for key in (
-            "openai_base_url", "chatgpt_base_url", "model_catalog_url",
-            "experimental_bearer_token")),
+        "openaiBaseUrlAbsent": config.get("openai_base_url") is None,
+        "chatgptBaseUrlPresent": chatgpt_base_url is not None,
+        "chatgptBaseUrlExactDefault": chatgpt_base_url == CANONICAL_CHATGPT_BASE_URL,
+        "chatgptBaseUrlCanonical": chatgpt_base_url is None
+        or chatgpt_base_url == CANONICAL_CHATGPT_BASE_URL,
+        "modelCatalogUrlAbsent": config.get("model_catalog_url") is None,
+        "experimentalBearerTokenAbsent": config.get("experimental_bearer_token") is None,
     }
 
 
@@ -228,7 +238,7 @@ def main():
             summary["flags"] = _flags(config)
             check_policy_module(node, module, config, home, deadline)
         summary["policyModuleAccepted"] = True
-        summary["successful"] = all(summary["flags"].values())
+        summary["successful"] = all(summary["flags"][key] for key in REQUIRED_FLAGS)
         if not summary["successful"]:
             raise ProbeFailure("config_shape_incompatible")
     except ProbeFailure as error:

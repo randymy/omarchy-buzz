@@ -16,8 +16,18 @@ class PolicyNativeProbeTests(unittest.TestCase):
         self.assertIsNone(probe._response({"id": 1, "result": {}}, 1))
         config = {"forced_login_method": "chatgpt", "model_provider": None}
         self.assertEqual(probe._response({"id": 2, "result": {"config": config}}, 2), config)
-        self.assertTrue(all(probe._flags(config).values()))
-        self.assertFalse(probe._flags({**config, "openai_base_url": "https://elsewhere.invalid"})["noUrlOverrides"])
+        self.assertTrue(all(probe._flags(config)[key] for key in probe.REQUIRED_FLAGS))
+        self.assertFalse(probe._flags(config)["chatgptBaseUrlPresent"])
+        canonical = {**config, "chatgpt_base_url": probe.CANONICAL_CHATGPT_BASE_URL}
+        self.assertTrue(all(probe._flags(canonical)[key] for key in probe.REQUIRED_FLAGS))
+        self.assertTrue(probe._flags(canonical)["chatgptBaseUrlExactDefault"])
+        for value in ("https://chatgpt.com/backend-api",
+                      probe.CANONICAL_CHATGPT_BASE_URL + "?route=other",
+                      "https://user@chatgpt.com/backend-api/", "https://elsewhere.invalid"):
+            self.assertFalse(probe._flags({**config, "chatgpt_base_url": value})[
+                "chatgptBaseUrlCanonical"])
+        self.assertFalse(probe._flags({**config, "openai_base_url": "https://elsewhere.invalid"})[
+            "openaiBaseUrlAbsent"])
         for response in ({"id": 2, "result": {}}, {"id": 2, "error": {}},
                          {"id": 3, "result": {"config": config}}):
             with self.subTest(response=response), self.assertRaises(probe.ProbeFailure):
@@ -42,7 +52,7 @@ print(json.dumps({"id": 2, "result": {"config": {
             entry.write_text(peer)
             config = probe.read_native_config(Path(sys.executable), entry,
                                               Path(temporary) / "home", time.monotonic() + 5)
-            self.assertTrue(all(probe._flags(config).values()))
+            self.assertTrue(all(probe._flags(config)[key] for key in probe.REQUIRED_FLAGS))
 
     def test_policy_module_runs_with_type_stripping(self):
         node = shutil.which("node")
