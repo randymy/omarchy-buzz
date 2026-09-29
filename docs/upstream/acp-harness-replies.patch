@@ -1,5 +1,5 @@
 diff --git a/crates/buzz-acp/src/acp.rs b/crates/buzz-acp/src/acp.rs
-index 16651a1..28b0c78 100644
+index 16651a1..d06f693 100644
 --- a/crates/buzz-acp/src/acp.rs
 +++ b/crates/buzz-acp/src/acp.rs
 @@ -217,6 +217,10 @@ pub struct AcpClient {
@@ -24,7 +24,7 @@ index 16651a1..28b0c78 100644
          })
      }
  
-@@ -955,7 +963,54 @@ impl AcpClient {
+@@ -955,7 +963,59 @@ impl AcpClient {
                  self.current_hard_deadline = None;
              }
          }
@@ -77,10 +77,15 @@ index 16651a1..28b0c78 100644
 +        self.reply_capture = None;
 +        self.reply_target = None;
 +        self.ready_reply.take()
++    }
++
++    #[cfg(test)]
++    pub(crate) fn set_ready_room_reply_for_test(&mut self, reply: crate::room_reply::Ready) {
++        self.ready_reply = Some(reply);
      }
  
      /// Send a `session/cancel` **notification** (no `id` field, no response expected).
-@@ -1866,6 +1921,9 @@ impl AcpClient {
+@@ -1866,6 +1926,9 @@ impl AcpClient {
      /// leave it `None` and are steered via `_session/steering` instead, which
      /// needs no run id.
      fn handle_session_update(&mut self, msg: &serde_json::Value) -> bool {
@@ -90,7 +95,7 @@ index 16651a1..28b0c78 100644
          let update = &msg["params"]["update"];
          let update_type = update
              .get("sessionUpdate")
-@@ -1875,7 +1933,9 @@ impl AcpClient {
+@@ -1875,7 +1938,9 @@ impl AcpClient {
          match update_type {
              "agent_message_chunk" => {
                  if let Some(text) = update["content"]["text"].as_str() {
@@ -101,7 +106,7 @@ index 16651a1..28b0c78 100644
                  }
                  false
              }
-@@ -3151,6 +3211,78 @@ mod tests {
+@@ -3151,6 +3216,78 @@ mod tests {
              .expect("failed to spawn test script")
      }
  
@@ -295,7 +300,7 @@ index ab7ae34..340b7c7 100644
  
      #[test]
 diff --git a/crates/buzz-acp/src/lib.rs b/crates/buzz-acp/src/lib.rs
-index 8461ef6..fe4b639 100644
+index 8461ef6..6891eaa 100644
 --- a/crates/buzz-acp/src/lib.rs
 +++ b/crates/buzz-acp/src/lib.rs
 @@ -4,6 +4,8 @@ mod git;
@@ -538,7 +543,134 @@ index 8461ef6..fe4b639 100644
              has_generated_codex_config: false,
              relay_observer: false,
              exit_after_inactivity_secs: 0,
-@@ -9492,6 +9598,7 @@ mod error_outcome_emission_tests {
+@@ -9450,6 +9556,126 @@ mod error_outcome_emission_tests {
+     use nostr::{EventBuilder, Keys, Kind};
+     use std::collections::HashSet;
+ 
++    #[tokio::test]
++    async fn observed_room_removal_suppresses_completed_reply_submission() {
++        use axum::{extract::State, routing::post, Json, Router};
++        use tokio::sync::mpsc::UnboundedSender;
++
++        async fn accept_reply(
++            State(sent): State<UnboundedSender<String>>,
++            Json(event): Json<nostr::Event>,
++        ) -> Json<serde_json::Value> {
++            sent.send(event.content.clone()).expect("test receiver open");
++            Json(serde_json::json!({
++                "event_id": event.id.to_hex(), "accepted": true
++            }))
++        }
++
++        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
++            .await
++            .expect("bind loopback reply sink");
++        let addr = listener.local_addr().expect("loopback reply sink address");
++        let (sent_tx, mut sent_rx) = mpsc::unbounded_channel();
++        let app = Router::new()
++            .route("/events", post(accept_reply))
++            .with_state(sent_tx);
++        let server = tokio::spawn(async move {
++            axum::serve(listener, app).await.expect("serve reply sink");
++        });
++        let rest = relay::RestClient {
++            http: reqwest::Client::new(),
++            base_url: format!("http://{addr}"),
++            keys: Keys::generate(),
++            auth_tag_json: None,
++        };
++        let room = Uuid::new_v4();
++        let root = nostr::EventId::from_hex(&"ab".repeat(32)).unwrap();
++        let scope = scope::SessionScope::Thread {
++            channel_id: room,
++            root_event_id: root.to_hex(),
++        };
++        let mut config = test_config();
++        config.harness_replies = true;
++        config.isolate_relay_identity = true;
++        config.session_policy = scope::SessionPolicy::Thread;
++        let observer = ObserverHandle::in_process();
++
++        for (removed, text) in [(true, "revoked reply"), (false, "active reply")] {
++            let mut agent = dummy_agent(0).await;
++            agent.acp.set_observer(Some(observer.clone()), 0);
++            agent.acp.set_ready_room_reply_for_test(room_reply::Ready {
++                target: room_reply::Target {
++                    channel_id: room,
++                    root_event_id: root.clone(),
++                },
++                text: text.into(),
++            });
++            let mut pool = AgentPool::from_slots(vec![None]);
++            let mut queue = EventQueue::new(config::DedupMode::Queue);
++            let mut heartbeat_in_flight = false;
++            let removed_channels = if removed {
++                HashSet::from([room])
++            } else {
++                HashSet::new()
++            };
++            let mut crash_history = vec![SlotCircuit {
++                crash_times: Vec::new(),
++                open_until: None,
++                respawn_in_flight: false,
++            }];
++            let (respawn_tx, _respawn_rx) = mpsc::channel(1);
++            let mut respawn_tasks = tokio::task::JoinSet::new();
++            handle_prompt_result(
++                &mut pool,
++                &mut queue,
++                &config,
++                PromptResult {
++                    agent,
++                    source: PromptSource::Channel(scope.clone()),
++                    turn_id: "reply-removal-test".into(),
++                    outcome: PromptOutcome::Ok(acp::StopReason::EndTurn),
++                    batch: None,
++                },
++                &mut heartbeat_in_flight,
++                &removed_channels,
++                &mut crash_history,
++                &respawn_tx,
++                &mut respawn_tasks,
++                None,
++                Some(&rest),
++            );
++            if removed {
++                assert!(
++                    observer.snapshot().iter().any(|event| {
++                        event.kind == "room_reply_suppressed"
++                            && event.payload["reason"] == "reply_route_unavailable"
++                    }),
++                    "observed removal must synchronously suppress the reply"
++                );
++                assert!(
++                    tokio::time::timeout(Duration::from_millis(150), sent_rx.recv())
++                        .await
++                        .is_err(),
++                    "observed removal must suppress HTTP publication"
++                );
++            }
++        }
++        assert_eq!(
++            tokio::time::timeout(Duration::from_secs(2), sent_rx.recv())
++                .await
++                .expect("active reply submission deadline"),
++            Some("active reply".into()),
++            "positive control must reach the real submission path"
++        );
++        assert!(
++            tokio::time::timeout(Duration::from_millis(150), sent_rx.recv())
++                .await
++                .is_err(),
++            "observed removal must never queue a delayed publication"
++        );
++        server.abort();
++    }
++
+     fn test_config() -> Config {
+         Config {
+             keys: nostr::Keys::generate(),
+@@ -9492,6 +9718,7 @@ mod error_outcome_emission_tests {
              allowed_respond_to: vec![],
              persona_env_vars: vec![],
              isolate_relay_identity: false,
@@ -546,7 +678,7 @@ index 8461ef6..fe4b639 100644
              has_generated_codex_config: false,
              relay_observer: false,
              exit_after_inactivity_secs: 0,
-@@ -9828,10 +9935,12 @@ mod error_outcome_emission_tests {
+@@ -9828,10 +10055,12 @@ mod error_outcome_emission_tests {
          );
  
          let returned = pool.agents_mut()[0].as_ref().expect("returned agent");
@@ -563,7 +695,7 @@ index 8461ef6..fe4b639 100644
      }
  
      /// Drive one error outcome through `handle_prompt_result` and return how
-@@ -10737,7 +10846,9 @@ mod error_outcome_emission_tests {
+@@ -10737,7 +10966,9 @@ mod error_outcome_emission_tests {
          );
          assert_eq!(
              turn_error.payload["error"].as_str().unwrap(),
@@ -574,7 +706,7 @@ index 8461ef6..fe4b639 100644
              "observer message must name the actual grace and must not claim preservation"
          );
          assert_eq!(
-@@ -10843,7 +10954,9 @@ mod error_outcome_emission_tests {
+@@ -10843,7 +11074,9 @@ mod error_outcome_emission_tests {
          );
          assert_eq!(
              turn_error.payload["error"].as_str().unwrap(),
@@ -585,7 +717,7 @@ index 8461ef6..fe4b639 100644
              "observer message must be fate-neutral even though the batch was dropped"
          );
          assert_eq!(
-@@ -11260,11 +11373,12 @@ mod error_outcome_emission_tests {
+@@ -11260,11 +11493,12 @@ mod error_outcome_emission_tests {
              "⚠️ I couldn't process the last request: the configured model wasn't found at the provider's endpoint. Open agent settings, select a different model from the dropdown, and save your changes. Restart the agent to apply the new configuration, then re-send your request."
          );
          let tags = serde_json::to_value(&notice.tags).unwrap();

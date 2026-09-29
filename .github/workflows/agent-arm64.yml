@@ -87,6 +87,7 @@ jobs:
           cargo +1.95.0 test --locked -p buzz-acp --lib deny_tool_policy --target-dir "$RUNNER_TEMP/agent-target"
           cargo +1.95.0 test --locked -p buzz-acp --lib key_isolation_tests:: --target-dir "$RUNNER_TEMP/agent-target"
           cargo +1.95.0 test --locked -p buzz-acp --lib bounded_single_attempt_room_reply_transport --target-dir "$RUNNER_TEMP/agent-target"
+          cargo +1.95.0 test --locked -p buzz-acp --lib observed_room_removal_suppresses_completed_reply_submission --target-dir "$RUNNER_TEMP/agent-target"
       - name: Verify authentication deadlines with synthetic peers
         working-directory: buzz
         run: |
