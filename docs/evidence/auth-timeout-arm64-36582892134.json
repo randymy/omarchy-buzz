@@ -1,0 +1,20 @@
+{
+  "workflowRun": 36582892134,
+  "sourceRevision": "21b36af41ee36399e958d736251139dd1da1bf71",
+  "successful": true,
+  "archiveDigestVerified": true,
+  "artifact": {
+    "artifact": "agent-preview-arm64.tar.gz",
+    "bytes": 58878653,
+    "manifestSha256": "434f8dafd1ce5eb3216e625f0e64cb5ee4ba9c2f80ed396bd670a782a1320fff",
+    "sha256": "ead1f534efacec3835566c5d5f84b2596905961b30320d33b1dbfdc64b2d32bc"
+  },
+  "authDeadline": {
+    "successful": true,
+    "delayedResponseSeconds": 65,
+    "elapsedSeconds": 65.1,
+    "realAccountUsed": false,
+    "modelTaskSubmitted": false
+  },
+  "installed": false
+}

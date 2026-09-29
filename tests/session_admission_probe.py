@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bounded ACP session admission check. Never sends a model prompt or logs payloads."""
+"""Bounded ACP admission check; optional fixed prompt smoke test, no payload logging."""
 import argparse
 import importlib.machinery
 import importlib.util
@@ -24,7 +24,7 @@ def client_reply(message):
     return {'jsonrpc': '2.0', 'id': message['id'], 'error': {'code': -32601, 'message': 'Client operation disabled'}}
 
 
-def run(command, env, cwd, agent, report, timeout=60):
+def run(command, env, cwd, agent, report, timeout=60, prompt_smoke=False):
     child = subprocess.Popen(command, env=env, cwd=cwd, stdin=subprocess.PIPE,
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
     selector = selectors.DefaultSelector()
@@ -34,13 +34,15 @@ def run(command, env, cwd, agent, report, timeout=60):
     total = 0
     deadline = time.monotonic() + timeout
     expected = 1
+    session_id = None
+    response_text = []
     def send(value):
         child.stdin.write(json.dumps(value).encode() + b'\n')
         child.stdin.flush()
     try:
         send({'jsonrpc':'2.0','id':1,'method':'initialize','params':{
             'protocolVersion':1,'clientCapabilities':{'fs':{'readTextFile':False,'writeTextFile':False},
-                                                    'terminal':False, 'auth':{'terminal':True}}}})
+                                                    'terminal':False, 'auth':{'terminal':True,'_meta':{'gateway':True}}, '_meta':{'terminal-auth':True}}}})
         while time.monotonic() < deadline:
             if not selector.get_map():
                 raise ProbeFailure('adapter_exited')
@@ -62,6 +64,15 @@ def run(command, env, cwd, agent, report, timeout=60):
                     if not isinstance(value,dict):
                         raise ProbeFailure('invalid_response')
                     if 'method' in value:
+                        if (value.get('method') == 'session/update' and prompt_smoke and
+                                expected == 4 and value.get('params', {}).get('sessionId') == session_id):
+                            update = value.get('params', {}).get('update', {})
+                            if update.get('sessionUpdate') == 'agent_message_chunk':
+                                content = update.get('content', {})
+                                if content.get('type') == 'text' and isinstance(content.get('text'), str):
+                                    response_text.append(content['text'])
+                                    if sum(map(len, response_text)) > 4096:
+                                        raise ProbeFailure('response_text_limit')
                         if 'id' in value:
                             report['clientRequestsDenied'] += 1
                             send(client_reply(value))
@@ -79,6 +90,14 @@ def run(command, env, cwd, agent, report, timeout=60):
                             expected = 3
                             report['sessionRequestSent'] = True
                             send({'jsonrpc':'2.0','id':3,'method':'session/new','params':{'cwd':str(cwd),'mcpServers':[]}})
+                    elif expected == 4:
+                        if 'error' in value or not isinstance(value.get('result'),dict):
+                            raise ProbeFailure('model_smoke_rejected')
+                        report['modelResponseMatched'] = ''.join(response_text).strip() == 'BUZZ_SUBSCRIPTION_CHECK_OK'
+                        report['modelStopCompleted'] = value['result'].get('stopReason') == 'end_turn'
+                        if not report['modelResponseMatched'] or not report['modelStopCompleted']:
+                            raise ProbeFailure('model_smoke_mismatch')
+                        return
                     else:
                         result = value.get('result')
                         if 'error' in value:
@@ -86,7 +105,14 @@ def run(command, env, cwd, agent, report, timeout=60):
                         if not isinstance(result,dict) or not isinstance(result.get('sessionId'),str) or not result['sessionId']:
                             raise ProbeFailure('session_response_invalid')
                         report['sessionCreated'] = True
-                        return
+                        if not prompt_smoke:
+                            return
+                        session_id = result['sessionId']
+                        expected = 4
+                        report['modelPromptSent'] = True
+                        send({'jsonrpc':'2.0','id':4,'method':'session/prompt','params':{
+                            'sessionId':session_id,'prompt':[{'type':'text','text':
+                            'Reply exactly BUZZ_SUBSCRIPTION_CHECK_OK. Do not call tools or read files.'}]}})
         raise ProbeFailure('admission_timeout')
     finally:
         try:
@@ -105,6 +131,7 @@ def main():
     parser.add_argument('--manifest-sha256',required=True)
     parser.add_argument('--agent',choices=['codex','claude'],required=True)
     parser.add_argument('--profile-mode',choices=['separate','existing'],default='separate')
+    parser.add_argument('--prompt-smoke',action='store_true',help='Send one fixed, tiny subscription-backed prompt; client operations remain denied')
     args = parser.parse_args()
     loader = importlib.machinery.SourceFileLoader('preview',str(Path(__file__).resolve().parents[1]/'scripts/agent-preview'))
     spec = importlib.util.spec_from_loader(loader.name,loader)
@@ -121,22 +148,31 @@ def main():
         manifest = preview.verify_bundle(args.bundle,args.manifest_sha256)
         preview.verify_runtime(args.bundle,manifest,args.agent)
         profile = preview.profile_for(args.agent,args.bundle,manifest)
-        provider = preview.selected_provider(args.agent,args.profile_mode,None,profile)
+        provider = preview.selected_provider(args.agent,args.profile_mode,None,profile,allow_user_hooks=args.agent == 'claude')
         env = preview.environment(profile,args.bundle,{})
         env['CODEX_HOME' if args.agent=='codex' else 'CLAUDE_CONFIG_DIR'] = str(provider)
         with tempfile.TemporaryDirectory(prefix='admission-',dir=profile/'work') as work:
-            if args.agent == 'claude':
-                raise ProbeFailure('claude_session_hook_validation_required')
-            config = query_native_config(preview.login_command(args.bundle, 'codex')[:-1]+['app-server'],
-                                         env,Path(work),time.monotonic()+30)
-            flags = _flags(config)
-            if not all(flags[key] for key in REQUIRED_FLAGS):
-                raise ProbeFailure('subscription_routing_rejected')
-            if any(config.get(key) for key in ('mcp_servers','hooks','plugins','projects','skills')):
-                raise ProbeFailure('native_integrations_review_required')
+            if args.agent == 'codex':
+                config = query_native_config(preview.login_command(args.bundle, 'codex')[:-1]+['app-server'],
+                                             env,Path(work),time.monotonic()+30)
+                flags = _flags(config)
+                if not all(flags[key] for key in REQUIRED_FLAGS):
+                    raise ProbeFailure('subscription_routing_rejected')
+                if any(config.get(key) for key in ('mcp_servers','hooks','plugins','projects','skills')):
+                    raise ProbeFailure('native_integrations_review_required')
+            else:
+                # User-hook suppression is proven by claude_session_hook_probe;
+                # managed integrations are not covered by that evidence.
+                for settings in (provider/'settings.json',Path('/etc/claude-code/managed-settings.json')):
+                    if settings.exists():
+                        values=json.loads(settings.read_text())
+                        if any(values.get(key) for key in ('mcpServers','enabledPlugins','extraKnownMarketplaces')):
+                            raise ProbeFailure('native_integrations_review_required')
+                if (provider/'plugins/installed_plugins.json').exists():
+                    raise ProbeFailure('native_plugins_review_required')
             report['effectiveConfigPreflight'] = 'passed'
             run([str(args.bundle/'bin/node'),str(args.bundle/preview.ENTRIES[args.agent]),preview.GUARDS[args.agent]],
-                env,Path(work),args.agent,report)
+                env,Path(work),args.agent,report,timeout=120 if args.prompt_smoke else 60,prompt_smoke=args.prompt_smoke)
         report['successful'] = True
     except (ProbeFailure,preview.Refused) as error:
         report['error'] = error.category if isinstance(error,ProbeFailure) else str(error)

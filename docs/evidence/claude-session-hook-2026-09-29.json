@@ -1,0 +1,27 @@
+{
+  "date": "2026-09-29",
+  "probe": "tests/claude_session_hook_probe.py",
+  "bundle": "agent-preview-arm64 from run 36518401395",
+  "bundleManifestSha256": "dccd9e9a0659f53a7c910a0cfc8fe1bb000277213447284d7f1090f7e450b2f9",
+  "claudeAdapterRevision": "18de37624071b48e95aed9ec5382823e2d72cd39",
+  "claudeAdapterVersion": "0.82.0",
+  "isolation": "unshare user and network namespaces; loopback interface only; disposable HOME, CLAUDE_CONFIG_DIR and work directories",
+  "fixture": "synthetic user settings.json SessionStart command touches a disposable marker",
+  "ordinary": {
+    "initialized": true,
+    "sessionRequestSent": true,
+    "sessionCreated": true,
+    "nativeProcessObserved": true,
+    "hookCommandExecuted": true
+  },
+  "guarded": {
+    "initialized": true,
+    "sessionRequestSent": true,
+    "sessionCreated": false,
+    "nativeProcessObserved": true,
+    "subscriptionRejected": true,
+    "hookCommandExecuted": false
+  },
+  "conclusion": "The ordinary adapter created a native session and ran the synthetic user SessionStart hook. The guarded adapter started the native process and rejected the account-free session without running the hook.",
+  "limits": "The guarded session lacked a subscription account. Rejection may itself prevent SessionStart, so this comparison does not isolate settingSources as the cause or prove hook suppression in an admitted session. Source inspection separately establishes settingSources: [] in the guarded SDK configuration. No real account, credential, prompt, relay or room agent was used."
+}

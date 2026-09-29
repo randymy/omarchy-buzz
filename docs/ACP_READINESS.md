@@ -289,3 +289,27 @@ not establish a real subscription login or complete room-to-model-to-room turn.
 The installed plugin/helper and production relay were not changed by these
 checks. Pending gates remain target ARM64 packaging, controlled profile/service
 lifecycle, and authorized real-account acceptance.
+
+## Current subscription milestone (September 29, 2026)
+
+ARM64 run [36582892134](https://github.com/randymy/omarchy-buzz/actions/runs/36582892134)
+built all eight Buzz proposals and both guarded adapters successfully. The
+authentication deadline fix passed unit tests and an actual compiled CLI test
+whose synthetic authentication took 65 seconds. The artifact was downloaded and
+its archive digest verified; it has not replaced the installed preview.
+
+Actual Codex (separate profile) and Claude (existing native profile) model turns
+now pass guarded subscription admission and return the requested fixed response.
+Both first reject API-key authentication. An isolated hook test observed no Claude SessionStart hook execution before
+the guarded adapter rejected an account-free session; its ordinary-adapter
+control ran the hook. This is not independent proof for an admitted session. See [setup and evidence](AGENT_PREVIEW_SETUP.md). This closes
+the previously outstanding model-response test for these profiles and versions;
+no tier or billing receipt is asserted.
+
+No production room agent is enabled. Room publication, harness credential/tool
+boundaries, supervised lifecycle and end-to-end room acceptance remain separate.
+The proposed atomic membership-bound endpoint is a stronger contract than
+ordinary Buzz room permissions; whether that stronger guarantee is required
+for the first release is a pending product decision. It is not an existing
+upstream requirement. Neither a silent legacy fallback nor a production relay
+fork is authorized by these tests.

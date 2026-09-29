@@ -1,0 +1,18 @@
+{
+  "agent": "claude",
+  "profileMode": "existing",
+  "initialized": true,
+  "apiAuthenticationRejected": true,
+  "sessionCreated": true,
+  "modelPromptSent": true,
+  "fixedResponseMatched": true,
+  "modelStopCompleted": true,
+  "clientRequestsDenied": 0,
+  "roomAgentEnabled": false,
+  "effectiveConfigPreflight": "passed",
+  "successful": true,
+  "nativeToolExecutionIndependentlyAudited": false,
+  "billingReceiptInspected": false,
+  "sessionCorrelationVerified": true,
+  "recheckedAfterProbeReview": true
+}

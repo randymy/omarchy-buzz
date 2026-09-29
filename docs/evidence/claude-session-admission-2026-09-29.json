@@ -1,0 +1,14 @@
+{
+  "agent": "claude",
+  "profileMode": "existing",
+  "initialized": true,
+  "apiAuthenticationRejected": true,
+  "sessionRequestSent": true,
+  "sessionCreated": true,
+  "clientRequestsDenied": 0,
+  "modelPromptSent": false,
+  "roomAgentEnabled": false,
+  "successful": true,
+  "effectiveConfigPreflight": "passed",
+  "hostAccessRequired": true
+}

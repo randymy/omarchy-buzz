@@ -1234,3 +1234,35 @@ account admission, and user/managed hooks need session-level validation. Discove
 hook tests alone are insufficient. The new probe refuses Claude sessions outright
 until that gate is addressed. Three admission fixture tests, 19 launcher tests
 and four native-config tests pass. Upstream relay publication remains unresolved.
+
+## Live subscription responses and authentication deadline (September 29)
+
+Codex's separate ChatGPT profile and Claude's existing native subscription profile
+both passed actual guarded model smoke tests: initialize, reject API login,
+create session, return exact fixed response, finish normally. No room was used,
+no agent service enabled, no client permission request arrived. These results
+prove the tested subscription route/model response, not independently audited
+native tool behavior, plan tier or billing receipts. Evidence lives in the
+respective `*-subscription-smoke-2026-09-29.json` files.
+
+Claude session-start hooks were tested in a loopback-only network namespace:
+ordinary adapter ran the synthetic hook; guarded adapter rejected the missing
+subscription without running it. This does not isolate suppression from account
+rejection or independently prove hook behavior in an admitted session. Source
+inspection separately establishes guarded SDK `settingSources: []`. The admission probe now supports Claude
+subject to managed-hook/provider/MCP/plugin preflight. This supersedes the earlier
+Claude-session deferral. Five synthetic admission tests exercise the probe, including rejection of
+early and cross-session response text. Both live fixed-response checks were
+repeated successfully after this independent-review correction.
+
+Manual ARM64 run 36582892134 at 21b36af passed all eight proposed Buzz patches,
+both guarded adapter builds and native packaging. An actual synthetic ACP login
+lasting 65 seconds passed, closing the generic 60-second timeout regression.
+The downloaded archive digest matches its sidecar; no replacement was installed.
+
+Remaining room-agent blockers include unmerged harness key isolation and tool
+permission changes, lifecycle/room acceptance, and the publication contract.
+The user has been asked whether ordinary Buzz room permissions suffice or the
+stronger atomic membership-removal guarantee is required. No answer yet; no
+legacy fallback or patched production relay has been deployed. Release notice
+evidence and packaging validation are being completed independently.

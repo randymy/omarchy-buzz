@@ -85,8 +85,12 @@ native status command uses `--setting-sources "" --settings '{"disableAllHooks":
 An account-free fixture verifies that configured hooks/helper commands do not
 run on that path. Managed hooks and provider/helper overrides still require
 review. Guarded `auth-methods` discovery also permits user hooks after a separate
-isolated synthetic-hook probe passed. Login and session creation with existing
-hooks remain outside that validation. If a check fails, retain the separate profile pending review.
+isolated synthetic-hook probe passed. Login with existing hooks remains outside that validation. A separate
+network-isolated session-start test observed no ordinary user SessionStart hook
+execution before the guarded adapter rejected an account-free session. This
+does not isolate hook behavior in an admitted session; source inspection confirms
+the guarded SDK uses `settingSources: []` to omit user settings, and
+managed hooks remain blocked. If a check fails, retain the separate profile pending review.
 
 Reusing a provider directory shares its settings and native credential lifecycle;
 it is not isolation from the other agent processes using it. The preview still
@@ -102,8 +106,10 @@ ChatGPT for Codex or Claude subscription login for Claude. Codex executes the
 verified native binary with `-c forced_login_method="chatgpt" login`, using the
 same dedicated CODEX_HOME as the adapter. This avoids the Buzz transport's
 60-second generic RPC timeout during interactive ACP authentication. Claude
-continues using the terminal-auth handoff. The Buzz timeout remains an upstream
-issue; the launcher does not weaken subscription admission or enable API login.
+continues using the terminal-auth handoff. The Buzz timeout proposal now passes compiled unit tests and a real 65-second
+authentication probe in ARM64 run 36582892134. That newer bundle has not replaced
+the installed preview; the launcher does not weaken subscription admission or
+enable API login.
 See [official authentication guidance](https://developers.openai.com/codex/auth/). No API-login choice
 is exposed by this preview. Native output stays in the terminal; the plugin
 never receives it, credentials or callback data. The tool does not report a
@@ -143,8 +149,29 @@ It does not verify model billing, agent tool execution or relay publication.
 
 `tests/session_admission_probe.py` records only booleans/categories, bounds all
 output, and never exposes session IDs or provider output. Its dedicated-profile
-default avoids the normal user's plugins/hooks. It refuses Claude session tests
-until native session-start hook behavior is validated and rejects configured
-Codex MCP/hooks/plugins/projects/skills. Do not disable these checks merely to
+default avoids the normal user's plugins/hooks. It rejects configured Codex
+MCP/hooks/plugins/projects/skills. Claude admission rejects managed hooks,
+provider overrides, configured MCP servers and installed plugins; ordinary user
+SessionStart hooks are excluded by the guarded adapter's inspected
+`settingSources: []` configuration. The account-free hook test does not independently
+prove this for an admitted session. Do not disable these checks merely to
 make an existing profile pass. Existing-profile discovery and auth-status remain
 available independently.
+
+## Live subscription smoke tests (September 29, 2026)
+
+Both guarded adapters created a session, rejected API-key authentication and
+returned the exact requested fixed response in a real model turn. Codex used
+the separate signed-in ChatGPT profile; Claude used the existing native
+subscription profile. The probe used an empty private workspace and requested
+no tools. No ACP client permission request arrived, no Buzz room was involved,
+and no room-agent service was enabled.
+
+The optional `--prompt-smoke` flag on `tests/session_admission_probe.py` makes
+this one model request explicitly; default execution remains a no-prompt
+admission check. Outputs contain booleans/categories only. Evidence is recorded
+in `evidence/codex-subscription-smoke-2026-09-29.json` and
+`evidence/claude-subscription-smoke-2026-09-29.json`. These checks establish
+successful guarded subscription routing and model responses for the tested
+profiles/versions. They do not independently certify a plan tier, inspect a
+billing receipt, audit every native tool action or prove room-agent operation.
