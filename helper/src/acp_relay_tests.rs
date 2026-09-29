@@ -184,6 +184,9 @@ async fn acp_relay_synthetic_routing() {
             let catalog=crate::catalog::discover(&relay,&owner,None).await.expect("thread-reader relay authority");
             let replies=crate::thread::fetch(&relay,&owner,catalog.signer,room,&trigger_id).await.expect("signed thread window query");
             assert!(replies.rows.iter().any(|row| row.id==accepted_reply.id.to_hex() && row.text==accepted_reply.content && row.author_pubkey==agent.public_key().to_hex()),"persisted reply absent from plugin thread projection");
+            let history=crate::history::fetch(&relay,&owner,catalog.signer,room).await.expect("room window after agent reply");
+            assert!(history.rows.iter().any(|row| row.id==trigger_id),"thread root absent from room projection");
+            assert!(!history.rows.iter().any(|row| row.id==accepted_reply.id.to_hex()),"thread reply leaked into top-level room projection");
         }
         eprintln!("OMARCHY_ACP_STAGE=excluded_triggers");
         let unmentioned=token();let stranger=token();
