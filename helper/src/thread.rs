@@ -200,6 +200,12 @@ pub fn reduce(
                     || one(event, "d")? != Some(expected.as_str())
                     || one(event, "e")? != Some(root_hex.as_str())
                 {
+                    // Booleans only: diagnose pinned-relay compatibility without logging events or keys.
+                    eprintln!(
+                        "omarchy-buzz: thread bounds rejected: duplicate={} signer={} tags={} binding={} root={}",
+                        bounds.is_some(), event.pubkey == relay, event.tags.len() == 3,
+                        one(event, "d")? == Some(expected.as_str()), one(event, "e")? == Some(root_hex.as_str())
+                    );
                     return Err("thread_invalid_bounds");
                 }
                 let raw: serde_json::Value =

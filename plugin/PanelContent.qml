@@ -376,7 +376,8 @@ FocusScope {
                   font.family: Style.font.family
                   font.pixelSize: Style.font.body
                 }
-                Controls.Button {
+                Ui.Button {
+                  focusable: true
                   visible: root.service && root.service.canOpenThread(messageRow.modelData.id)
                   text: root.service && root.service.threadRootId === messageRow.modelData.id ? "Hide replies" : "View replies"
                   onClicked: {
@@ -431,7 +432,8 @@ FocusScope {
                       }
                     }
                   }
-                  Controls.Button {
+                  Ui.Button {
+                    focusable: true
                     text: "Refresh replies"
                     enabled: root.service && root.service.threadState !== "loading"
                     onClicked: root.service.refreshThread()

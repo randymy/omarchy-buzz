@@ -661,7 +661,11 @@ async fn observe_inner(
                                 rows:thread.rows.into_iter().map(|r|crate::protocol::HistoryRow{id:r.id,author:r.author_pubkey,time:r.timestamp,text:r.text,edited:r.edited,truncated:r.truncated,unavailable:r.unavailable}).collect(),
                             },
                             Ok(_)=>Thread::unavailable(Some(room.clone()),Some(root.clone()),Some("thread_invalid")),
-                            Err(error)=>Thread::unavailable(Some(room.clone()),Some(root.clone()),Some(thread_category(error))),
+                            Err(error)=> {
+                                // Query/reducer errors are static categories, never relay payloads or credentials.
+                                eprintln!("omarchy-buzz: thread read failed: {error}");
+                                Thread::unavailable(Some(room.clone()),Some(root.clone()),Some(thread_category(error)))
+                            },
                         });
                     }
                 }
