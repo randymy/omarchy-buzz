@@ -143,6 +143,79 @@ fn signed_direct_reply_and_root_aux_project_only_reply() {
 }
 
 #[test]
+fn sdk_reaction_without_h_stays_auxiliary_and_wrong_h_or_forgery_fails() {
+    let relay = key(1);
+    let user = key(2);
+    let root = root(&user);
+    let original = reply(&user, &root, "message");
+    let reaction = buzz_sdk::build_reaction(original.id, "+")
+        .unwrap()
+        .custom_created_at(Timestamp::from(150))
+        .sign_with_keys(&user)
+        .unwrap();
+    let result = run(
+        &user,
+        &relay,
+        &root,
+        &[
+            original.clone(),
+            reaction.clone(),
+            closed(&relay, &user, &root),
+        ],
+    )
+    .unwrap();
+    assert_eq!(result.rows.len(), 1);
+    assert_eq!(result.rows[0].id, original.id.to_hex());
+    let unrelated = buzz_sdk::build_reaction(EventId::from_hex(&"aa".repeat(32)).unwrap(), "+")
+        .unwrap()
+        .custom_created_at(Timestamp::from(150))
+        .sign_with_keys(&user)
+        .unwrap();
+    assert_eq!(
+        run(
+            &user,
+            &relay,
+            &root,
+            &[original.clone(), unrelated, closed(&relay, &user, &root)]
+        )
+        .unwrap_err(),
+        "thread_invalid_scope"
+    );
+    let wrong = event(
+        &user,
+        7,
+        "+",
+        &[
+            &["h", &Uuid::new_v4().to_string()],
+            &["e", &original.id.to_hex()],
+        ],
+        150,
+    );
+    assert_eq!(
+        run(
+            &user,
+            &relay,
+            &root,
+            &[original.clone(), wrong, closed(&relay, &user, &root)]
+        )
+        .unwrap_err(),
+        "thread_invalid_scope"
+    );
+    let mut forged = reaction;
+    forged.content = "forged".into();
+    assert_eq!(
+        run(
+            &user,
+            &relay,
+            &root,
+            &[original, forged, closed(&relay, &user, &root)]
+        )
+        .unwrap_err(),
+        "thread_invalid_signature"
+    );
+}
+
+#[test]
 fn bounds_are_fresh_unique_signed_and_exactly_bound() {
     let relay = key(1);
     let user = key(2);

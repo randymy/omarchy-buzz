@@ -78,6 +78,65 @@ fn membership(keys: &Keys) -> Event {
         .sign_with_keys(&Keys::generate())
         .unwrap()
 }
+
+#[tokio::test]
+async fn sdk_reaction_without_h_is_valid_aux_but_wrong_scope_or_signature_fails() {
+    let _network_fixture = crate::NETWORK_TEST_LOCK.lock().await;
+    let keys = Keys::generate();
+    let room = Uuid::new_v4();
+    let root = EventBuilder::new(Kind::Custom(9), "root")
+        .tags([Tag::parse(["h", &room.to_string()]).unwrap()])
+        .sign_with_keys(&keys)
+        .unwrap();
+    let reaction = buzz_sdk::build_reaction(root.id, "+")
+        .unwrap()
+        .sign_with_keys(&keys)
+        .unwrap();
+    assert!(!reaction
+        .tags
+        .iter()
+        .any(|tag| tag.as_slice().first().map(String::as_str) == Some("h")));
+    for request in [
+        QueryRequest::RoomHistory { room, limit: 20 },
+        QueryRequest::ThreadReplies {
+            room,
+            root: root.id,
+        },
+    ] {
+        let (origin, server_task) = server(response(
+            &serde_json::to_vec(&vec![reaction.clone()]).unwrap(),
+        ))
+        .await;
+        assert_eq!(
+            query(&origin, &keys, &request).await.unwrap()[0].id,
+            reaction.id
+        );
+        server_task.await.unwrap();
+        let wrong = EventBuilder::new(Kind::Custom(7), "+")
+            .tags([
+                Tag::parse(["h", &Uuid::new_v4().to_string()]).unwrap(),
+                Tag::event(root.id),
+            ])
+            .sign_with_keys(&keys)
+            .unwrap();
+        let (origin, server_task) =
+            server(response(&serde_json::to_vec(&vec![wrong]).unwrap())).await;
+        assert!(matches!(
+            query(&origin, &keys, &request).await,
+            Err("query_invalid_scope")
+        ));
+        server_task.await.unwrap();
+        let mut forged = reaction.clone();
+        forged.content = "forged".into();
+        let (origin, server_task) =
+            server(response(&serde_json::to_vec(&vec![forged]).unwrap())).await;
+        assert!(matches!(
+            query(&origin, &keys, &request).await,
+            Err("query_invalid_signature")
+        ));
+        server_task.await.unwrap();
+    }
+}
 #[test]
 fn endpoint_and_nonce_binding() {
     assert_eq!(

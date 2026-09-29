@@ -171,6 +171,7 @@ pub fn reduce(
     let mut originals = BTreeMap::new();
     let mut edits = Vec::new();
     let mut deletes = Vec::new();
+    let mut reactions = Vec::new();
     for event in events {
         event.verify().map_err(|_| "thread_invalid_signature")?;
         if event.created_at.as_secs() > now.saturating_add(60) {
@@ -181,7 +182,7 @@ pub fn reduce(
         }
         let kind = event.kind.as_u16();
         let h = one(event, "h")?;
-        if matches!(kind, 5 | 9005) {
+        if matches!(kind, 5 | 9005 | 7) {
             if h.is_some_and(|h| h != room_hex) {
                 return Err("thread_invalid_scope");
             }
@@ -272,6 +273,7 @@ pub fn reduce(
             }
             7 => {
                 targets(event)?;
+                reactions.push(event);
             }
             _ => return Err("thread_invalid_kind"),
         }
@@ -279,6 +281,14 @@ pub fn reduce(
     let bounds = bounds.ok_or("thread_missing_bounds")?;
     if originals.len() > ROWS {
         return Err("thread_oversized");
+    }
+    for reaction in reactions {
+        if !targets(reaction)?
+            .iter()
+            .any(|target| target == &root_hex || originals.contains_key(target))
+        {
+            return Err("thread_invalid_scope");
+        }
     }
     let mut deleted = BTreeSet::new();
     let mut uncertain = BTreeSet::new();

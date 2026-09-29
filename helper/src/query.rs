@@ -79,8 +79,15 @@ impl QueryRequest {
             }
             Self::RoomHistory { room, .. } => {
                 let kind = event.kind.as_u16();
+                // The pinned SDK's NIP-25 reaction builder emits an e target
+                // without h; reducers verify its signature and target shape.
+                let has_h = event
+                    .tags
+                    .iter()
+                    .any(|t| t.as_slice().first().map(String::as_str) == Some("h"));
                 matches!(kind, 9 | 40002 | 40003 | 5 | 9005 | 7 | 39006)
                     && (matches!(kind, 5 | 9005)
+                        || kind == 7 && !has_h
                         || event.tags.iter().any(|t| {
                             t.as_slice().first().map(String::as_str) == Some("h")
                                 && t.as_slice()
@@ -90,8 +97,14 @@ impl QueryRequest {
             }
             Self::ThreadReplies { room, .. } => {
                 let kind = event.kind.as_u16();
+                // Keep explicit cross-room h tags out even for reactions.
+                let has_h = event
+                    .tags
+                    .iter()
+                    .any(|t| t.as_slice().first().map(String::as_str) == Some("h"));
                 matches!(kind, 9 | 40003 | 5 | 9005 | 7 | 39007)
                     && (matches!(kind, 5 | 9005)
+                        || kind == 7 && !has_h
                         || event.tags.iter().any(|t| {
                             t.as_slice().first().map(String::as_str) == Some("h")
                                 && t.as_slice()

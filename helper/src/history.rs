@@ -117,6 +117,7 @@ pub fn reduce(
     let mut originals = BTreeMap::new();
     let mut edits = Vec::new();
     let mut deletions = Vec::new();
+    let mut reactions = Vec::new();
     for event in events {
         event.verify().map_err(|_| "history_invalid_signature")?;
         if event.created_at.as_secs() > now.saturating_add(60) {
@@ -127,8 +128,8 @@ pub fn reduce(
         }
         let kind = event.kind.as_u16();
         let h = one(event, "h")?;
-        if !matches!(kind, 5 | 9005) && h != Some(scope.as_str())
-            || matches!(kind, 5 | 9005) && h.is_some_and(|h| h != scope)
+        if !matches!(kind, 5 | 9005 | 7) && h != Some(scope.as_str())
+            || matches!(kind, 5 | 9005 | 7) && h.is_some_and(|h| h != scope)
         {
             return Err("history_invalid_scope");
         }
@@ -146,7 +147,10 @@ pub fn reduce(
                 targets(event)?;
                 deletions.push(event);
             }
-            7 => {}
+            7 => {
+                targets(event)?;
+                reactions.push(event);
+            }
             39006 => {
                 if now.saturating_sub(event.created_at.as_secs()) > 60 {
                     return Err("history_stale_bounds");
@@ -181,6 +185,14 @@ pub fn reduce(
     let bounds = bounds.ok_or("history_missing_bounds")?;
     if originals.len() > ROWS {
         return Err("history_oversized");
+    }
+    for reaction in reactions {
+        if !targets(reaction)?
+            .iter()
+            .any(|target| originals.contains_key(target))
+        {
+            return Err("history_invalid_scope");
+        }
     }
     let mut deleted = BTreeSet::new();
     let mut uncertain = BTreeSet::new();

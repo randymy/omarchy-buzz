@@ -56,6 +56,69 @@ fn deletion(author: &Keys, target: &Event) -> Event {
     event(author, 5, "", tags(&[&["e", &target.id.to_hex()]]), 190)
 }
 #[test]
+fn sdk_reaction_without_h_stays_auxiliary_and_wrong_h_or_forgery_fails() {
+    let relay = key(1);
+    let user = key(2);
+    let original = row(&user, "message");
+    let reaction = buzz_sdk::build_reaction(original.id, "+")
+        .unwrap()
+        .custom_created_at(Timestamp::from(150))
+        .sign_with_keys(&user)
+        .unwrap();
+    let page = [original.clone(), reaction.clone(), head(&relay)];
+    let result = reduce(room(), relay.public_key(), &page, 200).unwrap();
+    assert_eq!(result.rows.len(), 1);
+    assert_eq!(result.rows[0].id, original.id.to_hex());
+    let unrelated =
+        buzz_sdk::build_reaction(nostr::EventId::from_hex(&"aa".repeat(32)).unwrap(), "+")
+            .unwrap()
+            .custom_created_at(Timestamp::from(150))
+            .sign_with_keys(&user)
+            .unwrap();
+    assert_eq!(
+        reduce(
+            room(),
+            relay.public_key(),
+            &[original.clone(), unrelated, head(&relay)],
+            200
+        )
+        .unwrap_err(),
+        "history_invalid_scope"
+    );
+    let wrong = event(
+        &user,
+        7,
+        "+",
+        tags(&[
+            &["h", &Uuid::new_v4().to_string()],
+            &["e", &original.id.to_hex()],
+        ]),
+        150,
+    );
+    assert_eq!(
+        reduce(
+            room(),
+            relay.public_key(),
+            &[original.clone(), wrong, head(&relay)],
+            200
+        )
+        .unwrap_err(),
+        "history_invalid_scope"
+    );
+    let mut forged = reaction;
+    forged.content = "forged".into();
+    assert_eq!(
+        reduce(
+            room(),
+            relay.public_key(),
+            &[original, forged, head(&relay)],
+            200
+        )
+        .unwrap_err(),
+        "history_invalid_signature"
+    );
+}
+#[test]
 fn signed_bounds_required_typed_and_authoritative() {
     let relay = key(1);
     let user = key(2);
