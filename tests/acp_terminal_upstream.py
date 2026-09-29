@@ -41,6 +41,10 @@ class TerminalUpstream(unittest.TestCase):
         self.home = Path(self.root.name)
         self.trace = self.home / "trace.jsonl"
         (self.home / "runtime").mkdir()
+        self.codex_home = self.home / "codex-profile"
+        self.claude_config_dir = self.home / "claude-profile"
+        self.codex_home.mkdir()
+        self.claude_config_dir.mkdir()
         self.env = {
             "HOME": str(self.home),
             "PATH": "/usr/bin:/bin",
@@ -50,6 +54,8 @@ class TerminalUpstream(unittest.TestCase):
             "XDG_DATA_HOME": str(self.home / "data"),
             "XDG_STATE_HOME": str(self.home / "state"),
             "XDG_RUNTIME_DIR": str(self.home / "runtime"),
+            "CODEX_HOME": str(self.codex_home),
+            "CLAUDE_CONFIG_DIR": str(self.claude_config_dir),
             # Synthetic markers prove the auth subprocesses do not inherit
             # provider or Buzz credentials from the calling environment.
             "BUZZ_PRIVATE_KEY": "synthetic-not-a-key",
@@ -171,6 +177,25 @@ class TerminalUpstream(unittest.TestCase):
 
     def test_terminal_success_reconnects_without_acp_authenticate(self):
         self.assert_terminal_success("success")
+
+    def test_controlled_profiles_survive_discovery_login_and_reconnect(self):
+        result = self.pipe("auth-methods", "success", "--terminal-auth", "--json")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["methods"][0]["type"], "terminal")
+        discovery = events(self.trace)
+        self.assertEqual([row["event"] for row in discovery], ["spawn", "initialize"])
+
+        self.trace.unlink()
+        self.assert_terminal_success("success")
+        rows = discovery + events(self.trace)
+        expected = {
+            "codex_home": str(self.codex_home),
+            "claude_config_dir": str(self.claude_config_dir),
+        }
+        for row in rows:
+            if row["event"] in ("spawn", "login"):
+                self.assertEqual({key: row[key] for key in expected}, expected)
+        self.assertEqual(len([row for row in rows if row["event"] == "spawn"]), 3)
 
     def test_terminal_can_read_interactive_input(self):
         self.assert_terminal_success("input")

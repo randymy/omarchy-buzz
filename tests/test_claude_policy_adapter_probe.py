@@ -103,7 +103,7 @@ for request_id, method in expected:
             "_meta":{}}}
     else:
         response = {"jsonrpc":"2.0","id":request_id,"error":{
-            "code":-32000,"message":"Claude subscription route is unavailable.",
+            "code":-32000,"message":"Authentication required: Claude subscription route is unavailable.",
             "data":{"reason":"claude_subscription_route_unavailable"}}}
     print(json.dumps(response), flush=True)
 '''

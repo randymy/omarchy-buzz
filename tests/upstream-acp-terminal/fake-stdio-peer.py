@@ -28,6 +28,11 @@ def main():
             record(trace, "inherited_forbidden_env", key=key)
             raise SystemExit(3)
 
+    profiles = {
+        "codex_home": os.environ.get("CODEX_HOME"),
+        "claude_config_dir": os.environ.get("CLAUDE_CONFIG_DIR"),
+    }
+
     if extra:
         if extra != ["--login"]:
             record(trace, "unexpected_args", args=extra)
@@ -38,6 +43,7 @@ def main():
             tty=all(os.isatty(fd) for fd in (0, 1, 2)),
             foreground=os.tcgetpgrp(0) == os.getpgrp(),
             marker=os.environ.get("ACP_INTERACTIVE_LOGIN"),
+            **profiles,
         )
         if case == "nonzero":
             raise SystemExit(7)
@@ -51,7 +57,7 @@ def main():
                 time.sleep(0.05)
         raise SystemExit(0)
 
-    record(trace, "spawn")
+    record(trace, "spawn", **profiles)
     for line in sys.stdin:
         request = json.loads(line)
         method = request.get("method")

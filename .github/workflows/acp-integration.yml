@@ -8,6 +8,10 @@ on:
         description: Offline adapter discovery and synthetic API-login rejection (no accounts or prompts)
         type: boolean
         default: false
+      guarded_adapters:
+        description: Compiled subscription-policy adapter discovery through Buzz ACP (no accounts or turns)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -119,7 +123,7 @@ jobs:
           python3 -m unittest discover -s tests -p test_codex_subscription_probe.py -v
           python3 -m unittest discover -s tests -p test_codex_adapter_subscription_probe.py -v
       - name: Install exact Node runtime for optional vendor discovery
-        if: inputs.vendor_discovery
+        if: inputs.vendor_discovery || inputs.guarded_adapters
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22.23.3'
@@ -227,3 +231,73 @@ jobs:
             ${{ runner.temp }}/relay-target
             ${{ runner.temp }}/helper-target
           key: ${{ steps.cache.outputs.cache-primary-key }}
+
+      - name: Check out pinned Codex proposal base
+        if: inputs.guarded_adapters
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: agentclientprotocol/codex-acp
+          ref: 2eebebc35441e03cd466003b40a75953b221b886
+          path: codex-guarded
+          persist-credentials: false
+      - name: Check out pinned Claude proposal base
+        if: inputs.guarded_adapters
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: agentclientprotocol/claude-agent-acp
+          ref: 18de37624071b48e95aed9ec5382823e2d72cd39
+          path: claude-guarded
+          persist-credentials: false
+      - name: Prepare guarded adapters in disposable checkouts
+        if: inputs.guarded_adapters
+        run: |
+          python3 - <<'PYCODE'
+          import os,pathlib,shutil,subprocess,tempfile
+          root=pathlib.Path.cwd()
+          for vendor in ('codex','claude'):
+              source=root/(vendor+'-guarded')
+              patch=root/'plugin/docs/upstream'/(vendor+'-subscription-policy.patch')
+              subprocess.run(['git','apply','--check',str(patch)],cwd=source,check=True)
+              subprocess.run(['git','apply',str(patch)],cwd=source,check=True)
+              with tempfile.TemporaryDirectory(prefix='guarded-npm-',dir=os.environ['RUNNER_TEMP']) as home:
+                  profile=pathlib.Path(home)
+                  for name in ('user.npmrc','global.npmrc'): (profile/name).touch()
+                  env={'HOME':home,'PATH':os.environ['PATH'],'LANG':'C.UTF-8'}
+                  subprocess.run([shutil.which('npm'),'ci','--ignore-scripts','--no-audit','--no-fund',
+                      '--userconfig='+str(profile/'user.npmrc'),'--globalconfig='+str(profile/'global.npmrc'),
+                      '--cache='+str(profile/'cache')],cwd=source,env=env,check=True,timeout=300)
+          PYCODE
+      - name: Build and discover guarded adapters without network or accounts
+        if: inputs.guarded_adapters
+        working-directory: plugin
+        run: |
+          python3 -m unittest discover -s tests -p test_guarded_adapter_harness_probe.py -v
+          probe_uid=$(id -u)
+          probe_gid=$(id -g)
+          probe_node=$(command -v node)
+          outside_netns=$(readlink /proc/self/ns/net)
+          for vendor in codex claude; do
+            probe_home=$(mktemp -d "$RUNNER_TEMP/guarded-build.XXXXXXXX")
+            sudo unshare --net --pid --fork --kill-child --mount-proc -- \
+            /usr/bin/setpriv --reuid="$probe_uid" --regid="$probe_gid" --clear-groups --no-new-privs \
+            --bounding-set=-all --inh-caps=-all --ambient-caps=-all \
+            /usr/bin/env -i HOME="$probe_home" PATH="$(dirname "$probe_node"):/usr/bin:/bin" LANG=C.UTF-8 \
+            /bin/bash -euc 'cd "$1"; npm run build' -- "$GITHUB_WORKSPACE/$vendor-guarded"
+          done
+          sudo unshare --net --pid --fork --kill-child --mount-proc -- \
+            /usr/bin/setpriv --reuid="$probe_uid" --regid="$probe_gid" --clear-groups --no-new-privs \
+            --bounding-set=-all --inh-caps=-all --ambient-caps=-all \
+            /usr/bin/env -i PATH="$(dirname "$probe_node"):/usr/bin:/bin" LANG=C.UTF-8 \
+            /usr/bin/python3 tests/guarded_adapter_harness_probe.py \
+            --binary "$RUNNER_TEMP/relay-target/debug/buzz-acp" --node "$probe_node" \
+            --codex-source "$GITHUB_WORKSPACE/codex-guarded" \
+            --claude-source "$GITHUB_WORKSPACE/claude-guarded" \
+            --outside-netns "$outside_netns" --output "$RUNNER_TEMP/guarded-harness-evidence.json"
+      - name: Upload sanitized guarded harness evidence
+        if: always() && inputs.guarded_adapters
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: guarded-harness-evidence
+          path: ${{ runner.temp }}/guarded-harness-evidence.json
+          if-no-files-found: warn
+          retention-days: 7

@@ -25,7 +25,7 @@ from vendor_adapter_discovery import (
 EXPECTED_ADAPTER = "0.82.0"
 EXPECTED_NATIVE = "0.3.280"
 POLICY_REASON = "claude_subscription_route_unavailable"
-POLICY_MESSAGE = "Claude subscription route is unavailable."
+POLICY_MESSAGE = "Authentication required: Claude subscription route is unavailable."
 TOTAL_TIMEOUT = 45
 SESSION_ID = "00000000-0000-0000-0000-000000000001"
 REQUESTS = (

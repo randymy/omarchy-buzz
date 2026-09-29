@@ -293,7 +293,7 @@
  axum = { workspace = true }
 --- /dev/null
 +++ b/crates/buzz-acp/src/terminal_auth.rs
-@@ -0,0 +1,335 @@
+@@ -0,0 +1,337 @@
 +//! Restricted interactive authentication. Never run this from the QML process.
 +use serde_json::Value;
 +use std::{
@@ -381,6 +381,8 @@
 +        "XDG_DATA_HOME",
 +        "XDG_STATE_HOME",
 +        "XDG_RUNTIME_DIR",
++        "CODEX_HOME",
++        "CLAUDE_CONFIG_DIR",
 +        "DBUS_SESSION_BUS_ADDRESS",
 +        "DISPLAY",
 +        "WAYLAND_DISPLAY",
