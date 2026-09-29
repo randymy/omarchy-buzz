@@ -519,7 +519,9 @@ FocusScope {
               onClicked: if (root.service) root.service.submitDraft()
             }
             Ui.Button {
-              text: root.service && (root.service.deliveryState === "rejected" || root.service.deliveryCategory === "send_request_reused") ? "Start new submission" : "Start new draft"
+              text: !root.service ? "" : root.service.deliveryState === "unknown"
+                ? "Discard uncertain draft" + (root.service.deliveryScopeMismatch ? " from " + root.service.submissionScopeLabel : "")
+                : "Start new submission" + (root.service.deliveryScopeMismatch ? " for " + root.service.submissionScopeLabel : "")
               focusable: true
               visible: root.service && (root.service.deliveryState === "unknown" || root.service.deliveryState === "rejected" || root.service.deliveryCategory === "send_request_reused")
               onClicked: if (root.service) root.service.newDraft(root.service.deliveryState === "rejected" || root.service.deliveryCategory === "send_request_reused")

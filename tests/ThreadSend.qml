@@ -12,13 +12,14 @@ ShellRoot {
     onTriggered: {
       try {
         var room = "11111111-1111-4111-8111-111111111111"
+        var otherRoom = "22222222-2222-4222-8222-222222222222"
         var rootId = "1".repeat(64)
         function row(id) { return {id:id,author:"a".repeat(64),time:100,text:"Synthetic",edited:false,truncated:false,unavailable:false} }
         function frame() {
           return {version:1,type:service.instanceId === "" ? "hello" : "status",instanceId:"thread-send",generation:1,
             capabilities:["connection_status","room_catalog","room_history","thread_replies","message_send","thread_send"],
             status:{generation:1,connection:"authenticated",category:null,identity:"b".repeat(64),relay:"wss://fixture.example/",
-              catalog:{state:"ready",category:null,rooms:[{id:room,name:"Fixture",description:""}]},
+              catalog:{state:"ready",category:null,rooms:[{id:room,name:"Fixture",description:""},{id:otherRoom,name:"Other",description:""}]},
               history:{state:"snapshot",roomId:room,rows:[row(rootId)],hasMore:false,category:"history_completeness_unknown"},
               delivery:{state:"idle",requestId:null,roomId:null,eventId:null,category:null},
               thread:{state:"snapshot",roomId:room,rootId:rootId,rows:[],hasMore:false,category:"thread_completeness_unknown"}}}
@@ -60,7 +61,26 @@ ShellRoot {
         service.composeRoom()
         request=service.prepareSubmission()
         check(request && !Object.prototype.hasOwnProperty.call(request,"rootId"), "Top-level request gained reply target")
-        console.log("PASS: scoped thread drafts, exact reply target, ambiguous-send lock, acknowledgments, missing-root and old-helper fences")
+        service.selectRoom(otherRoom)
+        service.updateDraft("Other room draft")
+        service.applyDelivery({state:"acknowledged",requestId:request.id,roomId:room,eventId:"3".repeat(64),category:null})
+        check(service.deliveryScopeMismatch && service.deliveryLabel.indexOf("#Fixture") !== -1,
+          "Acknowledgment in another room lost its destination")
+        check(service.draftText === "Other room draft", "Acknowledgment erased another room draft")
+        service.selectRoom(room)
+        service.updateDraft("Uncertain room draft")
+        request=service.prepareSubmission()
+        check(request && request.roomId === room, "Uncertain-send setup selected wrong room")
+        service.losePendingDelivery()
+        service.selectRoom(otherRoom)
+        check(service.deliveryScopeMismatch && service.deliveryLabel.indexOf("#Fixture") !== -1, "Previous-room receipt lost its destination")
+        service.newDraft(false)
+        check(service.draftText === "Other room draft", "Discarding uncertain draft erased current room")
+        service.selectRoom(room)
+        check(service.draftText === "" && !service.canSend, "Uncertain room draft became a new send after room switch")
+        service.selectRoom(otherRoom)
+        check(service.draftText === "Other room draft", "Other room draft was not preserved")
+        console.log("PASS: scoped thread drafts, exact reply target, ambiguous-send lock, room-switch discard, acknowledgments, missing-root and old-helper fences")
         Qt.quit()
       } catch(error) { console.error(error); Qt.exit(1) }
     }

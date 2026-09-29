@@ -139,7 +139,14 @@ Item {
   readonly property bool canSend: sendSupported && !sampleMode && !sessionFailed && connection === "authenticated"
     && selectedRoom !== null && deliveryState !== "sending" && deliveryState !== "unknown" && deliveryState !== "rejected" && deliveryCategory !== "send_request_reused"
     && replyReady && recipientIntentValid && draftText.trim().length > 0 && draftText.indexOf("\u0000") === -1 && utf8Size(draftText) <= 4096
-  readonly property string deliveryLabel: deliveryCategory === "send_request_reused" ? "Submission ID cannot be reused. Start a new submission explicitly." : deliveryCategory === "send_ledger_unavailable" ? "Local send ledger unavailable. Check state directory permissions and free space, then retry." : ({idle:"",sending:"Sending…",acknowledged:"Acknowledged by relay",rejected:"Message rejected. Start a new submission explicitly to retry; this receipt will not send again.",failed:"Send failed · draft retained",unknown:"Outcome unknown. Sending again may create a duplicate. Start a new draft explicitly to continue."})[deliveryState] || ""
+  readonly property bool deliveryScopeMismatch: submissionId !== "" && submissionDraftKey !== composerKey
+  readonly property string submissionScopeLabel: {
+    var room = rooms.find(function(entry) { return entry.id === submissionRoom })
+    var label = "#" + (room ? room.name : submissionRoom)
+    return submissionRoot ? label + " · thread " + submissionRoot.slice(0, 8) + "…" : label
+  }
+  readonly property string deliveryBaseLabel: deliveryCategory === "send_request_reused" ? "Submission ID cannot be reused. Start a new submission explicitly." : deliveryCategory === "send_ledger_unavailable" ? "Local send ledger unavailable. Check state directory permissions and free space, then retry." : ({idle:"",sending:"Sending…",acknowledged:"Acknowledged by relay",rejected:"Message rejected. Start a new submission explicitly to retry; this receipt will not send again.",failed:"Send failed · draft retained",unknown:"Outcome unknown. Sending again may create a duplicate. Discard the uncertain draft explicitly to continue."})[deliveryState] || ""
+  readonly property string deliveryLabel: deliveryScopeMismatch && deliveryBaseLabel ? submissionScopeLabel + ": " + deliveryBaseLabel : deliveryBaseLabel
 
   readonly property var sample: sampleMode ? SampleData.snapshot().payload : null
   readonly property var viewModel: sample || ({ community: "Buzz" })
@@ -219,7 +226,8 @@ Item {
   function newDraft(preserveText) {
     if (deliveryState === "sending") return
     var copy = Object.assign({}, drafts)
-    copy[composerKey] = preserveText === true ? draftText : ""
+    var key = submissionDraftKey || composerKey
+    copy[key] = preserveText === true ? (drafts[key] || "") : ""
     drafts = copy
     deliveryState = "idle"
     deliveryCategory = ""
