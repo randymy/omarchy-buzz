@@ -44,7 +44,9 @@ explicitly leaves authentication `not_checked`.
 Each agent gets an owner-only profile beneath
 `~/.local/state/omarchy-buzz-agent-preview/`. The launcher creates separate HOME,
 provider, XDG and working directories. Reused configuration trees containing
-unexpected symlinks or other owners are rejected. The only link exception is
+unexpected symlinks or other owners are rejected. Browser-owned contents under the real, current-user directories `home/.cache`
+and `config/chromium` are excluded from recursive link inspection; their roots
+must not be symlinks. These directories are not sandboxed. The provider-tree link exception is
 Codex's four known temporary command shims under `provider/tmp/arg0/`: each must
 point directly to the exact native binary whose digest matches the verified
 bundle. Configuration and credential symlinks remain rejected. Existing native credentials and user
@@ -56,7 +58,13 @@ forwarded. Profile locations, not tokens, pass through the Buzz auth subprocess.
 
 Only after target validation, run `login` with the same arguments from an
 interactive local terminal. This delegates to the native subscription login:
-ChatGPT for Codex or Claude subscription login for Claude. No API-login choice
+ChatGPT for Codex or Claude subscription login for Claude. Codex executes the
+verified native binary with `-c forced_login_method="chatgpt" login`, using the
+same dedicated CODEX_HOME as the adapter. This avoids the Buzz transport's
+60-second generic RPC timeout during interactive ACP authentication. Claude
+continues using the terminal-auth handoff. The Buzz timeout remains an upstream
+issue; the launcher does not weaken subscription admission or enable API login.
+See [official authentication guidance](https://developers.openai.com/codex/auth/). No API-login choice
 is exposed by this preview. Native output stays in the terminal; the plugin
 never receives it, credentials or callback data. The tool does not report a
 verified Pro account merely because login exits successfully.

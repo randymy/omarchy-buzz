@@ -1116,3 +1116,21 @@ Twelve launcher tests pass, including rejection of alternate targets/tampering.
 Actual target discovery followed by another status/profile check passes. Reopened
 the native sign-in terminal. Provider login completion remains unverified; no
 agent task or API-billed operation was started.
+
+## Native Codex login handoff (September 29)
+
+Browser sign-in opened but Buzz exited `auth_authenticate_failed`; the subsequent
+localhost callback could not connect. Source inspection found a generic 60-second
+ACP request deadline inside the nominal ten-minute authenticate operation. That
+is a likely cause, not a timed trace of the user's failure. No callback URLs or
+authorization codes were saved. The preview now invokes the verified native Codex
+binary's subscription-only login directly in the same isolated profile; installed
+help confirms syntax. Claude retains the terminal-auth handoff. The upstream ACP
+timeout remains unresolved and should be corrected separately.
+
+Browser startup also creates legitimate fontconfig and Chromium singleton links.
+Recursive profile validation now excludes only the contents of real current-user
+home/.cache and config/chromium directories; their roots cannot be links. Provider
+configuration links remain rejected. This is not isolation from same-user code.
+Fifteen tests and target profile/status recheck pass. A fresh native sign-in
+terminal was opened. Login completion/account entitlement still unverified.

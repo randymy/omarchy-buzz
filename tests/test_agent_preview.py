@@ -147,6 +147,32 @@ class AgentPreview(unittest.TestCase):
                 with self.assertRaisesRegex(module.Refused, "profile_tree_unsafe"):
                     module.profile_for("claude")
 
+    def test_browser_cache_links_do_not_block_profile_reuse(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with patch.object(module.Path, "home", return_value=root):
+                profile = module.profile_for("codex")
+                cache = profile / "home/.cache"
+                browser = profile / "config/chromium"
+                for directory in (cache / "fontconfig", browser):
+                    directory.mkdir(parents=True)
+                    (directory / "browser-link").symlink_to(root / "outside")
+                module.profile_for("codex")
+                (profile / "provider/config.toml").symlink_to(root / "outside")
+                with self.assertRaisesRegex(module.Refused, "profile_tree_unsafe"):
+                    module.profile_for("codex")
+
+    def test_browser_cache_roots_must_be_real_directories(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with patch.object(module.Path, "home", return_value=root):
+                profile = module.profile_for("codex")
+                for path in (profile / "home/.cache", profile / "config/chromium"):
+                    path.symlink_to(root / "outside")
+                    with self.assertRaisesRegex(module.Refused, "profile_tree_unsafe"):
+                        module.profile_for("codex")
+                    path.unlink()
+
     def test_manifest_requires_independent_expected_hash(self):
         with tempfile.TemporaryDirectory() as temporary:
             bundle, _ = fixture_bundle(Path(temporary))
@@ -160,6 +186,13 @@ class AgentPreview(unittest.TestCase):
             child.write_text('import sys\nsys.stdout.write("X"*70000)\nsys.stdout.flush()\n')
             with self.assertRaisesRegex(module.Refused, 'auth_discovery_output_limit'):
                 module.capture_discovery([sys.executable, str(child)], {}, root)
+
+    def test_native_codex_login_forces_chatgpt_without_api_flags(self):
+        command = module.login_command(Path('/verified'), 'codex')
+        self.assertTrue(command[0].endswith('/bin/codex'))
+        self.assertEqual(command[1:], ['-c', 'forced_login_method="chatgpt"', 'login'])
+        self.assertEqual(module.login_command(Path('/verified'), 'claude'),
+                         module.auth_command(Path('/verified'), 'claude', True))
 
     def test_login_commands_select_only_subscription_methods(self):
         for agent, method in [('codex', 'chat-gpt'), ('claude', 'claude-ai-login')]:

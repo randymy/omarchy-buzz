@@ -129,6 +129,13 @@ def profile_for(agent, bundle=None, report=None):
                         raise Refused('profile_tree_unsafe')
                 elif item.stat().st_uid != os.getuid():
                     raise Refused('profile_tree_unsafe')
+                elif item in (profile / 'home/.cache', profile / 'config/chromium'):
+                    # Browser/fontconfig caches create their own links. These two
+                    # owned, real directories are outside the credential guard;
+                    # pruning traversal is not a sandbox for their contents.
+                    if not item.is_dir():
+                        raise Refused('profile_tree_unsafe')
+                    dirs.remove(name)
     return profile
 
 
@@ -196,6 +203,14 @@ def auth_command(bundle, agent, login=False):
     else:
         command += ['--json', '--terminal-auth']
     return command
+
+
+def login_command(bundle, agent):
+    if agent == 'codex':
+        native = member(bundle / 'adapters/codex',
+                        'node_modules/@openai/codex-linux-arm64/vendor/aarch64-unknown-linux-musl/bin/codex')
+        return [str(native), '-c', 'forced_login_method="chatgpt"', 'login']
+    return auth_command(bundle, agent, True)
 
 
 def checked_methods(raw, agent):
@@ -286,7 +301,8 @@ def main():
         if args.action == 'login':
             # Native upstream interactive output goes directly to the user, never QML/logs.
             os.chdir(profile / 'work')
-            os.execve(str(args.bundle / ENTRIES['buzzAcp']), auth_command(args.bundle, args.agent, True), env)
+            command = login_command(args.bundle, args.agent)
+            os.execve(command[0], command, env)
         raw = capture_discovery(auth_command(args.bundle, args.agent), env, profile / 'work')
         methods = checked_methods(raw, args.agent)
         print(json.dumps({'agent': args.agent, 'methods': methods,
