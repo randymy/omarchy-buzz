@@ -65,3 +65,31 @@ jobs:
               npm run build
               ./node_modules/.bin/vitest run --no-file-parallelism --retry=0 src/tests/subscription-policy.test.ts src/tests/authorization.test.ts src/tests/providers.test.ts src/tests/acp-agent-settings.test.ts
             '
+      - name: Validate probe parsers and subprocess boundaries
+        working-directory: plugin
+        run: |
+          python3 -m unittest discover -s tests -p 'test_claude_policy_*_probe.py' -v
+      - name: Check compiled adapter policy and native login syntax without accounts
+        working-directory: plugin
+        run: |
+          probe_uid=$(id -u)
+          probe_gid=$(id -g)
+          probe_node=$(command -v node)
+          outside_netns=$(readlink /proc/self/ns/net)
+          for probe in adapter native; do
+            sudo unshare --net --pid --fork --kill-child --mount-proc -- \
+              /usr/bin/setpriv --reuid="$probe_uid" --regid="$probe_gid" --clear-groups --no-new-privs \
+              --bounding-set=-all --inh-caps=-all --ambient-caps=-all \
+              /usr/bin/env -i PATH="$(dirname "$probe_node"):/usr/bin:/bin" LANG=C.UTF-8 \
+              /usr/bin/python3 "tests/claude_policy_${probe}_probe.py" \
+              --adapter-source "$GITHUB_WORKSPACE/adapter" --node "$probe_node" \
+              --outside-netns "$outside_netns" --output "$RUNNER_TEMP/claude-policy-${probe}.json"
+          done
+      - name: Upload sanitized conformance evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: claude-policy-conformance
+          path: ${{ runner.temp }}/claude-policy-*.json
+          if-no-files-found: warn
+          retention-days: 7
