@@ -13,16 +13,35 @@ class AdapterSubscriptionProbeTests(unittest.TestCase):
     def test_exact_policy_rejection_required(self):
         probe.require_response({"jsonrpc":"2.0","id": 1, "result": {"authMethods": [{"id": "api-key"}]}}, 1)
         probe.require_response({"jsonrpc":"2.0","id": 2, "error": {
-            "code": -32603, "message": "native: " + probe.EXPECTED_ERROR_MESSAGE,
+            "code": -32603, "message": "Internal error", "data": {"details": probe.EXPECTED_ERROR_MESSAGE},
+        }}, 2)
+        probe.require_response({"jsonrpc":"2.0","id": 2, "error": {
+            "code": -32600, "message": probe.EXPECTED_ERROR_MESSAGE,
         }}, 2)
         for response in (
             {"jsonrpc":"2.0","id": 2, "result": {}},
             {"jsonrpc":"2.0","id": 2, "error": {"code": -32603, "message": "Internal error"}},
             {"jsonrpc":"2.0","id": 2, "error": {"code": -32602, "message": probe.EXPECTED_ERROR_MESSAGE}},
             {"jsonrpc":"2.0","id": 2, "error": {"code": -32603, "message": "API key rejected"}},
+            {"jsonrpc":"2.0","id": 2, "error": {"code": -32603, "message": "Internal error", "data": {"details": "prefix: " + probe.EXPECTED_ERROR_MESSAGE}}},
+            {"jsonrpc":"2.0","id": 2, "error": {"code": -32603, "message": "Internal error", "data": {"details": probe.EXPECTED_ERROR_MESSAGE, "other": True}}},
+            {"jsonrpc":"2.0","id": 2, "error": {"code": -32600, "message": probe.EXPECTED_ERROR_MESSAGE, "data": {"details": probe.EXPECTED_ERROR_MESSAGE}}},
         ):
             with self.subTest(response=response), self.assertRaises(probe.ProbeFailure):
                 probe.require_response(response, 2)
+
+    def test_rejection_shape_is_static_and_redacted(self):
+        shape = {}
+        with self.assertRaisesRegex(probe.ProbeFailure, "acp_api_rejection_mismatch"):
+            probe.require_response({"jsonrpc":"2.0", "id":2, "error":{
+                "code":-32603, "message":"Internal error: secret sentinel",
+                "data":{"cause": probe.EXPECTED_ERROR_MESSAGE + " secret sentinel"},
+            }}, 2, shape)
+        self.assertEqual(shape, {
+            "codeClass":"internal_error", "messageContainsPolicySentence":False,
+            "dataContainsPolicySentence":True, "hasData":True, "messageIsString":True,
+        })
+        self.assertNotIn("secret sentinel", repr(shape))
 
     def test_synthetic_peer_sequence_and_isolated_env(self):
         fixture = '''import json, os, pathlib, sys
@@ -34,7 +53,7 @@ assert first == {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protoco
 print(json.dumps({"jsonrpc":"2.0","id":1,"result":{"authMethods":[{"id":"api-key"}]}}), flush=True)
 second = json.loads(sys.stdin.readline())
 assert second == {"jsonrpc":"2.0","id":2,"method":"authenticate","params":{"methodId":"api-key"}}
-print(json.dumps({"jsonrpc":"2.0","id":2,"error":{"code":-32603,"message":"API key login is disabled. Use ChatGPT login instead."}}), flush=True)
+print(json.dumps({"jsonrpc":"2.0","id":2,"error":{"code":-32603,"message":"Internal error","data":{"details":"API key login is disabled. Use ChatGPT login instead."}}}), flush=True)
 '''
         with tempfile.TemporaryDirectory() as temporary:
             entry = Path(temporary) / "peer.py"

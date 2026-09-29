@@ -27,7 +27,27 @@ SYNTHETIC_KEY = "sk-test-key"
 TOTAL_TIMEOUT = 45
 
 
-def require_response(message, expected_id):
+def rejection_shape(error):
+    """Fixed-label evidence only: never return provider/adapter error text."""
+    code = error.get("code")
+    detail = error.get("message")
+    data = error.get("data")
+    try:
+        data_text = json.dumps(data, ensure_ascii=True)
+    except (TypeError, ValueError):
+        data_text = ""
+    return {
+        "codeClass": ({-32600: "invalid_request", -32603: "internal_error",
+                       -32602: "invalid_params"}.get(code, "other")
+                      if type(code) is int else "other"),
+        "messageContainsPolicySentence": isinstance(detail, str) and EXPECTED_ERROR_MESSAGE in detail,
+        "dataContainsPolicySentence": EXPECTED_ERROR_MESSAGE in data_text,
+        "hasData": data is not None,
+        "messageIsString": isinstance(detail, str),
+    }
+
+
+def require_response(message, expected_id, diagnostics=None):
     if not isinstance(message, dict) or message.get("jsonrpc") != "2.0" or type(message.get("id")) is not int or message["id"] != expected_id:
         raise ProbeFailure("acp_response_invalid")
     if expected_id == 1:
@@ -43,10 +63,18 @@ def require_response(message, expected_id):
     error = message.get("error")
     if "result" in message or not isinstance(error, dict):
         raise ProbeFailure("acp_api_auth_not_rejected")
-    code, detail = error.get("code"), error.get("message")
-    # Adapter may rewrap native invalid-request as internal-error. The exact
-    # native policy sentence is essential; generic errors cannot pass.
-    if type(code) is not int or code not in (-32600, -32603) or not isinstance(detail, str) or EXPECTED_ERROR_MESSAGE not in detail:
+    if diagnostics is not None:
+        diagnostics.update(rejection_shape(error))
+    code, detail, data = error.get("code"), error.get("message"), error.get("data")
+    # Pinned @agentclientprotocol/sdk 1.5.0, dist/jsonrpc.js:156-190,
+    # converts a foreign vscode-jsonrpc ResponseError to internalError
+    #({details: error.message}); RequestError.internalError at :1020-1022
+    # emits exactly -32603 / "Internal error". Accept only that precise
+    # envelope and exact native policy sentence, or the native direct form.
+    direct = type(code) is int and code == -32600 and detail == EXPECTED_ERROR_MESSAGE and data is None
+    wrapped = (type(code) is int and code == -32603 and detail == "Internal error"
+               and isinstance(data, dict) and data == {"details": EXPECTED_ERROR_MESSAGE})
+    if not (direct or wrapped):
         raise ProbeFailure("acp_api_rejection_mismatch")
 
 
@@ -58,7 +86,7 @@ def _write_rpc(process, payload):
         raise ProbeFailure("acp_stdin_closed") from None
 
 
-def run_adapter_probe(node, executable, deadline):
+def run_adapter_probe(node, executable, deadline, diagnostics=None):
     with tempfile.TemporaryDirectory(prefix="codex-acp-subscription-probe-") as temporary:
         home = Path(temporary)
         codex_home = home / "codex"
@@ -122,7 +150,7 @@ def run_adapter_probe(node, executable, deadline):
                             raise ProbeFailure("acp_json_invalid") from None
                         if not isinstance(message, dict) or "id" not in message:
                             continue  # Notifications are discarded, never recorded.
-                        require_response(message, expected_id)
+                        require_response(message, expected_id, diagnostics)
                         if expected_id == 2:
                             return
                         expected_id = 2
@@ -154,7 +182,7 @@ def main():
         "adapterPackageVersion": None, "nativePackageVersion": None,
         "nativeBinaryVersion": None, "adapterBinaryVersion": None, "nodeVersion": None,
         "startupPolicy": "chatgpt", "acpApiAuthRejected": False,
-        "failures": [],
+        "rejectionShape": None, "failures": [],
     }
     deadline = time.monotonic() + TOTAL_TIMEOUT
     try:
@@ -207,7 +235,9 @@ def main():
         if raw.decode("ascii", errors="ignore").strip() != "@agentclientprotocol/codex-acp " + EXPECTED_ADAPTER:
             raise ProbeFailure("adapter_binary_version_mismatch")
         summary["adapterBinaryVersion"] = EXPECTED_ADAPTER
-        run_adapter_probe(node, executable, deadline)
+        shape = {}
+        summary["rejectionShape"] = shape
+        run_adapter_probe(node, executable, deadline, shape)
         summary["acpApiAuthRejected"] = True
         summary["successful"] = True
     except ProbeFailure as error:
