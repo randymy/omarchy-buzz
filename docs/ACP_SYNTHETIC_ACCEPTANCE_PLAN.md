@@ -41,8 +41,10 @@ Advertise `read-only` in session modes and return exactly one `mode` option
 with `currentValue: read-only` after the setter. On a prompt containing the
 random token, send one `agent_message_chunk` text update for the current
 session with `AE-ACK:<token>`, then return `stopReason: end_turn`. It must never
-invoke `buzz`, set `BUZZ_E2E_CLI_BIN`, make HTTP requests, request a tool, or
-access a model. The pinned fake peer **does** invoke the CLI when that variable
+invoke `buzz`, set `BUZZ_E2E_CLI_BIN`, make HTTP requests, execute a tool, or access a model. The implemented peer
+sends a synthetic permission request without executing anything; it withholds
+the reply until the harness selects rejection. It also emits a thought sentinel
+that must be absent from the published message. The pinned fake peer **does** invoke the CLI when that variable
 is present, which would prove a different publisher.
 
 Adapt `scripts/acp-fixture` for a separate reply-only mode, retaining its clean
@@ -50,9 +52,9 @@ environment, loopback URL validation, fixed synthetic identities, deadline,
 bounded private diagnostics, and descendant process-group cleanup. Feed the
 disposable agent scalar through one inherited anonymous pipe via
 `--private-key-fd <fd>` (`pass_fds` in Python); close the write end after
-launch and never put the scalar in argv, environment, or logs. In this mode do
+writing the fixed scalar and never put the scalar in argv, environment, or logs. In this mode do
 not require or expose the `buzz`/Git helper binaries. Use the patched harness
-with the following relevant arguments (plus the fixture's absolute Node peer,
+with the following relevant arguments (plus the fixture's absolute Python peer,
 agent owner, room, relay URL, and existing bounded timeouts):
 
 ```text

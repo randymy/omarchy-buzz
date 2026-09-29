@@ -152,11 +152,16 @@ class FixtureCommandError(RuntimeError):
         allowed = [value.decode("ascii") for value in observed if value.decode("ascii") in phases]
         if allowed:
             self.safe["fixturePhase"] = allowed[-1]
-        acp_phases = {"registration", "spawn", "await_ack", "excluded_triggers", "cleanup", "complete"}
+        acp_phases = {"registration", "spawn", "await_ack", "persisted_reply", "excluded_triggers", "cleanup", "complete"}
         observed_acp = re.findall(rb"(?m)^OMARCHY_ACP_STAGE=([a-z_]+)$", diagnostics)
         allowed_acp = [value.decode("ascii") for value in observed_acp if value.decode("ascii") in acp_phases]
         if allowed_acp:
             self.safe["acpPhase"] = allowed_acp[-1]
+        supervisor_stages = {"arguments", "source_verification", "prerequisites", "process_spawn", "process_monitor", "process_cleanup"}
+        observed_supervisor = re.findall(rb"(?m)^OMARCHY_ACP_SUPERVISOR_STAGE=([a-z_]+)$", diagnostics)
+        allowed_supervisor = [value.decode("ascii") for value in observed_supervisor if value.decode("ascii") in supervisor_stages]
+        if allowed_supervisor:
+            self.safe["acpSupervisorStage"] = allowed_supervisor[-1]
         super().__init__(category)
 
 

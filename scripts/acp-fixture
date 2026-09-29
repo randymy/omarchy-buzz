@@ -24,6 +24,7 @@ AGENT = "c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5"
 PUBLIC_FIXTURE_SCALAR = "0" * 63 + "2"
 PEER = "desktop/tests/e2e/fixtures/fake-acp-agent.mjs"
 REPLY_PEER = Path(__file__).resolve().parents[1] / "tests/harness_reply_peer.py"
+STAGE = "arguments"
 
 
 def origin(value):
@@ -165,6 +166,8 @@ def checked_type(validator):
 
 
 def main():
+    global STAGE
+    STAGE = "arguments"
     import selectors
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--buzz-source", required=True, type=Path)
@@ -185,9 +188,11 @@ def main():
     node = args.node.resolve() if args.node is not None else Path(sys.executable)
     if "," in str(source):
         raise ValueError("fixture source path cannot contain the CLI argument delimiter")
+    STAGE = "source_verification"
     verify_source(source)
+    STAGE = "prerequisites"
     required = ("buzz-acp",) if args.harness_replies else ("buzz-acp", "buzz", "git-sign-nostr", "git-credential-nostr")
-    executables = (sys.executable, *(binaries / name for name in required)) if args.harness_replies else (node, *(binaries / name for name in required))
+    executables = (Path(sys.executable), *(binaries / name for name in required)) if args.harness_replies else (node, *(binaries / name for name in required))
     for executable in executables:
         if not executable.is_file() or not os.access(executable, os.X_OK):
             raise ValueError("required isolated fixture executable unavailable")
@@ -197,6 +202,7 @@ def main():
     def interrupted(_number, _frame):
         raise KeyboardInterrupt()
     signal.signal(signal.SIGTERM, interrupted)
+    STAGE = "process_spawn"
     with tempfile.TemporaryDirectory(prefix="omarchy-buzz-acp-") as temporary:
         directory = Path(temporary)
         env = environment(directory, binaries, node, args.relay_url, args.harness_replies)
@@ -219,6 +225,7 @@ def main():
                 print(json.dumps({"type": "started", "agentKey": AGENT, "ownerKey": OWNER,
                                   "roomId": args.room, "sourceRevision": PIN,
                                   "replyMode": "harness" if args.harness_replies else "legacy"}), flush=True)
+                STAGE = "process_monitor"
                 # A distinct driver must establish readiness through relay observations.
                 expires = time.monotonic() + args.deadline
                 with selectors.DefaultSelector() as selector:
@@ -237,13 +244,21 @@ def main():
                         raise ValueError("synthetic ACP exited before driver completion")
             finally:
                 cleanup(process)
+            STAGE = "process_cleanup"
             print(json.dumps({"type": "stopped", "claim": "process_cleanup_only"}), flush=True)
 
 
-if __name__ == "__main__":
+def run():
     try:
         main()
-    except (ValueError, OSError, subprocess.SubprocessError, KeyboardInterrupt):
+        return 0
+    except (Exception, KeyboardInterrupt, SystemExit) as error:
         # Raw harness diagnostics and process environment never enter evidence output.
+        reason = "interrupted" if isinstance(error, KeyboardInterrupt) else "fixture_failure"
+        print(json.dumps({"type": "failed", "stage": STAGE, "reason": reason}), flush=True)
         print("acp-fixture: fixture failed or interrupted; private diagnostics discarded", file=sys.stderr)
-        sys.exit(1)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(run())

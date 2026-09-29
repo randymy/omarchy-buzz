@@ -127,6 +127,13 @@ async fn acp_relay_synthetic_routing() {
         })).await.expect("supervisor startup deadline").unwrap();
         supervisor.0.stdout=Some(stdout);
         let started:serde_json::Value=serde_json::from_str(&line).expect("supervisor startup metadata");
+        if started["type"]=="failed" {
+            let stage=started["stage"].as_str().unwrap_or("unknown");
+            if matches!(stage,"arguments"|"source_verification"|"prerequisites"|"process_spawn"|"process_monitor"|"process_cleanup") {
+                eprintln!("OMARCHY_ACP_SUPERVISOR_STAGE={stage}");
+            }
+            panic!("synthetic supervisor startup failed");
+        }
         assert!(started["type"]=="started"&&started["agentKey"]==agent.public_key().to_hex()&&started["roomId"]==room.to_string(),"supervisor fixture scope");
         if harness_replies { assert_eq!(started["replyMode"],"harness"); }
         let key=agent.public_key().to_hex();let positive=token();
@@ -140,7 +147,7 @@ async fn acp_relay_synthetic_routing() {
         let trigger_id=trigger.id.to_hex();
         publish(&mut admin,trigger).await;
         let ready_deadline=Instant::now()+Duration::from_secs(45);
-        loop {
+        let accepted_reply = loop {
             supervisor.alive();assert!(Instant::now()<ready_deadline,"synthetic ACP signed ACK readiness deadline");
             match admin.next_event(Duration::from_millis(200)).await {
                 Ok(RelayMessage::Event{subscription_id,event}) if subscription_id==sid => {
@@ -153,10 +160,27 @@ async fn acp_relay_synthetic_routing() {
                             assert!(event.tags.iter().any(|t|t.as_slice()==["e",trigger_id.as_str(),"","reply"]),"reply must target admitted root");
                             assert!(!event.content.contains("THOUGHT-MUST-NOT-PUBLISH"));
                         }
-                        break;
+                        break event;
                     }
                 },Err(buzz_ws_client::WsClientError::Timeout)=>{},Err(_)=>panic!("synthetic observation transport failed"),_=>{}
             }
+        };
+        if harness_replies {
+            eprintln!("OMARCHY_ACP_STAGE=persisted_reply");
+            let persisted=Uuid::new_v4().to_string();
+            admin.send_raw(&json!(["REQ",persisted,{"ids":[accepted_reply.id.to_hex()]}])).await.unwrap();
+            timeout(Duration::from_secs(10),async { loop {
+                match admin.next_event(Duration::from_secs(5)).await.unwrap() {
+                    RelayMessage::Event{subscription_id,event} if subscription_id==persisted => {
+                        event.verify().unwrap();
+                        assert_eq!(event,accepted_reply,"persisted reply differs from observed signed event");
+                        break;
+                    },
+                    RelayMessage::Eose{subscription_id} if subscription_id==persisted => panic!("signed reply missing from persisted query"),
+                    _=>{}
+                }
+            }}).await.expect("persisted signed reply deadline");
+            admin.send_raw(&json!(["CLOSE",persisted])).await.unwrap();
         }
         eprintln!("OMARCHY_ACP_STAGE=excluded_triggers");
         let unmentioned=token();let stranger=token();

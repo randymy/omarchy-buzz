@@ -2,12 +2,16 @@
 """No relay/provider/harness launch: test supervisor's actual process boundary."""
 import importlib.machinery
 import importlib.util
+import contextlib
+import io
 import os
 from pathlib import Path
+import signal
 import subprocess
 import sys
 import tempfile
 import time
+from unittest import mock as unittest_mock
 
 ROOT = Path(__file__).resolve().parents[1]
 loader = importlib.machinery.SourceFileLoader("fixture", str(ROOT / "scripts/acp-fixture"))
@@ -100,6 +104,52 @@ with tempfile.TemporaryDirectory(prefix="buzz-acp-supervisor-test-") as temporar
         raise AssertionError("reply mode accepted no key FD")
     except ValueError:
         pass
+
+    # Exercise the whole harness-reply supervisor path with a fixed local
+    # sleeper in place of buzz-acp; no relay, signer, ACP, or provider runs.
+    mock_harness = binaries / "buzz-acp"
+    mock_harness.write_text("#!/usr/bin/python3\nimport time\ntime.sleep(30)\n")
+    mock_harness.chmod(0o700)
+    reader, writer = os.pipe()
+    os.write(writer, b"stop\n")
+    os.close(writer)
+    saved_handler = signal.getsignal(signal.SIGTERM)
+    output = io.StringIO()
+    fixture_args = ["acp-fixture", "--harness-replies", "--buzz-source", str(root),
+                    "--buzz-bin-dir", str(binaries), "--relay-url", "ws://127.0.0.1:12345",
+                    "--room", "11111111-1111-4111-8111-111111111111",
+                    "--fixture-auth-tag", valid_tag]
+    try:
+        with os.fdopen(reader) as input_stream, unittest_mock.patch.object(sys, "stdin", input_stream), \
+             unittest_mock.patch.object(sys, "argv", fixture_args), \
+             unittest_mock.patch.object(fixture, "verify_source", return_value=None), \
+             contextlib.redirect_stdout(output):
+            assert fixture.run() == 0
+    finally:
+        signal.signal(signal.SIGTERM, saved_handler)
+    records = [json.loads(line) for line in output.getvalue().splitlines()]
+    assert [record["type"] for record in records] == ["started", "stopped"]
+    assert records[0]["replyMode"] == "harness"
+    assert records[1]["claim"] == "process_cleanup_only"
+    output = io.StringIO()
+    try:
+        with unittest_mock.patch.object(sys, "argv", fixture_args), \
+             unittest_mock.patch.object(fixture, "verify_source", side_effect=ValueError("private path detail")), \
+             contextlib.redirect_stdout(output), contextlib.redirect_stderr(io.StringIO()):
+            assert fixture.run() == 1
+    finally:
+        signal.signal(signal.SIGTERM, saved_handler)
+    assert json.loads(output.getvalue()) == {"type": "failed", "stage": "source_verification",
+                                             "reason": "fixture_failure"}
+    assert "private path detail" not in output.getvalue()
+    mock_harness.unlink()
+    output = io.StringIO()
+    with unittest_mock.patch.object(sys, "argv", fixture_args), \
+         unittest_mock.patch.object(fixture, "verify_source", return_value=None), \
+         contextlib.redirect_stdout(output), contextlib.redirect_stderr(io.StringIO()):
+        assert fixture.run() == 1
+    assert json.loads(output.getvalue()) == {"type": "failed", "stage": "prerequisites",
+                                             "reason": "fixture_failure"}
 
     peer_requests = [
         {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
