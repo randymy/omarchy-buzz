@@ -2,8 +2,10 @@
 
 Status: prepared for review, not submitted or applied to the product. The
 one-file proposal is [`acp-permission-mode.patch`](acp-permission-mode.patch).
-It applies cleanly with `git apply --check` to official Buzz
-`4ef23609b7025bc356a9ea078834d57b69ec33cf` (September 29, 2026).
+The expanded patch and complete staged series apply cleanly to official Buzz
+`781d39510cf23cfe224e8f521ae06a23377e06de`. The earlier policy-only
+patch applied to `4ef23609b7025bc356a9ea078834d57b69ec33cf`;
+recheck that newer base before submission.
 The `buzz-acp` and `buzz-ws-client` trees have no changes between that revision
 and `8519db1532efd6cda8f72bb6454c00fc3f87cfba`. The applicability check
 used an isolated `/tmp` extraction and did not modify either Buzz checkout.
@@ -40,23 +42,38 @@ release on its own.
   for ACP tool permission requests. It touches `pool.rs` but does not resolve
   explicit startup mode fallback. Keep the concerns separate during review.
 
-## Exact validation still needed before submission
+## Current validation and remaining submission checks
 
-1. On a fresh isolated worktree at the intended official Buzz base, apply only
-   `acp-permission-mode.patch`, then run `cargo fmt -p buzz-acp -- --check`,
-   `cargo test -p buzz-acp --all-targets`, and `cargo clippy -p buzz-acp
-   --all-targets -- -D warnings` with the workspace's locked toolchain.
-2. Add a fake ACP peer integration test through the real session-preparation
-   path: missing/malformed/unadvertised explicit mode must end before
-   `session/prompt`; advertised mode with application error or timeout must do
-   the same. An accepted mode must send the exact session ID and mode once.
-   Assert no fallback prompt and no broader mode retry.
-3. Recheck the branch against the then-current head of PRs #7487 and #4626,
+The patch now contains four fake-peer tests through the actual
+`run_isolated_prompt` path. At the isolated official `781d395` base,
+`cargo test --locked -p buzz-acp explicit_permission_mode_integration_tests --lib`
+passed 4/4: missing, malformed and unadvertised modes never prompted; an
+advertised mode rejected by the setter or timed out before prompting; an
+accepted `plan` sent exactly one setter with the expected session ID and mode,
+then one prompt. Exact request-method sequences also rule out fallback and
+broader-mode retry. This used a scripted ACP subprocess, no relay or model.
+The final patch differs from that tested source only by Rust formatting and
+test-module placement. The patched `pool.rs` passed Rust 1.95 `rustfmt --check`.
+The local toolchain lacks `cargo-fmt`, so the package-wide Cargo format command
+was not run.
+
+The staged WS, permission, interactive-login, key-isolation, harness-reply,
+tool-denial and auth-timeout patches all passed `git apply --check` and applied
+in that order on a fresh disposable `781d395` checkout. A combined `buzz-acp`
+test compile reached its final link, which failed because the temporary
+filesystem ran out of space. The temporary build directories were removed;
+this is not a passing combined test or a source compilation failure.
+
+Before submission:
+
+1. Recheck the expanded patch on the intended official base, then run the
+   package-wide format, full `buzz-acp` test and Clippy gates with its locked
+   toolchain in a runner with adequate disk space.
+2. Recheck the branch against the then-current head of PRs #7487 and #4626,
    reconcile their assertions and source overlap, and run the repository's
-   required CI. The existing four transport-double tests in
-   `tests/upstream-acp-permissions` exercise extracted functions only; the
-   preparer is pinned to Buzz `781d395` and is not evidence of a production
-   path test at `4ef2360`.
+   required CI. The older four transport-double tests in
+   `tests/upstream-acp-permissions` remain separate from the new production
+   path tests; neither test set establishes effective provider permissions.
 
 Do not merge or adopt a changed ACP dependency in the product until the actual
 combined policy and room-agent boundaries have been reviewed and exercised.

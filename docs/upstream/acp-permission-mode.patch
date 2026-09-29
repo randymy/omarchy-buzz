@@ -28,7 +28,7 @@
  /// Check if the agent's `session/new` response advertises a given mode ID
  /// in `result.modes.availableModes[].id`. Returns `false` if the modes
  /// field is absent or the mode isn't listed.
-@@ -2076,10 +2068,16 @@
+@@ -2076,10 +2068,18 @@
          .unwrap_or(false)
  }
  
@@ -41,7 +41,9 @@
 +    if agent_supports_mode(raw, mode) {
 +        Ok(())
 +    } else {
-+        Err(AcpError::Protocol("requested permission mode is not advertised".into()))
++        Err(AcpError::Protocol(
++            "requested permission mode is not advertised".into(),
++        ))
 +    }
 +}
 +
@@ -87,12 +89,167 @@
 -            );
 -            return Err(AcpError::Timeout(PERMISSION_MODE_TIMEOUT));
 -        }
--    }
--    Ok(())
 +        Ok(Ok(_)) => Ok(()),
 +        Ok(Err(error)) => Err(error),
 +        Err(_) => Err(AcpError::Timeout(PERMISSION_MODE_TIMEOUT)),
-+    }
+     }
+-    Ok(())
  }
  
  /// Prepend a legacy agent's standing context to a user-message body.
+@@ -11979,6 +11945,155 @@
+     }
+ }
+ 
++#[cfg(test)]
++mod explicit_permission_mode_integration_tests {
++    use super::*;
++    use crate::acp::AcpClient;
++    use tests::make_prompt_context_no_owner;
++
++    fn agent(acp: AcpClient) -> OwnedAgent {
++        OwnedAgent {
++            index: 0,
++            acp,
++            state: SessionState::default(),
++            model_capabilities: None,
++            desired_model: None,
++            model_overridden: false,
++            desired_model_request_id: None,
++            desired_model_pending_ack: false,
++            startup_effort: None,
++            agent_name: "mode-test-agent".into(),
++            goose_system_prompt_supported: None,
++            protocol_version: 2,
++        }
++    }
++
++    async fn run_case(
++        modes: &str,
++        setter_reply: &str,
++    ) -> (Result<StopReason, AcpError>, Vec<serde_json::Value>) {
++        // This peer handles the actual ACP session/new, setter and prompt RPCs.
++        // The observer records exactly which requests crossed the stdio boundary.
++        let setter_action = if setter_reply == "no-reply" {
++            "sleep 7".to_string()
++        } else {
++            format!(r#"printf '%s\n' '{{"jsonrpc":"2.0","id":1,{setter_reply}}}'"#)
++        };
++        let script = format!(
++            r#"count=0
++while IFS= read -r line; do
++  id=$count
++  count=$((count + 1))
++  if [ "$count" -eq 1 ]; then
++    printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"sessionId":"mode-session","modes":{modes}}}}}'
++  elif [ "$count" -eq 2 ]; then
++    {setter_action}
++  else
++    printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{"stopReason":"end_turn"}}}}'
++  fi
++done"#
++        );
++        let acp = AcpClient::spawn("bash", &["-c".into(), script], &[], false)
++            .await
++            .expect("scripted ACP peer");
++        let mut agent = agent(acp);
++        let observer = observer::ObserverHandle::in_process();
++        agent.acp.set_observer(Some(observer.clone()), 0);
++        let mut ctx = make_prompt_context_no_owner();
++        ctx.permission_mode = PermissionMode::Plan;
++        let mut session = None;
++        let result = tokio::time::timeout(
++            Duration::from_secs(8),
++            run_isolated_prompt(
++                &mut agent,
++                &ctx,
++                "synthetic prompt",
++                Duration::from_secs(2),
++                &mut session,
++            ),
++        )
++        .await
++        .expect("session preparation deadline");
++        let writes = observer
++            .snapshot()
++            .into_iter()
++            .filter(|event| event.kind == "acp_write")
++            .map(|event| event.payload)
++            .collect();
++        agent.acp.shutdown().await;
++        (result, writes)
++    }
++
++    fn methods(writes: &[serde_json::Value]) -> Vec<&str> {
++        writes
++            .iter()
++            .map(|value| value["method"].as_str().unwrap())
++            .collect()
++    }
++
++    #[tokio::test]
++    async fn unadvertised_or_malformed_explicit_mode_never_prompts() {
++        for modes in [
++            "null",
++            r#"{"availableModes":"bad"}"#,
++            r#"{"availableModes":[{"id":"default"}]}"#,
++        ] {
++            let (result, writes) = run_case(modes, r#""result":{}"#).await;
++            assert!(
++                matches!(result, Err(AcpError::Protocol(_))),
++                "{modes}: {result:?}"
++            );
++            assert_eq!(methods(&writes), ["session/new"], "{modes}");
++        }
++    }
++
++    #[tokio::test]
++    async fn advertised_mode_application_error_never_prompts() {
++        let modes = r#"{"availableModes":[{"id":"plan"}]}"#;
++        let (result, writes) =
++            run_case(modes, r#""error":{"code":-32602,"message":"rejected"}"#).await;
++        assert!(
++            matches!(result, Err(AcpError::AgentError { .. })),
++            "{result:?}"
++        );
++        assert_eq!(
++            methods(&writes),
++            ["session/new", "session/set_config_option"]
++        );
++        assert_eq!(
++            writes[1]["params"],
++            serde_json::json!({"sessionId":"mode-session","configId":"mode","value":"plan"})
++        );
++    }
++
++    #[tokio::test]
++    async fn advertised_mode_setter_timeout_never_prompts() {
++        let modes = r#"{"availableModes":[{"id":"plan"}]}"#;
++        let (result, writes) = run_case(modes, "no-reply").await;
++        assert!(matches!(result, Err(AcpError::Timeout(_))), "{result:?}");
++        assert_eq!(
++            methods(&writes),
++            ["session/new", "session/set_config_option"]
++        );
++    }
++
++    #[tokio::test]
++    async fn accepted_exact_mode_reaches_one_prompt() {
++        let modes = r#"{"availableModes":[{"id":"plan"}]}"#;
++        let (result, writes) = run_case(modes, r#""result":{}"#).await;
++        assert!(matches!(result, Ok(StopReason::EndTurn)), "{result:?}");
++        assert_eq!(
++            methods(&writes),
++            ["session/new", "session/set_config_option", "session/prompt"]
++        );
++        assert_eq!(
++            writes[1]["params"],
++            serde_json::json!({"sessionId":"mode-session","configId":"mode","value":"plan"})
++        );
++        assert_eq!(writes[2]["params"]["sessionId"], "mode-session");
++    }
++}
++
+ #[cfg(all(test, unix))]
+ #[path = "pool/pi_prompt_tests.rs"]
+ mod pi_prompt_tests;

@@ -42,8 +42,11 @@ harness or execute an agent, relay, login or model.
 Four tests cover missing/malformed/unsupported advertisements, an exact supported
 mode, successful setter invocation, application/transport errors and an
 unanswered setter. The latter cases must return an error without fallback.
-Full upstream workspace and fake-peer integration tests remain required before
-merging upstream or adopting a new production dependency revision.
+The expanded patch also includes four actual ACP-client fake-peer regressions
+through `run_isolated_prompt`. They passed 4/4 at official Buzz `781d395` for
+unadvertised/malformed mode, setter rejection, setter timeout and exact accepted
+mode sequencing. No relay, model or provider tool ran. Full upstream workspace
+and provider-policy validation remain required before merging or adoption.
 
 ## Combined build verification
 

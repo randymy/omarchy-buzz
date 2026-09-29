@@ -781,17 +781,6 @@ index 3586081..476d2af 100644
      pub mcp_servers: Vec<McpServer>,
      pub initial_message: Option<String>,
      pub idle_timeout: Duration,
-@@ -2073,7 +2074,9 @@ fn require_permission_mode(raw: &serde_json::Value, mode: &str) -> Result<(), Ac
-     if agent_supports_mode(raw, mode) {
-         Ok(())
-     } else {
--        Err(AcpError::Protocol("requested permission mode is not advertised".into()))
-+        Err(AcpError::Protocol(
-+            "requested permission mode is not advertised".into(),
-+        ))
-     }
- }
- 
 @@ -2265,6 +2268,9 @@ fn send_prompt_result(
      batch: Option<FlushBatch>,
  ) {
