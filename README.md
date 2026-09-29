@@ -104,8 +104,9 @@ Rejected messages require an explicit new submission before another attempt.
 
 Drafts stay in memory. The helper stores only bounded request/event identifiers
 and delivery outcomes, never message bodies, in its private state directory.
-Keep that delivery record during updates. Select recipients to attach exact mention keys; a typed `@name` alone is not
-resolved. Names are self-asserted hints beside public keys, and the roster is
+Keep that delivery record during updates. Type `@` in the composer, then select a room member with Tab/Enter or a click
+to attach the exact identity. The separate recipient picker remains available.
+Unselected plain `@name` text is not a routed mention. Names are self-asserted hints beside public keys, and the roster is
 explicitly partial. Agent execution still requires separately configured Buzz ACP.
 For a verified thread, select **Reply in thread** to compose a reply; **Back to room** restores the room draft. This requires the matching 0.0.8 helper. Attachments are not supported. See [sending semantics](docs/SENDING.md).
 

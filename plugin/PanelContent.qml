@@ -10,6 +10,37 @@ FocusScope {
   property bool recipientPickerExpanded: false
   property bool presentationSwitchEnabled: false
   property bool windowMode: false
+  property int mentionIndex: 0
+  property bool mentionDismissed: false
+  readonly property var mentionQuery: {
+    if (!service || !composer.visible || composer.readOnly || service.recipientsState !== "snapshot"
+        || service.recipientsRoomId !== service.selectedRoomId || service.recipientPickerLocked) return null
+    var before = composer.text.slice(0, composer.cursorPosition)
+    var match = /(^|[\s([{,;:])@([^\s@]*)$/.exec(before)
+    if (!match) return null
+    return {start: before.length - match[2].length - 1, end: before.length, prefix: match[2].toLocaleLowerCase()}
+  }
+  readonly property var mentionMatches: {
+    if (!mentionQuery || !service) return []
+    var prefix = mentionQuery.prefix
+    return service.recipientEntries.filter(function(entry) {
+      if (!entry.name || !entry.name.trim()) return false
+      return (entry.name || "").toLocaleLowerCase().indexOf(prefix) === 0
+        || entry.key.toLowerCase().indexOf(prefix) === 0
+    }).slice(0, 8)
+  }
+  readonly property bool mentionOpen: !mentionDismissed && mentionMatches.length > 0
+  onMentionMatchesChanged: mentionIndex = 0
+  function chooseMention(index) {
+    if (!mentionOpen || !mentionQuery || index < 0 || index >= mentionMatches.length || !service) return false
+    var query = mentionQuery
+    var nextCursor = service.insertMention(mentionMatches[index].key, query.start, query.end)
+    if (nextCursor < 0) return false
+    if (composer.text !== service.draftText) composer.text = service.draftText
+    composer.cursorPosition = nextCursor
+    composer.forceActiveFocus()
+    return true
+  }
   signal closeRequested()
   signal presentationRequested()
   Keys.onEscapePressed: closeRequested()
@@ -484,13 +515,44 @@ FocusScope {
               onClicked: root.service.composeRoom()
             }
           }
+          ColumnLayout {
+            id: mentionSuggestions
+            objectName: "buzzMentionSuggestions"
+            Layout.fillWidth: true
+            visible: root.mentionOpen
+            spacing: Style.space(2)
+            Text {
+              text: "Mention someone in this room"
+              textFormat: Text.PlainText
+              color: Color.foreground
+              opacity: 0.7
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+            }
+            Repeater {
+              model: root.mentionOpen ? root.mentionMatches : []
+              delegate: Ui.Button {
+                required property var modelData
+                required property int index
+                Layout.fillWidth: true
+                objectName: "buzzMentionOption"
+                text: "@" + (modelData.name || "Unnamed") + " · " + modelData.key.slice(0, 12) + "…" + modelData.key.slice(-8)
+                  + " · " + (root.service ? root.service.participantLabel(modelData.key) : "")
+                tooltipText: modelData.key
+                leftAlign: true
+                focusable: false
+                selected: root.mentionIndex === index
+                onClicked: root.chooseMention(index)
+              }
+            }
+          }
           Controls.TextArea {
             id: composer
             objectName: "buzzComposer"
             Layout.fillWidth: true
             Layout.preferredHeight: Style.space(70)
             visible: root.service && root.service.selectedRoom !== null && root.service.connection === "authenticated"
-            placeholderText: "Plain text · choose exact recipients above"
+            placeholderText: "Plain text · type @ to mention someone in this room"
             textFormat: TextEdit.PlainText
             wrapMode: TextEdit.Wrap
             text: root.service ? root.service.draftText : ""
@@ -502,6 +564,23 @@ FocusScope {
             onTextChanged: {
               if (text.length > 4096) text = text.slice(0, 4096)
               if (root.service) root.service.updateDraft(text)
+              root.mentionDismissed = false
+            }
+            onCursorPositionChanged: root.mentionDismissed = false
+            Keys.onPressed: function(event) {
+              if (!root.mentionOpen) return
+              if (event.key === Qt.Key_Down) {
+                root.mentionIndex = (root.mentionIndex + 1) % root.mentionMatches.length
+                event.accepted = true
+              } else if (event.key === Qt.Key_Up) {
+                root.mentionIndex = (root.mentionIndex + root.mentionMatches.length - 1) % root.mentionMatches.length
+                event.accepted = true
+              } else if (event.key === Qt.Key_Tab || event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                event.accepted = root.chooseMention(root.mentionIndex)
+              } else if (event.key === Qt.Key_Escape) {
+                root.mentionDismissed = true
+                event.accepted = true
+              }
             }
           }
           Connections {

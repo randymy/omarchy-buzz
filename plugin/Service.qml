@@ -129,6 +129,7 @@ Item {
   property var recipientEntries: []
   property var agentProfiles: []
   property var recipientDrafts: ({})
+  property var inlineMentionDrafts: ({})
   readonly property var selectedRecipients: recipientDrafts[composerKey] || []
   readonly property var unavailableRecipients: selectedRecipients.filter(function(key) {
     return recipientsState !== "snapshot" || !recipientEntries.some(function(entry) { return entry.key === key })
@@ -221,6 +222,7 @@ Item {
     var copy = Object.assign({}, drafts)
     copy[composerKey] = text
     drafts = copy
+    reconcileInlineMentions(composerKey, text)
     if (deliveryState !== "sending" && deliveryState !== "unknown") {
       deliveryState = "idle"
       deliveryCategory = ""
@@ -233,13 +235,70 @@ Item {
     var key = submissionDraftKey || composerKey
     copy[key] = preserveText === true ? (drafts[key] || "") : ""
     drafts = copy
+    reconcileInlineMentions(key, copy[key])
     deliveryState = "idle"
     deliveryCategory = ""
     submissionId = ""
     submissionText = ""
   }
-  function toggleRecipient(key) {
+  function mentionTokenPresent(text, token) {
+    var offset = text.indexOf(token)
+    while (offset !== -1) {
+      var before = offset === 0 ? "" : text[offset - 1]
+      var after = text[offset + token.length] || ""
+      if ((!before || /[\s([{,;:]/.test(before)) && (!after || /[\s.,!?;:)\]}]/.test(after))) return true
+      offset = text.indexOf(token, offset + 1)
+    }
+    return false
+  }
+  function reconcileInlineMentions(scope, text) {
+    var tracked = inlineMentionDrafts[scope] || []
+    var kept = tracked.filter(function(item) { return item.tokens.some(function(token) { return mentionTokenPresent(text, token) }) })
+    var removed = tracked.filter(function(item) { return !kept.some(function(other) { return item.key === other.key }) })
+    if (!removed.length) return
+    var bindings = Object.assign({}, inlineMentionDrafts)
+    bindings[scope] = kept
+    inlineMentionDrafts = bindings
+    var recipients = Object.assign({}, recipientDrafts)
+    recipients[scope] = (recipients[scope] || []).filter(function(key) { return !removed.some(function(item) { return item.key === key }) })
+    recipientDrafts = recipients
+  }
+  function insertMention(key, start, end) {
+    if (recipientPickerLocked || recipientsState !== "snapshot" || recipientsRoomId !== selectedRoomId
+        || !Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end > draftText.length || start >= end
+        || (start > 0 && !/[\s([{,;:]/.test(draftText[start - 1]))
+        || draftText[start] !== "@" || !/^@[^\s@]*$/.test(draftText.slice(start, end))) return -1
+    var entry = recipientEntries.find(function(item) { return item.key === key && item.name.trim() })
+    if (!entry || (selectedRecipients.indexOf(key) === -1 && selectedRecipients.length >= 20)) return -1
+    var token = "@" + entry.name.trim()
+    var sameName = recipientEntries.filter(function(item) { return item.name.trim().toLowerCase() === entry.name.trim().toLowerCase() })
+    if (sameName.length > 1) {
+      var length = 12
+      while (length < 64 && sameName.some(function(item) { return item.key !== key && item.key.slice(0, length) === key.slice(0, length) })) length += 4
+      token += "[" + key.slice(0, length) + "]"
+    }
+    var next = draftText.slice(0, start) + token + " " + draftText.slice(end)
+    if (next.length > 4096 || utf8Size(next) > 4096) return -1
+    updateDraft(next)
+    var tracked = (inlineMentionDrafts[composerKey] || []).slice()
+    var previous = tracked.find(function(item) { return item.key === key })
+    if (previous || selectedRecipients.indexOf(key) === -1) {
+      tracked = tracked.filter(function(item) { return item.key !== key })
+      tracked.push({key:key, tokens:previous ? previous.tokens.concat([token]) : [token]})
+      var bindings = Object.assign({}, inlineMentionDrafts)
+      bindings[composerKey] = tracked
+      inlineMentionDrafts = bindings
+    }
+    if (selectedRecipients.indexOf(key) === -1) toggleRecipient(key, true)
+    return start + token.length + 1
+  }
+  function toggleRecipient(key, fromInline) {
     if (recipientPickerLocked) return
+    if (fromInline !== true) {
+      var bindings = Object.assign({}, inlineMentionDrafts)
+      bindings[composerKey] = (bindings[composerKey] || []).filter(function(item) { return item.key !== key })
+      inlineMentionDrafts = bindings
+    }
     var copy = selectedRecipients.slice()
     var index = copy.indexOf(key)
     if (index >= 0) copy.splice(index, 1)
@@ -312,6 +371,7 @@ Item {
         var copy = Object.assign({}, drafts)
         copy[submissionDraftKey] = ""
         drafts = copy
+        reconcileInlineMentions(submissionDraftKey, "")
       }
       if (acknowledgedRefreshId !== submissionId) {
         acknowledgedRefreshId = submissionId
@@ -648,6 +708,7 @@ Item {
       clearThread()
       drafts = ({})
       recipientDrafts = ({})
+      inlineMentionDrafts = ({})
       replyTargets = ({})
       submissionText = ""
     }

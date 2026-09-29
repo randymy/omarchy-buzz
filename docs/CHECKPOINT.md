@@ -1525,3 +1525,19 @@ The operator reported `Incompatible helper` despite matching 0.0.8 files.
 window capture confirmed authenticated rooms and VASSIVE DEV messages. The
 earlier helper/socket verification did not establish that old compiled QML had
 unloaded. Future upgrades must include the actual rendered-window check.
+
+## Usernames and inline mentions corrected
+
+A room-open burst sends history and recipients into a one-slot helper command
+queue. Recipient rejection as request_busy previously left names and mentions
+unavailable permanently. The UI now retries that read at most twice, scoped to
+room, helper instance and generation. The actual Process fixture rejects the
+first lookup and verifies recovery without duplicate message sends.
+
+Composer @ completion uses only the current verified room roster. Click or
+Tab/Enter attaches an exact key and inserts its readable token. Duplicate names
+receive a distinguishing key suffix. Inline targets are removed when their tokens
+are deleted or an unchanged draft is acknowledged; explicit picker selections
+remain independent. Rendered tests cover duplicate names, exact submission keys,
+deleted tokens, acknowledgment cleanup, emails, missing/foreign recipients and
+room switching. No model task was used to test these UI changes.

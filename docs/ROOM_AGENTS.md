@@ -9,9 +9,8 @@ identity. The installed Omarchy helper verified the reply. See
 ## Current operator setup
 
 The separately supervised `omarchy-buzz-codex.service` is running manually.
-It is not enabled at login. In the configured room, use the plugin's mention
-picker to select **Codex (isolated)**; typing a display name alone does not attach
-the exact public-key mention. Only the configured owner's messages trigger it.
+It is not enabled at login. In the configured room, type `@codex` in the composer and press Tab/Enter or click
+**Codex (isolated)** in the suggestions to attach its exact public-key mention. Only the configured owner's messages trigger it.
 
 The writable task workspace is
 `~/.local/state/omarchy-buzz-room-workspaces/codex`, visible inside as `/workspace`.
