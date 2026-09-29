@@ -131,7 +131,10 @@ and [ACP interactive authentication](docs/upstream/ACP_INTERACTIVE_LOGIN.md).
 They are isolated proposals, not installed dependency patches. The
 [authentication preview setup](docs/AGENT_PREVIEW_SETUP.md) keeps dedicated
 provider profiles and native login outside the shell; it does not enable room
-agents. The [prepared marketplace submission](docs/MARKETPLACE_SUBMISSION.md)
+agents. Guarded Codex/ChatGPT and Claude native-subscription model smoke tests
+have passed; a separate synthetic relay test verifies signed, persisted room
+replies through Buzz's existing endpoint. These are separate checks, not a
+complete production room-agent deployment. The [prepared marketplace submission](docs/MARKETPLACE_SUBMISSION.md)
 describes only the messaging preview. Subscription support
 is a first-class requirement; the [authentication matrix](docs/AGENT_AUTH_COMPATIBILITY.md)
 separates native product support from actual ACP verification. The current

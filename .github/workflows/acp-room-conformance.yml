@@ -143,7 +143,9 @@ jobs:
               report = json.loads(summary.read_text())
               report['publicationContractSelected'] = contract
               report['publicationRouteSelected'] = routes[contract]
-              report['membershipRemovalConformance'] = 'not_tested'
+              report['ordinaryPrivateRoomMembership'] = ('passed' if
+                  report.get('messaging', {}).get('state') == 'passed' else 'not_established')
+              report['membershipRemovalConformance'] = 'concurrent_removal_not_tested'
               summary.write_text(json.dumps(report, sort_keys=True, indent=2) + '\n')
           PY
       - name: Upload only sanitized test evidence

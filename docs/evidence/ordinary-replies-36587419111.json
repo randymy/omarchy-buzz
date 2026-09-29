@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 1,
+  "runId": 36587419111,
+  "runUrl": "https://github.com/randymy/omarchy-buzz/actions/runs/36587419111",
+  "pluginRevision": "5122750f06e4f2c039fceb39f1e585092785c9b3",
+  "conclusion": "success",
+  "downloadedSummarySha256": "1d679efdbfed8a334a0203235956c643d3e5cc53ae1b4bcaaad4c082d24a38ef",
+  "patchSha256": {
+    "ws-resource-limits.patch": "e781a5b984ed3895ddd5ca0f893918f35028753f79b6c0a159d56f88c09bf24c",
+    "acp-permission-mode.patch": "ddf10293ab52bf170fc29e5eb928c0f40b9acf319d8cb9442855f34db5fbc83a",
+    "acp-interactive-login.patch": "eb92515fa12fdfea5d5ae4f36101b91a65172e1f2cd50acf7f3d2e793e11e71e",
+    "acp-key-isolation.patch": "224bcda5bec0dd5f993d4a6b01b9597e999699c62b61ad3b8e18f366fc2a4d6c",
+    "acp-harness-replies.patch": "182662141dfde29bf1e116b66ec3bee09aa17129de914c93614dea0e87179d26",
+    "acp-deny-tool-requests.patch": "acb1a4e0db90bc866c7eb952c818c0d854a4ac598b47b7eb33dd053b554e0d38"
+  },
+  "summary": {
+    "acp": {
+      "replyMode": "harness",
+      "state": "passed",
+      "syntheticOnly": true,
+      "tests": {
+        "passed": 1,
+        "requiredTest": "acp_relay_tests::acp_relay_synthetic_routing"
+      }
+    },
+    "cleanupComplete": true,
+    "durationSeconds": 35.39,
+    "images": {
+      "postgres": "sha256:79bd7c99e923138f136f8009d6bffa66e21e9d4fda5c0c561b00fc9c90cfe537",
+      "redis": "sha256:f84b0c4678011602b9b98c227a4dcd5468bf8b088b02fdd4165cb7758bad8058",
+      "relay": "sha256:76080d1991b3f324dd05ecd8e3a7bea68ddbde0230358718b2977889c05c46b7"
+    },
+    "loopbackOnly": true,
+    "membershipRemovalConformance": "not_tested",
+    "messaging": {
+      "state": "passed",
+      "tests": {
+        "passed": 1,
+        "requiredTest": "real_relay_tests::real_relay_messaging_conformance"
+      }
+    },
+    "objectStoreProbe": false,
+    "productionStateUsed": false,
+    "publicationContractSelected": "ordinary",
+    "publicationRouteSelected": "/events",
+    "relayBinarySha256": "6cb2039e6df0436954e0f27cda311f94c473e5c700b0bfe8da0aa2f96c4f8745",
+    "relayEgressBlocked": false,
+    "runtimeBaseReference": "ubuntu:24.04",
+    "runtimeRecipeSha256": "10bcbef4b99bd5c19accf84953b1433e5e7cfa5c7945ee34f2fb3c2338f47c51",
+    "schemaVersion": 1,
+    "stage": "complete",
+    "state": "passed",
+    "tests": {
+      "passed": 1,
+      "requiredTest": "real_relay_tests::real_relay_messaging_conformance"
+    },
+    "upstreamRevision": "781d39510cf23cfe224e8f521ae06a23377e06de",
+    "validationScope": "messaging-only"
+  },
+  "limits": [
+    "Synthetic agent only; no provider subscription or model task in this test",
+    "Membership-removal and publication-race semantics not tested",
+    "Harness changes are unmerged proposals; ordinary relay endpoint itself is existing upstream",
+    "No installed plugin, production relay or room-agent service changed"
+  ]
+}

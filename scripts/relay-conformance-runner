@@ -146,8 +146,9 @@ class FixtureCommandError(RuntimeError):
         if ports:
             self.safe["loopbackPorts"] = ports
         phases = {"owner_auth", "member_auth", "create_room", "catalog", "roster", "freshness_count",
-                  "prepare_send", "send_ack", "history", "persisted_mention", "remove_member",
-                  "revoked_roster", "local_revoked_write", "relay_revoked_write", "complete"}
+                  "prepare_send", "send_ack", "history", "persisted_mention", "http_member_write",
+                  "remove_member", "revoked_roster", "local_revoked_write", "relay_revoked_write",
+                  "http_revoked_write", "complete"}
         observed = re.findall(rb"(?m)^OMARCHY_CONFORMANCE_STAGE=([a-z_]+)$", diagnostics)
         allowed = [value.decode("ascii") for value in observed if value.decode("ascii") in phases]
         if allowed:

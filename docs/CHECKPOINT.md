@@ -1331,3 +1331,14 @@ WebSocket draft PR using a contribution-only fork and signed-off commits. Do not
 interpret elapsed time as approval. No upstream fork, PR, comment, marketplace
 submission, release tag or room-agent enablement occurred. Resume with the saved
 WS_PR_SUBMISSION and KEYLESS_UPSTREAM_REVIEW plans rather than rediscovering them.
+
+## Resumed: ordinary signed replies passed
+
+Run 36587419111 completed successfully at 5122750. The isolated real-relay
+fixture accepted a synthetic mention, ran the proposed six-patch ACP harness,
+verified its signed reply, queried the persisted event and projected it through
+the plugin's thread reducer. It used existing upstream `POST /events`, with no
+member-bound relay patch. Fixture cleanup completed. Evidence is in
+`evidence/ordinary-replies-36587419111.json`. This closes ordinary-route
+reply-persistence conformance, not removal semantics, real-provider integration
+with a room, or upstream adoption. No production changes were made.

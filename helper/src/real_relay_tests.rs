@@ -2,9 +2,15 @@
 //! The runner bootstraps the public key of the explicitly synthetic owner below.
 //! No production config, keyring, external host, or SQL connection is used here.
 use crate::{catalog, config, history, ledger::Ledger, protocol, recipients, sending::Sender};
+use base64::{engine::general_purpose::STANDARD, Engine};
 use buzz_sdk::builders::{build_add_member, build_create_channel, build_remove_member};
 use buzz_ws_client::{NostrWsConnection, RelayMessage};
-use nostr::{Event, Keys};
+use nostr::{
+    hashes::{sha256, Hash},
+    nips::nip98::{HttpData, HttpMethod},
+    Event, EventBuilder, JsonUtil, Keys, Tag,
+};
+use reqwest::{header::AUTHORIZATION, redirect::Policy, Client, StatusCode};
 use serde_json::json;
 use std::{path::PathBuf, time::Duration};
 use tokio::time::{sleep, timeout};
@@ -36,6 +42,50 @@ async fn publish(conn: &mut NostrWsConnection, event: Event) {
         .expect("publish transport");
     assert_eq!(ok.event_id, id);
     assert!(ok.accepted, "fixture event rejected: {}", ok.message);
+}
+
+// Exercise the ordinary NIP-98 bridge with a fresh authorization for each
+// request. The caller has already restricted relay to a disposable loopback URL.
+async fn post_event(relay: &str, keys: &Keys, event: &Event) -> (StatusCode, serde_json::Value) {
+    let mut url = url::Url::parse(relay).unwrap();
+    url.set_scheme("http").unwrap();
+    url.set_path("/events");
+    let body = event.as_json();
+    let auth = EventBuilder::http_auth(
+        HttpData::new(nostr::Url::parse(url.as_str()).unwrap(), HttpMethod::POST)
+            .payload(sha256::Hash::hash(body.as_bytes())),
+    )
+    .tags([Tag::parse(["nonce", &Uuid::new_v4().to_string()]).unwrap()])
+    .sign_with_keys(keys)
+    .unwrap();
+    let client = Client::builder()
+        .no_proxy()
+        .redirect(Policy::none())
+        .timeout(Duration::from_secs(10))
+        .build()
+        .unwrap();
+    let response = client
+        .post(url)
+        .header(
+            AUTHORIZATION,
+            format!("Nostr {}", STANDARD.encode(auth.as_json())),
+        )
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .body(body)
+        .send()
+        .await
+        .expect("ordinary event POST transport");
+    let status = response.status();
+    let bytes = response
+        .bytes()
+        .await
+        .expect("ordinary event POST response body");
+    assert!(
+        bytes.len() <= 8192,
+        "ordinary event POST response too large"
+    );
+    let result = serde_json::from_slice(&bytes).expect("ordinary event POST JSON response");
+    (status, result)
 }
 
 #[tokio::test]
@@ -256,6 +306,23 @@ async fn real_relay_messaging_conformance() {
         .await
         .expect("persisted mention query deadline");
         client.send_raw(&json!(["CLOSE", sid])).await.unwrap();
+        eprintln!("OMARCHY_CONFORMANCE_STAGE=http_member_write");
+        let active = buzz_sdk::builders::build_message(
+            room,
+            "active synthetic HTTP write",
+            None,
+            &[],
+            false,
+            &[],
+            &[],
+        )
+        .unwrap()
+        .sign_with_keys(&user)
+        .unwrap();
+        let (status_code, receipt) = post_event(&relay, &user, &active).await;
+        assert_eq!(status_code, StatusCode::OK);
+        assert_eq!(receipt["event_id"], active.id.to_hex());
+        assert_eq!(receipt["accepted"], true);
         eprintln!("OMARCHY_CONFORMANCE_STAGE=remove_member");
         publish(
             &mut admin,
@@ -372,6 +439,22 @@ async fn real_relay_messaging_conformance() {
             .unwrap();
         assert_eq!(ok.event_id, id);
         assert!(!ok.accepted, "revoked member write accepted");
+        eprintln!("OMARCHY_CONFORMANCE_STAGE=http_revoked_write");
+        let revoked = buzz_sdk::builders::build_message(
+            room,
+            "revoked synthetic HTTP write",
+            None,
+            &[],
+            false,
+            &[],
+            &[],
+        )
+        .unwrap()
+        .sign_with_keys(&user)
+        .unwrap();
+        let (status_code, rejection) = post_event(&relay, &user, &revoked).await;
+        assert_eq!(status_code, StatusCode::BAD_REQUEST);
+        assert_eq!(rejection["error"], "restricted: not a channel member");
         eprintln!("OMARCHY_CONFORMANCE_STAGE=complete");
         client.disconnect().await.unwrap();
         admin.disconnect().await.unwrap();

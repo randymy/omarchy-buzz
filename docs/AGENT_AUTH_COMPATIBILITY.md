@@ -28,6 +28,26 @@ historical, not the active policy. Recheck provider documentation when updating
 adapter support. Neither documentation statement certifies our untested real
 account flow or removes the need to exclude inherited API credentials.
 
+## Live verification update — September 29
+
+The source assessment below is supplemented by live model smoke tests using
+the pinned guarded adapters. Both tests first rejected API-key authentication,
+created a session in a private empty workspace, and returned the requested
+fixed response for that session. No room agent was enabled.
+
+| Agent | Native login selected | Model response | Room-agent production status |
+| --- | --- | --- | --- |
+| Codex | Separate ChatGPT subscription profile | Passed | Not enabled |
+| Claude Code | Existing native subscription profile | Passed | Not enabled |
+| Goose | Not yet validated here | Not tested | Not enabled |
+
+Evidence: [Codex](evidence/codex-subscription-smoke-2026-09-29.json),
+[Claude](evidence/claude-subscription-smoke-2026-09-29.json), and
+[preview setup](AGENT_PREVIEW_SETUP.md). These tests establish the tested
+subscription route and model response, not an independently verified Pro tier
+or billing receipt. API usage remains a future explicit option, not a fallback
+implemented by this subscription-only preview.
+
 ## Support priorities and current verification
 
 Codex and Claude Code are the first agent targets, with subscription sign-in a

@@ -49,11 +49,20 @@ Run either choice explicitly from the Actions workflow dispatch UI, or with
 and the same command with `publication_contract=ordinary`. Use a branch that
 contains the workflow and patches under review. When the runner generates a
 sanitized `summary.json`, the uploaded copy records `publicationContractSelected`,
-`publicationRouteSelected`, and `membershipRemovalConformance: not_tested`;
+`publicationRouteSelected`, `ordinaryPrivateRoomMembership`, and
+`membershipRemovalConformance: concurrent_removal_not_tested`;
 its stage and pass/fail fields still determine whether conformance actually
 ran. A pass establishes the signed reply and persisted-thread path for that
-selected disposable build. It does not test removal, an open-room publication
-race, or atomic revocation, and it does not select the product contract.
+selected disposable build. The messaging fixture additionally tests ordinary
+private-room HTTP acceptance before removal and rejection after owner-verified
+removal. It does not test an open-room publication race or atomic revocation,
+and it does not select the product contract.
+
+Run [36587419111](https://github.com/randymy/omarchy-buzz/actions/runs/36587419111)
+passed the ordinary variant at `5122750`: real relay messaging, synthetic ACP
+routing, signed reply receipt, persistence and plugin thread projection.
+[Recorded evidence](../evidence/ordinary-replies-36587419111.json) preserves
+the exact build and limits. Removal semantics remain a separate test.
 
 ## Smallest upstream patch series for ordinary room replies
 
