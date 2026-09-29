@@ -876,3 +876,12 @@ adapter tests, but has not been dispatched. Remote CI remains paused. Local
 disk has about 160 MB free (and `/tmp` about 19 MB), so dependency installation
 and full builds remain deferred; no user files were removed. The installed
 plugin/helper, relay and provider accounts are unchanged.
+
+Focused static review found and prompted fixes for a configuration-context
+change (the adapter automatically trusted the workspace after the precheck)
+and client-supplied MCP processes. The revised proposal preserves existing
+workspace trust and rejects client MCP servers/additional directories in its
+initial subscription mode. Its advertised login/session/MCP capabilities now
+match those restrictions. These fixes still need the full adapter and pinned
+native configuration fixtures; static review and policy-module checks are not
+a substitute for those gates.
