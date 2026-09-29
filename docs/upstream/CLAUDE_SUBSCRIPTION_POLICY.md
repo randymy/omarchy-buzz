@@ -131,3 +131,21 @@ No billing receipt is required to satisfy the proposed *route-selection*
 product requirement. An authorized account smoke test is still needed before
 claiming the native binary actually accepts the subscription login and refuses
 an API-key fallback in its current release.
+
+## Validation record
+
+Run [36510783911](https://github.com/randymy/omarchy-buzz/actions/runs/36510783911)
+passed the TypeScript build and 172 tests across four files at `81eb6aa`,
+including 13 policy tests. Fake SDK fixtures cover successful subscription
+session creation, rejection and query cleanup for missing/API/unknown accounts,
+account-change/read-failure rejection before prompt enqueue, refusal of client
+MCP and metadata overrides before query creation, and restricted native auth
+status/logout environments. The preceding run caught a normal-mode logout call
+signature regression; the corrected patch preserves the original call shape.
+
+All tests ran without external networking, real accounts or model turns.
+These fixtures do not establish real Claude Pro authentication or fresh native
+credential selection. Native compiled-adapter conformance, controlled Buzz ACP
+integration, and an authorized account acceptance run remain separate gates.
+The patch is uninstalled and unsubmitted.
+[Sanitized evidence](../evidence/claude-policy-36510783911.json).

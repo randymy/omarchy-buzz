@@ -928,3 +928,26 @@ creation/prompt tests and native status/logout environment checks are underway.
 The SDK account read is cached per query; the policy requires controlled profile
 configuration and does not prove credentials stayed unchanged externally.
 [Evidence](evidence/claude-policy-36510233749.json). Nothing is installed.
+
+## Claude session lifecycle validation passed (2026-09-28)
+
+Run [36510783911](https://github.com/randymy/omarchy-buzz/actions/runs/36510783911)
+passed the build and all 172 tests at `81eb6aa`, including 13 policy tests.
+Fake SDK fixtures now cover accepted session creation, rejection cleanup,
+account change/read failure before prompt enqueue, and client overrides denied
+before query creation. Native auth status/logout use the restricted environment
+in guarded mode; normal logout retains its original call signature after the
+preceding regression test caught the changed argument shape.
+[Evidence](evidence/claude-policy-36510783911.json).
+
+Both subscription guard proposals remain uninstalled and unsubmitted. Remote
+checks are authorized and manual-only. No production relay, identity, provider
+account or installed plugin/helper changed. Next concrete gates:
+
+1. Validate the compiled Claude adapter and native login interface account-free.
+2. Connect the guarded adapters to the isolated Buzz ACP harness using the
+   reviewed permission, identity-isolation and room-membership proposals.
+3. Validate target ARM64 artifacts and controlled profile/service lifecycle.
+4. Perform an authorized real subscription acceptance flow before claiming Pro
+   support or enabling normal room-agent launches. Preserve cached-account and
+   externally mutable configuration limitations in the deployment contract.

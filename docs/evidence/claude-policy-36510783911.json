@@ -1,0 +1,16 @@
+{
+  "runId": 36510783911,
+  "url": "https://github.com/randymy/omarchy-buzz/actions/runs/36510783911",
+  "pluginRevision": "81eb6aab0581d4811c8644ebfddf1553668aa56b",
+  "adapterRevision": "18de37624071b48e95aed9ec5382823e2d72cd39",
+  "conclusion": "success",
+  "typecheckAndBuild": true,
+  "testFiles": 4,
+  "testsPassed": 172,
+  "policyTests": 13,
+  "networkIsolatedTests": true,
+  "realAccountUsed": false,
+  "modelTurnRequested": false,
+  "guardedSessionLifecycleVerifiedWithFakeSDK": true,
+  "actualNativeSubscriptionAcceptanceVerified": false
+}
