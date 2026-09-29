@@ -1143,3 +1143,26 @@ and the native ChatGPT-login status. Only the classified boolean was reported;
 no credential files or raw account output were inspected or saved. This confirms
 the authentication route, not a specific Pro tier or successful model execution.
 Claude sign-in and room-agent acceptance remain unverified.
+
+## Existing native profile selection (September 29)
+
+Preview CLI now supports explicit --profile-mode existing and optional absolute
+--provider-directory alongside the preserved separate-profile default. Clean
+HOME/work/cache and provider environment filtering remain. Credentials are never
+copied; native tools resolve them through CODEX_HOME/CLAUDE_CONFIG_DIR. Added
+bounded auth-status classification without exposing raw account output.
+
+The default existing Codex profile reports ChatGPT login through the verified
+native CLI. Existing Claude native status did not confirm subscription login;
+review identified native settings could invoke credential helpers. Added a
+preflight rejecting hooks/env/provider/helper overrides and unsafe paths before
+future native probes. The existing Claude profile now correctly reports
+existing_settings_review_required; no settings were changed. Do not claim native
+status guarantees zero provider-managed side effects or establishes model billing.
+
+Eighteen launcher tests pass; model/room agents remain disabled. User-facing
+selection is CLI-only for this experimental stage; no QML account selector or
+saved default was added. See AGENT_PREVIEW_SETUP.md and sanitized evidence
+existing-profile-check-2026-09-29.json. Next: review Claude settings compatibility
+without weakening subscription guards, then actual guarded session acceptance
+once upstream room-agent gates are resolved.

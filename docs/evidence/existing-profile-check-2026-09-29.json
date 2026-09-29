@@ -1,0 +1,16 @@
+{
+  "codex": {
+    "profileMode": "existing",
+    "authentication": "chatgpt",
+    "subscriptionTier": "not_verified"
+  },
+  "claude": {
+    "profileMode": "existing",
+    "compatibility": "existing_settings_review_required",
+    "authentication": "not_verified"
+  },
+  "credentialFilesCopied": false,
+  "existingSettingsModified": false,
+  "modelTaskSubmitted": false,
+  "roomAgentsEnabled": false
+}

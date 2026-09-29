@@ -153,6 +153,44 @@ def environment(profile, bundle, ambient):
     return result
 
 
+def selected_provider(agent, mode, requested, profile):
+    if mode == 'separate':
+        if requested is not None:
+            raise Refused('provider_directory_requires_existing_mode')
+        return profile / 'provider'
+    target = requested if requested is not None else Path.home() / ('.codex' if agent == 'codex' else '.claude')
+    if not target.is_absolute() or '..' in target.parts:
+        raise Refused('absolute_provider_directory_required')
+    for part in (target, *target.parents):
+        if part.is_symlink():
+            raise Refused('linked_provider_directory')
+    if not target.is_dir():
+        raise Refused('existing_provider_directory_missing')
+    details = target.stat()
+    if details.st_uid != os.getuid() or details.st_mode & 0o022:
+        raise Refused('existing_provider_directory_unsafe')
+    # Validate paths only; native tools own credential parsing and storage.
+    names = ('config.toml', 'auth.json') if agent == 'codex' else ('settings.json', '.credentials.json')
+    for name in names:
+        item = target / name
+        if item.is_symlink():
+            raise Refused('linked_provider_file')
+        if item.exists() and (not item.is_file() or item.stat().st_uid != os.getuid() or item.stat().st_mode & 0o022):
+            raise Refused('existing_provider_file_unsafe')
+    if agent == 'claude':
+        for settings in (target / 'settings.json', Path('/etc/claude-code/managed-settings.json')):
+            if settings.is_symlink():
+                raise Refused('existing_settings_review_required')
+            if settings.exists():
+                if not settings.is_file() or settings.stat().st_size > 1024 * 1024:
+                    raise Refused('existing_settings_review_required')
+                value = json.loads(settings.read_text())
+                if not isinstance(value, dict) or any(value.get(key) for key in
+                    ('apiKeyHelper', 'env', 'awsAuthRefresh', 'awsCredentialExport', 'modelOverrides', 'hooks')):
+                    raise Refused('existing_settings_review_required')
+    return target
+
+
 def verify_runtime(bundle, report, agent):
     source = bundle / 'adapters' / agent
     for package in report['npmProbePackages'][agent]:
@@ -213,6 +251,21 @@ def login_command(bundle, agent):
     return auth_command(bundle, agent, True)
 
 
+def subscription_status(agent, code, raw):
+    if code != 0:
+        return False
+    if agent == 'codex':
+        return 'Logged in using ChatGPT' in raw.decode('utf-8', errors='replace').splitlines()
+    try:
+        value = json.loads(raw)
+    except (ValueError, UnicodeDecodeError):
+        return False
+    return (isinstance(value, dict) and value.get('loggedIn') is True and
+            value.get('apiProvider') == 'firstParty' and
+            isinstance(value.get('subscriptionType'), str) and bool(value['subscriptionType'].strip()) and
+            not value.get('tokenSource') and value.get('apiKeySource') in (None, 'none'))
+
+
 def checked_methods(raw, agent):
     methods = json.loads(raw)['methods']
     allowed = {'chat-gpt', 'chat-gpt-device-code'} if agent == 'codex' else {'claude-ai-login'}
@@ -228,9 +281,9 @@ def checked_methods(raw, agent):
     return ids
 
 
-def capture_discovery(command, env, cwd):
+def capture_discovery(command, env, cwd, status=False):
     process = subprocess.Popen(command, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
-                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT if status else subprocess.DEVNULL,
                                start_new_session=True)
     selector = selectors.DefaultSelector()
     selector.register(process.stdout, selectors.EVENT_READ)
@@ -248,7 +301,10 @@ def capture_discovery(command, env, cwd):
                 data.extend(chunk)
                 if len(data) > 65536:
                     raise Refused('auth_discovery_output_limit')
-        if process.wait(timeout=max(0.01, deadline-time.monotonic())):
+        code = process.wait(timeout=max(0.01, deadline-time.monotonic()))
+        if status:
+            return code, bytes(data)
+        if code:
             raise Refused('auth_discovery_failed')
         return bytes(data)
     finally:
@@ -263,9 +319,11 @@ def capture_discovery(command, env, cwd):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=['prepare', 'hydrate', 'status', 'auth-methods', 'login'])
+    parser.add_argument('action', choices=['prepare', 'hydrate', 'status', 'auth-status', 'auth-methods', 'login'])
     parser.add_argument('--bundle', type=Path, required=True)
     parser.add_argument('--agent', choices=tuple(GUARDS), required=True)
+    parser.add_argument('--profile-mode', choices=['separate', 'existing'], default='separate')
+    parser.add_argument('--provider-directory', type=Path, help='Explicit existing native profile; no credentials are copied')
     parser.add_argument('--manifest-sha256', required=True,
                         help='Manifest digest from the independently verified workflow artifact')
     args = parser.parse_args()
@@ -278,6 +336,7 @@ def main():
             raise Refused('absolute_bundle_path_required')
         report = verify_bundle(args.bundle, args.manifest_sha256)
         profile = profile_for(args.agent, args.bundle, report)
+        provider = selected_provider(args.agent, args.profile_mode, args.provider_directory, profile)
         if args.action == 'hydrate':
             hydrate(args.bundle, report, args.agent, profile)
         if args.action in ('status', 'hydrate'):
@@ -286,18 +345,31 @@ def main():
                 ready = True
             except Refused:
                 ready = False
-            print(json.dumps({'agent': args.agent, 'runtimeReady': ready,
+            print(json.dumps({'agent': args.agent, 'profileMode': args.profile_mode, 'runtimeReady': ready,
                               'authentication': 'not_checked', 'roomAgentsEnabled': False}))
             return 0 if ready else 1
         if args.action == 'prepare':
-            print(json.dumps({'agent': args.agent, 'profilePrepared': True,
+            print(json.dumps({'agent': args.agent, 'profileMode': args.profile_mode, 'profilePrepared': True,
                               'authentication': 'not_checked', 'roomAgentsEnabled': False}))
             return 0
         verify_runtime(args.bundle, report, args.agent)
         if args.action == 'login' and not all(os.isatty(fd) for fd in (0, 1, 2)):
             raise Refused('login_requires_local_terminal')
         env = environment(profile, args.bundle, os.environ)
-        env['CODEX_HOME' if args.agent == 'codex' else 'CLAUDE_CONFIG_DIR'] = str(profile / 'provider')
+        env['CODEX_HOME' if args.agent == 'codex' else 'CLAUDE_CONFIG_DIR'] = str(provider)
+        if args.action == 'auth-status':
+            if args.agent == 'codex':
+                command = login_command(args.bundle, 'codex') + ['status']
+            else:
+                command = [str(member(args.bundle / 'adapters/claude',
+                           'node_modules/@anthropic-ai/claude-agent-sdk-linux-arm64/claude')),
+                           'auth', 'status', '--json']
+            code, raw = capture_discovery(command, env, profile / 'work', status=True)
+            confirmed = subscription_status(args.agent, code, raw)
+            print(json.dumps({'agent': args.agent, 'profileMode': args.profile_mode,
+                              'authentication': ('chatgpt' if args.agent == 'codex' else 'claude_subscription') if confirmed else 'not_verified',
+                              'subscriptionTier': 'not_verified', 'roomAgentsEnabled': False}))
+            return 0 if confirmed else 1
         if args.action == 'login':
             # Native upstream interactive output goes directly to the user, never QML/logs.
             os.chdir(profile / 'work')
@@ -305,7 +377,7 @@ def main():
             os.execve(command[0], command, env)
         raw = capture_discovery(auth_command(args.bundle, args.agent), env, profile / 'work')
         methods = checked_methods(raw, args.agent)
-        print(json.dumps({'agent': args.agent, 'methods': methods,
+        print(json.dumps({'agent': args.agent, 'profileMode': args.profile_mode, 'methods': methods,
                           'authentication': 'not_checked', 'roomAgentsEnabled': False}))
         return 0
     except (Refused, OSError, ValueError, KeyError, TypeError, AttributeError, subprocess.TimeoutExpired) as error:

@@ -41,6 +41,43 @@ def fixture_bundle(root):
 
 
 class AgentPreview(unittest.TestCase):
+    def test_existing_provider_is_referenced_without_copy_or_creation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            existing = root / '.codex'
+            existing.mkdir(mode=0o700)
+            with patch.object(module.Path, 'home', return_value=root):
+                self.assertEqual(module.selected_provider('codex', 'existing', None, root/'private'), existing)
+                self.assertFalse((root/'private').exists())
+                link = root/'linked'
+                link.symlink_to(existing)
+                with self.assertRaisesRegex(module.Refused, 'linked_provider_directory'):
+                    module.selected_provider('codex', 'existing', link, root/'private')
+                (existing/'auth.json').symlink_to(root/'outside')
+                with self.assertRaisesRegex(module.Refused, 'linked_provider_file'):
+                    module.selected_provider('codex', 'existing', existing, root/'private')
+                with self.assertRaisesRegex(module.Refused, 'provider_directory_requires_existing_mode'):
+                    module.selected_provider('codex', 'separate', existing, root/'private')
+
+    def test_claude_existing_settings_helpers_require_review(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            existing = root/'claude'
+            existing.mkdir(mode=0o700)
+            (existing/'settings.json').write_text(json.dumps({'apiKeyHelper':'never execute'}))
+            with self.assertRaisesRegex(module.Refused, 'existing_settings_review_required'):
+                module.selected_provider('claude', 'existing', existing, root/'private')
+
+    def test_status_classifies_only_subscription_evidence(self):
+        self.assertTrue(module.subscription_status('codex', 0, b'Warning: fixture\nLogged in using ChatGPT\n'))
+        self.assertFalse(module.subscription_status('codex', 1, b'Logged in using ChatGPT'))
+        self.assertFalse(module.subscription_status('codex', 0, b'Logged in using an API key'))
+        account = {'loggedIn':True,'apiProvider':'firstParty','subscriptionType':'pro','apiKeySource':'none'}
+        self.assertTrue(module.subscription_status('claude', 0, json.dumps(account).encode()))
+        for change in ({'apiKeySource':'environment'},{'tokenSource':'environment'},{'subscriptionType':''},{'loggedIn':False},{'apiProvider':'bedrock'}):
+            self.assertFalse(module.subscription_status('claude', 0, json.dumps(account | change).encode()))
+        self.assertFalse(module.subscription_status('claude', 0, b'not json'))
+
     def test_low_disk_refuses_before_npm_or_profile_mutation(self):
         from types import SimpleNamespace
         with patch.object(module.shutil, 'disk_usage', return_value=SimpleNamespace(free=300*1024**2)), patch.object(module.subprocess, 'run') as run, patch.object(module.tempfile, 'TemporaryDirectory') as temporary:

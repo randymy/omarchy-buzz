@@ -54,6 +54,40 @@ project settings are not imported. The launch environment is allowlisted;
 provider API keys, proxy overrides, Node options and Buzz credentials are not
 forwarded. Profile locations, not tokens, pass through the Buzz auth subprocess.
 
+## Reuse an existing native login
+
+The preview CLI accepts `--profile-mode existing` for each action. It references
+`~/.codex` or `~/.claude` by default, or an absolute `--provider-directory` for a
+custom native profile. Selection is explicit per invocation, not saved in QML.
+The default remains `--profile-mode separate`, preserving the Buzz profile.
+
+```bash
+scripts/agent-preview auth-status --agent codex --profile-mode existing \
+  --bundle /absolute/bundle --manifest-sha256 VERIFIED_MANIFEST_DIGEST
+```
+
+Use `--agent claude` for Claude. No credential file is copied or parsed by the
+launcher. Native tools own credential retrieval, refresh and sign-in. Provider
+paths and known configuration/credential paths are checked for unexpected links,
+ownership and write permissions. Native status output is bounded and reduced to
+an authentication category; account details and raw output are not exposed.
+Status does not certify a Pro tier, billing or a successful model turn.
+
+Private HOME/work/cache directories and the environment allowlist remain in use;
+only CODEX_HOME/CLAUDE_CONFIG_DIR references the existing profile. Claude state
+stored directly in the original HOME may therefore be unavailable. Existing
+Claude settings with hooks, environment/provider overrides or credential helper
+commands require review before native status/discovery/login; the launcher does
+not execute those configured commands to decide whether they are safe. It never
+rewrites existing settings to make them pass. Managed Claude settings are checked
+as well. If this check fails, retain the separate profile pending review.
+
+Reusing a provider directory shares its settings and native credential lifecycle;
+it is not isolation from the other agent processes using it. The preview still
+has no room-agent launch action. Existing-profile status/discovery is not agent
+execution approval; guarded subscription admission remains necessary for every
+future session/task.
+
 ## User-controlled login
 
 Only after target validation, run `login` with the same arguments from an
