@@ -6,11 +6,19 @@
   },
   "claude": {
     "profileMode": "existing",
-    "compatibility": "existing_settings_review_required",
-    "authentication": "not_verified"
+    "authentication": "claude_subscription",
+    "subscriptionTier": "not_verified",
+    "statusSettingsSources": [],
+    "statusHooksDisabled": true,
+    "discoveryAndLoginWithExistingHooks": "review_required"
   },
   "credentialFilesCopied": false,
   "existingSettingsModified": false,
   "modelTaskSubmitted": false,
-  "roomAgentsEnabled": false
+  "roomAgentsEnabled": false,
+  "nativeStatusFixture": {
+    "successful": true,
+    "fixtureCommandsExecuted": false,
+    "realAccountUsed": false
+  }
 }

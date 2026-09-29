@@ -1166,3 +1166,22 @@ saved default was added. See AGENT_PREVIEW_SETUP.md and sanitized evidence
 existing-profile-check-2026-09-29.json. Next: review Claude settings compatibility
 without weakening subscription guards, then actual guarded session acceptance
 once upstream room-agent gates are resolved.
+
+## Both existing native subscription routes confirmed (September 29)
+
+Claude's compatibility gate was an existing SessionStart hook. No hook command
+or user settings were changed. Pinned native CLI help exposes --setting-sources
+and --settings. Added a settings-free, hooks-disabled auth-status command and
+an account-free fixture containing synthetic SessionStart/apiKeyHelper commands;
+neither executed. Scoped the user-hook exception to auth-status only; managed
+hooks and API/provider/helper overrides remain blocked. Existing-hook discovery
+and login are not thereby enabled.
+
+Native Claude status now reports loggedIn, firstParty, nonempty subscriptionType
+and no API key/token source. Combined with the prior Codex ChatGPT check, both
+existing native profiles support subscription-status reuse without new login or
+credential copying. No raw account output, credential content or tier was saved.
+Nineteen unit tests and the pinned native status fixture pass. These are native
+status reports, not model-turn billing or room-agent acceptance. Remaining work:
+validate existing-profile adapter/session behavior, upstream publication and
+permission gates, then the room-agent demo; no agent services are enabled.

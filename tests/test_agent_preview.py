@@ -68,6 +68,19 @@ class AgentPreview(unittest.TestCase):
             with self.assertRaisesRegex(module.Refused, 'existing_settings_review_required'):
                 module.selected_provider('claude', 'existing', existing, root/'private')
 
+    def test_existing_claude_hooks_allowed_only_for_settings_free_status(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            existing = root/'claude'
+            existing.mkdir(mode=0o700)
+            (existing/'settings.json').write_text(json.dumps({'hooks':{'SessionStart':[]}}))
+            with self.assertRaisesRegex(module.Refused, 'existing_settings_review_required'):
+                module.selected_provider('claude', 'existing', existing, root/'private')
+            self.assertEqual(module.selected_provider('claude', 'existing', existing, root/'private', status_only=True), existing)
+            (existing/'settings.json').write_text(json.dumps({'apiKeyHelper':'do not execute'}))
+            with self.assertRaisesRegex(module.Refused, 'existing_settings_review_required'):
+                module.selected_provider('claude', 'existing', existing, root/'private', status_only=True)
+
     def test_status_classifies_only_subscription_evidence(self):
         self.assertTrue(module.subscription_status('codex', 0, b'Warning: fixture\nLogged in using ChatGPT\n'))
         self.assertFalse(module.subscription_status('codex', 1, b'Logged in using ChatGPT'))

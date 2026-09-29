@@ -153,7 +153,7 @@ def environment(profile, bundle, ambient):
     return result
 
 
-def selected_provider(agent, mode, requested, profile):
+def selected_provider(agent, mode, requested, profile, status_only=False):
     if mode == 'separate':
         if requested is not None:
             raise Refused('provider_directory_requires_existing_mode')
@@ -186,7 +186,9 @@ def selected_provider(agent, mode, requested, profile):
                     raise Refused('existing_settings_review_required')
                 value = json.loads(settings.read_text())
                 if not isinstance(value, dict) or any(value.get(key) for key in
-                    ('apiKeyHelper', 'env', 'awsAuthRefresh', 'awsCredentialExport', 'modelOverrides', 'hooks')):
+                    ('apiKeyHelper', 'env', 'awsAuthRefresh', 'awsCredentialExport', 'modelOverrides')):
+                    raise Refused('existing_settings_review_required')
+                if value.get('hooks') and (not status_only or settings != target / 'settings.json'):
                     raise Refused('existing_settings_review_required')
     return target
 
@@ -336,7 +338,7 @@ def main():
             raise Refused('absolute_bundle_path_required')
         report = verify_bundle(args.bundle, args.manifest_sha256)
         profile = profile_for(args.agent, args.bundle, report)
-        provider = selected_provider(args.agent, args.profile_mode, args.provider_directory, profile)
+        provider = selected_provider(args.agent, args.profile_mode, args.provider_directory, profile, status_only=args.action == 'auth-status')
         if args.action == 'hydrate':
             hydrate(args.bundle, report, args.agent, profile)
         if args.action in ('status', 'hydrate'):
@@ -363,6 +365,7 @@ def main():
             else:
                 command = [str(member(args.bundle / 'adapters/claude',
                            'node_modules/@anthropic-ai/claude-agent-sdk-linux-arm64/claude')),
+                           '--setting-sources', '', '--settings', '{"disableAllHooks":true}',
                            'auth', 'status', '--json']
             code, raw = capture_discovery(command, env, profile / 'work', status=True)
             confirmed = subscription_status(args.agent, code, raw)

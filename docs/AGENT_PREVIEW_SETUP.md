@@ -80,7 +80,12 @@ Claude settings with hooks, environment/provider overrides or credential helper
 commands require review before native status/discovery/login; the launcher does
 not execute those configured commands to decide whether they are safe. It never
 rewrites existing settings to make them pass. Managed Claude settings are checked
-as well. If this check fails, retain the separate profile pending review.
+as well. For `auth-status` only, ordinary user hooks are permitted because the verified
+native status command uses `--setting-sources "" --settings '{"disableAllHooks":true}'`.
+An account-free fixture verifies that configured hooks/helper commands do not
+run on that path. Managed hooks and provider/helper overrides still require
+review. Discovery/login with existing hooks remains blocked pending its own
+validation. If a check fails, retain the separate profile pending review.
 
 Reusing a provider directory shares its settings and native credential lifecycle;
 it is not isolation from the other agent processes using it. The preview still
