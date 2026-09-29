@@ -169,6 +169,16 @@ class RunnerTests(unittest.TestCase):
         self.assertNotIn("threadErrorCategory", error.safe)
         self.assertNotIn("secret_fixture_value", json.dumps(error.safe))
 
+    def test_thread_scope_diagnostics_are_numeric_and_boolean_only(self):
+        error = runner.FixtureCommandError(["cargo", "test"], 101,
+            b'OMARCHY_THREAD_SCOPE kind=40003 has_h=1 room_h=0 allowed_kind=1\nsecret_fixture_value')
+        self.assertEqual(error.safe["threadScope"], {"kind": 40003, "hasH": True,
+                                                        "roomH": False, "allowedKind": True})
+        self.assertNotIn("secret_fixture_value", json.dumps(error.safe))
+        error = runner.FixtureCommandError(["cargo", "test"], 101,
+            b'OMARCHY_THREAD_SCOPE kind=999999 has_h=1 room_h=1 allowed_kind=1')
+        self.assertNotIn("threadScope", error.safe)
+
     def test_harness_reply_mode_is_explicit_and_reported(self):
         status, report = self.run_mock(acp=True, harness_replies=True)
         self.assertEqual(status, 0)

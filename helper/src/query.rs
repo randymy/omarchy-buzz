@@ -221,6 +221,25 @@ pub async fn query(
     for event in &events {
         event.verify().map_err(|_| "query_invalid_signature")?;
         if !request.matches(event, keys) {
+            #[cfg(test)]
+            if let QueryRequest::ThreadReplies { room, .. } = request {
+                let kind = event.kind.as_u16();
+                let has_h = event
+                    .tags
+                    .iter()
+                    .any(|tag| tag.as_slice().first().map(String::as_str) == Some("h"));
+                let room_h = event.tags.iter().any(|tag| {
+                    tag.as_slice().first().map(String::as_str) == Some("h")
+                        && tag.as_slice().get(1) == Some(&room.to_string())
+                });
+                eprintln!(
+                    "OMARCHY_THREAD_SCOPE kind={} has_h={} room_h={} allowed_kind={}",
+                    kind,
+                    u8::from(has_h),
+                    u8::from(room_h),
+                    u8::from(matches!(kind, 9 | 40003 | 5 | 9005 | 7 | 39007))
+                );
+            }
             return Err("query_invalid_scope");
         }
     }

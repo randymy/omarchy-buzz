@@ -167,6 +167,12 @@ class FixtureCommandError(RuntimeError):
         thread_match = re.search(rb'signed thread window query: "([a-z_]+)"', diagnostics)
         if thread_match and thread_match[1].decode("ascii") in thread_errors:
             self.safe["threadErrorCategory"] = thread_match[1].decode("ascii")
+        # Test-only transport emits shape booleans for the first rejected thread event.
+        # Never copy event tags, IDs, content or arbitrary diagnostic text.
+        scope_match = re.search(rb"(?m)^OMARCHY_THREAD_SCOPE kind=([0-9]{1,5}) has_h=([01]) room_h=([01]) allowed_kind=([01])$", diagnostics)
+        if scope_match and int(scope_match[1]) <= 65535:
+            self.safe["threadScope"] = {"kind": int(scope_match[1]), "hasH": scope_match[2] == b"1",
+                                        "roomH": scope_match[3] == b"1", "allowedKind": scope_match[4] == b"1"}
         super().__init__(category)
 
 
