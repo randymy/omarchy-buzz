@@ -1,0 +1,75 @@
+name: Manual ARM64 helper preview
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: helper-arm64-preview
+  cancel-in-progress: false
+
+jobs:
+  helper:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 35
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CARGO_PROFILE_RELEASE_DEBUG: '0'
+      CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Verify native architecture and install build prerequisites
+        run: |
+          test "$(uname -m)" = aarch64
+          rustup toolchain install 1.95.0 --profile minimal --component rustfmt
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libssl-dev libdbus-1-dev
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            helper/target
+          key: buzz-helper-arm64-v1-${{ hashFiles('helper/Cargo.lock') }}
+          restore-keys: buzz-helper-arm64-v1-
+      - name: Check formatting and native helper tests
+        run: |
+          cargo +1.95.0 fmt --manifest-path helper/Cargo.toml --check
+          cargo +1.95.0 test --locked --release --manifest-path helper/Cargo.toml
+          cargo +1.95.0 build --locked --release --manifest-path helper/Cargo.toml
+      - name: Check actual helper IPC without credentials
+        run: |
+          python3 tests/helper_smoke.py helper/target/release/omarchy-buzz
+          python3 tests/helper_send_ipc.py helper/target/release/omarchy-buzz
+          python3 tests/helper_activation.py helper/target/release/omarchy-buzz
+      - name: Prepare development artifact with exact provenance
+        run: |
+          python3 - <<'PY'
+          import hashlib,json,os,pathlib,shutil,subprocess,tomllib
+          root=pathlib.Path.cwd()
+          binary=root/'helper/target/release/omarchy-buzz'
+          metadata=json.loads(subprocess.check_output([str(binary),'--version'],text=True))
+          cargo=tomllib.loads((root/'helper/Cargo.toml').read_text())
+          manifest=json.loads((root/'manifest.json').read_text())
+          assert metadata['helperVersion']==cargo['package']['version']==manifest['version']
+          assert metadata['backendRevision']==cargo['dependencies']['buzz-sdk']['rev']
+          destination=root/'dist'
+          destination.mkdir()
+          shutil.copy2(binary,destination/'omarchy-buzz')
+          report={'sourceRevision':os.environ['GITHUB_SHA'],'runId':os.environ['GITHUB_RUN_ID'],
+                  'architecture':'aarch64','developmentPreview':True,
+                  'sha256':hashlib.sha256(binary.read_bytes()).hexdigest(),'metadata':metadata}
+          (destination/'build.json').write_text(json.dumps(report,indent=2)+'\n')
+          shutil.copy2(root/'LICENSE',destination/'LICENSE')
+          PY
+      - name: Upload preview for local validation; no release or install
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: helper-arm64-preview
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7

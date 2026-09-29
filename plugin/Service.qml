@@ -566,6 +566,7 @@ Item {
     var incomingScope = (state.relay || "") + "|" + (state.identity || "")
     if (draftScopeKey && (incomingScope !== draftScopeKey || (instanceId !== "" && frame.generation !== generation))) {
       losePendingDelivery()
+      clearThread()
       drafts = ({})
       recipientDrafts = ({})
       submissionText = ""
@@ -672,6 +673,22 @@ Item {
     if (autoConnect && !sampleMode) retry()
   }
 
+  Timer {
+    interval: 15000
+    running: root.threadState === "loading"
+    onTriggered: {
+      root.threadRows = []
+      root.threadState = "unavailable"
+      root.threadCategory = "thread_timeout"
+      root.pendingThreadRequestId = ""
+    }
+  }
+  Timer {
+    interval: 8000
+    repeat: true
+    running: root.panelOpen && root.threadState === "snapshot" && root.canOpenThread(root.threadRootId)
+    onTriggered: root.refreshThread()
+  }
   Timer {
     id: notificationCooldown
     interval: 10000

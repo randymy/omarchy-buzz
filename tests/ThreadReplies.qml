@@ -37,6 +37,9 @@ ShellRoot {
         accept(snapshot(frame(),"3".repeat(64)))
         if (service.threadRows.length || service.threadState !== "loading") throw new Error("Late foreign thread accepted")
         accept(snapshot(frame(),rootId))
+        var failed=frame(); failed.status.thread={state:"unavailable",roomId:room,rootId:rootId,rows:[],hasMore:null,category:"thread_timeout"}
+        accept(failed)
+        if (service.threadState !== "unavailable" || service.threadRows.length || service.threadRootId !== rootId) throw new Error("Read error did not preserve retry scope")
         var removed=frame(); removed.status.history.rows=[]
         accept(removed)
         if (service.threadRootId || service.threadRows.length) throw new Error("Missing root retained replies")

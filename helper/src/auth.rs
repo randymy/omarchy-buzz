@@ -625,7 +625,17 @@ async fn observe_inner(
             result=thread_jobs.join_next(), if !thread_jobs.is_empty()=> {
                 if matches!(&result,Some(Err(e)) if !e.is_cancelled()) {
                     thread_jobs.abort_all();thread_jobs=tokio::task::JoinSet::new();thread_ticket=thread_ticket.wrapping_add(1);
-                    publish_status(tx,|s|s.thread=Thread::unavailable(None,None,Some("thread_unavailable")));
+                    let scope={
+                        let status=tx.borrow();
+                        match (status.thread.room_id.as_deref(),status.thread.root_id.as_deref()) {
+                            (Some(room),Some(root)) if thread_allowed(&status,selected_history.as_deref(),room,root,fresh,relay_pin.is_some()) => Some((room.to_owned(),root.to_owned())),
+                            _=>None,
+                        }
+                    };
+                    publish_status(tx,|s|s.thread=match scope {
+                        Some((room,root))=>Thread::unavailable(Some(room),Some(root),Some("thread_unavailable")),
+                        None=>Thread::unavailable(None,None,None),
+                    });
                 }
                 if let Some(Ok((ticket,generation,room,root,result)))=result {
                     let status=tx.borrow();
@@ -646,12 +656,12 @@ async fn observe_inner(
                         }
                         publish_status(tx,|s|s.thread=match result {
                             Ok(thread) if thread.room==room && thread.root==root && thread.rows.len()<=8=>Thread {
-                                state:"snapshot".into(),room_id:Some(room),root_id:Some(root),
+                                state:"snapshot".into(),room_id:Some(room.clone()),root_id:Some(root.clone()),
                                 has_more:Some(thread.has_more),category:Some(thread.category.into()),
                                 rows:thread.rows.into_iter().map(|r|crate::protocol::HistoryRow{id:r.id,author:r.author_pubkey,time:r.timestamp,text:r.text,edited:r.edited,truncated:r.truncated,unavailable:r.unavailable}).collect(),
                             },
-                            Ok(_)=>Thread::unavailable(None,None,Some("thread_invalid")),
-                            Err(error)=>Thread::unavailable(None,None,Some(thread_category(error))),
+                            Ok(_)=>Thread::unavailable(Some(room.clone()),Some(root.clone()),Some("thread_invalid")),
+                            Err(error)=>Thread::unavailable(Some(room.clone()),Some(root.clone()),Some(thread_category(error))),
                         });
                     }
                 }
@@ -1118,12 +1128,24 @@ mod thread_policy_tests {
         status.thread = Thread {
             state: "snapshot".into(),
             room_id: Some(room.into()),
-            root_id: Some(root),
+            root_id: Some(root.clone()),
             rows: Vec::new(),
             has_more: Some(false),
             category: Some("thread_completeness_unknown".into()),
         };
         let (tx, rx) = watch::channel(status);
+        publish_status(&tx, |s| {
+            s.thread = Thread::unavailable(
+                Some(room.into()),
+                Some(root.clone()),
+                Some("thread_timeout"),
+            )
+        });
+        assert_eq!(
+            rx.borrow().thread.category.as_deref(),
+            Some("thread_timeout")
+        );
+        assert_eq!(rx.borrow().thread.root_id.as_deref(), Some(root.as_str()));
         publish_status(&tx, |s| s.history.rows.clear());
         assert_eq!(rx.borrow().thread.state, "unavailable");
         assert!(rx.borrow().thread.root_id.is_none());
