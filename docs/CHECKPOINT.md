@@ -1209,3 +1209,28 @@ but Rust compilation and delayed-process acceptance remain unrun. Our verified
 native-login path remains installed. No production relay or room-agent service
 changed. Next gates are real session permission/subscription admission and the
 unmerged relay publication interface; discovery alone does not complete them.
+
+## Codex live session admission passed (September 29)
+
+Added a bounded no-prompt admission probe and three synthetic-peer tests. It
+verifies bundle/runtime, reads effective native config, refuses custom routing
+and configured MCP/hooks/plugins/projects/skills, initializes ACP, requires API
+login rejection, then requests a session in an empty private temporary workspace.
+All ACP client permission requests are cancelled and other client operations
+refused. Payloads, account output and session IDs are not logged. Child process
+groups are terminated after the result; native empty-session metadata may persist.
+
+The dedicated signed-in Codex profile passed on the actual host: routing/integration
+preflight, initialization, API auth rejection and session/new all succeeded.
+Sandboxed attempt rejected admission; normal-access retry passed. No model prompt,
+relay event, native tool action or room-agent service was requested. The native
+process can perform account/config operations during admission; do not call this
+read-only or proof of billing for a model turn. Evidence is saved in
+codex-session-admission-2026-09-29.json. Existing Codex discovery remains verified,
+but its session-level config has not been certified by this separate-profile test.
+
+Claude session/new remains deferred: SDK query spawns native CLI before final
+account admission, and user/managed hooks need session-level validation. Discovery
+hook tests alone are insufficient. The new probe refuses Claude sessions outright
+until that gate is addressed. Three admission fixture tests, 19 launcher tests
+and four native-config tests pass. Upstream relay publication remains unresolved.

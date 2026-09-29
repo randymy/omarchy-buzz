@@ -130,3 +130,21 @@ installed relay does not implement that endpoint. Current upstream Buzz at
 `12670bd0f037c66a682272bb81c46c3f254fad74` was checked on September 28, 2026 and
 still lacks it. Do not enable a legacy publication fallback or deploy a relay
 fork to conceal this dependency. See [ACP readiness](ACP_READINESS.md).
+
+## Session admission evidence
+
+The dedicated Codex profile passed a live no-prompt `session/new` check through
+its guarded adapter on September 29. The native effective configuration first
+passed routing and integration preflight; API-key authentication was rejected.
+The probe denied any client-side permissions/tools and then terminated the
+adapter process group. No prompt or relay operation was sent. Native empty-session
+metadata may remain in the selected provider profile; this test is not read-only.
+It does not verify model billing, agent tool execution or relay publication.
+
+`tests/session_admission_probe.py` records only booleans/categories, bounds all
+output, and never exposes session IDs or provider output. Its dedicated-profile
+default avoids the normal user's plugins/hooks. It refuses Claude session tests
+until native session-start hook behavior is validated and rejects configured
+Codex MCP/hooks/plugins/projects/skills. Do not disable these checks merely to
+make an existing profile pass. Existing-profile discovery and auth-status remain
+available independently.

@@ -1,0 +1,18 @@
+{
+  "date": "2026-09-29",
+  "bundleWorkflowRun": 36518401395,
+  "agent": "codex",
+  "profileMode": "separate",
+  "effectiveConfigPreflight": "passed",
+  "initialized": true,
+  "apiAuthenticationRejected": true,
+  "sessionCreated": true,
+  "modelPromptSent": false,
+  "roomAgentEnabled": false,
+  "clientRequestsDenied": 0,
+  "successful": true,
+  "hostAccessRequired": true,
+  "subscriptionTier": "not_verified",
+  "billingForModelTurn": "not_tested",
+  "claudeSessionAdmission": "deferred_hook_validation"
+}
