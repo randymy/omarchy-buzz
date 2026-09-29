@@ -7,6 +7,27 @@ is an explicit per-agent choice between subscription sign-in and usage-based
 API billing, with no automatic change of payer. See
 [ACP_READINESS.md](ACP_READINESS.md#required-subscription-and-usage-based-authentication-workflow).
 
+### Subscription contract clarification (2026-09-28)
+
+The product contract is explicit subscription authentication and no automatic
+API-key, Console or alternate-provider fallback. It is not a guarantee of
+unlimited usage or a billing receipt for every turn. Provider plan limits and
+account-level extra-usage choices still apply. Verification should establish
+the controlled launch configuration, selected authentication and actual adapter
+routing behavior; it must not invent a provider billing-attestation API.
+
+Current [OpenAI authentication documentation](https://learn.chatgpt.com/docs/auth)
+distinguishes ChatGPT subscription access from API-key access and documents
+`forced_login_method="chatgpt"`. This is a useful native restriction, not proof
+that an independently configured custom provider route is disabled.
+
+Anthropic's [Agent SDK subscription notice](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan)
+currently says SDK and third-party usage still use subscription limits; its
+June 15 change was paused. The older proposal retained lower on that page is
+historical, not the active policy. Recheck provider documentation when updating
+adapter support. Neither documentation statement certifies our untested real
+account flow or removes the need to exclude inherited API credentials.
+
 ## Support priorities and current verification
 
 Codex and Claude Code are the first agent targets, with subscription sign-in a
