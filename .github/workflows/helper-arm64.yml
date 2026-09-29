@@ -28,7 +28,8 @@ jobs:
           rustup toolchain install 1.95.0 --profile minimal --component rustfmt
           sudo apt-get update
           sudo apt-get install -y pkg-config libssl-dev libdbus-1-dev
-      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
+      - id: cache
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25
         with:
           path: |
             ~/.cargo/registry
@@ -37,6 +38,7 @@ jobs:
           key: buzz-helper-arm64-v1-${{ hashFiles('helper/Cargo.lock') }}
           restore-keys: buzz-helper-arm64-v1-
       - name: Check formatting and native helper tests
+        id: build
         run: |
           cargo +1.95.0 fmt --manifest-path helper/Cargo.toml --check
           cargo +1.95.0 test --locked --release --manifest-path helper/Cargo.toml
@@ -73,3 +75,12 @@ jobs:
           path: dist/
           if-no-files-found: error
           retention-days: 7
+      - name: Preserve native compilation for fixture corrections
+        if: always() && !cancelled() && steps.build.outcome == 'success' && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            helper/target
+          key: ${{ steps.cache.outputs.cache-primary-key }}
