@@ -1,8 +1,8 @@
 diff --git c/readme-dev.md i/readme-dev.md
-index 58dd0e8..8df4c3c 100644
+index 58dd0e8..a5987ff 100644
 --- c/readme-dev.md
 +++ i/readme-dev.md
-@@ -13,6 +13,20 @@ Set `CODEX_PATH` to run a different Codex binary; versions other than the one sp
+@@ -13,6 +13,23 @@ Set `CODEX_PATH` to run a different Codex binary; versions other than the one sp
  - `NO_BROWSER` - hide browser-based ChatGPT auth when set.
  - `APP_SERVER_LOGS` - directory for adapter logs.
  
@@ -14,7 +14,10 @@ index 58dd0e8..8df4c3c 100644
 +provider mutations. Native Codex starts with `forced_login_method=chatgpt`; fresh
 +sessions require native `account/read` to report a ChatGPT account and use the
 +built-in `openai` provider. Resume, load, fork, steering, and goal controls are
-+unavailable in this first version. Adapter file logging is disabled in this mode.
++unavailable in this first version, as are client-supplied MCP servers and
++additional directories. These unavailable methods are not advertised. The
++normal per-project trust overrides are not injected. Adapter file logging is
++disabled in this mode.
 +An unauthenticated user must complete a separate ChatGPT login before creating
 +a session. This check does not attest a paid plan, effective billing, or an
 +immutable network route. The launcher must keep the profile and project config
@@ -23,13 +26,13 @@ index 58dd0e8..8df4c3c 100644
  ### Quick start
  
  #### Develop on Windows?
-@@ -102,4 +116,3 @@ the adapter does not rely on notices being displayed.
+@@ -102,4 +119,3 @@ the adapter does not rely on notices being displayed.
  Command replies, review results, and terminal/retrying errors retain their existing response or
  failure channels. Clients advertising session compaction support continue to receive the dedicated
  compaction lifecycle instead of the legacy completion advisory.
 -
 diff --git c/src/CodexAcpClient.ts i/src/CodexAcpClient.ts
-index 3b3aca4..8428044 100644
+index 3b3aca4..8be3492 100644
 --- c/src/CodexAcpClient.ts
 +++ i/src/CodexAcpClient.ts
 @@ -136,7 +136,8 @@ export class CodexAcpClient {
@@ -93,7 +96,18 @@ index 3b3aca4..8428044 100644
          const additionalDirectories = readAdditionalDirectories(request.cwd, request.additionalDirectories, request._meta);
          await this.refreshSkills(request.cwd, additionalDirectories);
  
-@@ -705,6 +715,9 @@ export class CodexAcpClient {
+@@ -698,6 +708,10 @@ export class CodexAcpClient {
+ 
+     async newSession(request: acp.NewSessionRequest): Promise<SessionMetadata> {
+         const additionalDirectories = readAdditionalDirectories(request.cwd, request.additionalDirectories, request._meta);
++        if (this.requireChatgptSubscription && (request.mcpServers.length !== 0
++            || additionalDirectories.length !== 0)) {
++            throw new Error("subscription_policy_denied");
++        }
+         await this.refreshSkills(request.cwd, additionalDirectories);
+ 
+         const response = await this.codexClient.threadStart({
+@@ -705,6 +719,9 @@ export class CodexAcpClient {
              modelProvider: this.getModelProvider(),
              cwd: request.cwd,
          });
@@ -103,7 +117,19 @@ index 3b3aca4..8428044 100644
  
          const codexModels = await this.fetchAvailableModels();
          if (codexModels.length === 0) {
-@@ -901,7 +914,7 @@ export class CodexAcpClient {
+@@ -857,9 +874,9 @@ export class CodexAcpClient {
+         });
+         const mergedConfig = {
+             ...forceGitRootTurnDiffPaths(mergeGatewayConfig(this.config, this.gatewayConfig)),
+-            projects: Object.fromEntries(sessionRoots.map(root => [root, {
++            ...(!this.requireChatgptSubscription && {projects: Object.fromEntries(sessionRoots.map(root => [root, {
+                 trust_level: "trusted",
+-            }])),
++            }]))}),
+         };
+         const configWithWorkspaceRoots = mergeSandboxWorkspaceWriteRoots(mergedConfig, additionalDirectories);
+         if (mcpServers.length === 0) {
+@@ -901,7 +918,7 @@ export class CodexAcpClient {
      }
  
      getModelProvider(): string | null {
@@ -113,7 +139,7 @@ index 3b3aca4..8428044 100644
  
      private async getResumeModelProvider(): Promise<string> {
 diff --git c/src/CodexAcpServer.ts i/src/CodexAcpServer.ts
-index 3b79ee4..55047aa 100644
+index 3b79ee4..96b543f 100644
 --- c/src/CodexAcpServer.ts
 +++ i/src/CodexAcpServer.ts
 @@ -54,6 +54,7 @@ import {CodexCommands, GOAL_CONTINUATION_PROMPT} from "./CodexCommands";
@@ -132,7 +158,103 @@ index 3b79ee4..55047aa 100644
      stderr: string;
      stderrProcess?: CodexConnection["process"];
  }
-@@ -1205,13 +1207,16 @@ export class CodexAcpServer {
+@@ -309,6 +311,7 @@ export class CodexAcpServer {
+     private readonly goalControlGenerations: Map<string, number>;
+     private readonly permissionLifecycleContexts: WeakMap<SessionState, PermissionLifecycleContext>;
+     private readonly codexProcessState: CodexProcessState | null;
++    private readonly requireChatgptSubscription: boolean;
+     private codexProcessGeneration = 0;
+     private initializeRequest: acp.InitializeRequest | null = null;
+     private providerUpdate: Promise<void> | null = null;
+@@ -320,6 +323,7 @@ export class CodexAcpServer {
+         getExitCode?: () => number | null,
+         getRecentStderr?: () => string,
+         codexProcessState?: CodexProcessState,
++        requireChatgptSubscription = false,
+     ) {
+         this.sessions = new Map();
+         this.pendingMcpStartupSessions = new Map();
+@@ -336,6 +340,7 @@ export class CodexAcpServer {
+         this.codexAcpClient = codexAcpClient;
+         this.defaultAuthRequest = defaultAuthRequest ?? null;
+         this.codexProcessState = codexProcessState ?? null;
++        this.requireChatgptSubscription = requireChatgptSubscription;
+         this.captureStderr();
+         this.getExitCode = getExitCode ?? (() => this.codexProcessState?.connection.process.exitCode ?? null);
+         this.getRecentStderr = getRecentStderr ?? (() => this.codexProcessState?.stderr ?? "");
+@@ -375,15 +380,10 @@ export class CodexAcpServer {
+             controlMethod: GOAL_CONTROL_METHOD,
+             actions: [...GOAL_CONTROL_ACTIONS],
+         };
+-        const sessionCapabilities: SubagentAwareSessionCapabilities = {
+-            resume: { },
+-            list: { },
+-            close: { },
+-            delete: { },
+-            fork: { },
+-            additionalDirectories: {},
+-            subagents: {},
+-        };
++        const sessionCapabilities: SubagentAwareSessionCapabilities = this.requireChatgptSubscription
++            ? {list: {}, close: {}, delete: {}}
++            : {resume: {}, list: {}, close: {}, delete: {}, fork: {},
++                additionalDirectories: {}, subagents: {}};
+         return {
+             protocolVersion: acp.PROTOCOL_VERSION,
+             agentInfo: {
+@@ -395,8 +395,7 @@ export class CodexAcpServer {
+                 auth: {
+                     logout: {},
+                 },
+-                providers: {},
+-                loadSession: true,
++                ...(!this.requireChatgptSubscription && {providers: {}, loadSession: true}),
+                 promptCapabilities: {
+                     embeddedContext: true,
+                     image: true
+@@ -404,7 +403,7 @@ export class CodexAcpServer {
+                 sessionCapabilities,
+                 mcpCapabilities: {
+                     acp: false,
+-                    http: true,
++                    http: !this.requireChatgptSubscription,
+                     sse: false
+                 },
+                 _meta: {
+@@ -413,23 +412,25 @@ export class CodexAcpServer {
+                     [AUTH_STATUS_META_KEY]: authStatusCapability(),
+                 },
+             },
+-            authMethods: getCodexAuthMethods(_params.clientCapabilities),
++            authMethods: getCodexAuthMethods(_params.clientCapabilities)
++                .filter(method => !this.requireChatgptSubscription
++                    || method.id === "chat-gpt" || method.id === "chat-gpt-device-code"),
+             _meta: {
+-                steering: {
+-                    supported: true,
+-                },
++                ...(!this.requireChatgptSubscription && {steering: {supported: true}}),
+                 // Only AIR gets the AIR extension, see `docs/air-extensions.md`.
+                 ...(this.capabilities.airClient ? {
+                     [JETBRAINS_META_KEY]: {
+                         [AIR_META_KEY]: {
+                             [AIR_EXTENSION_VERSION_KEY]: AIR_EXTENSION_VERSION,
+-                            [AIR_GOAL_KEY]: goalCapability,
++                            ...(!this.requireChatgptSubscription && {[AIR_GOAL_KEY]: goalCapability}),
+                             [AIR_EXTENSION_CAPABILITIES_KEY]: [
+                                 AIR_SESSION_FAILURE_KEY,
+                                 AIR_DIFF_PATCH_KEY,
+                                 AIR_AGENT_FILE_CHANGE_REPORT_KEY,
+-                                AIR_NATIVE_SUBAGENT_SESSIONS_KEY,
+-                                AIR_ASYNC_TASKS_KEY,
++                                ...(!this.requireChatgptSubscription ? [
++                                    AIR_NATIVE_SUBAGENT_SESSIONS_KEY,
++                                    AIR_ASYNC_TASKS_KEY,
++                                ] : []),
+                                 AIR_RECOMMENDED_CONFIG_VALUE_KEY,
+                                 AIR_RAW_INPUT_RENDERING_KEY,
+                                 AIR_PLAN_CONTENT_DELTA_KEY,
+@@ -1205,13 +1206,16 @@ export class CodexAcpServer {
          clearTimeout(forceKill);
  
          state.stderr = "";
@@ -297,14 +419,16 @@ index 0000000..4125030
 +}
 diff --git c/src/__tests__/SubscriptionPolicy.test.ts i/src/__tests__/SubscriptionPolicy.test.ts
 new file mode 100644
-index 0000000..e87c537
+index 0000000..f1ff3e4
 --- /dev/null
 +++ i/src/__tests__/SubscriptionPolicy.test.ts
-@@ -0,0 +1,69 @@
+@@ -0,0 +1,93 @@
 +import {describe, expect, it, vi} from "vitest";
 +import type {CodexAppServerClient} from "../CodexAppServerClient";
 +import {CodexAcpClient} from "../CodexAcpClient";
++import {CodexAcpServer} from "../CodexAcpServer";
 +import {createCodexMockTestFixture} from "./acp-test-utils";
++import {PROTOCOL_VERSION} from "@agentclientprotocol/sdk";
 +import {SubscriptionPolicy, subscriptionChildEnv, validSubscriptionConfig,
 +    validateSubscriptionStartup} from "../SubscriptionPolicy";
 +
@@ -368,10 +492,32 @@ index 0000000..e87c537
 +        await expect(client.resumeSession({} as never)).rejects.toThrow("subscription_policy_denied");
 +        await expect(client.forkSession({} as never)).rejects.toThrow("subscription_policy_denied");
 +        await expect(client.loadSession({} as never)).rejects.toThrow("subscription_policy_denied");
++        await expect(client.newSession({cwd: "/workspace", mcpServers: [{}] as never}))
++            .rejects.toThrow("subscription_policy_denied");
++        await expect(client.newSession({cwd: "/workspace", mcpServers: [],
++            additionalDirectories: ["/other"]} as never))
++            .rejects.toThrow("subscription_policy_denied");
++    });
++
++    it("advertises only supported auth and fresh-session capabilities", async () => {
++        const fixture = createCodexMockTestFixture();
++        const client = new CodexAcpClient(fixture.getCodexAppServerClient(), {}, undefined, true);
++        const server = new CodexAcpServer(fixture.getAcpConnection(), client,
++            undefined, () => null, undefined, undefined, true);
++        const response = await server.initialize({protocolVersion: PROTOCOL_VERSION});
++        expect(response.authMethods?.every(method => method.id === "chat-gpt"
++            || method.id === "chat-gpt-device-code")).toBe(true);
++        expect(response.agentCapabilities?.providers).toBeUndefined();
++        expect(response.agentCapabilities?.loadSession).toBeUndefined();
++        expect(response.agentCapabilities?.sessionCapabilities?.resume).toBeUndefined();
++        expect(response.agentCapabilities?.sessionCapabilities?.fork).toBeUndefined();
++        expect(response.agentCapabilities?.sessionCapabilities?.additionalDirectories).toBeUndefined();
++        expect(response.agentCapabilities?.mcpCapabilities?.http).toBe(false);
++        expect(response._meta?.["steering"]).toBeUndefined();
 +    });
 +});
 diff --git c/src/index.ts i/src/index.ts
-index 1975930..6b8ff56 100644
+index 1975930..9516395 100644
 --- c/src/index.ts
 +++ i/src/index.ts
 @@ -17,6 +17,14 @@ import {
@@ -437,7 +583,15 @@ index 1975930..6b8ff56 100644
          return new CodexAcpServer(
              connection,
              codexClient,
-@@ -135,6 +152,7 @@ function startAcpServer() {
+@@ -125,6 +142,7 @@ function startAcpServer() {
+             undefined,
+             undefined,
+             codexProcessState,
++            requireChatgptSubscription,
+         );
+     }
+ 
+@@ -135,6 +153,7 @@ function startAcpServer() {
          }
          return codexAcpServer;
      };
@@ -445,7 +599,7 @@ index 1975930..6b8ff56 100644
  
      acp.agent({name: packageJson.name})
          .onConnect((connection) => {
-@@ -147,27 +165,43 @@ function startAcpServer() {
+@@ -147,27 +166,44 @@ function startAcpServer() {
              });
          })
          .onRequest(acp.methods.agent.initialize, (ctx) => getAgent().initialize(ctx.params))
@@ -456,6 +610,7 @@ index 1975930..6b8ff56 100644
 +            if (requireChatgptSubscription) {
 +                // The server's generic getOrCreateSession treats a sessionId field as resume.
 +                if ("sessionId" in ctx.params) subscriptionDenied();
++                if (ctx.params.mcpServers.length !== 0) subscriptionDenied();
 +                await guarded().checkWorkspace(ctx.params.cwd);
 +            }
 +            const result = await getAgent().newSession(ctx.params);
