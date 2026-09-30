@@ -1589,3 +1589,42 @@ The rendered thread regression verifies repeated snapshot identity, quiet loadin
 new-message delegate retention, unchanged scroll position and open-thread retention.
 Mention, thread-send and author-name checks passed. No helper or relay change and
 no production message/model turn was needed.
+
+## Periodic room check no longer blanks the panel — September 29 night
+
+The operator still saw the current page flicker after `388d3d6`. A passive
+`ui-bridge` subscriber recorded the installed 0.0.8 helper for 75 seconds:
+every ~31 seconds `auth.rs` starts its joined-room check and publishes
+`catalog=loading` with no rooms, `history=unavailable` and
+`recipients=unavailable`, restoring them over the next ~2 seconds. The panel
+mirrored each step: room list, messages, names, the open thread and the
+composer disappeared, and the composer stayed in a stale reply mode. `388d3d6`
+covered the 5-second history and 8-second thread polls, not this path.
+
+`d0e5299` keeps the displayed snapshots within one authenticated helper scope
+until the helper's views are re-established in order: catalog, history,
+roster, open thread. Removal from the room list, failed checks, read errors,
+disconnects and scope changes still clear. An unfinished check ends after 20
+seconds. A submission made during the check is held and written once after
+the helper can validate it; if the check fails it becomes a known failure with
+the draft retained, never an uncertain send. Busy refreshes of an already
+displayed history or roster no longer hide it.
+
+Three earlier expectations changed deliberately: the default preview, activity
+and room-activity fixtures asserted that `catalog=loading` empties the
+conversation, roster and bar count. They now assert retention.
+
+New checks: `scripts/preview --catalog-refresh` (rendered, replays the recorded
+frame sequence plus removal, failure, read error, refused thread and
+disconnect) and `scripts/preview --catalog-refresh-send` (Process fixture;
+held submission order). All twelve preview modes pass.
+
+Installed at `d0e5299` with a shell restart. Twelve captures of the real window
+across two live room checks were pixel-identical. That live check ran in an
+empty room, so it proves stable rooms, header and composer; message, scroll and
+open-thread retention are proven by the synthetic rendered test only. No
+message was sent and no helper, relay or agent change was made.
+
+This is a UI-side accommodation. The helper should stop tearing down its views
+for a background room check; until then sends and thread reads are unavailable
+in the helper for the ~2 seconds of each check.

@@ -30,7 +30,7 @@ conflict explicitly rather than assuming an old milestone is current.
 | Component | State at handoff |
 | --- | --- |
 | Repository | `https://github.com/randymy/omarchy-buzz`, branch `main`; local `~/Projects/omarchy-buzz` |
-| Latest implementation commit | `388d3d6adc40b8a6ab04d6803445cddc432b217c` — quiet background updates; subsequent documentation commits may follow |
+| Latest implementation commit | `d0e52994f30538eb0626fa11aaa4eaba25fef8d1` — conversation kept during the periodic room check; local only, not pushed at handoff; documentation commits may follow |
 | Installed UI | `~/.config/omarchy/plugins/community.buzz`, verified at the same implementation commit |
 | Plugin/helper version | `0.0.8`; this preview version covers multiple development commits, so verify commits and hashes too |
 | Helper binary | `~/.local/bin/omarchy-buzz`; SHA256 `f6b8f6d6c870828152b26110984456a4023f6e53530719a1cf31cabedf30eda7` |
@@ -83,7 +83,12 @@ Artifact downloads expire; the local verified helper artifact is under
    snapshots visible during loading, and updates message delegates by event ID.
    The rendered regression checks delegate and scroll retention on new messages.
 
-The quiet-refresh fix is installed and has synthetic rendered test coverage.
+4. The helper's joined-room check blanked the whole panel for about two seconds
+   every ~31 seconds. Commit `d0e5299` keeps same-scope snapshots until the
+   helper's views are re-established and holds submissions made meanwhile. See
+   the checkpoint's periodic room check entry before changing `resyncStage`.
+
+Both refresh fixes are installed and have synthetic rendered test coverage.
 There is no subsequent user confirmation of the improved experience yet.
 Do not claim full live desktop acceptance solely from helper/socket tests.
 
@@ -150,6 +155,8 @@ Focused UI checks, already passed for the recent changes:
 
 ```sh
 scripts/preview --thread-replies
+scripts/preview --catalog-refresh
+scripts/preview --catalog-refresh-send
 scripts/preview --mentions
 scripts/preview --thread-send
 scripts/preview --author-names
