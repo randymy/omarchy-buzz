@@ -1560,3 +1560,15 @@ verified history auxiliary set, applies reaction deletions, and suppresses uncer
 authority. It does not introduce a separate reaction polling CLI, raw events in QML,
 or a new Buzz protocol. Thread rows currently omit reaction metadata. Empty counts
 are not a completeness claim; absent metadata remains compatible with older helpers.
+
+ARM64 run 36646298882 passed native tests, IPC and private keyring checks.
+The downloaded package passed its digest/version checks and isolated socket
+checks on this machine. It was installed with backup
+`~/.local/share/omarchy-buzz/backups/20260930T003325.465724Z`.
+The installed binary SHA256 is
+`f6b8f6d6c870828152b26110984456a4023f6e53530719a1cf31cabedf30eda7`.
+A fresh authenticated helper read returned the user's exact reply and observed
+zero remaining 👀/💬 reactions for the completed turn. The shell was restarted;
+the normal window was visually checked authenticated. The expanded last-message
+viewport and snapshot reaction rendering were validated in a rendered synthetic
+fixture; no new production turn was generated for these tests.

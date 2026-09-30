@@ -491,6 +491,7 @@ FocusScope {
                   visible: root.service && root.service.threadRootId === messageRow.modelData.id
                   width: parent.width
                   implicitHeight: threadBody.height + Style.space(16)
+                  height: visible ? implicitHeight : 0
                   color: Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.07)
                   border.color: Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.25)
                   radius: Style.cornerRadius
