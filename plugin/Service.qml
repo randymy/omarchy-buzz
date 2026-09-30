@@ -210,6 +210,111 @@ Item {
   readonly property string deliveryBaseLabel: deliveryCategory === "send_request_reused" ? "Submission ID cannot be reused. Start a new submission explicitly." : deliveryCategory === "send_ledger_unavailable" ? "Local send ledger unavailable. Check state directory permissions and free space, then retry." : ({idle:"",sending:"Sending…",acknowledged:"Acknowledged by relay",rejected:"Message rejected. Start a new submission explicitly to retry; this receipt will not send again.",failed:"Send failed · draft retained",unknown:"Outcome unknown. Sending again may create a duplicate. Discard the uncertain draft explicitly to continue."})[deliveryState] || ""
   readonly property string deliveryLabel: deliveryScopeMismatch && deliveryBaseLabel ? submissionScopeLabel + ": " + deliveryBaseLabel : deliveryBaseLabel
 
+  // Starting a DM (helper `dm_open`). People come only from the verified roster
+  // on screen or from an existing DM's participants; the relay decides. The
+  // viewer's public key is used only to leave the viewer out of the choice.
+  property string identity: ""
+  property bool dmOpenSupported: false
+  property string dmOpenState: "idle"
+  property string dmOpenCategory: ""
+  property string dmOpenRequestId: ""
+  property int dmOpenGeneration: 0
+  property string dmOpenInstance: ""
+  // The channel the relay named for the last acknowledged open, selected once listed.
+  property string dmOpenTarget: ""
+  property var dmSelection: []
+  readonly property var dmCandidates: recipientsState === "snapshot" && recipientsRoomId === selectedRoomId && selectedRoomId !== ""
+    ? recipientEntries.filter(function(entry) { return entry.key !== root.identity })
+      .map(function(entry) { return {key: entry.key, name: entry.name, label: root.participantLabel(entry.key)} }) : []
+  readonly property bool dmOpenAvailable: dmOpenSupported && !sampleMode && !sessionFailed && connection === "authenticated"
+    && ["partial", "ready"].indexOf(catalogState) !== -1 && instanceId !== ""
+  readonly property bool canStartDm: dmOpenAvailable && dmOpenState !== "sending" && validDmKeys(dmSelection)
+  readonly property string dmOpenLabel: ({
+    sending: "Starting conversation…",
+    acknowledged: dmOpenCategory === "dm_open_response_unknown" ? "Relay accepted · conversation not identified, check Direct messages"
+      : dmOpenTarget !== "" ? "Conversation started · waiting for it to be listed" : "",
+    rejected: "Relay refused this conversation",
+    unknown: "Outcome unknown · the conversation may exist, check Direct messages",
+    failed: ({dm_open_busy: "Helper busy · try again", dm_open_access_denied: "Only people verified here can be chosen",
+      dm_open_invalid: "Choose 1 to 8 other people", dm_open_scope_changed: "Connection changed · choose again"})[dmOpenCategory]
+      || "Conversation not started · try again"
+  })[dmOpenState] || ""
+  function dmKeyAllowed(key) {
+    if (typeof key !== "string" || !/^[a-f0-9]{64}$/.test(key) || key === identity) return false
+    if (recipientsState === "snapshot" && recipientsRoomId === selectedRoomId && selectedRoomId !== ""
+        && recipientEntries.some(function(entry) { return entry.key === key })) return true
+    return rooms.some(function(room) { return room.kind === "dm" && room.participants.indexOf(key) !== -1 })
+  }
+  function validDmKeys(keys) {
+    return Array.isArray(keys) && keys.length >= 1 && keys.length <= 8
+      && keys.every(function(key, index) { return keys.indexOf(key) === index && root.dmKeyAllowed(key) })
+  }
+  function toggleDmParticipant(key) {
+    if (!dmOpenAvailable || dmOpenState === "sending") return false
+    var copy = dmSelection.slice()
+    var index = copy.indexOf(key)
+    if (index !== -1) copy.splice(index, 1)
+    else if (copy.length < 8 && dmKeyAllowed(key)) copy.push(key)
+    else return false
+    dmSelection = copy
+    if (dmOpenState !== "idle") { dmOpenState = "idle"; dmOpenCategory = "" }
+    return true
+  }
+  function openDm(keys) {
+    if (!dmOpenAvailable || !bridge.running || dmOpenState === "sending" || !validDmKeys(keys)) return false
+    dmOpenRequestId = correlationUuid()
+    dmOpenGeneration = generation
+    dmOpenInstance = instanceId
+    dmOpenState = "sending"
+    dmOpenCategory = ""
+    dmOpenTarget = ""
+    bridge.write(JSON.stringify({version: 1, id: dmOpenRequestId, type: "open_dm", participants: keys.slice(),
+      generation: generation, instanceId: instanceId}) + "\n")
+    dmOpenTimeout.restart()
+    return true
+  }
+  function startDm() { return openDm(dmSelection) }
+  function loseDmOpen() {
+    dmOpenTimeout.stop()
+    dmOpenTarget = ""
+    if (dmOpenState === "sending") { dmOpenState = "unknown"; dmOpenCategory = "dm_open_unknown" }
+  }
+  function validatedDmOpen(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)
+        || Object.keys(value).sort().join(",") !== "category,channelId,created,requestId,state"
+        || ["idle", "sending", "acknowledged", "rejected", "unknown"].indexOf(value.state) === -1
+        || (value.category !== null && ["dm_open_rejected", "dm_open_unknown", "dm_open_response_unknown"].indexOf(value.category) === -1)
+        || (value.channelId !== null && !uuidValue(value.channelId))
+        || (value.created !== null && typeof value.created !== "boolean")) return null
+    if (value.state === "idle") {
+      if (value.requestId !== null || value.channelId !== null || value.created !== null || value.category !== null) return null
+    } else if (!uuidValue(value.requestId)) return null
+    else if (value.state === "acknowledged") {
+      // A channel comes only with the relay's `created` flag; without one the answer named no channel.
+      if ((value.channelId === null) !== (value.created === null)
+          || value.category !== (value.channelId === null ? "dm_open_response_unknown" : null)) return null
+    } else if (value.channelId !== null || value.created !== null
+        || value.category !== ({sending: null, rejected: "dm_open_rejected", unknown: "dm_open_unknown"})[value.state]) return null
+    return {state: value.state, requestId: value.requestId, channelId: value.channelId, created: value.created, category: value.category}
+  }
+  function applyDmOpen(view) {
+    if (!view || !dmOpenRequestId || view.requestId !== dmOpenRequestId || dmOpenState !== "sending"
+        || generation !== dmOpenGeneration || instanceId !== dmOpenInstance || view.state === "sending") return
+    dmOpenTimeout.stop()
+    dmOpenState = view.state
+    dmOpenCategory = view.category || ""
+    if (view.state === "acknowledged") {
+      dmSelection = []
+      if (view.channelId) dmOpenTarget = view.channelId
+    }
+  }
+  function selectOpenedDm() {
+    if (dmOpenTarget === "" || !dmRooms.some(function(room) { return room.id === root.dmOpenTarget })) return
+    var target = dmOpenTarget
+    dmOpenTarget = ""
+    selectRoom(target)
+  }
+
   readonly property var sample: sampleMode ? SampleData.snapshot().payload : null
   readonly property var viewModel: sample || ({ community: "Buzz" })
   property var catalogRooms: []
@@ -703,10 +808,10 @@ Item {
     if (!sampleMode) selectedRoomId = ""
   }
   function validCapabilities(capabilities) {
-    return Array.isArray(capabilities) && capabilities.length >= 1 && capabilities.length <= 11
+    return Array.isArray(capabilities) && capabilities.length >= 1 && capabilities.length <= 12
       && capabilities.indexOf("connection_status") !== -1
       && capabilities.every(function(cap, index) {
-        return ["connection_status", "room_catalog", "room_history", "message_send", "room_recipients", "history_auto_refresh", "room_activity", "agent_profiles", "thread_replies", "thread_send", "thread_summaries"].indexOf(cap) !== -1 && capabilities.indexOf(cap) === index
+        return ["connection_status", "room_catalog", "room_history", "message_send", "room_recipients", "history_auto_refresh", "room_activity", "agent_profiles", "thread_replies", "thread_send", "thread_summaries", "dm_open"].indexOf(cap) !== -1 && capabilities.indexOf(cap) === index
       })
   }
   // Streams carry no participants and are never hidden. A DM lists 2-9 distinct
@@ -781,6 +886,8 @@ Item {
   }
   function beginSession() {
     losePendingDelivery()
+    loseDmOpen()
+    dmOpenSupported = false
     sendSupported = false
     clearCatalog()
     instanceId = ""
@@ -797,6 +904,8 @@ Item {
   }
   function fail(reason) {
     losePendingDelivery()
+    loseDmOpen()
+    dmOpenSupported = false
     sendSupported = false
     handshake.stop()
     clearCatalog()
@@ -817,9 +926,16 @@ Item {
     if (!boundedString(line, 1048576)) { fail("invalid_response"); return false }
     var frame
     try { frame = JSON.parse(line) } catch (_) { fail("invalid_response"); return false }
-    if (frame && frame.version === 1 && frame.type === "error" && ["request_busy", "send_busy", "send_scope_changed", "send_request_reused", "send_invalid", "send_unavailable", "send_access_denied", "send_ledger_unavailable", "delivery_unknown"].indexOf(frame.category) !== -1) {
+    if (frame && frame.version === 1 && frame.type === "error" && ["request_busy", "send_busy", "send_scope_changed", "send_request_reused", "send_invalid", "send_unavailable", "send_access_denied", "send_ledger_unavailable", "delivery_unknown",
+        "dm_open_busy", "dm_open_scope_changed", "dm_open_request_reused", "dm_open_invalid", "dm_open_unavailable", "dm_open_access_denied", "dm_open_unknown"].indexOf(frame.category) !== -1) {
       if (instanceId === "" || frame.instanceId !== instanceId) return false
       if (!boundedString(frame.id, 128) || !/^ui-[0-9]+$/.test(frame.id) && !uuidValue(frame.id)) { fail("invalid_response"); return false }
+      if (frame.id === dmOpenRequestId && dmOpenState === "sending") {
+        // Refusals are known: nothing was signed. A lost helper reply is not.
+        dmOpenTimeout.stop()
+        dmOpenState = frame.category === "dm_open_unknown" ? "unknown" : "failed"
+        dmOpenCategory = frame.category === "request_busy" ? "dm_open_busy" : frame.category
+      }
       if (frame.id === submissionId && deliveryState === "sending") {
         deliveryTimeout.stop()
         deliveryState = ["send_scope_changed", "delivery_unknown"].indexOf(frame.category) !== -1 ? "unknown" : "failed"
@@ -902,6 +1018,9 @@ Item {
     var supportsSend = frame.capabilities.indexOf("message_send") !== -1
     var delivery = supportsSend ? validatedDelivery(state.delivery) : null
     if (supportsSend && !delivery) { fail("invalid_response"); return false }
+    var supportsDmOpen = frame.capabilities.indexOf("dm_open") !== -1
+    var dmOpen = supportsDmOpen ? validatedDmOpen(state.dmOpen) : null
+    if (supportsDmOpen && !dmOpen) { fail("invalid_response"); return false }
     var supportsActivity = frame.capabilities.indexOf("room_activity") !== -1
     if (supportsActivity && (!Array.isArray(state.activity) || state.activity.length > 20 || state.activity.some(function(a, i) {
       return !RoomActivity.valid(a) || !uuidValue(a.roomId) || !catalog.rooms.some(function(r) { return r.id === a.roomId })
@@ -910,6 +1029,8 @@ Item {
     var incomingScope = (state.relay || "") + "|" + (state.identity || "")
     if (draftScopeKey && (incomingScope !== draftScopeKey || (instanceId !== "" && frame.generation !== generation))) {
       losePendingDelivery()
+      loseDmOpen()
+      dmSelection = []
       clearThread()
       drafts = ({})
       recipientDrafts = ({})
@@ -918,7 +1039,7 @@ Item {
       submissionText = ""
     }
     draftScopeKey = incomingScope
-    if (state.connection !== "authenticated") losePendingDelivery()
+    if (state.connection !== "authenticated") { losePendingDelivery(); loseDmOpen() }
     var previousCatalogState = catalogState
     var resyncingCatalog = resyncStage === "catalog"
     if (state.connection !== "authenticated") catalog = {state: "unavailable", rooms: [], category: ""}
@@ -1015,7 +1136,11 @@ Item {
     connection = state.connection
     category = state.category || ""
     sendSupported = supportsSend
+    identity = state.identity || ""
+    dmOpenSupported = supportsDmOpen
+    if (!supportsDmOpen) loseDmOpen()
     applyDelivery(delivery)
+    applyDmOpen(dmOpen)
     handshake.stop()
     if (frame.type === "hello" && bridge.running) send("subscribe")
     // One fetch per first population/catalog refresh completion, never per status echo.
@@ -1032,6 +1157,7 @@ Item {
       advanceResync(supportsRecipients ? "recipients" : "thread")
     else if (resyncStage === "recipients" && recipients && recipients.state !== "loading" && recipients.roomId === selectedRoomId)
       advanceResync("thread")
+    selectOpenedDm()
     return true
   }
   function send(kind, roomId, rootId) {
@@ -1136,6 +1262,12 @@ Item {
     onTriggered: root.fail("handshake_timeout")
   }
   Timer {
+    id: dmOpenTimeout
+    // Beyond the helper's own 15-second bound: a missing answer is unknown, never refused.
+    interval: 30000
+    onTriggered: root.loseDmOpen()
+  }
+  Timer {
     id: deliveryTimeout
     interval: 30000
     onTriggered: root.losePendingDelivery()
@@ -1149,6 +1281,8 @@ Item {
     stderr: SplitParser { onRead: function(line) {} }
     onExited: {
       root.losePendingDelivery()
+      root.loseDmOpen()
+      root.dmOpenSupported = false
       root.sendSupported = false
       handshake.stop()
       root.clearCatalog()

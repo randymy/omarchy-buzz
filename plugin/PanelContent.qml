@@ -20,6 +20,14 @@ FocusScope {
   readonly property var mentionMatches: activeComposer.mentionMatches
   readonly property bool mentionOpen: activeComposer.mentionOpen
   function chooseMention(index) { return activeComposer.chooseMention(index) }
+  // New direct message: a compact picker over the open room's verified members.
+  readonly property bool newDmAvailable: !!service && service.dmOpenAvailable
+  property bool newDmOpen: false
+  onNewDmAvailableChanged: if (!newDmAvailable) newDmOpen = false
+  Connections {
+    target: root.service
+    function onDmOpenStateChanged() { if (root.service.dmOpenState === "acknowledged") root.newDmOpen = false }
+  }
 
   // Keep delegates alive across snapshots; only changed rows are updated.
   readonly property var incomingMessages: service ? service.messages : []
@@ -226,7 +234,7 @@ FocusScope {
               }
             }
             Text {
-              visible: root.service && root.service.dmRooms.length > 0
+              visible: root.service && (root.service.dmRooms.length > 0 || root.newDmAvailable)
               Layout.fillWidth: true
               text: "Direct messages"
               textFormat: Text.PlainText
@@ -235,6 +243,84 @@ FocusScope {
               opacity: 0.6
               font.family: Style.font.family
               font.pixelSize: Style.font.caption
+            }
+            Ui.Button {
+              objectName: "buzzNewDm"
+              visible: root.newDmAvailable
+              Layout.fillWidth: true
+              text: root.newDmOpen ? "Cancel new message" : "+ New message"
+              tooltipText: "Message people from this room"
+              fontSize: Style.font.caption
+              leftAlign: true
+              focusable: true
+              onClicked: root.newDmOpen = !root.newDmOpen
+            }
+            ColumnLayout {
+              objectName: "buzzNewDmPicker"
+              visible: root.newDmAvailable && root.newDmOpen
+              Layout.fillWidth: true
+              Layout.leftMargin: Style.space(6)
+              spacing: Style.space(2)
+              Text {
+                Layout.fillWidth: true
+                text: root.service && root.service.dmCandidates.length
+                  ? "Members of " + root.service.roomTitle(root.service.selectedRoom) + " · up to 8"
+                  : "Open a room to choose its members"
+                textFormat: Text.PlainText
+                elide: Text.ElideRight
+                color: Color.foreground
+                opacity: 0.6
+                font.family: Style.font.family
+                font.pixelSize: Style.font.caption
+              }
+              Repeater {
+                model: root.service ? root.service.dmCandidates : []
+                delegate: Ui.Button {
+                  required property var modelData
+                  readonly property string key: modelData.key
+                  objectName: "buzzNewDmCandidate"
+                  Layout.fillWidth: true
+                  clip: true
+                  readonly property bool chosen: root.service.dmSelection.indexOf(modelData.key) !== -1
+                  text: (chosen ? "✓ " : "") + (modelData.name.trim() || modelData.key.slice(0, 12) + "…")
+                    + " · " + modelData.key.slice(0, 8) + " · " + modelData.label
+                  tooltipText: modelData.key
+                  fontSize: Style.font.caption
+                  leftAlign: true
+                  focusable: true
+                  selected: chosen
+                  onClicked: root.service.toggleDmParticipant(modelData.key)
+                }
+              }
+              Ui.Button {
+                objectName: "buzzNewDmStart"
+                text: "Start" + (root.service && root.service.dmSelection.length ? " · " + root.service.dmSelection.length : "")
+                fontSize: Style.font.caption
+                focusable: true
+                enabled: !!root.service && root.service.canStartDm
+                opacity: enabled ? 1 : 0.5
+                onClicked: if (root.service && root.service.canStartDm) root.service.startDm()
+              }
+            }
+            Text {
+              objectName: "buzzNewDmStatus"
+              visible: root.newDmAvailable && text !== ""
+              Layout.fillWidth: true
+              text: root.service ? root.service.dmOpenLabel : ""
+              textFormat: Text.PlainText
+              elide: Text.ElideRight
+              color: Color.foreground
+              opacity: 0.7
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+              Controls.ToolTip.visible: dmStatusHover.containsMouse && truncated
+              Controls.ToolTip.text: text
+              MouseArea {
+                id: dmStatusHover
+                anchors.fill: parent
+                hoverEnabled: true
+                acceptedButtons: Qt.NoButton
+              }
             }
             Repeater {
               model: root.service ? root.service.dmRooms : []
