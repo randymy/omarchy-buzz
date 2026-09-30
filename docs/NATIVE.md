@@ -16,7 +16,9 @@ omarchy-shell shell summon community.buzz '{"mode":"window"}'
 The native window close control and **Close · Esc** both close the view through
 Omarchy's panel lifecycle. The bar/shortcut keeps its existing toggle behavior:
 if Buzz is already open it closes it; the next fresh open defaults to the
-overlay. Window size and presentation preference are not persisted yet.
+normal window (a `{"mode":"overlay"}` summon, or **Overlay** in Settings,
+switches for the session). Window size and presentation preference are not
+persisted yet.
 
 The short native fixture `scripts/preview --presentation` requires a running
 Wayland session and briefly displays synthetic content. It uses isolated

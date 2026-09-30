@@ -10,7 +10,9 @@ Item {
   property var manifest: null
   property var service: null
   property bool opened: false
-  property bool windowMode: false
+  // A normal window by default (Super+B and a bare summon); Settings or a
+  // {"mode":"overlay"} summon switches to the overlay for the session.
+  property bool windowMode: true
   // The shared view, for synthetic presentation checks.
   readonly property alias content: content
   onOpenedChanged: if (service) service.panelOpen = opened

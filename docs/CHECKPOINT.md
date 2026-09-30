@@ -2563,3 +2563,14 @@ unavailable model failed silently on the agent's first turn. Contract in
 - This machine had no record: it was bootstrapped after verifying all 13
   installed reviewed files byte-for-byte against commit `01e5a74` (0.0.19),
   then 0.0.20 installed normally.
+
+## Default presentation is the window — September 30
+
+- Randy: "change the default of super+B to window not overlay." `Panel.qml`
+  and `PanelContent.qml` start with `windowMode: true`, so a bare summon (the
+  Super+B toggle, `'{}'`) opens the normal resizable window; `{"mode":"overlay"}`
+  or **Overlay** in Settings switches for the session, as before. No shortcut,
+  helper or service change. `--presentation` (a bare open is a window; a
+  `window` re-summon keeps it) and `--settings` (Window shown as current, both
+  switches still requested) updated and green; default, `--onboarding` and
+  `--bridge` pass. README and `docs/NATIVE.md` say the default.

@@ -313,7 +313,7 @@ FocusScope {
     font.pixelSize: Style.font.caption
   }
   property bool presentationSwitchEnabled: false
-  property bool windowMode: false
+  property bool windowMode: true
   property alias recipientPickerExpanded: roomComposer.pickerExpanded
   readonly property bool connected: !!service && (service.sampleMode || service.connection === "authenticated")
   // Agents (docs/AGENTS_SERVICE.md): shown only while the agent service is

@@ -192,15 +192,15 @@ ShellRoot {
           // Window: hidden without a host switch; the other presentation is requested.
           check(shown("buzzSettingsPresentation").length === 0, "Presentation offered without a host switch")
           view.presentationSwitchEnabled = true
-          check(one("buzzSettingsOverlay").selected && !one("buzzSettingsWindow").selected, "Overlay not shown as current")
-          test.click(one("buzzSettingsOverlay"))
-          check(test.presentationRequests === 0, "Choosing the current presentation switched")
+          check(one("buzzSettingsWindow").selected && !one("buzzSettingsOverlay").selected, "Window not shown as current by default")
           test.click(one("buzzSettingsWindow"))
-          check(test.presentationRequests === 1, "Window did not request the presentation switch")
-          view.windowMode = true
+          check(test.presentationRequests === 0, "Choosing the current presentation switched")
           test.click(one("buzzSettingsOverlay"))
-          check(test.presentationRequests === 2 && view.settingsOpen, "Overlay did not request the switch or closed Settings")
+          check(test.presentationRequests === 1 && view.settingsOpen, "Overlay did not request the switch or closed Settings")
           view.windowMode = false
+          test.click(one("buzzSettingsWindow"))
+          check(test.presentationRequests === 2, "Window did not request the presentation switch")
+          view.windowMode = true
 
           // Shortcut and About.
           check(one("buzzSettingsShortcut").text.indexOf("scripts/desktop-shortcut install") !== -1, "Shortcut note missing")

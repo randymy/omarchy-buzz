@@ -83,8 +83,9 @@ Your account sits at the bottom left: avatar, name and a connection dot
 (green online, amber connecting, red offline, grey not set up). Click it for
 the community, **Send feedback** and **Settings** (also Ctrl+,). Settings holds
 your avatar, **Alerts**, the **Overlay**/**Window** choice, the shortcut note
-and the version and public key. **Window** keeps Buzz open as a normal
-resizable desktop window, **Overlay** switches back; both presentations share
+and the version and public key. **Window** (the default) keeps Buzz open as a
+normal resizable desktop window, **Overlay** shows it above other windows
+instead; both presentations share
 the same view, draft and helper. See [native window and shortcut behavior](docs/NATIVE.md).
 
 ## Install the development helper

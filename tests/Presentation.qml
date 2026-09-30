@@ -30,9 +30,10 @@ ShellRoot {
     running: true
     onTriggered: {
       try {
-        panel.open('{"mode":"window"}')
-        if (!panel.opened || !panel.windowMode || !service.panelOpen) throw new Error("Window did not open")
+        // A bare summon (Super+B) opens the normal window by default.
         panel.open('{}')
+        if (!panel.opened || !panel.windowMode || !service.panelOpen) throw new Error("Default did not open as a window")
+        panel.open('{"mode":"window"}')
         if (!panel.windowMode) throw new Error("Re-summon changed presentation")
         // The switch lives in Settings (account menu); the shared view keeps it open across the move.
         if (!panel.content.openSettings() || !shownButton("buzzSettingsWindow").selected) throw new Error("Settings did not show Window as current")
