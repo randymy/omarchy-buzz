@@ -94,7 +94,7 @@ async fn integrated(mode: u8) {
         let _server_guard=AbortOnDrop(server.abort_handle());
         let path=std::env::temp_dir().join(format!("buzz-observer-send-{}",uuid::Uuid::new_v4()));let ledger=Ledger::open(path.join("ledger.json")).unwrap();
         let (tx,mut rx)=watch::channel(Status::new(&config::Config{relay:Some(origin.clone()),identity:Some(public.to_hex())}));let history_tx=tx.clone();let (commands,mut requests)=mpsc::channel(4);let mut conn=connect_identity(&origin,&user).await.unwrap();
-        let observer=tokio::spawn(async move {let mut sender=Sender::new(Some(ledger));let mut backoff=Backoff::default();let mut pin=None;observe_sending(&mut conn,&user,&origin,&mut pin,&tx,&mut requests,&mut backoff,FreshnessPolicy{interval:Duration::from_millis(150),response:Duration::from_secs(1)},&mut sender).await});
+        let observer=tokio::spawn(async move {let mut sender=Sender::new(Some(ledger));let mut backoff=Backoff::default();let mut pin=None;observe_sending(&mut conn,&user,&origin,&mut pin,&tx,&mut requests,&mut backoff,FreshnessPolicy{interval:Duration::from_millis(150),response:Duration::from_secs(1),..FRESHNESS},&mut sender).await});
         let _observer_guard=AbortOnDrop(observer.abort_handle());
         while rx.borrow().catalog.rooms.is_empty(){rx.changed().await.unwrap();}
         if mentioning {

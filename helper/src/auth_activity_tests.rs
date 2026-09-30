@@ -148,7 +148,7 @@ async fn scenario(select_background_before_denial: bool) {
             let mut pin = None;
             let mut backoff = Backoff::default();
             observe_connection(&mut conn, &user, &origin, &mut pin, &tx, &mut command_rx,
-                &mut backoff, FreshnessPolicy { interval: Duration::from_secs(2), response: Duration::from_secs(1) }).await
+                &mut backoff, FreshnessPolicy { interval: Duration::from_secs(2), response: Duration::from_secs(1), ..FRESHNESS }).await
         });
         timeout(Duration::from_secs(4), async {
             while status.borrow().catalog.rooms.len() != 2 { status.changed().await.unwrap(); }

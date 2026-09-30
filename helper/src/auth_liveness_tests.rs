@@ -40,6 +40,7 @@ fn fast() -> FreshnessPolicy {
     FreshnessPolicy {
         interval: Duration::from_secs(1),
         response: Duration::from_millis(50),
+        ..FRESHNESS
     }
 }
 #[test]

@@ -140,7 +140,7 @@ async fn scenario(in_flight: bool, automatic: bool, automatic_failure: bool) {
         let (commands,mut command_rx)=mpsc::channel(4);let mut conn=connect_identity(&origin,&user).await.unwrap();
         let observer=AbortTask(tokio::spawn(async move {
             let mut pin=None;let mut backoff=Backoff::default();
-            let exit=observe_connection(&mut conn,&user,&origin,&mut pin,&tx,&mut command_rx,&mut backoff,FreshnessPolicy{interval:Duration::from_secs(2),response:Duration::from_secs(1)}).await;
+            let exit=observe_connection(&mut conn,&user,&origin,&mut pin,&tx,&mut command_rx,&mut backoff,FreshnessPolicy{interval:Duration::from_secs(2),response:Duration::from_secs(1),..FRESHNESS}).await;
             assert_eq!(pin,Some(signer));exit
         }));
         wait_status(&mut status,|s|s.catalog.rooms.len()==1).await;assert_eq!(requests.load(Ordering::SeqCst),3);

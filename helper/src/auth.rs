@@ -160,10 +160,13 @@ fn catalog_category(error: &str) -> &'static str {
 struct FreshnessPolicy {
     interval: Duration,
     response: Duration,
+    // Cadence of the joined-room check after each completed discovery.
+    catalog: Duration,
 }
 const FRESHNESS: FreshnessPolicy = FreshnessPolicy {
     interval: Duration::from_secs(20),
     response: Duration::from_secs(5),
+    catalog: Duration::from_secs(30),
 };
 #[derive(Default)]
 struct Backoff {
@@ -755,7 +758,7 @@ async fn observe_inner(
                     },
                     _=>{},
                 }
-                if !cancelled {catalog_due=tokio::time::Instant::now()+Duration::from_secs(30);}
+                if !cancelled {catalog_due=tokio::time::Instant::now()+policy.catalog;}
             },
             _=tokio::time::sleep_until(catalog_due), if fresh && jobs.is_empty()=> {
                 history_jobs.abort_all(); history_jobs=tokio::task::JoinSet::new(); history_ticket=history_ticket.wrapping_add(1);

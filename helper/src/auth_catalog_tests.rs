@@ -128,7 +128,7 @@ async fn authenticated_catalog_is_partial_and_reauthentication_clears_it() {
         let observer=AbortTask(tokio::spawn(async move {
             let mut backoff=Backoff::default();let mut pin=None;
             let result=observe_connection(&mut connection,&user,&origin,&mut pin,&tx,&mut retry,&mut backoff,
-                FreshnessPolicy{interval:Duration::from_secs(2),response:Duration::from_secs(1)}).await;
+                FreshnessPolicy{interval:Duration::from_secs(2),response:Duration::from_secs(1),..FRESHNESS}).await;
             assert_eq!(pin,Some(signer));
             result
         }));
