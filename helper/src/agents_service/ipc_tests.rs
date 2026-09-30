@@ -138,6 +138,12 @@ async fn hello_subscribe_create_and_errors() {
     ))
     .await;
     assert_eq!(s.answer(R4).await["category"], "agent_busy");
+    s.send(request(
+        R4,
+        serde_json::json!({"type":"refresh_bundle","harness":"codex"}),
+    ))
+    .await;
+    assert_eq!(s.answer(R4).await["category"], "agent_busy");
     drop(held);
     // A frame that is not a request ends the session.
     s.write.write_all(b"not-json\n").await.unwrap();

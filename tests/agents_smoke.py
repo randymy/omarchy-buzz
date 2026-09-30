@@ -179,6 +179,9 @@ def main():
                 # sign_in for a known harness: the reviewed script is absent.
                 client.sendall(request(uuid(8), instance, "sign_in", harness="codex"))
                 assert frames.answer(uuid(8))["status"]["pending"]["category"] == "harness_missing"
+                # refresh_bundle: the installed agent-bundle is absent.
+                client.sendall(request(uuid(11), instance, "refresh_bundle", harness="codex"))
+                assert frames.answer(uuid(11))["status"]["pending"]["category"] == "harness_missing"
 
                 client.sendall(request(uuid(9), instance, "delete_agent", agentId=agent["id"]))
                 status = check_status(frames.answer(uuid(9)), "status", instance)

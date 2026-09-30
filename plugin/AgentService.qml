@@ -34,10 +34,10 @@ Item {
   signal agentCreated(string agentId)
 
   readonly property var harnessIds: ["claude-code", "codex"]
-  readonly property var errorCategories: ["agent_invalid", "agent_busy", "agent_limit", "harness_missing", "not_signed_in",
-    "enroll_failed", "unit_failed", "workspace_refused", "relay_unavailable"]
+  readonly property var errorCategories: ["agent_invalid", "agent_busy", "agent_limit", "harness_missing", "bundle_stale",
+    "not_signed_in", "enroll_failed", "unit_failed", "workspace_refused", "relay_unavailable"]
   readonly property var mutatingTypes: ["create_agent", "update_agent", "delete_agent", "enroll_agent", "start_agent",
-    "stop_agent", "set_start_at_login", "sign_in"]
+    "stop_agent", "set_start_at_login", "sign_in", "refresh_bundle"]
   readonly property var personaFields: ["name", "description", "instructions", "harness", "model", "rooms", "respondTo", "workspace", "answersDms"]
   readonly property bool serviceWorking: !!pending && pending.state === "working"
   readonly property bool busy: requestState === "working" || serviceWorking
@@ -177,6 +177,7 @@ Item {
       agent_busy: "Another agent change is in progress. Try again shortly.",
       agent_limit: "The limit of 16 agents is reached.",
       harness_missing: "This harness is not installed on this machine.",
+      bundle_stale: "The harness bundle needs a refresh.",
       not_signed_in: "Sign in to this harness first.",
       enroll_failed: "Enrollment did not complete.",
       unit_failed: "The agent's service unit failed.",
@@ -188,7 +189,8 @@ Item {
   function requestLabel(type) {
     return ({create_agent: "Creating agent", update_agent: "Saving agent", delete_agent: "Deleting agent",
       enroll_agent: "Enrolling agent", start_agent: "Starting agent", stop_agent: "Stopping agent",
-      set_start_at_login: "Changing start at login", sign_in: "Opening sign-in"})[type] || "Agent request"
+      set_start_at_login: "Changing start at login", sign_in: "Opening sign-in",
+      refresh_bundle: "Refreshing harness bundle"})[type] || "Agent request"
   }
   // One line for the editor: this panel's request first, then the service's own.
   readonly property string statusLabel: {
@@ -286,7 +288,7 @@ Item {
       var entry = value[i]
       if (!exactKeys(entry, "bundle,id,signedIn") || harnessIds.indexOf(entry.id) === -1
           || result.some(function(other) { return other.id === entry.id })
-          || ["ready", "missing"].indexOf(entry.bundle) === -1
+          || ["ready", "stale", "missing"].indexOf(entry.bundle) === -1
           || (entry.signedIn !== null && typeof entry.signedIn !== "boolean")) return null
       result.push({id: entry.id, bundle: entry.bundle, signedIn: entry.signedIn})
     }
@@ -469,7 +471,7 @@ Item {
   }
   function startAgent(id) {
     var entry = agent(id)
-    if (!entry || !entry.enrolled || entry.unit === "active") return false
+    if (!entry || !entry.enrolled || entry.unit === "active" || bundleStale(entry.harness)) return false
     return mutate({type: "start_agent", agentId: id}, id)
   }
   function stopAgent(id) {
@@ -486,6 +488,15 @@ Item {
     var entry = harness(harnessId)
     if (!entry || entry.signedIn === true) return false
     return mutate({type: "sign_in", harness: harnessId}, "")
+  }
+  // The bundle's launcher differs from the installed scripts: refresh before starting.
+  function bundleStale(harnessId) {
+    var entry = harness(harnessId)
+    return !!entry && entry.bundle === "stale"
+  }
+  function refreshBundle(harnessId) {
+    if (!bundleStale(harnessId)) return false
+    return mutate({type: "refresh_bundle", harness: harnessId}, "")
   }
   function dismissRequest() {
     if (requestState === "working") return false

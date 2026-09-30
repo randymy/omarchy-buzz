@@ -95,11 +95,12 @@ pub fn error_frame(id: &str, instance: &str, category: &str) -> serde_json::Valu
 }
 
 /// The fixed error categories of the contract.
-pub const CATEGORIES: [&str; 9] = [
+pub const CATEGORIES: [&str; 10] = [
     "agent_invalid",
     "agent_busy",
     "agent_limit",
     "harness_missing",
+    "bundle_stale",
     "not_signed_in",
     "enroll_failed",
     "unit_failed",
@@ -332,6 +333,10 @@ impl Service {
                     .await
             }
             "sign_in" => self.sign_in(r.harness.as_deref().unwrap_or("")).await,
+            "refresh_bundle" => {
+                self.refresh_bundle(r.harness.as_deref().unwrap_or(""))
+                    .await
+            }
             _ => Err("agent_invalid"),
         }
     }
@@ -793,8 +798,10 @@ impl Service {
             .find(|h| h.id == persona.harness)
             .cloned()
             .ok_or("harness_missing")?;
-        if view.bundle != "ready" {
-            return Err("harness_missing");
+        match view.bundle {
+            "ready" => {}
+            "stale" => return Err("bundle_stale"),
+            _ => return Err("harness_missing"),
         }
         if view.signed_in != Some(true) {
             return Err("not_signed_in");
@@ -843,6 +850,40 @@ impl Service {
         }
         persona.start_at_login = enabled;
         self.commit(persona)
+    }
+
+    /// Replaces a harness bundle's launcher files with the installed scripts,
+    /// then re-reads readiness: done when the bundle is `ready`, otherwise
+    /// `bundle_stale` (still stale) or `harness_missing`.
+    async fn refresh_bundle(&self, harness: &str) -> Result<(), &'static str> {
+        if !store::valid_harness(harness) {
+            return Err("agent_invalid");
+        }
+        let script = harness::bundle_script(&self.paths);
+        let argv = harness::refresh_argv(&self.paths, harness);
+        let spawner = self.deps.spawner.clone();
+        blocking(move || {
+            if !spawner.present(&script) {
+                return Err("harness_missing");
+            }
+            // The outcome is read back through `--check` below.
+            let _ = spawner.output(&argv);
+            Ok(())
+        })
+        .await?;
+        self.inspect_harnesses().await;
+        let bundle = self
+            .harnesses
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|h| h.id == harness)
+            .map(|h| h.bundle);
+        match bundle {
+            Some("ready") => Ok(()),
+            Some("stale") => Err("bundle_stale"),
+            _ => Err("harness_missing"),
+        }
     }
 
     async fn sign_in(&self, harness: &str) -> Result<(), &'static str> {
