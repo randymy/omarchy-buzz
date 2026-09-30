@@ -160,10 +160,13 @@ fn catalog_category(error: &str) -> &'static str {
 struct FreshnessPolicy {
     interval: Duration,
     response: Duration,
+    // Cadence of the joined-room check after each completed discovery.
+    catalog: Duration,
 }
 const FRESHNESS: FreshnessPolicy = FreshnessPolicy {
     interval: Duration::from_secs(20),
     response: Duration::from_secs(5),
+    catalog: Duration::from_secs(30),
 };
 #[derive(Default)]
 struct Backoff {
@@ -732,36 +735,68 @@ async fn observe_inner(
                             state:catalog.state.into(),category:Some(catalog.category.into()),
                             rooms:catalog.rooms.into_iter().map(|r|crate::protocol::Room {id:r.id,name:r.name,description:r.description}).collect(),
                         };
+                        // A room that left the joined set loses its views, jobs and pending
+                        // delivery as an access denial would; remaining rooms keep theirs.
+                        let (removed,lost_recipients,lost_thread)={
+                            let status=tx.borrow();
+                            let removed:Vec<String>=status.catalog.rooms.iter().filter(|r|!next_catalog.rooms.iter().any(|n|n.id==r.id)).map(|r|r.id.clone()).collect();
+                            let lost_recipients=status.recipients.room_id.clone().filter(|room|removed.contains(room));
+                            let lost_thread=status.thread.room_id.as_ref().is_some_and(|room|removed.contains(room));
+                            (removed,lost_recipients,lost_thread)
+                        };
                         activity.retain(&next_catalog.rooms);
                         let removed_selection=selected_history.as_ref().filter(|room|!next_catalog.rooms.iter().any(|r|r.id==**room)).cloned();
-                        if removed_selection.is_some() {selected_history=None;}
-                        else if selected_history.is_some() {history_due=tokio::time::Instant::now();}
+                        if removed_selection.is_some() {
+                            selected_history=None;
+                            history_jobs.abort_all();history_jobs=tokio::task::JoinSet::new();history_ticket=history_ticket.wrapping_add(1);
+                        }
+                        if lost_recipients.is_some() {recipient_jobs.abort_all();recipient_jobs=tokio::task::JoinSet::new();recipient_ticket=recipient_ticket.wrapping_add(1);}
+                        if lost_thread {thread_jobs.abort_all();thread_jobs=tokio::task::JoinSet::new();thread_ticket=thread_ticket.wrapping_add(1);}
+                        // The single in-flight activity read does not record its room.
+                        if !removed.is_empty() {activity_jobs.abort_all();activity_jobs=tokio::task::JoinSet::new();}
+                        let mut revoked_delivery=None;
+                        for room in &removed {
+                            if let Some(delivery)=sender.revoke_room(room) {revoked_delivery=Some(delivery);}
+                        }
                         // Publish the catalog and all dependent views under one watch lock.
                         publish_status(tx, |s| {
                             s.catalog=next_catalog;
                             s.activity=activity.summaries();
                             if let Some(room)=removed_selection {s.history=History::unavailable(Some(room),Some("history_access_denied"));}
+                            else if let Some(room)=s.history.room_id.clone().filter(|room|removed.contains(room)) {s.history=History::unavailable(Some(room),Some("history_access_denied"));}
+                            if let Some(room)=lost_recipients {s.recipients=crate::protocol::RecipientsView::unavailable(Some(room),Some("recipients_access_denied"));}
+                            if lost_thread {s.thread=Thread::unavailable(None,None,Some("thread_access_denied"));}
+                            if let Some(delivery)=revoked_delivery {s.delivery=delivery;}
                         });
                     },
-                    Some(Ok(Err(error))) if fresh=>{
+                    failed @ (Some(Ok(Err(_)))|Some(Err(_))) if fresh && !cancelled=>{
+                        let category=match failed {Some(Ok(Err(error)))=>catalog_category(error),_=>"room_catalog_unavailable"};
+                        // A failed check proves nothing about any room: clear every dependent view.
                         selected_history=None;
+                        history_jobs.abort_all();history_jobs=tokio::task::JoinSet::new();history_ticket=history_ticket.wrapping_add(1);
+                        recipient_jobs.abort_all();recipient_jobs=tokio::task::JoinSet::new();recipient_ticket=recipient_ticket.wrapping_add(1);
+                        thread_jobs.abort_all();thread_jobs=tokio::task::JoinSet::new();thread_ticket=thread_ticket.wrapping_add(1);
+                        activity_jobs.abort_all();activity_jobs=tokio::task::JoinSet::new();
                         activity=crate::activity::Tracker::default();
-                        publish_status(tx, |s|{s.activity.clear();s.catalog=crate::protocol::Catalog::unavailable(Some(catalog_category(error)));s.history=History::unavailable(None,None);});
-                    },
-                    Some(Err(error)) if fresh && !error.is_cancelled()=>{
-                        selected_history=None;
-                        activity=crate::activity::Tracker::default();
-                        publish_status(tx, |s|{s.activity.clear();s.catalog=crate::protocol::Catalog::unavailable(Some("room_catalog_unavailable"));s.history=History::unavailable(None,None);});
+                        publish_status(tx, |s|{
+                            s.activity.clear();s.catalog=crate::protocol::Catalog::unavailable(Some(category));s.history=History::unavailable(None,None);
+                            s.recipients=crate::protocol::RecipientsView::unavailable(None,None);s.thread=Thread::unavailable(None,None,None);
+                        });
                     },
                     _=>{},
                 }
-                if !cancelled {catalog_due=tokio::time::Instant::now()+Duration::from_secs(30);}
+                if !cancelled {catalog_due=tokio::time::Instant::now()+policy.catalog;}
             },
             _=tokio::time::sleep_until(catalog_due), if fresh && jobs.is_empty()=> {
-                history_jobs.abort_all(); history_jobs=tokio::task::JoinSet::new(); history_ticket=history_ticket.wrapping_add(1);
-                activity_jobs.abort_all();activity_jobs=tokio::task::JoinSet::new();
-                recipient_jobs.abort_all();recipient_jobs=tokio::task::JoinSet::new();recipient_ticket=recipient_ticket.wrapping_add(1);
-                publish_status(tx, |s| {s.activity.clear();s.catalog=crate::protocol::Catalog::loading();s.history=History::unavailable(None,None);s.recipients=crate::protocol::RecipientsView::unavailable(None,None);});
+                // Re-checking a published catalog keeps every view and job until the
+                // result is known; only a first check shows loading.
+                let background=relay_pin.is_some() && matches!(tx.borrow().catalog.state.as_str(),"partial"|"ready");
+                if !background {
+                    history_jobs.abort_all(); history_jobs=tokio::task::JoinSet::new(); history_ticket=history_ticket.wrapping_add(1);
+                    activity_jobs.abort_all();activity_jobs=tokio::task::JoinSet::new();
+                    recipient_jobs.abort_all();recipient_jobs=tokio::task::JoinSet::new();recipient_ticket=recipient_ticket.wrapping_add(1);
+                    publish_status(tx, |s| {s.activity.clear();s.catalog=crate::protocol::Catalog::loading();s.history=History::unavailable(None,None);s.recipients=crate::protocol::RecipientsView::unavailable(None,None);});
+                }
                 let relay=relay.to_owned();let keys=keys.clone();let pin=*relay_pin;
                 jobs.spawn(async move {
                     match timeout(Duration::from_secs(15),crate::catalog::discover(&relay,&keys,pin)).await {
