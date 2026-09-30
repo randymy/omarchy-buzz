@@ -37,7 +37,38 @@ ShellRoot {
       try {
         if (test.shown("buzzThreadPanel").length || test.shown("buzzThreadReply").length)
           throw new Error("Closed thread stayed on screen")
-        console.log("PASS: thread opens beside the room with its replies; snapshots keep delegates and the open thread; the view follows the newest message only for a reader at the end")
+        var summarized = JSON.parse(JSON.stringify(test.crowdedFrame))
+        summarized.capabilities.push("thread_summaries")
+        var rows = summarized.status.history.rows
+        rows[0].thread = {replies:2, lastReplyAt:150, participants:["c".repeat(64)]}
+        rows[1].thread = {replies:1, lastReplyAt:null, participants:[]}
+        if (!service.acceptFrame(JSON.stringify(summarized)) || !service.threadSummariesSupported)
+          throw new Error("Thread summary snapshot rejected")
+        test.summaryIds = [rows[0].id, rows[1].id]
+        checkSummaries.start()
+      } catch (error) { console.error(error); Qt.exit(1) }
+    }
+  }
+  property var summaryIds: []
+  Timer {
+    id: checkSummaries
+    interval: 100
+    onTriggered: {
+      try {
+        var toggles = test.findNamed(view, "buzzThreadToggle", [])
+        function toggle(id) { return toggles.filter(function(item) { return item.messageId === id })[0] }
+        var two = toggle(test.summaryIds[0])
+        var one = toggle(test.summaryIds[1])
+        if (!two || two.text !== "2 replies ›" || !two.visible)
+          throw new Error("Summary count not rendered on its row: " + (two ? two.text : "missing"))
+        if (two.tooltipText !== "Last reply " + service.formatTimestamp(150))
+          throw new Error("Last reply time not offered: " + two.tooltipText)
+        if (!one || one.text !== "1 reply ›" || one.tooltipText !== "Open replies beside the room")
+          throw new Error("Singular summary or unknown recency mislabelled: " + (one ? one.text : "missing"))
+        var quiet = toggles.filter(function(item) { return test.summaryIds.indexOf(item.messageId) === -1 })
+        if (!quiet.length || !quiet.every(function(item) { return item.text === "Reply ›" }))
+          throw new Error("Rows without a summary did not offer a plain reply")
+        console.log("PASS: thread opens beside the room with its replies; snapshots keep delegates and the open thread; the view follows the newest message only for a reader at the end; relay reply counts label their rows")
         Qt.quit()
       } catch (error) { console.error(error); Qt.exit(1) }
     }
@@ -91,6 +122,8 @@ ShellRoot {
         var reactions = test.findNamed(scroll, "buzzMessageReactions", [])
         if (reactions.length !== 15 || !reactions[reactions.length - 1].visible)
           throw new Error("Snapshot reactions were not rendered on their message")
+        if (service.threadSummariesSupported || !toggles.every(function(item) { return item.text === "Thread ›" }))
+          throw new Error("Helper without thread summaries did not keep the neutral thread label")
         if (test.shown("buzzThreadPanel").length) throw new Error("Thread panel shown without an open thread")
         toggles[toggles.length - 1].clicked()
         if (service.threadRootId !== test.openedRoot || service.threadState !== "loading")
@@ -221,6 +254,39 @@ ShellRoot {
         badCounts.status.history.rows[0].reactions={seen:201,working:0}
         if (service.acceptFrame(JSON.stringify(badCounts)) || !service.sessionFailed)
           throw new Error("Out-of-range reaction count accepted")
+        service.beginSession()
+        var summaryFrame=frame()
+        summaryFrame.capabilities.push("thread_summaries")
+        summaryFrame.status.history.rows[0].thread={replies:2,lastReplyAt:150,participants:["c".repeat(64),"d".repeat(64)],extra:true}
+        accept(summaryFrame)
+        var kept=service.historyRows[0].thread
+        if (!service.threadSummariesSupported || kept.replies !== 2 || kept.lastReplyAt !== 150
+            || kept.participants.length !== 2 || kept.extra !== undefined)
+          throw new Error("Valid thread summary was not carried into the row")
+        var unknown=frame(); unknown.capabilities.push("thread_summaries")
+        unknown.status.history.rows[0].thread=null
+        accept(unknown)
+        if (service.historyRows[0].thread !== null) throw new Error("Absent thread summary was invented")
+        var badSummaries=[{replies:-1,lastReplyAt:null,participants:[]},
+          {replies:1000001,lastReplyAt:null,participants:[]},
+          {replies:1.5,lastReplyAt:null,participants:[]},
+          {replies:"2",lastReplyAt:null,participants:[]},
+          {replies:2,lastReplyAt:-1,participants:[]},
+          {replies:2,lastReplyAt:253402300800,participants:[]},
+          {replies:2,participants:[]},
+          {replies:2,lastReplyAt:null},
+          {replies:2,lastReplyAt:null,participants:["not-a-key"]},
+          {replies:2,lastReplyAt:null,participants:["c".repeat(64),"c".repeat(64)]},
+          {replies:2,lastReplyAt:null,participants:"c".repeat(64)},
+          {replies:2,lastReplyAt:null,participants:Array.from({length:11},function(_,i){return i.toString(16).repeat(64)})},
+          [2], 2, "2 replies"]
+        for (var b=0;b<badSummaries.length;b++) {
+          service.beginSession()
+          var badSummary=frame(); badSummary.capabilities.push("thread_summaries")
+          badSummary.status.history.rows[0].thread=badSummaries[b]
+          if (service.acceptFrame(JSON.stringify(badSummary)) || !service.sessionFailed || service.historyRows.length)
+            throw new Error("Malformed thread summary accepted: " + JSON.stringify(badSummaries[b]))
+        }
         service.beginSession()
         var crowded=frame()
         crowded.status.history.rows=[]

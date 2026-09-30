@@ -224,6 +224,8 @@ Item {
   property string historyCategory: ""
   property bool historySupported: false
   property bool automaticHistorySupported: false
+  // The helper projects relay thread summaries: a row without one has no known replies.
+  property bool threadSummariesSupported: false
   property var historyHasMore: null
   property bool threadSupported: false
   property string threadRootId: ""
@@ -677,10 +679,10 @@ Item {
     if (!sampleMode) selectedRoomId = ""
   }
   function validCapabilities(capabilities) {
-    return Array.isArray(capabilities) && capabilities.length >= 1 && capabilities.length <= 10
+    return Array.isArray(capabilities) && capabilities.length >= 1 && capabilities.length <= 11
       && capabilities.indexOf("connection_status") !== -1
       && capabilities.every(function(cap, index) {
-        return ["connection_status", "room_catalog", "room_history", "message_send", "room_recipients", "history_auto_refresh", "room_activity", "agent_profiles", "thread_replies", "thread_send"].indexOf(cap) !== -1 && capabilities.indexOf(cap) === index
+        return ["connection_status", "room_catalog", "room_history", "message_send", "room_recipients", "history_auto_refresh", "room_activity", "agent_profiles", "thread_replies", "thread_send", "thread_summaries"].indexOf(cap) !== -1 && capabilities.indexOf(cap) === index
       })
   }
   function validatedCatalog(catalog) {
@@ -714,19 +716,26 @@ Item {
     for (var i = 0; i < history.rows.length; i++) {
       var row = history.rows[i]
       var reactions = row && row.reactions
+      var thread = row && row.thread
       if (!row || typeof row.id !== "string" || !/^[a-f0-9]{64}$/.test(row.id) || ids[row.id]
           || typeof row.author !== "string" || !/^[a-f0-9]{64}$/.test(row.author)
           || !Number.isInteger(row.time) || row.time < 0 || row.time > 253402300799
           || !boundedString(row.text, 2048) || typeof row.edited !== "boolean"
           || typeof row.truncated !== "boolean" || typeof row.unavailable !== "boolean"
           || (reactions != null && (!Number.isInteger(reactions.seen) || reactions.seen < 0 || reactions.seen > 200
-            || !Number.isInteger(reactions.working) || reactions.working < 0 || reactions.working > 200))) return null
+            || !Number.isInteger(reactions.working) || reactions.working < 0 || reactions.working > 200))
+          || (thread != null && (typeof thread !== "object" || Array.isArray(thread)
+            || !Number.isInteger(thread.replies) || thread.replies < 0 || thread.replies > 1000000
+            || (thread.lastReplyAt !== null && (!Number.isInteger(thread.lastReplyAt) || thread.lastReplyAt < 0 || thread.lastReplyAt > 253402300799))
+            || !Array.isArray(thread.participants) || thread.participants.length > 10
+            || !thread.participants.every(function(key, index) { return typeof key === "string" && /^[a-f0-9]{64}$/.test(key) && thread.participants.indexOf(key) === index })))) return null
       try { if (encodeURIComponent(row.text).replace(/%[A-F0-9]{2}/gi, "x").length > 2048) return null }
       catch (_) { return null }
       ids[row.id] = true
       clean.push({id: row.id, author: row.author, time: row.time, text: row.unavailable ? "" : row.text,
         edited: row.edited, truncated: row.truncated, unavailable: row.unavailable,
-        reactions: reactions == null ? null : {seen: reactions.seen, working: reactions.working}})
+        reactions: reactions == null ? null : {seen: reactions.seen, working: reactions.working},
+        thread: thread == null ? null : {replies: thread.replies, lastReplyAt: thread.lastReplyAt, participants: thread.participants.slice()}})
     }
     return {state: history.state, roomId: history.roomId, rows: clean, hasMore: history.hasMore, category: history.category || ""}
   }
@@ -740,6 +749,7 @@ Item {
     historySupported = false
     threadSupported = false
     threadSendSupported = false
+    threadSummariesSupported = false
     recipientsSupported = false
     generation = 0
     connection = "connecting"
@@ -754,6 +764,7 @@ Item {
     historySupported = false
     threadSupported = false
     threadSendSupported = false
+    threadSummariesSupported = false
     recipientsSupported = false
     relay = ""
     connection = "unavailable"
@@ -957,6 +968,7 @@ Item {
     }
     recipientsSupported = supportsRecipients
     automaticHistorySupported = frame.capabilities.indexOf("history_auto_refresh") !== -1
+    threadSummariesSupported = supportsHistory && frame.capabilities.indexOf("thread_summaries") !== -1
     instanceId = frame.instanceId
     generation = frame.generation
     relay = state.relay || ""
@@ -1102,6 +1114,7 @@ Item {
       root.clearCatalog()
       root.historySupported = false
       root.threadSupported = false
+      root.threadSummariesSupported = false
       root.threadSendSupported = false
       root.recipientsSupported = false
       root.sessionFailed = true
