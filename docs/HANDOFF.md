@@ -119,8 +119,13 @@ finished at the stop; it passed, and release 0.0.17 (`9684942`, Invite people
 in Settings) followed. **0.0.17 is installed** (helper SHA256
 `a605d55aaea4d2f78c57d64c39ecef4c109324d17afc2624283bc94fef50d788`, ARM64 run
 36765602361, rollback backup `~/.local/share/omarchy-buzz/backups/20260930T193257.874381Z`);
-bundles refreshed and `ready`. Branch `attachments` (worktree
-`~/Projects/omarchy-buzz-files`) is in progress per `docs/ATTACHMENTS_MAP.md`.
+bundles refreshed and `ready`. Release 0.0.18 (`a812003`, file attachments per
+`docs/ATTACHMENTS_MAP.md`) followed and **is installed** (helper SHA256
+`6183fba08731931a169acc138235d88393da05125294dd836edb0cf87ca5ec7a`, ARM64 run
+36772295227, rollback backup `~/.local/share/omarchy-buzz/backups/20260930T203041.252399Z`).
+The helper projects a real attachment on the owner's room (a 47 KB file shared
+from Desktop); no real download or upload had been exercised at this line's
+writing.
 If the helper shows `auth_rejected` after the VM was suspended, check the clock
 first (see the checkpoint entry on clock drift). The bundles under `~/.local/share/omarchy-buzz/agent-*` were
 reassembled by hand on September 30 afternoon from the 0.0.15 scripts; after
