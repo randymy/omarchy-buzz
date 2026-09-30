@@ -449,20 +449,13 @@ FocusScope {
                   readonly property string agentId: modelData.id
                   Layout.fillWidth: true
                   clip: true
+                  // Status in the row, harness in the tooltip: the sidebar is too narrow for both.
                   text: modelData.name + " · " + root.agentService.statusWord(modelData)
-                  tooltipText: modelData.name + " · " + root.agentService.harnessLabel(modelData.harness)
+                  tooltipText: modelData.name + " · " + root.agentService.harnessLabel(modelData.harness) + " · " + root.agentService.statusWord(modelData)
                   leftAlign: true
                   focusable: true
                   selected: root.agentEditorShown && root.agentEditorId === modelData.id
                   onClicked: root.openAgentEditor(modelData.id)
-                }
-                Text {
-                  text: modelData.harness
-                  textFormat: Text.PlainText
-                  color: Color.foreground
-                  opacity: 0.45
-                  font.family: Style.font.family
-                  font.pixelSize: Style.font.caption
                 }
               }
             }
