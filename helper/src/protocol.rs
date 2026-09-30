@@ -24,6 +24,14 @@ pub struct Request {
     pub participants: Option<Vec<String>>,
     /// `set_relay` only: the relay address to use. The helper canonicalizes it.
     pub url: Option<String>,
+    /// `claim_invite` only: the text the user pasted (link or bare code).
+    pub input: Option<String>,
+    /// `accept_invite` only: the code the helper parsed and published.
+    pub code: Option<String>,
+    /// `accept_invite` only: the join policy version shown, or `null` when the
+    /// relay has none. Presence is checked on the raw frame.
+    #[serde(rename = "policyVersion")]
+    pub policy_version: Option<String>,
 }
 fn canonical_key(value: &str) -> bool {
     nostr::PublicKey::from_hex(value).is_ok_and(|key| key.to_hex() == value)
@@ -62,12 +70,23 @@ pub fn request(bytes: &[u8]) -> Result<Request, &'static str> {
             | "open_dm"
             | "set_relay"
             | "create_identity"
+            | "claim_invite"
+            | "accept_invite"
+            | "open_rooms"
+            | "join_room"
+            | "leave_room"
     ) {
         return Err("unsupported_request");
     }
     if matches!(
         r.kind.as_str(),
-        "fetch_recent" | "fetch_older" | "fetch_thread" | "fetch_recipients" | "send_message"
+        "fetch_recent"
+            | "fetch_older"
+            | "fetch_thread"
+            | "fetch_recipients"
+            | "send_message"
+            | "join_room"
+            | "leave_room"
     ) {
         let room = r.room_id.as_deref().ok_or("invalid_request")?;
         let parsed = uuid::Uuid::parse_str(room).map_err(|_| "invalid_request")?;
@@ -152,6 +171,36 @@ pub fn request(bytes: &[u8]) -> Result<Request, &'static str> {
     } else if r.url.is_some() {
         return Err("invalid_request");
     }
+    if r.kind == "claim_invite" {
+        // Shape only; the helper parses the invite and answers with a category.
+        let input = r.input.as_deref().ok_or("invalid_request")?;
+        if input.trim().is_empty() || input.len() > 4096 || input.contains('\0') {
+            return Err("invalid_request");
+        }
+    } else if raw.get("input").is_some() {
+        return Err("invalid_request");
+    }
+    if r.kind == "accept_invite" {
+        let code = r.code.as_deref().ok_or("invalid_request")?;
+        if !crate::join::valid_code(code) {
+            return Err("invalid_request");
+        }
+        // Required key: a version string, or null when no policy was shown.
+        match raw.get("policyVersion") {
+            Some(serde_json::Value::Null) => {}
+            Some(serde_json::Value::String(v)) if crate::join::valid_version(v) => {}
+            _ => return Err("invalid_request"),
+        }
+    } else if raw.get("code").is_some() || raw.get("policyVersion").is_some() {
+        return Err("invalid_request");
+    }
+    // Room actions are correlated like other publishing requests.
+    if matches!(r.kind.as_str(), "join_room" | "leave_room") {
+        let id = uuid::Uuid::parse_str(&r.id).map_err(|_| "invalid_request")?;
+        if id.to_string() != r.id {
+            return Err("invalid_request");
+        }
+    }
     Ok(r)
 }
 #[derive(Clone)]
@@ -193,6 +242,24 @@ pub enum Command {
     /// `None` once the configuration is saved and published.
     SetRelay(String, tokio::sync::oneshot::Sender<Option<&'static str>>),
     CreateIdentity(tokio::sync::oneshot::Sender<Option<&'static str>>),
+    /// `community_join`: parse an invite and read the relay's join policy.
+    /// Honoured while authenticated or disconnected with keys loaded.
+    ClaimInvite(String, tokio::sync::oneshot::Sender<Option<&'static str>>),
+    /// Accept the published policy (if any) and claim the published code.
+    AcceptInvite(
+        String,
+        Option<String>,
+        tokio::sync::oneshot::Sender<Option<&'static str>>,
+    ),
+    /// Refresh the open rooms this identity has not joined.
+    FetchOpenRooms,
+    /// Publish kind 9021 (join) or 9022 (leave) for a room: request id, room.
+    RoomAction(
+        crate::join::Action,
+        String,
+        String,
+        tokio::sync::oneshot::Sender<Option<&'static str>>,
+    ),
 }
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -235,6 +302,105 @@ impl Default for DmOpen {
             request_id: None,
             channel_id: None,
             created: None,
+            category: None,
+        }
+    }
+}
+/// A relay's join policy as shown to the user before acceptance.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JoinPolicy {
+    /// Terms, then privacy text; controls other than newline and tab removed.
+    pub text: String,
+    pub version: String,
+    /// The relay requires a minimum-age attestation with acceptance.
+    pub age_required: bool,
+    /// The text was longer than the panel shows (`join::POLICY_TEXT`).
+    pub truncated: bool,
+}
+/// The relay's positive claim answer, validated field by field.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaimResult {
+    /// `joined` or `already_member`.
+    pub status: String,
+    pub community_id: String,
+    pub host: String,
+    pub role: String,
+}
+/// Onboarding step two: the invite being redeemed (`community_join`).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JoinSetup {
+    /// `idle`, `checking`, `policy`, `claiming`, `joined` or `failed`.
+    pub state: String,
+    /// The parsed code, present only in `policy` (awaiting `accept_invite`).
+    pub invite_code: Option<String>,
+    /// The policy to accept, present only in `policy`; `null` there means none.
+    pub join_policy: Option<JoinPolicy>,
+    /// Present only in `joined`.
+    pub claim: Option<ClaimResult>,
+    /// Present only in `failed`.
+    pub category: Option<String>,
+}
+impl Default for JoinSetup {
+    fn default() -> Self {
+        Self {
+            state: "idle".into(),
+            invite_code: None,
+            join_policy: None,
+            claim: None,
+            category: None,
+        }
+    }
+}
+/// An open stream room this identity has not joined (relay-signed kind 39000).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct OpenRoom {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    /// Always `stream`: only open stream rooms are listed.
+    pub kind: String,
+}
+#[derive(Clone, Debug, Serialize)]
+pub struct OpenRooms {
+    /// `unavailable`, `loading` or `snapshot`.
+    pub state: String,
+    /// At most `catalog::OPEN_ROOMS`, by name.
+    pub rooms: Vec<OpenRoom>,
+    pub category: Option<String>,
+}
+impl OpenRooms {
+    pub fn unavailable(category: Option<&str>) -> Self {
+        Self {
+            state: "unavailable".into(),
+            rooms: Vec::new(),
+            category: category.map(str::to_owned),
+        }
+    }
+}
+/// The one join or leave the helper tracks; outcomes only from the relay's
+/// exact-ID `OK`.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RoomAction {
+    /// `idle`, `sending`, `acknowledged`, `rejected` or `unknown`.
+    pub state: String,
+    /// `join` or `leave`; `null` when idle.
+    pub action: Option<String>,
+    pub request_id: Option<String>,
+    pub room_id: Option<String>,
+    /// `join_rejected`, `leave_rejected` or `relay_unavailable` (unknown).
+    pub category: Option<String>,
+}
+impl Default for RoomAction {
+    fn default() -> Self {
+        Self {
+            state: "idle".into(),
+            action: None,
+            request_id: None,
+            room_id: None,
             category: None,
         }
     }
@@ -410,6 +576,9 @@ pub struct Status {
     pub dm_open: DmOpen,
     pub recipients: RecipientsView,
     pub activity: Vec<crate::activity::Summary>,
+    pub setup: JoinSetup,
+    pub open_rooms: OpenRooms,
+    pub room_action: RoomAction,
 }
 impl Status {
     pub fn new(c: &crate::config::Config) -> Self {
@@ -426,11 +595,14 @@ impl Status {
             dm_open: DmOpen::default(),
             recipients: RecipientsView::unavailable(None, None),
             activity: Vec::new(),
+            setup: JoinSetup::default(),
+            open_rooms: OpenRooms::unavailable(None),
+            room_action: RoomAction::default(),
         }
     }
 }
 pub fn envelope(kind: &str, id: Option<&str>, instance: &str, s: &Status) -> serde_json::Value {
-    serde_json::json!({"version":1,"type":kind,"id":id,"instanceId":instance,"generation":s.generation,"capabilities":["connection_status","room_catalog","room_history","message_send","thread_send","room_recipients","history_auto_refresh","room_activity","agent_profiles","thread_replies","thread_summaries","dm_open","older_history","live_updates","setup_assist"],"backendRevision":crate::compatibility::BUZZ_REVISION,"status":s})
+    serde_json::json!({"version":1,"type":kind,"id":id,"instanceId":instance,"generation":s.generation,"capabilities":["connection_status","room_catalog","room_history","message_send","thread_send","room_recipients","history_auto_refresh","room_activity","agent_profiles","thread_replies","thread_summaries","dm_open","older_history","live_updates","setup_assist","community_join"],"backendRevision":crate::compatibility::BUZZ_REVISION,"status":s})
 }
 pub async fn read_line<R: tokio::io::AsyncBufRead + Unpin>(
     r: &mut R,
@@ -537,7 +709,8 @@ mod state_tests {
                 "dm_open",
                 "older_history",
                 "live_updates",
-                "setup_assist"
+                "setup_assist",
+                "community_join"
             ])
         );
         assert_eq!(v["status"]["catalog"]["state"], "unavailable");
@@ -821,6 +994,74 @@ mod state_tests {
         .is_err());
     }
     #[test]
+    fn join_requests_carry_only_their_own_fields() {
+        let parse = |v: &serde_json::Value| request(&serde_json::to_vec(v).unwrap());
+        let code = "v2.AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
+        let room = "00000000-0000-4000-8000-000000000001";
+        let id = "00000000-0000-4000-8000-000000000002";
+        let claim = serde_json::json!({"version":1,"id":"ui-1","type":"claim_invite","input":"https://relay.example/invite/x"});
+        assert_eq!(
+            parse(&claim).unwrap().input.as_deref(),
+            Some("https://relay.example/invite/x")
+        );
+        let accept = serde_json::json!({"version":1,"id":"ui-2","type":"accept_invite","code":code,"policyVersion":"v1"});
+        let parsed = parse(&accept).unwrap();
+        assert_eq!(
+            (parsed.code.as_deref(), parsed.policy_version.as_deref()),
+            (Some(code), Some("v1"))
+        );
+        let mut none = accept.clone();
+        none["policyVersion"] = serde_json::Value::Null;
+        assert!(parse(&none).unwrap().policy_version.is_none());
+        let open = serde_json::json!({"version":1,"id":"ui-3","type":"open_rooms"});
+        assert!(parse(&open).is_ok());
+        let join = serde_json::json!({"version":1,"id":id,"type":"join_room","roomId":room});
+        assert_eq!(parse(&join).unwrap().room_id.as_deref(), Some(room));
+        let mut leave = join.clone();
+        leave["type"] = serde_json::json!("leave_room");
+        assert!(parse(&leave).is_ok());
+        for (base, field, value) in [
+            (&claim, "input", serde_json::json!("")),
+            (&claim, "input", serde_json::json!("  ")),
+            (&claim, "input", serde_json::json!("a\u{0}b")),
+            (&claim, "input", serde_json::json!("x".repeat(4097))),
+            (&claim, "input", serde_json::Value::Null),
+            (&claim, "code", serde_json::json!(code)),
+            (&claim, "url", serde_json::json!("wss://relay.example")),
+            (&claim, "privateKey", serde_json::json!("a".repeat(64))),
+            (&accept, "code", serde_json::json!("has space")),
+            (&accept, "code", serde_json::json!("")),
+            (&accept, "policyVersion", serde_json::json!("")),
+            (&accept, "policyVersion", serde_json::json!(1)),
+            (&accept, "input", serde_json::json!("x")),
+            (&accept, "roomId", serde_json::json!(room)),
+            (&open, "roomId", serde_json::json!(room)),
+            (&open, "input", serde_json::json!("x")),
+            (&join, "id", serde_json::json!("ui-4")),
+            (&join, "roomId", serde_json::json!("../room")),
+            (&join, "code", serde_json::json!(code)),
+            (&join, "generation", serde_json::json!(1)),
+            (&set_relay_frame(), "input", serde_json::json!("x")),
+        ] {
+            let mut bad = base.clone();
+            bad[field] = value;
+            assert!(parse(&bad).is_err(), "{bad}");
+        }
+        for (base, field) in [
+            (&claim, "input"),
+            (&accept, "code"),
+            (&accept, "policyVersion"),
+            (&join, "roomId"),
+        ] {
+            let mut missing = base.clone();
+            missing.as_object_mut().unwrap().remove(field);
+            assert!(parse(&missing).is_err(), "{missing}");
+        }
+    }
+    fn set_relay_frame() -> serde_json::Value {
+        serde_json::json!({"version":1,"id":"ui-5","type":"set_relay","url":"wss://relay.example"})
+    }
+    #[test]
     fn maximum_projected_snapshot_fits_ipc_frame() {
         let mut status = Status::new(&crate::config::Config::default());
         status.relay = Some("x".repeat(2048));
@@ -908,6 +1149,37 @@ mod state_tests {
             channel_id: Some("00000000-0000-4000-8000-000000000004".into()),
             created: Some(true),
             category: Some("dm_open_response_unknown".into()),
+        };
+        status.setup = JoinSetup {
+            state: "policy".into(),
+            invite_code: Some("a".repeat(crate::join::CODE_BYTES)),
+            join_policy: Some(JoinPolicy {
+                text: "\\".repeat(crate::join::POLICY_TEXT),
+                version: "\\".repeat(128),
+                age_required: true,
+                truncated: true,
+            }),
+            claim: None,
+            category: None,
+        };
+        status.open_rooms = OpenRooms {
+            state: "snapshot".into(),
+            rooms: (0..crate::catalog::OPEN_ROOMS)
+                .map(|_| OpenRoom {
+                    id: "00000000-0000-4000-8000-000000000001".into(),
+                    name: "\\".repeat(128),
+                    description: "\\".repeat(256),
+                    kind: "stream".into(),
+                })
+                .collect(),
+            category: None,
+        };
+        status.room_action = RoomAction {
+            state: "rejected".into(),
+            action: Some("leave".into()),
+            request_id: Some("00000000-0000-4000-8000-000000000005".into()),
+            room_id: Some("00000000-0000-4000-8000-000000000006".into()),
+            category: Some("leave_rejected".into()),
         };
         let encoded = serde_json::to_vec(&envelope(
             "status",

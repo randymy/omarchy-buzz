@@ -47,7 +47,7 @@ def status(frame, kind):
     assert frame["status"]["connection"] == "unconfigured", frame
     assert frame["status"]["identity"] is None, frame
     assert frame["status"]["relay"] is None, frame
-    assert frame["capabilities"] == ["connection_status", "room_catalog", "room_history", "message_send", "thread_send", "room_recipients", "history_auto_refresh", "room_activity", "agent_profiles", "thread_replies", "thread_summaries", "dm_open", "older_history", "live_updates", "setup_assist"], frame
+    assert frame["capabilities"] == ["connection_status", "room_catalog", "room_history", "message_send", "thread_send", "room_recipients", "history_auto_refresh", "room_activity", "agent_profiles", "thread_replies", "thread_summaries", "dm_open", "older_history", "live_updates", "setup_assist", "community_join"], frame
     assert frame["status"]["catalog"]["state"] == "unavailable", frame
     assert frame["status"]["catalog"]["rooms"] == [], frame
     assert frame["status"]["history"] == {
@@ -62,6 +62,13 @@ def status(frame, kind):
     }, frame
     assert frame["status"]["recipients"] == {
         "state": "unavailable", "roomId": None, "entries": [], "agents": [], "partial": True, "category": None,
+    }, frame
+    assert frame["status"]["setup"] == {
+        "state": "idle", "inviteCode": None, "joinPolicy": None, "claim": None, "category": None,
+    }, frame
+    assert frame["status"]["openRooms"] == {"state": "unavailable", "rooms": [], "category": None}, frame
+    assert frame["status"]["roomAction"] == {
+        "state": "idle", "action": None, "requestId": None, "roomId": None, "category": None,
     }, frame
     assert frame["instanceId"] and frame["generation"] == 1, frame
 
@@ -174,6 +181,17 @@ def main():
                     error = frames.matching(f"relay{index}")
                     assert error["type"] == "error" and error["category"] == "setup_invalid_relay", error
                 assert not list((base / "config").rglob("*")), "refused relay wrote configuration"
+                # Joining needs a relay and an identity; room actions a connection.
+                client.sendall(json.dumps({"version": 1, "id": "invite0", "type": "claim_invite", "input": "code"}).encode() + b"\n")
+                error = frames.matching("invite0")
+                assert error["type"] == "error" and error["category"] == "setup_not_allowed", error
+                client.sendall(request("open0", "open_rooms"))
+                status(frames.matching("open0"), "status")
+                join = {"version": 1, "id": "00000000-0000-4000-8000-000000000001", "type": "join_room",
+                        "roomId": "00000000-0000-4000-8000-000000000002"}
+                client.sendall(json.dumps(join).encode() + b"\n")
+                error = frames.matching(join["id"])
+                assert error["type"] == "error" and error["category"] == "relay_unavailable", error
                 # No relay yet: nothing to create an identity for.
                 client.sendall(request("create0", "create_identity"))
                 error = frames.matching("create0")
@@ -196,7 +214,7 @@ def main():
             daemon.send_signal(signal.SIGTERM)
             assert daemon.wait(timeout=5) == 0, "SIGTERM did not stop daemon cleanly"
             assert not endpoint.exists(), "standalone daemon left its socket behind"
-            print("PASS: unconfigured hello/status, malformed and oversized requests, bridge EOF, setup assist refusals and relay save, SIGTERM socket cleanup")
+            print("PASS: unconfigured hello/status, malformed and oversized requests, bridge EOF, setup assist refusals and relay save, invite and room action refusals, SIGTERM socket cleanup")
         finally:
             for process in reversed(processes):
                 stop(process)

@@ -166,6 +166,11 @@ struct Script {
     // How the fixture answers a kind 41010 DM open, and what it received.
     dm: DmReply,
     dm_events: Vec<Event>,
+    // Open rooms offered by an unscoped kind 39000 read, how a kind 9021/9022
+    // is answered, and what was received.
+    open: Vec<String>,
+    room_reply: DmReply,
+    room_events: Vec<Event>,
 }
 #[derive(Clone, Copy, PartialEq)]
 enum DmReply {
@@ -244,6 +249,9 @@ async fn recheck_fixture_every(first: Option<Discovery>, catalog: Duration) -> R
         joined: vec![a.clone(), b.clone()],
         dm: DmReply::Silent,
         dm_events: Vec::new(),
+        open: Vec::new(),
+        room_reply: DmReply::Silent,
+        room_events: Vec::new(),
     }));
     let (count_tx, discoveries) = watch::channel(0_usize);
     let count_tx = std::sync::Arc::new(count_tx);
@@ -287,6 +295,48 @@ async fn recheck_fixture_every(first: Option<Discovery>, catalog: Duration) -> R
                         .unwrap(),
                     "EVENT" => {
                         let event: Event = serde_json::from_value(frame[1].clone()).unwrap();
+                        if matches!(event.kind.as_u16(), 9021 | 9022) {
+                            event.verify().unwrap();
+                            assert_eq!(event.pubkey, public);
+                            let id = event.id.to_hex();
+                            let room = event
+                                .tags
+                                .iter()
+                                .find(|t| t.as_slice()[0] == "h")
+                                .unwrap()
+                                .as_slice()[1]
+                                .clone();
+                            let reply = {
+                                let mut script = dm_script.lock().unwrap();
+                                let join = event.kind.as_u16() == 9021;
+                                script.room_events.push(event);
+                                match script.room_reply {
+                                    DmReply::Silent => None,
+                                    DmReply::Reject => Some(json!([
+                                        "OK",
+                                        id,
+                                        false,
+                                        "invalid: cannot remove the last owner"
+                                    ])),
+                                    DmReply::Open => {
+                                        if join {
+                                            script.joined.push(room.clone());
+                                            script.open.retain(|r| *r != room);
+                                        } else {
+                                            script.joined.retain(|r| *r != room);
+                                            script.open.push(room);
+                                        }
+                                        Some(json!(["OK", id, true, ""]))
+                                    }
+                                }
+                            };
+                            if let Some(reply) = reply {
+                                ws.send(Message::Text(reply.to_string().into()))
+                                    .await
+                                    .unwrap();
+                            }
+                            continue;
+                        }
                         if event.kind.as_u16() != 41010 {
                             continue;
                         }
@@ -366,6 +416,19 @@ async fn recheck_fixture_every(first: Option<Discovery>, catalog: Duration) -> R
                         39002 => {
                             let room = tagged("#d").remove(0);
                             if joined.contains(&room) { ok(&serde_json::to_string(&vec![membership(&room)]).unwrap()) } else { FORBIDDEN.into() }
+                        }
+                        // Unscoped: member and open channels, each with its visibility tag,
+                        // plus one private channel the viewer could not see in pinned Buzz.
+                        39000 if filter.get("#d").is_none() => {
+                            assert_eq!(filter, &json!({"kinds":[39000],"limit":200}));
+                            let open = script.lock().unwrap().open.clone();
+                            let meta = |room: &str, name: &str, visibility: &str| note(&relay_keys, 39000, "", vec![
+                                Tag::parse(["d", room]).unwrap(), Tag::parse(["name", name]).unwrap(), Tag::parse([visibility]).unwrap(),
+                                Tag::parse(["closed"]).unwrap(), Tag::parse(["t", "stream"]).unwrap()]);
+                            let mut events: Vec<Event> = joined.iter().filter(|r| *r != DM_ROOM).map(|room| meta(room, "Fixture", "public")).collect();
+                            events.extend(open.iter().map(|room| meta(room, "Open fixture", "public")));
+                            events.push(meta("44444444-4444-4444-8444-444444444444", "Private", "private"));
+                            ok(&serde_json::to_string(&events).unwrap())
                         }
                         39000 => ok(&serde_json::to_string(&tagged("#d").iter().filter(|room| joined.contains(room)).map(|room| note(&relay_keys, 39000, "", if room == DM_ROOM {
                             vec![Tag::parse(["d", room.as_str()]).unwrap(), Tag::parse(["name", "DM"]).unwrap(), Tag::parse(["t", "dm"]).unwrap(), Tag::parse(["hidden"]).unwrap(),
@@ -713,3 +776,6 @@ async fn first_room_check_after_authentication_publishes_loading() {
 #[cfg(test)]
 #[path = "auth_dm_open_tests.rs"]
 mod dm_open_integration;
+#[cfg(test)]
+#[path = "auth_join_tests.rs"]
+mod join_integration;

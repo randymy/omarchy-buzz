@@ -55,6 +55,9 @@ pub enum QueryRequest {
         authors: Vec<nostr::PublicKey>,
     },
     DmVisibility,
+    /// Unscoped channel metadata: member channels plus every open channel
+    /// (`channel_members.rs` `get_accessible_channel_ids`), for open rooms.
+    OpenRooms,
 }
 impl QueryRequest {
     fn body(&self, keys: &Keys) -> Result<Vec<u8>, &'static str> {
@@ -72,6 +75,7 @@ impl QueryRequest {
             Self::DmVisibility => {
                 serde_json::json!({"kinds":[30622],"#p":[keys.public_key().to_hex()],"limit":1})
             }
+            Self::OpenRooms => serde_json::json!({"kinds":[39000],"limit":MAX_EVENTS}),
             Self::JoinedRooms { limit } if (1..=50).contains(limit) => {
                 serde_json::json!({"kinds":[39002],"#p":[keys.public_key().to_hex()],"limit":limit})
             }
@@ -172,6 +176,7 @@ impl QueryRequest {
                             && t.as_slice().get(1) == Some(&keys.public_key().to_hex())
                     })
             }
+            Self::OpenRooms => event.kind.as_u16() == 39000,
             Self::JoinedRooms { .. } => {
                 event.kind.as_u16() == 39002
                     && event.tags.iter().any(|t| {
@@ -200,7 +205,11 @@ fn endpoint(relay: &str) -> Result<url::Url, &'static str> {
     u.set_path("/query");
     Ok(u)
 }
-fn authorization(keys: &Keys, url: &url::Url, body: &[u8]) -> Result<HeaderValue, &'static str> {
+pub(crate) fn authorization(
+    keys: &Keys,
+    url: &url::Url,
+    body: &[u8],
+) -> Result<HeaderValue, &'static str> {
     let data = HttpData::new(
         nostr::Url::parse(url.as_str()).map_err(|_| "invalid_query_origin")?,
         HttpMethod::POST,

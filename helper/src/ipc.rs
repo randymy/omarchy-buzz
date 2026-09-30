@@ -127,15 +127,32 @@ async fn client(
                         else {None}};
                     if let Some(category)=refused {write(&mut out,&serde_json::json!({"version":1,"type":"error","id":r.id,"category":category,"instanceId":instance})).await?;continue;}
                 }
+                if r.kind=="claim_invite" || r.kind=="accept_invite" {
+                    let refused={let current=status.borrow();
+                        // Invites need a relay and an identity. A disconnected helper still
+                        // holds the identity of its refused connection: a new identity may
+                        // not authenticate before it is a member (handlers/auth.rs).
+                        if current.relay.is_none() || current.identity.is_none() {Some("setup_not_allowed")}
+                        else if matches!(current.setup.state.as_str(),"checking"|"claiming") {Some("setup_busy")}
+                        else if matches!(current.connection.as_str(),"authenticated"|"disconnected") {None}
+                        else if current.connection=="connecting" {Some("setup_busy")}
+                        else {Some("setup_not_allowed")}};
+                    if let Some(category)=refused {write(&mut out,&serde_json::json!({"version":1,"type":"error","id":r.id,"category":category,"instanceId":instance})).await?;continue;}
+                }
+                if r.kind=="join_room" || r.kind=="leave_room" {
+                    let busy={let current=status.borrow();current.room_action.state=="sending" && current.room_action.request_id.as_deref()!=Some(r.id.as_str())};
+                    if busy {write(&mut out,&serde_json::json!({"version":1,"type":"error","id":r.id,"category":"setup_busy","instanceId":instance})).await?;continue;}
+                }
                 if r.kind=="send_message" {
                     let busy={let pending=status.borrow();pending.delivery.state=="sending" && pending.delivery.request_id.as_deref()!=Some(r.id.as_str())};
                     if busy {write(&mut out,&serde_json::json!({"version":1,"type":"error","id":r.id,"category":"send_busy","instanceId":instance})).await?;continue;}
                 }
                 let mut send_reply=None;
-                let setup=r.kind=="set_relay" || r.kind=="create_identity";
+                let setup=matches!(r.kind.as_str(),"set_relay"|"create_identity"|"claim_invite"|"accept_invite");
+                let room_action=r.kind=="join_room" || r.kind=="leave_room";
                 // A setup reply that never arrives is not a refusal; the next
                 // status frame shows whether the change was saved.
-                let unknown=if r.kind=="open_dm" {"dm_open_unknown"} else if setup {"setup_busy"} else {"delivery_unknown"};
+                let unknown=if r.kind=="open_dm" {"dm_open_unknown"} else if setup || room_action {"setup_busy"} else {"delivery_unknown"};
                 let command=match r.kind.as_str() {
                     "retry_connection"=>Some(protocol::Command::Retry),
                     "fetch_recent"=>Some(protocol::Command::FetchRecent(r.room_id.clone().unwrap())),
@@ -152,11 +169,18 @@ async fn client(
                     },reply))},
                     "set_relay"=>{let (reply,receiver)=tokio::sync::oneshot::channel();send_reply=Some(receiver);Some(protocol::Command::SetRelay(r.url.clone().unwrap(),reply))},
                     "create_identity"=>{let (reply,receiver)=tokio::sync::oneshot::channel();send_reply=Some(receiver);Some(protocol::Command::CreateIdentity(reply))},
+                    "claim_invite"=>{let (reply,receiver)=tokio::sync::oneshot::channel();send_reply=Some(receiver);Some(protocol::Command::ClaimInvite(r.input.clone().unwrap(),reply))},
+                    "accept_invite"=>{let (reply,receiver)=tokio::sync::oneshot::channel();send_reply=Some(receiver);Some(protocol::Command::AcceptInvite(r.code.clone().unwrap(),r.policy_version.clone(),reply))},
+                    "open_rooms"=>Some(protocol::Command::FetchOpenRooms),
+                    "join_room"|"leave_room"=>{let (reply,receiver)=tokio::sync::oneshot::channel();send_reply=Some(receiver);
+                        let action=if r.kind=="join_room" {crate::join::Action::Join} else {crate::join::Action::Leave};
+                        Some(protocol::Command::RoomAction(action,r.id.clone(),r.room_id.clone().unwrap(),reply))},
                     _=>None,
                 };
-                if let Some(command)=command {if retry.try_send(command).is_err() {write(&mut out,&serde_json::json!({"version":1,"type":"error","id":r.id,"category":if setup {"setup_busy"} else {"request_busy"},"instanceId":instance})).await?;continue;}}
+                if let Some(command)=command {if retry.try_send(command).is_err() {write(&mut out,&serde_json::json!({"version":1,"type":"error","id":r.id,"category":if setup || room_action {"setup_busy"} else {"request_busy"},"instanceId":instance})).await?;continue;}}
                 if let Some(reply)=send_reply {
-                    // Relay discovery (up to 13 s) and a Secret Service write take longer than a send.
+                    // Relay discovery (up to 13 s), a Secret Service write and an invite's
+                    // three HTTP requests (10 s each) take longer than a send.
                     let category=send_result(reply,Duration::from_secs(if setup {60} else {5}),unknown).await;
                     if let Some(category)=category {write(&mut out,&serde_json::json!({"version":1,"type":"error","id":r.id,"category":category,"instanceId":instance})).await?;continue;}
                 }
@@ -456,7 +480,7 @@ mod setup_tests {
         let actor = tokio::spawn(async move {
             let mut retries = 0;
             while let Some(command) = received.recv().await {
-                if crate::auth::offline_command(command, &tx, &actor_setup).await {
+                if crate::auth::offline_command(command, &tx, &actor_setup, None).await {
                     retries += 1;
                 }
             }
@@ -506,5 +530,136 @@ mod setup_tests {
         drop(lines);
         assert_eq!(actor.await.unwrap(), 2);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn invites_need_a_relay_identity_and_a_settled_connection() {
+        let identity = nostr::Keys::generate().public_key().to_hex();
+        let mut status = Status::new(&config::Config::default());
+        status.connection = "unconfigured".into();
+        let (tx, rx) = watch::channel(status);
+        let (commands, mut received) = mpsc::channel(1);
+        let (mut lines, mut write) = connect(rx, commands);
+        let mut seen = String::new();
+        assert_eq!(next(&mut lines, &mut seen).await["type"], "hello");
+        let claim = br#"{"version":1,"id":"ui-1","type":"claim_invite","input":"code"}"#;
+        let accept = br#"{"version":1,"id":"ui-2","type":"accept_invite","code":"code","policyVersion":null}"#;
+        let mut refusals = vec![("unconfigured", false, "idle", "setup_not_allowed")];
+        for connection in ["connecting"] {
+            refusals.push((connection, true, "idle", "setup_busy"));
+        }
+        refusals.push(("unavailable", true, "idle", "setup_not_allowed"));
+        refusals.push(("authenticated", true, "checking", "setup_busy"));
+        refusals.push(("disconnected", true, "claiming", "setup_busy"));
+        for (connection, configured, state, category) in refusals {
+            tx.send_modify(|s| {
+                s.connection = connection.into();
+                s.relay = configured.then(|| "wss://relay.example/".to_string());
+                s.identity = configured.then(|| identity.clone());
+                s.setup.state = state.into();
+            });
+            for (request, id) in [(&claim[..], "ui-1"), (&accept[..], "ui-2")] {
+                write.write_all(request).await.unwrap();
+                write.write_all(b"\n").await.unwrap();
+                let frame = answer(&mut lines, &mut seen, id).await;
+                assert_eq!(
+                    (frame["type"].as_str(), frame["category"].as_str()),
+                    (Some("error"), Some(category)),
+                    "{connection} {state}"
+                );
+            }
+        }
+        assert!(
+            received.try_recv().is_err(),
+            "a refused invite reached the actor"
+        );
+        // Disconnected (possibly refused as a non-member) with an identity: allowed.
+        tx.send_modify(|s| {
+            s.connection = "disconnected".into();
+            s.category = Some("auth_rejected".into());
+            s.setup.state = "failed".into();
+        });
+        write.write_all(claim).await.unwrap();
+        write.write_all(b"\n").await.unwrap();
+        let command = timeout(Duration::from_secs(5), received.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(command, protocol::Command::ClaimInvite(ref input, _) if input == "code"));
+    }
+
+    #[tokio::test]
+    async fn an_invite_is_redeemed_while_disconnected_and_reconnects() {
+        let _network_fixture = crate::NETWORK_TEST_LOCK.lock().await;
+        let keys = nostr::Keys::generate();
+        let (relay, server) = crate::join::tests::http_fixture(vec![
+            (404, String::new()),
+            (200, crate::join::tests::CLAIMED.into()),
+        ])
+        .await;
+        let configured = config::Config {
+            relay: Some(relay.clone()),
+            identity: Some(keys.public_key().to_hex()),
+        };
+        let mut status = Status::new(&configured);
+        status.connection = "disconnected".into();
+        status.category = Some("auth_rejected".into());
+        let (tx, rx) = watch::channel(status);
+        let (commands, mut received) = mpsc::channel(1);
+        let (setup, _, dir) = crate::setup::tests::fixture();
+        let actor_relay = relay.clone();
+        let actor = tokio::spawn(async move {
+            let mut retries = 0;
+            while let Some(command) = received.recv().await {
+                let session = Some((actor_relay.as_str(), &keys));
+                if crate::auth::offline_command(command, &tx, &setup, session).await {
+                    retries += 1;
+                }
+            }
+            retries
+        });
+        let (mut lines, mut write) = connect(rx, commands);
+        let mut seen = String::new();
+        assert_eq!(next(&mut lines, &mut seen).await["type"], "hello");
+        let code = crate::join::tests::CODE;
+        let claim = serde_json::json!({"version":1,"id":"ui-1","type":"claim_invite","input":format!(" {code} ")});
+        write
+            .write_all(format!("{claim}\n").as_bytes())
+            .await
+            .unwrap();
+        let frame = answer(&mut lines, &mut seen, "ui-1").await;
+        assert_eq!(frame["type"], "status", "{frame}");
+        assert_eq!(
+            frame["status"]["setup"],
+            serde_json::json!({"state":"policy","inviteCode":code,"joinPolicy":null,"claim":null,"category":null})
+        );
+        // Only the published code is accepted.
+        let other = serde_json::json!({"version":1,"id":"ui-2","type":"accept_invite","code":"other","policyVersion":null});
+        write
+            .write_all(format!("{other}\n").as_bytes())
+            .await
+            .unwrap();
+        assert_eq!(
+            answer(&mut lines, &mut seen, "ui-2").await["category"],
+            "invite_invalid"
+        );
+        let accept = serde_json::json!({"version":1,"id":"ui-3","type":"accept_invite","code":code,"policyVersion":null});
+        write
+            .write_all(format!("{accept}\n").as_bytes())
+            .await
+            .unwrap();
+        let frame = answer(&mut lines, &mut seen, "ui-3").await;
+        assert_eq!(frame["type"], "status", "{frame}");
+        assert_eq!(
+            frame["status"]["setup"],
+            serde_json::json!({"state":"joined","inviteCode":null,"joinPolicy":null,"category":null,
+                "claim":{"status":"joined","communityId":"11111111-1111-4111-8111-111111111111","host":"127.0.0.1","role":"member"}})
+        );
+        assert_eq!(server.await.unwrap().len(), 2);
+        drop(write);
+        drop(lines);
+        // The successful claim asked the connection to be retried.
+        assert_eq!(actor.await.unwrap(), 1);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

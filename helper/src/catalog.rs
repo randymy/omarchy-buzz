@@ -447,6 +447,99 @@ pub fn reconcile(
     })
 }
 
+/// Open rooms listed at most (`status.openRooms`).
+pub const OPEN_ROOMS: usize = 50;
+
+/// Open stream rooms from an unscoped kind 39000 response
+/// (`channel_members.rs` `get_accessible_channel_ids`: member channels plus
+/// every `visibility = open` channel). Pinned Buzz tags each 39000 with exactly
+/// one of `["public"]` (visibility open) or `["private"]`
+/// (`side_effects.rs` `emit_group_discovery_events`; the `closed` tag is on
+/// every channel and says nothing about joining). Every event is validated as
+/// in `reconcile` against the pinned signer; any bad event, repeated room with
+/// another event, or a visibility tag that is missing, doubled or carries a
+/// value rejects the whole response. Kept: `public`, `t` = `stream`, not
+/// `hidden`, not `archived`, and not in `joined`; by name, at most 50.
+pub fn open_rooms(
+    signer: PublicKey,
+    events: &[Event],
+    joined: &BTreeSet<String>,
+    now: u64,
+) -> Result<Vec<crate::protocol::OpenRoom>, &'static str> {
+    if events.len() > 200 {
+        return Err("catalog_oversized");
+    }
+    let mut seen = BTreeMap::new();
+    for event in events {
+        let id = validated(event, signer, 39000, now)?;
+        insert(&mut seen, id, event)?;
+    }
+    let mut rooms = Vec::new();
+    for (id, event) in seen {
+        let flags = |name: &str| {
+            event
+                .tags
+                .iter()
+                .filter(|t| t.as_slice().first().is_some_and(|v| v == name))
+                .map(|t| t.as_slice().len())
+                .collect::<Vec<_>>()
+        };
+        let (public, private) = (flags("public"), flags("private"));
+        let open = match (public.as_slice(), private.as_slice()) {
+            ([1], []) => true,
+            ([], [1]) => false,
+            _ => return Err("catalog_invalid_shape"),
+        };
+        let name = one_tag(event, "name")?.ok_or("catalog_invalid_shape")?;
+        let kind = one_tag(event, "t")?.ok_or("catalog_invalid_shape")?;
+        if kind.is_empty()
+            || kind.len() > 32
+            || !kind.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_')
+        {
+            return Err("catalog_invalid_shape");
+        }
+        let about = one_tag(event, "about")?.unwrap_or("");
+        if !open
+            || kind != "stream"
+            || !flags("hidden").is_empty()
+            || !flags("archived").is_empty()
+            || joined.contains(&id.to_string())
+        {
+            continue;
+        }
+        let name = clean(name, 128);
+        if name.trim().is_empty() {
+            return Err("catalog_invalid_shape");
+        }
+        rooms.push(crate::protocol::OpenRoom {
+            id: id.to_string(),
+            name,
+            description: clean(about, 256),
+            kind: "stream".into(),
+        });
+    }
+    rooms.sort_by(|a, b| {
+        a.name
+            .to_lowercase()
+            .cmp(&b.name.to_lowercase())
+            .then(a.id.cmp(&b.id))
+    });
+    rooms.truncate(OPEN_ROOMS);
+    Ok(rooms)
+}
+
+/// One authenticated unscoped 39000 read for open rooms, checked against the
+/// pinned relay signer. `joined` is the published catalog's room IDs.
+pub async fn discover_open(
+    relay: &str,
+    keys: &Keys,
+    pin: PublicKey,
+    joined: BTreeSet<String>,
+) -> Result<Vec<crate::protocol::OpenRoom>, &'static str> {
+    let events = query(relay, keys, &QueryRequest::OpenRooms).await?;
+    open_rooms(pin, &events, &joined, Timestamp::now().as_secs())
+}
+
 pub async fn discover(
     relay: &str,
     keys: &Keys,

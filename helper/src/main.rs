@@ -12,6 +12,7 @@ mod dm_open;
 mod enrollment;
 mod history;
 mod ipc;
+mod join;
 mod ledger;
 mod live;
 mod protocol;
