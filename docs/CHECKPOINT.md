@@ -1667,3 +1667,15 @@ Still helper-bound: reply counts on room messages (every message offers
 eight replies, older history, live updates, and direct messages. DMs remain
 excluded by DESIGN.md; the catalog admits only `stream` rooms. The selected
 room is not remembered across shell restarts.
+
+## Existing direct messages, synthetic only — September 29
+
+Branch `direct-messages`, phase (a) of [DM_MAP.md](DM_MAP.md). The catalog admits `t=dm`
+channels with 2–9 participant keys including self (pinned `dm.rs:109-118`; otherwise the
+catalog is rejected). The DM `hidden` tag is an always-present list hint
+(`side_effects.rs:1215-1219`), so hide state comes only from the NIP-DV snapshot; a
+snapshot not relay-signed or not exactly shaped fails the catalog as `catalog_invalid_shape`.
+DM names come from participant profiles with key-prefix fallback. The panel lists visible
+DMs under Direct messages, without `#`; reading, threads and sending were unchanged.
+Verified with locked helper tests and every `scripts/preview` mode only. No live relay
+verification: no real DM was listed, read or sent, and nothing was installed.
