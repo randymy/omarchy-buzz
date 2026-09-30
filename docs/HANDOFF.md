@@ -151,6 +151,16 @@ attachments (view/download media tags, upload from the composer) → model
 availability check for Claude Code agents → presence/"Update your status".
 Teams, sharing and import stay on hold. Git history is never rewritten.
 
+## Shell restarts
+
+Before `omarchy restart shell`, check `pgrep -fa '^/usr/bin/quickshell'`. An
+orphaned second shell instance (seen September 30, left by an earlier restart)
+causes "omarchy-shell is not responding", duplicate D-Bus registrations and a
+SIGABRT core dump of the restarting instance; kill the instance that owns no
+layers (`hyprctl layers -j` shows the owner's pid) and restart once. After a
+helper upgrade a second restart is sometimes needed before the new panel code
+loads ("Incompatible helper" until then).
+
 ## Next three priorities
 
 1. **Stabilize daily messaging UX.** Observe the installed quiet-refresh behavior;
