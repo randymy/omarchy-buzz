@@ -765,6 +765,24 @@ impl Catalog {
         }
     }
 }
+/// Every `status.category` the helper publishes. The panel's `acceptFrame`
+/// refuses a frame with any other one, so a new entry needs a panel update.
+/// `clock_skew` is a rejected authentication with a clock offset of at least
+/// `clock::THRESHOLD` seconds.
+pub const CONNECTION_CATEGORIES: [&str; 12] = [
+    "identity_access_pending",
+    "identity_missing",
+    "identity_locked",
+    "identity_invalid",
+    "identity_unavailable",
+    "auth_rejected",
+    "clock_skew",
+    "relay_timeout",
+    "relay_unavailable",
+    "relay_protocol_error",
+    "config_unavailable",
+    "invalid_config",
+];
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Status {
@@ -772,7 +790,12 @@ pub struct Status {
     pub identity: Option<String>,
     pub relay: Option<String>,
     pub generation: u64,
+    /// One of `CONNECTION_CATEGORIES`, or none.
     pub category: Option<String>,
+    /// Last measured `relay − local` clock offset in seconds (HTTP `Date`),
+    /// bounded to ±`clock::BOUND`; none until measured on this relay.
+    /// Informational only: nothing is ever adjusted with it.
+    pub clock_skew_seconds: Option<i64>,
     pub catalog: Catalog,
     pub history: History,
     pub thread: Thread,
@@ -799,6 +822,7 @@ impl Status {
             relay: c.relay.clone(),
             generation: 1,
             category: None,
+            clock_skew_seconds: None,
             catalog: Catalog::unavailable(None),
             history: History::unavailable(None, None),
             thread: Thread::unavailable(None, None, None),
