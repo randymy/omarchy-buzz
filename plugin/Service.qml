@@ -233,6 +233,20 @@ Item {
   // The helper projects relay thread summaries: a row without one has no known replies.
   property bool threadSummariesSupported: false
   property var historyHasMore: null
+  // Older pages: the helper holds the signed cursor; the panel only asks for the next page.
+  property bool olderHistorySupported: false
+  property var historyNextCursor: null
+  property string historyOlderState: "idle"
+  property bool olderRequested: false
+  property string olderRequestCursor: ""
+  property string pendingOlderRequestId: ""
+  property int olderRetryBudget: 0
+  property string olderRetryRoom: ""
+  property string olderRetryInstance: ""
+  property int olderRetryGeneration: 0
+  readonly property bool olderLoading: olderRequested || historyOlderState === "loading"
+  readonly property bool canLoadOlder: !sampleMode && olderHistorySupported && connection === "authenticated"
+    && historyState === "snapshot" && historyNextCursor !== null
   property bool threadSupported: false
   property string threadRootId: ""
   property string threadState: "unavailable"
@@ -256,7 +270,9 @@ Item {
     : threadCategory === "thread_access_denied" ? "Replies unavailable for this room" : "Replies unavailable · try Refresh replies"
   readonly property var messages: sample ? sample.messages.filter(function(message) { return message.roomId === root.selectedRoomId }) : historyRows
   readonly property string historyLabel: historyState === "loading" ? "Loading recent snapshot" : historyState === "snapshot"
-    ? (automaticHistorySupported ? "Auto-refreshing snapshot" : "Snapshot") + " · completeness unknown" + (historyHasMore ? " · older history available" : "") : ({request_busy: "Helper busy · refresh again", history_timeout: "History request timed out", history_invalid: "History response could not be validated", history_access_denied: "History unavailable for this room"})[historyCategory] || "History not available yet"
+    ? (automaticHistorySupported ? "Auto-refreshing snapshot" : "Snapshot") + " · " + historyRows.length + (historyRows.length === 1 ? " message" : " messages") + " shown · completeness unknown"
+      + (!historyHasMore ? "" : historyCategory === "history_older_unheld" ? " · older messages exist but are not held" : " · older history available")
+      + (historyOlderState === "unavailable" && !olderLoading ? " · older messages could not be loaded" : "") : ({request_busy: "Helper busy · refresh again", history_timeout: "History request timed out", history_invalid: "History response could not be validated", history_access_denied: "History unavailable for this room"})[historyCategory] || "History not available yet"
   readonly property string barLabel: sampleMode ? "TEST" : ({unconfigured: "Setup", connecting: "Connecting", authenticated: "Connected", identity_locked: "Locked", disconnected: "Offline", unavailable: "Error"})[connection] || "Error"
   readonly property string barSymbol: sampleMode ? "T" : ({unconfigured: "?", connecting: "…", authenticated: "✓", identity_locked: "!", disconnected: "○", unavailable: "!"})[connection] || "!"
   readonly property string statusLabel: sampleMode ? "Sample data" : category === "incompatible_response" ? "Incompatible helper" : category === "identity_access_pending" ? "Waiting for secret store unlock" : ({
@@ -520,6 +536,29 @@ Item {
     historyState = "unavailable"
     historyCategory = ""
     historyHasMore = null
+    historyNextCursor = null
+    historyOlderState = "idle"
+    clearOlderRequest()
+  }
+  function clearOlderRequest() {
+    olderRetry.stop()
+    olderTimeout.stop()
+    olderRequested = false
+    olderRequestCursor = ""
+    pendingOlderRequestId = ""
+  }
+  // One bounded, quiet request for the next older page; what is shown is never cleared.
+  function loadOlder() {
+    if (!canLoadOlder || olderLoading || !bridge.running || instanceId === "") return false
+    olderRequested = true
+    olderRequestCursor = JSON.stringify(historyNextCursor)
+    olderRetryBudget = 2
+    olderRetryRoom = selectedRoomId
+    olderRetryInstance = instanceId
+    olderRetryGeneration = generation
+    olderTimeout.restart()
+    send("fetch_older", selectedRoomId)
+    return true
   }
   function refreshHistory() {
     if (sampleMode || !historySupported || connection !== "authenticated" || !selectedRoom) return
@@ -703,10 +742,10 @@ Item {
     if (!sampleMode) selectedRoomId = ""
   }
   function validCapabilities(capabilities) {
-    return Array.isArray(capabilities) && capabilities.length >= 1 && capabilities.length <= 11
+    return Array.isArray(capabilities) && capabilities.length >= 1 && capabilities.length <= 12
       && capabilities.indexOf("connection_status") !== -1
       && capabilities.every(function(cap, index) {
-        return ["connection_status", "room_catalog", "room_history", "message_send", "room_recipients", "history_auto_refresh", "room_activity", "agent_profiles", "thread_replies", "thread_send", "thread_summaries"].indexOf(cap) !== -1 && capabilities.indexOf(cap) === index
+        return ["connection_status", "room_catalog", "room_history", "message_send", "room_recipients", "history_auto_refresh", "room_activity", "agent_profiles", "thread_replies", "thread_send", "thread_summaries", "older_history"].indexOf(cap) !== -1 && capabilities.indexOf(cap) === index
       })
   }
   // Streams carry no participants and are never hidden. A DM lists 2-9 distinct
@@ -746,10 +785,18 @@ Item {
     var uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/
     if (!history || ["unavailable", "loading", "snapshot"].indexOf(history.state) === -1
         || (history.roomId !== null && (typeof history.roomId !== "string" || !uuid.test(history.roomId)))
-        || !Array.isArray(history.rows) || history.rows.length > (limit || 20)
+        || !Array.isArray(history.rows) || history.rows.length > (limit || 100)
         || (history.hasMore !== null && typeof history.hasMore !== "boolean")
-        || (history.category !== null && ["history_unavailable", "history_timeout", "history_invalid", "history_access_denied", "history_completeness_unknown"].indexOf(history.category) === -1)) return null
+        || (history.category !== null && ["history_unavailable", "history_timeout", "history_invalid", "history_access_denied", "history_completeness_unknown", "history_older_unheld"].indexOf(history.category) === -1)) return null
     if (history.state === "snapshot" && (history.roomId === null || typeof history.hasMore !== "boolean")) return null
+    // Absent from helpers without older pages: no cursor, nothing loading.
+    var cursor = history.nextCursor === undefined ? null : history.nextCursor
+    var olderState = history.olderState === undefined ? "idle" : history.olderState
+    if (cursor !== null && (typeof cursor !== "object" || Array.isArray(cursor) || Object.keys(cursor).length !== 2
+        || !Number.isInteger(cursor.createdAt) || cursor.createdAt < 0 || cursor.createdAt > 253402300799
+        || typeof cursor.id !== "string" || !/^[a-f0-9]{64}$/.test(cursor.id)
+        || history.state !== "snapshot" || history.hasMore !== true)) return null
+    if (["idle", "loading", "unavailable"].indexOf(olderState) === -1) return null
     if (history.state !== "snapshot" && history.rows.length !== 0) return null
     var clean = []
     var ids = ({})
@@ -777,7 +824,8 @@ Item {
         reactions: reactions == null ? null : {seen: reactions.seen, working: reactions.working},
         thread: thread == null ? null : {replies: thread.replies, lastReplyAt: thread.lastReplyAt, participants: thread.participants.slice()}})
     }
-    return {state: history.state, roomId: history.roomId, rows: clean, hasMore: history.hasMore, category: history.category || ""}
+    return {state: history.state, roomId: history.roomId, rows: clean, hasMore: history.hasMore, category: history.category || "",
+      nextCursor: cursor === null ? null : {createdAt: cursor.createdAt, id: cursor.id}, olderState: olderState}
   }
   function beginSession() {
     losePendingDelivery()
@@ -790,6 +838,7 @@ Item {
     threadSupported = false
     threadSendSupported = false
     threadSummariesSupported = false
+    olderHistorySupported = false
     recipientsSupported = false
     generation = 0
     connection = "connecting"
@@ -805,6 +854,7 @@ Item {
     threadSupported = false
     threadSendSupported = false
     threadSummariesSupported = false
+    olderHistorySupported = false
     recipientsSupported = false
     relay = ""
     connection = "unavailable"
@@ -832,6 +882,13 @@ Item {
           clearHistory()
           historyCategory = "request_busy"
         }
+      }
+      if (frame.id === pendingOlderRequestId) {
+        pendingOlderRequestId = ""
+        if (frame.category === "request_busy" && olderRetryBudget > 0) {
+          olderRetryBudget--
+          olderRetry.restart()
+        } else clearOlderRequest()
       }
       if (frame.id === pendingThreadRequestId) {
         pendingThreadRequestId = ""
@@ -951,6 +1008,10 @@ Item {
         historyState = history.state
         historyCategory = history.category
         historyHasMore = history.hasMore
+        if (!sameProjection(historyNextCursor, history.nextCursor)) historyNextCursor = history.nextCursor
+        historyOlderState = history.olderState
+        // The helper took the request over, or the cursor it answered has moved on.
+        if (olderRequested && (history.olderState === "loading" || JSON.stringify(history.nextCursor) !== olderRequestCursor)) clearOlderRequest()
       }
       if (history.state === "snapshot" && typeof state.identity === "string") {
         var observed = ActivityObserver.observe(activityObservation,
@@ -1009,6 +1070,7 @@ Item {
     recipientsSupported = supportsRecipients
     automaticHistorySupported = frame.capabilities.indexOf("history_auto_refresh") !== -1
     threadSummariesSupported = supportsHistory && frame.capabilities.indexOf("thread_summaries") !== -1
+    olderHistorySupported = supportsHistory && frame.capabilities.indexOf("older_history") !== -1
     instanceId = frame.instanceId
     generation = frame.generation
     relay = state.relay || ""
@@ -1041,6 +1103,7 @@ Item {
       if (kind === "fetch_recent") { request.roomId = roomId; pendingHistoryRequestId = request.id }
       if (kind === "fetch_thread") { request.roomId = roomId; request.rootId = rootId; pendingThreadRequestId = request.id }
       if (kind === "fetch_recipients") { request.roomId = roomId; pendingRecipientsRequestId = request.id }
+      if (kind === "fetch_older") { request.roomId = roomId; pendingOlderRequestId = request.id }
       bridge.write(JSON.stringify(request) + "\n")
     }
   }
@@ -1119,6 +1182,22 @@ Item {
     }
   }
   Timer {
+    id: olderRetry
+    interval: 300
+    onTriggered: {
+      if (root.sessionFailed || root.connection !== "authenticated" || !root.olderRequested
+          || root.selectedRoomId !== root.olderRetryRoom || root.instanceId !== root.olderRetryInstance
+          || root.generation !== root.olderRetryGeneration || !root.canLoadOlder) { root.clearOlderRequest(); return }
+      root.send("fetch_older", root.selectedRoomId)
+    }
+  }
+  Timer {
+    id: olderTimeout
+    // The helper bounds each older read to 15 seconds; stop waiting shortly after.
+    interval: 20000
+    onTriggered: root.clearOlderRequest()
+  }
+  Timer {
     id: notificationCooldown
     interval: 10000
   }
@@ -1155,6 +1234,7 @@ Item {
       root.historySupported = false
       root.threadSupported = false
       root.threadSummariesSupported = false
+      root.olderHistorySupported = false
       root.threadSendSupported = false
       root.recipientsSupported = false
       root.sessionFailed = true

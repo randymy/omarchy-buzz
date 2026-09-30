@@ -24,7 +24,52 @@ FocusScope {
   // Keep delegates alive across snapshots; only changed rows are updated.
   readonly property var incomingMessages: service ? service.messages : []
   readonly property var incomingReplies: service ? service.threadRows : []
-  onIncomingMessagesChanged: syncRows(messageModel, incomingMessages, null)
+  onIncomingMessagesChanged: {
+    var anchor = historyAnchor()
+    syncRows(messageModel, incomingMessages, null)
+    holdHistoryAnchor(anchor)
+  }
+  // A reader who scrolled up keeps the row at the top of the view where it was
+  // when older rows arrive above it; a reader at the end keeps following. New
+  // delegates settle their heights over a few layout passes, so the anchor is
+  // re-applied whenever the list's height changes until it settles.
+  property var pendingHistoryAnchor: null
+  function historyAnchor() {
+    if (pendingHistoryAnchor) return pendingHistoryAnchor
+    if (historyScroll.follow) return null
+    var flick = historyScroll.contentItem
+    for (var i = 0; i < historyRepeater.count; i++) {
+      var item = historyRepeater.itemAt(i)
+      if (item && item.y + item.height > flick.contentY) return {id: item.row.id, offset: item.y - flick.contentY}
+    }
+    return null
+  }
+  function holdHistoryAnchor(anchor) {
+    if (!anchor || !anchor.id) return
+    pendingHistoryAnchor = anchor
+    restoreHistoryAnchor()
+    historyAnchorSettle.restart()
+  }
+  function restoreHistoryAnchor() {
+    var anchor = pendingHistoryAnchor
+    if (!anchor) return
+    historyList.forceLayout()
+    for (var i = 0; i < historyRepeater.count; i++) {
+      var item = historyRepeater.itemAt(i)
+      if (item && item.row.id === anchor.id) {
+        historyScroll.contentItem.contentY = item.y - anchor.offset
+        // The anchor exists only for a reader who was not following.
+        historyScroll.follow = false
+        return
+      }
+    }
+    pendingHistoryAnchor = null
+  }
+  Timer {
+    id: historyAnchorSettle
+    interval: 250
+    onTriggered: { root.restoreHistoryAnchor(); root.pendingHistoryAnchor = null }
+  }
   onIncomingRepliesChanged: syncRows(replyModel, incomingReplies, service ? service.threadRoot : null)
   ListModel { id: messageModel; dynamicRoles: true }
   ListModel { id: replyModel; dynamicRoles: true }
@@ -395,7 +440,24 @@ FocusScope {
             id: historyList
             width: parent.width
             height: childrenRect.height
+            onHeightChanged: root.restoreHistoryAnchor()
+            Ui.Button {
+              objectName: "buzzLoadOlder"
+              anchors.horizontalCenter: parent.horizontalCenter
+              visible: !!root.service && root.service.canLoadOlder
+              text: root.service && root.service.olderLoading ? "Loading older messages…" : "Load older messages"
+              tooltipText: "Show the next older messages in this room"
+              fontSize: Style.font.caption
+              horizontalPadding: Style.space(8)
+              verticalPadding: Style.space(3)
+              opacity: 0.7
+              focusable: true
+              onClicked: if (root.service) root.service.loadOlder()
+              // Appearing or leaving above the rows must not move them either.
+              onVisibleChanged: root.holdHistoryAnchor(root.historyAnchor())
+            }
             Repeater {
+              id: historyRepeater
               model: messageModel
               delegate: BuzzMessage {
                 required property string payload
