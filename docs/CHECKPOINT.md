@@ -1745,3 +1745,30 @@ immediate re-check) and every `scripts/preview` mode, including the new
 nothing was installed. Not verified: whether the relay's discovery events for a
 new DM are visible to the immediate re-check (they are emitted best-effort after
 commit); a slower emission is picked up by the regular 30-second check.
+
+## Older room history — September 29, 2026
+
+Branch `older-history`, section A of [PAGING_LIVE_MAP.md](PAGING_LIVE_MAP.md); not
+merged, installed or run against a relay. The helper keeps the head page's signed
+`next_cursor`. A new `fetch_older` command (room id only; the panel never names a
+position) resends the same window filter with `until` = `next_cursor.created_at` and
+`before_id` = `next_cursor.id`. The continued page is verified exactly like the head
+page, plus: its `kind:39006` `d` tag must be `<room>:<until>:<before_id>` for that
+request (the head binding is refused), every row must lie strictly past the request
+cursor in `created_at DESC, id ASC` order, the new cursor must move past it, and no row
+may lie past the page's own cursor (the head page is held to that too). Pages repeating
+a held id are refused whole rather than merged. The room holds at most 100 rows: the
+head plus four older pages of 20, within 200 events / 512 KiB per page and 800 events /
+2 MiB across older pages. At the cap the view reports `history_older_unheld` and no
+cursor. The 5-second head refresh replaces the head and keeps older pages: held rows
+inside the new head's range are dropped (on the head, or deleted since), rows an earlier
+head showed that newer messages pushed off it stay held with their last verified
+projection, and deletion markers on any later page apply to held rows. A stale cursor
+discards the page; room change, `fetch_recent`, re-authentication, revocation, a new
+generation or connection, and any error that clears history drop all older pages. The
+panel shows a muted "Load older messages" control while a cursor exists and keeps the
+reader's top visible row in place when rows arrive above it. Status frames with 100
+worst-case rows and 200 thread replies measure 818,238 bytes, under the 1 MiB bound.
+Evidence is synthetic only: locked helper tests (unit, loopback NIP-98 and observer
+fixtures) and every `scripts/preview` mode, including the new `--older-history`.
+Helpers without the new `older_history` capability are read as having no cursor.

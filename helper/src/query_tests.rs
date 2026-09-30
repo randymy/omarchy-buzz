@@ -97,7 +97,11 @@ async fn sdk_reaction_without_h_is_valid_aux_but_wrong_scope_or_signature_fails(
         .iter()
         .any(|tag| tag.as_slice().first().map(String::as_str) == Some("h")));
     for request in [
-        QueryRequest::RoomHistory { room, limit: 20 },
+        QueryRequest::RoomHistory {
+            room,
+            limit: 20,
+            before: None,
+        },
         QueryRequest::ThreadReplies {
             room,
             root: root.id,
@@ -395,7 +399,11 @@ fn only_room_history_requests_and_admits_thread_summaries() {
     let root = EventBuilder::new(Kind::Custom(9), "root")
         .sign_with_keys(&keys)
         .unwrap();
-    let history = QueryRequest::RoomHistory { room, limit: 20 };
+    let history = QueryRequest::RoomHistory {
+        room,
+        limit: 20,
+        before: None,
+    };
     let thread = QueryRequest::ThreadReplies {
         room,
         root: root.id,

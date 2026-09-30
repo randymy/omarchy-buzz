@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 pub const LIMIT: usize = 65536;
-// Status frames can contain one channel page and up to 200 thread replies; the
-// worst case measured by `maximum_projected_snapshot_fits_ipc_frame` is ~428 KiB.
+// Status frames can contain 100 held channel rows and up to 200 thread replies;
+// `maximum_projected_snapshot_fits_ipc_frame` measures the worst case.
 // Incoming commands retain the smaller LIMIT; only projected output uses this.
 pub const RESPONSE_LIMIT: usize = 1024 * 1024;
 #[derive(Deserialize)]
@@ -52,6 +52,7 @@ pub fn request(bytes: &[u8]) -> Result<Request, &'static str> {
             | "retry_connection"
             | "subscribe"
             | "fetch_recent"
+            | "fetch_older"
             | "fetch_thread"
             | "close_thread"
             | "fetch_recipients"
@@ -62,7 +63,7 @@ pub fn request(bytes: &[u8]) -> Result<Request, &'static str> {
     }
     if matches!(
         r.kind.as_str(),
-        "fetch_recent" | "fetch_thread" | "fetch_recipients" | "send_message"
+        "fetch_recent" | "fetch_older" | "fetch_thread" | "fetch_recipients" | "send_message"
     ) {
         let room = r.room_id.as_deref().ok_or("invalid_request")?;
         let parsed = uuid::Uuid::parse_str(room).map_err(|_| "invalid_request")?;
@@ -159,6 +160,8 @@ pub struct DmOpenIntent {
 pub enum Command {
     Retry,
     FetchRecent(String),
+    /// One older page for the selected room, continuing from its held cursor.
+    FetchOlder(String),
     FetchThread(String, String),
     CloseThread,
     FetchRecipients(String),
@@ -276,9 +279,19 @@ pub struct ThreadRow {
 pub struct History {
     pub state: String,
     pub room_id: Option<String>,
+    /// Oldest first: older pages, then the head page; at most `history::HELD_ROWS`.
     pub rows: Vec<HistoryRow>,
+    /// True when older rows exist that are not shown.
     pub has_more: Option<bool>,
+    /// `history_completeness_unknown` for a snapshot, or `history_older_unheld`
+    /// when older rows exist but the held cap is reached; otherwise an error
+    /// category with no rows.
     pub category: Option<String>,
+    /// Present only while another older page can be requested with `fetch_older`.
+    pub next_cursor: Option<crate::history::Cursor>,
+    /// `idle`, `loading` or `unavailable`: the latest older-page request. A
+    /// failed older page never clears the rows already shown.
+    pub older_state: String,
 }
 impl History {
     pub fn unavailable(room: Option<String>, category: Option<&str>) -> Self {
@@ -288,6 +301,8 @@ impl History {
             rows: Vec::new(),
             has_more: None,
             category: category.map(str::to_owned),
+            next_cursor: None,
+            older_state: "idle".into(),
         }
     }
 }
@@ -394,7 +409,7 @@ impl Status {
     }
 }
 pub fn envelope(kind: &str, id: Option<&str>, instance: &str, s: &Status) -> serde_json::Value {
-    serde_json::json!({"version":1,"type":kind,"id":id,"instanceId":instance,"generation":s.generation,"capabilities":["connection_status","room_catalog","room_history","message_send","thread_send","room_recipients","history_auto_refresh","room_activity","agent_profiles","thread_replies","thread_summaries","dm_open"],"backendRevision":crate::compatibility::BUZZ_REVISION,"status":s})
+    serde_json::json!({"version":1,"type":kind,"id":id,"instanceId":instance,"generation":s.generation,"capabilities":["connection_status","room_catalog","room_history","message_send","thread_send","room_recipients","history_auto_refresh","room_activity","agent_profiles","thread_replies","thread_summaries","dm_open","older_history"],"backendRevision":crate::compatibility::BUZZ_REVISION,"status":s})
 }
 pub async fn read_line<R: tokio::io::AsyncBufRead + Unpin>(
     r: &mut R,
@@ -498,7 +513,8 @@ mod state_tests {
                 "agent_profiles",
                 "thread_replies",
                 "thread_summaries",
-                "dm_open"
+                "dm_open",
+                "older_history"
             ])
         );
         assert_eq!(v["status"]["catalog"]["state"], "unavailable");
@@ -526,6 +542,39 @@ mod state_tests {
         ] {
             assert!(request(&serde_json::to_vec(&value).unwrap()).is_err());
         }
+    }
+    #[test]
+    fn older_history_request_carries_only_the_room() {
+        let room = "aaaaaaaa-0000-4000-8000-00000000000b";
+        let valid = serde_json::json!({"version":1,"id":"ui-7","type":"fetch_older","roomId":room});
+        let parsed = request(&serde_json::to_vec(&valid).unwrap()).unwrap();
+        assert_eq!(
+            (parsed.kind.as_str(), parsed.room_id.as_deref()),
+            ("fetch_older", Some(room))
+        );
+        // The cursor stays in the helper: the panel cannot choose a position.
+        for (field, value) in [
+            ("roomId", serde_json::json!("../room")),
+            ("roomId", serde_json::json!(room.to_uppercase())),
+            ("rootId", serde_json::json!("a".repeat(64))),
+            ("text", serde_json::json!("x")),
+            ("until", serde_json::json!(1)),
+            ("before_id", serde_json::json!("a".repeat(64))),
+            (
+                "nextCursor",
+                serde_json::json!({"createdAt":1,"id":"a".repeat(64)}),
+            ),
+        ] {
+            let mut bad = valid.clone();
+            bad[field] = value;
+            assert!(
+                request(&serde_json::to_vec(&bad).unwrap()).is_err(),
+                "{field}"
+            );
+        }
+        let mut missing = valid;
+        missing.as_object_mut().unwrap().remove("roomId");
+        assert!(request(&serde_json::to_vec(&missing).unwrap()).is_err());
     }
     #[test]
     fn thread_requests_require_exact_scope_and_no_authority_fields() {
@@ -706,7 +755,7 @@ mod state_tests {
                 hidden: true,
             })
             .collect();
-        status.history.rows = (0..20)
+        status.history.rows = (0..crate::history::HELD_ROWS)
             .map(|_| HistoryRow {
                 reactions: None,
                 thread: None,
@@ -719,6 +768,13 @@ mod state_tests {
                 unavailable: false,
             })
             .collect();
+        status.history.has_more = Some(true);
+        status.history.category = Some("history_completeness_unknown".into());
+        status.history.next_cursor = Some(crate::history::Cursor {
+            created_at: u64::MAX,
+            id: "f".repeat(64),
+        });
+        status.history.older_state = "unavailable".into();
         status.thread.room_id = Some("00000000-0000-4000-8000-000000000001".into());
         status.thread.root_id = Some("a".repeat(64));
         for row in &mut status.history.rows {
@@ -779,6 +835,10 @@ mod state_tests {
             &status,
         ))
         .unwrap();
+        eprintln!(
+            "maximum projected status frame: {} bytes",
+            encoded.len() + 1
+        );
         assert!(
             encoded.len() + 1 <= RESPONSE_LIMIT,
             "{} byte frame",

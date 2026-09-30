@@ -35,6 +35,12 @@ elif [[ ${1:-} == --new-dm ]]; then
   export BUZZ_TEST_HELPER="$preview_dir/helper-fixture"
   export BUZZ_SEND_RECORD="$preview_dir/send-record.json"
   printf '{"requests":[]}\n' > "$BUZZ_SEND_RECORD"
+elif [[ ${1:-} == --older-history ]]; then
+  cp "$project_root/tests/OlderHistory.qml" "$preview_dir/shell.qml"
+  cp "$project_root/tests/older_history_fixture.py" "$preview_dir/helper-fixture"
+  export BUZZ_TEST_HELPER="$preview_dir/helper-fixture"
+  export BUZZ_SEND_RECORD="$preview_dir/send-record.json"
+  printf '{"requests":[]}\n' > "$BUZZ_SEND_RECORD"
 elif [[ ${1:-} == --last-room ]]; then
   cp "$project_root/tests/LastRoom.qml" "$preview_dir/shell.qml"
   export BUZZ_LAST_ROOM_PHASE=choose

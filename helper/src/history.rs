@@ -1,4 +1,5 @@
-//! First-page stream preview; no send API and no completeness claim.
+//! Recent stream pages: the head page plus older pages the reader asks for.
+//! No send API and no completeness claim.
 use crate::query::{query, QueryRequest};
 use nostr::{Event, EventId, Keys, PublicKey, Timestamp};
 use serde::{Deserialize, Serialize};
@@ -7,6 +8,13 @@ use uuid::Uuid;
 const EVENTS: usize = 200;
 const BYTES: usize = 512 * 1024;
 const ROWS: usize = 20;
+/// Rows held for one room: the head page plus up to `OLDER_PAGES` older pages.
+pub const HELD_ROWS: usize = 100;
+pub const OLDER_PAGES: usize = 4;
+/// Cumulative budget for the older pages held for one room. Each page keeps
+/// its own `EVENTS`/`BYTES` budget; together they may not exceed these.
+const OLDER_EVENTS: usize = 800;
+const OLDER_BYTES: usize = 2 * 1024 * 1024;
 const SUMMARY_REPLIES: u64 = 1_000_000;
 const SUMMARY_PARTICIPANTS: usize = 10;
 // 9999-12-31T23:59:59Z; the panel rejects later instants as unrepresentable.
@@ -46,12 +54,31 @@ pub struct History {
     pub category: &'static str,
     pub has_more: bool,
     pub rows: Vec<Row>,
+    /// The signed scan position to continue from; `Some` iff `has_more`.
+    pub next_cursor: Option<Cursor>,
+    /// Deletion markers on this page naming events that are not on it, as
+    /// (target, signer). They may name rows held from other pages.
+    pub outside_deletions: Vec<(String, PublicKey)>,
+    /// Page cost, for cumulative budgets: events and serialized bytes.
+    pub events: usize,
+    pub bytes: usize,
 }
-#[derive(Deserialize)]
+/// A relay scan position from signed `kind:39006` bounds (NIP-CW), echoed
+/// verbatim as `until` + `before_id`. Never derived from displayed rows.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct Cursor {
-    created_at: u64,
-    id: String,
+pub struct Cursor {
+    #[serde(rename(serialize = "createdAt"))]
+    pub created_at: u64,
+    pub id: String,
+}
+impl Cursor {
+    /// True when `(at, id)` lies strictly past this position in the relay's
+    /// `created_at DESC, id ASC` order, i.e. on a later (older) page. Lowercase
+    /// hex compares like the bytes it encodes.
+    pub fn precedes(&self, at: u64, id: &str) -> bool {
+        at < self.created_at || at == self.created_at && id > self.id.as_str()
+    }
 }
 // NIP-CW: clients MUST ignore unknown overlay content fields, so no
 // deny_unknown_fields here; the known fields are required and typed.
@@ -181,6 +208,17 @@ pub fn reduce(
     events: &[Event],
     now: u64,
 ) -> Result<History, &'static str> {
+    reduce_page(room, relay, events, now, None)
+}
+/// `request` is the cursor this page was asked for (`None` for the head). The
+/// bounds must echo it, and every row must lie strictly past it.
+pub fn reduce_page(
+    room: Uuid,
+    relay: PublicKey,
+    events: &[Event],
+    now: u64,
+    request: Option<&Cursor>,
+) -> Result<History, &'static str> {
     if events.len() > EVENTS {
         return Err("history_oversized");
     }
@@ -189,6 +227,10 @@ pub fn reduce(
         return Err("history_oversized");
     }
     let scope = room.to_string();
+    let binding = match request {
+        None => format!("{scope}:head"),
+        Some(cursor) => format!("{scope}:{}:{}", cursor.created_at, cursor.id),
+    };
     let mut index = BTreeMap::new();
     let mut bounds = None;
     let mut originals = BTreeMap::new();
@@ -242,7 +284,7 @@ pub fn reduce(
                 }
                 if bounds.is_some()
                     || event.pubkey != relay
-                    || one(event, "d")? != Some(format!("{scope}:head").as_str())
+                    || one(event, "d")? != Some(binding.as_str())
                 {
                     return Err("history_invalid_bounds");
                 }
@@ -270,6 +312,25 @@ pub fn reduce(
     let bounds = bounds.ok_or("history_missing_bounds")?;
     if originals.len() > ROWS {
         return Err("history_oversized");
+    }
+    // Keyset integrity: a continued page lies strictly past its request cursor,
+    // and every row is at or before the page's own scan position. This is what
+    // lets held pages be joined without overlaps or silent gaps.
+    for (id, event) in &originals {
+        let at = event.created_at.as_secs();
+        if request.is_some_and(|cursor| !cursor.precedes(at, id))
+            || bounds
+                .next_cursor
+                .as_ref()
+                .is_some_and(|next| next.precedes(at, id))
+        {
+            return Err("history_invalid_cursor");
+        }
+    }
+    if let (Some(cursor), Some(next)) = (request, &bounds.next_cursor) {
+        if !cursor.precedes(next.created_at, &next.id) {
+            return Err("history_invalid_cursor");
+        }
     }
     for reaction in &reactions {
         if !targets(reaction)?
@@ -302,19 +363,23 @@ pub fn reduce(
     }
     let mut deleted = BTreeSet::new();
     let mut uncertain = BTreeSet::new();
+    let mut outside_deletions = Vec::new();
     for marker in deletions {
         for target in targets(marker)? {
             // One marker may reference targets outside this page. They do not
-            // establish scope or a content claim, and are ignored here.
-            if let Some(event) = index.get(&target) {
-                if !matches!(event.kind.as_u16(), 9 | 40002 | 40003 | 7) {
-                    continue;
-                }
-                if marker.pubkey == author(event, relay)? {
-                    deleted.insert(target);
-                } else {
-                    uncertain.insert(target);
-                }
+            // establish scope or a content claim here; the caller may apply
+            // them to rows it already holds from other pages.
+            let Some(event) = index.get(&target) else {
+                outside_deletions.push((target, marker.pubkey));
+                continue;
+            };
+            if !matches!(event.kind.as_u16(), 9 | 40002 | 40003 | 7) {
+                continue;
+            }
+            if marker.pubkey == author(event, relay)? {
+                deleted.insert(target);
+            } else {
+                uncertain.insert(target);
             }
         }
     }
@@ -404,13 +469,223 @@ pub fn reduce(
             unavailable,
         });
     }
-    rows.sort_by(|a, b| a.timestamp.cmp(&b.timestamp).then_with(|| a.id.cmp(&b.id)));
+    rows.sort_by(oldest_first);
     Ok(History {
         room: scope,
         category: "history_completeness_unknown",
         has_more: bounds.has_more,
         rows,
+        next_cursor: bounds.next_cursor,
+        outside_deletions,
+        events: events.len(),
+        bytes: bytes.len(),
     })
+}
+/// The exact reverse of the relay's `created_at DESC, id ASC` scan order, so an
+/// older page always sorts before the page it continues.
+fn oldest_first(a: &Row, b: &Row) -> std::cmp::Ordering {
+    a.timestamp.cmp(&b.timestamp).then_with(|| b.id.cmp(&a.id))
+}
+/// Apply another page's deletion markers to held rows with the reducer's rule:
+/// the proven author's marker hides the row; anyone else's makes it unavailable.
+fn apply_deletions(rows: &mut Vec<Row>, deletions: &[(String, PublicKey)]) {
+    for (target, signer) in deletions {
+        let Some(index) = rows.iter().position(|row| &row.id == target) else {
+            continue;
+        };
+        if rows[index].author_pubkey == signer.to_hex() {
+            rows.remove(index);
+        } else {
+            let row = &mut rows[index];
+            row.unavailable = true;
+            row.text.clear();
+            row.truncated = false;
+            row.reactions = None;
+        }
+    }
+}
+
+/// One selected room's rows: the latest head page plus the older pages the
+/// reader asked for. The observer owns one per (relay, identity, generation,
+/// room, connection) and replaces it with `Held::default()` whenever the room's
+/// history is cleared, re-selected, re-authenticated or revoked.
+///
+/// Reconciliation with the periodic head refresh: the new head replaces the old
+/// one. Held rows the new head's scan range covers (at or before its
+/// `next_cursor`) are dropped: they are either on the new head, or were
+/// deleted or withheld since. Rows past that position stay, including rows an
+/// earlier head showed that newer messages pushed off the head; those keep
+/// their last verified projection and are not refreshed. Deletion markers on
+/// any later page that name a held row are applied to it.
+pub struct Held {
+    head: Option<History>,
+    /// Rows strictly past the head's scan position, oldest first.
+    older: Vec<Row>,
+    /// Older pages accepted; zero means only the head is held.
+    pages: usize,
+    /// Continuation after the oldest held page; `None` when exhausted or unheld.
+    tail: Option<Cursor>,
+    /// Older rows exist but are not held (trimmed to `HELD_ROWS`).
+    trimmed: bool,
+    events: usize,
+    bytes: usize,
+    /// `idle`, `loading` or `unavailable` for the latest older-page request.
+    pub older_state: &'static str,
+}
+impl Default for Held {
+    fn default() -> Self {
+        Self {
+            head: None,
+            older: Vec::new(),
+            pages: 0,
+            tail: None,
+            trimmed: false,
+            events: 0,
+            bytes: 0,
+            older_state: "idle",
+        }
+    }
+}
+impl Held {
+    fn clear_older(&mut self) {
+        let head = self.head.take();
+        *self = Self {
+            head,
+            ..Self::default()
+        };
+    }
+    /// Accept a new head page for the held room.
+    pub fn head(&mut self, page: History) {
+        let previous = self.head.replace(page);
+        let head = self.head.as_ref().expect("head just set");
+        if previous.as_ref().is_some_and(|p| p.room != head.room) {
+            self.clear_older();
+            return;
+        }
+        if self.pages == 0 {
+            return;
+        }
+        let Some(position) = head.next_cursor.clone() else {
+            // The head reaches the start of the room: nothing older exists.
+            self.clear_older();
+            return;
+        };
+        if let Some(previous) = previous {
+            self.older.extend(previous.rows);
+        }
+        self.older
+            .retain(|row| position.precedes(row.timestamp, &row.id));
+        let deletions = head.outside_deletions.clone();
+        apply_deletions(&mut self.older, &deletions);
+        if self.older.is_empty() {
+            // The head covers everything held; continue from the head again.
+            let state = self.older_state;
+            self.clear_older();
+            self.older_state = state;
+            return;
+        }
+        self.older.sort_by(oldest_first);
+        let room = HELD_ROWS.saturating_sub(self.head.as_ref().map_or(0, |h| h.rows.len()));
+        if self.older.len() > room {
+            // Drop the oldest rows; the cursor past them is gone with them.
+            self.older.drain(..self.older.len() - room);
+            self.tail = None;
+            self.trimmed = true;
+        }
+    }
+    /// Where the next older page would start, ignoring the row cap.
+    fn next(&self) -> Option<&Cursor> {
+        let head = self.head.as_ref()?;
+        if self.pages == 0 {
+            // `reduce` guarantees `has_more` exactly when a cursor is present.
+            head.next_cursor.as_ref().filter(|_| head.has_more)
+        } else {
+            self.tail.as_ref()
+        }
+    }
+    fn room_for_page(&self) -> bool {
+        let shown = self.head.as_ref().map_or(0, |h| h.rows.len()) + self.older.len();
+        !self.trimmed && self.pages < OLDER_PAGES && shown + ROWS <= HELD_ROWS
+    }
+    /// The cursor for the next older page, when one may be requested and held.
+    pub fn continuation(&self) -> Option<&Cursor> {
+        self.next().filter(|_| self.room_for_page())
+    }
+    /// Accept an older page fetched for `request`. Stale requests, over-budget
+    /// pages and pages repeating a held row are refused whole.
+    pub fn older(&mut self, request: &Cursor, page: History) -> Result<(), &'static str> {
+        if self.continuation() != Some(request) {
+            return Err("history_stale_cursor");
+        }
+        let head = self.head.as_mut().expect("continuation implies a head");
+        if page.room != head.room {
+            return Err("history_invalid_scope");
+        }
+        if self.events + page.events > OLDER_EVENTS || self.bytes + page.bytes > OLDER_BYTES {
+            return Err("history_oversized");
+        }
+        // Keyset order makes an overlap impossible for a conforming relay. A
+        // repeated id is refused rather than merged: which copy's auxiliary
+        // closure is current cannot be told, and silently keeping either could
+        // resurrect an edited or deleted body.
+        let held: BTreeSet<&str> = head
+            .rows
+            .iter()
+            .chain(&self.older)
+            .map(|row| row.id.as_str())
+            .collect();
+        if page.rows.iter().any(|row| held.contains(row.id.as_str())) {
+            return Err("history_duplicate_event");
+        }
+        apply_deletions(&mut head.rows, &page.outside_deletions);
+        apply_deletions(&mut self.older, &page.outside_deletions);
+        self.older.splice(0..0, page.rows);
+        self.older.sort_by(oldest_first);
+        self.pages += 1;
+        self.tail = page.next_cursor;
+        self.events += page.events;
+        self.bytes += page.bytes;
+        Ok(())
+    }
+    /// The panel view: held rows oldest first, `next_cursor` only while another
+    /// page may be loaded, and `history_older_unheld` when older rows exist that
+    /// will not be held.
+    pub fn project(&self) -> Option<crate::protocol::History> {
+        let head = self.head.as_ref()?;
+        let more = self.trimmed || self.next().is_some();
+        let unheld = more && self.continuation().is_none();
+        Some(crate::protocol::History {
+            state: "snapshot".into(),
+            room_id: Some(head.room.clone()),
+            has_more: Some(more),
+            category: Some(
+                if unheld {
+                    "history_older_unheld"
+                } else {
+                    head.category
+                }
+                .into(),
+            ),
+            next_cursor: self.continuation().cloned(),
+            older_state: self.older_state.into(),
+            rows: self
+                .older
+                .iter()
+                .chain(&head.rows)
+                .map(|r| crate::protocol::HistoryRow {
+                    reactions: r.reactions.clone(),
+                    thread: r.thread.clone(),
+                    id: r.id.clone(),
+                    author: r.author_pubkey.clone(),
+                    time: r.timestamp,
+                    text: r.text.clone(),
+                    edited: r.edited,
+                    truncated: r.truncated,
+                    unavailable: r.unavailable,
+                })
+                .collect(),
+        })
+    }
 }
 
 pub async fn fetch(
@@ -425,10 +700,47 @@ pub async fn fetch(
         &QueryRequest::RoomHistory {
             room,
             limit: ROWS as u16,
+            before: None,
         },
     )
     .await?;
     reduce(room, trusted_signer, &events, Timestamp::now().as_secs())
+}
+/// One older page continuing from `cursor`, verified exactly like the head
+/// plus its request binding. Reads only, so a busy query slot is retried.
+pub async fn fetch_older(
+    relay: &str,
+    keys: &Keys,
+    trusted_signer: PublicKey,
+    room: Uuid,
+    cursor: &Cursor,
+) -> Result<History, &'static str> {
+    let id = EventId::from_hex(&cursor.id).map_err(|_| "history_invalid_cursor")?;
+    if id.to_hex() != cursor.id {
+        return Err("history_invalid_cursor");
+    }
+    let request = QueryRequest::RoomHistory {
+        room,
+        limit: ROWS as u16,
+        before: Some((cursor.created_at, id)),
+    };
+    let mut attempts = 0;
+    let events = loop {
+        attempts += 1;
+        match query(relay, keys, &request).await {
+            Err("query_busy") if attempts < 3 => {
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await
+            }
+            other => break other?,
+        }
+    };
+    reduce_page(
+        room,
+        trusted_signer,
+        &events,
+        Timestamp::now().as_secs(),
+        Some(cursor),
+    )
 }
 #[cfg(test)]
 #[path = "history_tests.rs"]
