@@ -45,6 +45,11 @@ reconnects stay in the same budget; once it is spent the state is
 `disconnected`/`auth_rejected` until Retry. A rejected first authentication after
 start or Retry (a wrong or revoked identity) still stops at once. Successful
 matched probes reset the failure budget and end the automatic retries.
+Every rejected authentication, first or re-authentication, first measures the
+clock offset with one `HEAD` of the relay's `/info` (its `Date` header). With
+an offset of two minutes or more the category is `clock_skew` instead of
+`auth_rejected`, retried on the same budget (`connecting`/`clock_skew`, then
+`disconnected`/`clock_skew` until Retry): the clock can be fixed meanwhile.
 
 ## Prepared contribution, 2026-09-28
 

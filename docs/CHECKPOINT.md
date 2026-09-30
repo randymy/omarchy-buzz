@@ -2407,3 +2407,55 @@ Upstream references are to the pinned Buzz `781d3951`; the research map is
   branch was not tried in the live shell, including from the overlay
   (`PanelWindow`) presentation and the returned URL form for names with
   non-ASCII characters.
+
+## Clock skew detection (`clock_skew`) — September 30
+
+Branch `clock-skew` (not merged or installed; no real relay contacted, the
+system clock was not changed). Follows up the evening's `auth_rejected`
+episodes, which were a suspended VM's clock 73 minutes behind.
+
+- Measurement (`helper/src/clock.rs`): the relay's HTTP `Date` header, parsed
+  strictly as an RFC 7231 IMF-fixdate (`Sun, 06 Nov 1994 08:49:37 GMT`, weekday
+  checked; obsolete forms, other zones, a repeated header refused), minus the
+  local clock, round trip ignored, clamped to ±10 years. Read in two places
+  only: `catalog::relay_info` (the NIP-11 `GET /info` catalog discovery already
+  makes for the signer pin; no extra request) and `auth::explain_rejection`
+  (one `HEAD /info`, 5 s deadline, after each rejected first or
+  re-authentication; any status carries `Date`).
+- `status.clockSkewSeconds: integer|null` (signed, `relay − local`) keeps the
+  last measurement; a failed measurement keeps the previous one, a relay change
+  clears it. Informational only (see SECURITY.md).
+- A rejected authentication whose last measurement is at least 120 s either way
+  publishes `clock_skew` instead of `auth_rejected`, first or re-authentication.
+  It retries on the network budget (1/2/4/8/16 units, shared): `connecting`/
+  `clock_skew` while retrying, `disconnected`/`clock_skew` once spent, until
+  Retry (which starts a fresh budget). A small offset keeps `auth_rejected`
+  with its previous behaviour (a first-authentication rejection waits for Retry).
+- `protocol::CONNECTION_CATEGORIES` lists every connection category; tests
+  assert each published one is listed and that the panel's `acceptFrame` list
+  is identical. **Co-update:** a panel older than this one refuses a frame with
+  `clock_skew` (it fails the session as `invalid_response`); install the plugin
+  and helper together. The new panel accepts helpers without
+  `clockSkewSeconds`.
+- Panel: `statusLabel` `Clock is off by 73 min behind` (`ahead` when the local
+  clock is fast; hours from 120 min; `Clock is off` when unknown), bar `Buzz ·
+  Clock` / `!`, and setup instructions: the clock disagrees with the relay's,
+  often after suspend; on Omarchy `sudo systemctl restart systemd-timesyncd`
+  (or check `timedatectl`), then Retry.
+- Evidence (synthetic): `clock` unit tests (valid, malformed and other-form
+  dates, missing/repeated headers, signed bounded skew, threshold);
+  `catalog_tests` reads `Date` from the NIP-11 response; `auth_reauth_tests`
+  with a loopback relay that answers HTTP with a configurable `Date`: skewed
+  first authentication reads `clock_skew` and recovers without a command,
+  skewed re-authentication (local clock ahead) likewise, a 30 s offset keeps
+  `auth_rejected` and is not retried, five skewed retries stop at
+  `disconnected`/`clock_skew` with exactly one `HEAD` per rejection and Retry
+  reconnects; no `Date` leaves the offset null. `Preview.qml` covers the
+  labels, instructions, bar, invalid values and old helpers. `test --locked`
+  (290 passed, 2 ignored), `fmt --check`, `tests/helper_smoke.py` and every
+  `scripts/preview` mode pass.
+- Not verified: a real relay's `Date` header and its answer to `HEAD /info`
+  (any status with a `Date` suffices; a proxy may strip or rewrite it), how far the pinned relay
+  tolerates AUTH `created_at` drift (the 120 s threshold is ours), the catalog
+  path publishing a measurement end to end (unit-tested at `relay_info` only),
+  and the panel in the live shell.

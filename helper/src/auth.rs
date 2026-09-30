@@ -61,6 +61,11 @@ fn publish_status(tx: &watch::Sender<Status>, change: impl FnOnce(&mut Status)) 
     });
 }
 fn update(tx: &watch::Sender<Status>, state: &str, category: Option<&str>) {
+    #[cfg(test)]
+    assert!(
+        category.is_none_or(|c| crate::protocol::CONNECTION_CATEGORIES.contains(&c)),
+        "unlisted connection category {category:?}"
+    );
     publish_status(tx, |s| {
         s.connection = state.into();
         s.category = category.map(str::to_owned);
@@ -122,6 +127,8 @@ fn apply_loaded_config(
                     s.dm_open = crate::protocol::DmOpen::default();
                     s.connection = "unconfigured".into();
                     s.category = None;
+                    // A measurement belongs to the relay it was taken against.
+                    s.clock_skew_seconds = None;
                     s.catalog = crate::protocol::Catalog::unavailable(None);
                     s.history = History::unavailable(None, None);
                     s.thread = Thread::unavailable(None, None, None);
@@ -204,6 +211,10 @@ struct Backoff {
     // `auth_rejected` then retries like a network failure. A rejected first
     // authentication never sets it: that means a wrong or revoked identity.
     reauth_rejected: bool,
+    // Set while the latest failure was `clock_skew` (a rejected first or
+    // re-authentication explained by the clock offset). The clock can be fixed
+    // while the helper keeps trying, so it retries like a network failure.
+    clock_skew: bool,
     unit: Duration,
 }
 impl Default for Backoff {
@@ -211,6 +222,7 @@ impl Default for Backoff {
         Self {
             failures: 0,
             reauth_rejected: false,
+            clock_skew: false,
             unit: Duration::from_secs(1),
         }
     }
@@ -219,21 +231,28 @@ impl Backoff {
     fn reset(&mut self) {
         self.failures = 0;
         self.reauth_rejected = false;
+        self.clock_skew = false;
     }
     fn delay(&mut self, error: &str) -> Option<Duration> {
-        let retryable = matches!(error, "relay_timeout" | "relay_unavailable")
+        let retryable = matches!(error, "relay_timeout" | "relay_unavailable" | "clock_skew")
             || (error == "auth_rejected" && self.reauth_rejected);
         if !retryable || self.failures >= 5 {
             self.reauth_rejected = false;
+            self.clock_skew = false;
             return None;
         }
+        self.clock_skew = error == "clock_skew";
         let factor = 1_u32 << self.failures;
         self.failures += 1;
         Some(self.unit * factor)
     }
     /// The category shown while an automatic retry is in progress.
     fn retrying(&self) -> Option<&'static str> {
-        self.reauth_rejected.then_some("auth_rejected")
+        if self.clock_skew {
+            Some("clock_skew")
+        } else {
+            self.reauth_rejected.then_some("auth_rejected")
+        }
     }
 }
 enum ConnectionExit {
@@ -561,9 +580,10 @@ async fn wait_after_failure(
     session: Option<(&str, &nostr::Keys)>,
 ) -> bool {
     let delay = backoff.delay(error);
-    // A rejected re-authentication that is being retried is still an attempt to
-    // connect; it becomes `disconnected` only once the budget is spent.
-    let state = if delay.is_some() && error == "auth_rejected" {
+    // A rejected authentication that is being retried (re-authentication or
+    // clock skew) is still an attempt to connect; it becomes `disconnected`
+    // only once the budget is spent, and then waits for Retry.
+    let state = if delay.is_some() && matches!(error, "auth_rejected" | "clock_skew") {
         "connecting"
     } else {
         "disconnected"
@@ -1518,6 +1538,7 @@ async fn observe_inner(
                 match result {
                     Some(Ok(Ok(catalog))) if fresh=> {
                         *relay_pin=Some(catalog.signer);
+                        let skew=catalog.clock_skew;
                         let next_catalog=crate::protocol::Catalog {
                             state:catalog.state.into(),category:Some(catalog.category.into()),
                             rooms:catalog.rooms.into_iter().map(|r|crate::protocol::Room {id:r.id,name:r.name,description:r.description,kind:r.kind.into(),participants:r.participants,hidden:r.hidden}).collect(),
@@ -1548,6 +1569,7 @@ async fn observe_inner(
                         // Publish the catalog and all dependent views under one watch lock.
                         publish_status(tx, |s| {
                             s.catalog=next_catalog;
+                            if skew.is_some() {s.clock_skew_seconds=skew;}
                             s.activity=activity.summaries();
                             if let Some(room)=removed_selection {s.history=History::unavailable(Some(room),Some("history_access_denied"));}
                             else if let Some(room)=s.history.room_id.clone().filter(|room|removed.contains(room)) {s.history=History::unavailable(Some(room),Some("history_access_denied"));}
@@ -1830,6 +1852,31 @@ pub async fn run(
         }
     }
 }
+/// A rejected authentication (first or re-authentication) measures the clock
+/// offset once, with one `HEAD` for the relay's `Date` header, and publishes it.
+/// It reads `clock_skew` when the last measurement is at least
+/// `clock::THRESHOLD` seconds either way. Other failures pass unchanged.
+async fn explain_rejection(
+    error: &'static str,
+    relay: &str,
+    tx: &watch::Sender<Status>,
+) -> &'static str {
+    if error != "auth_rejected" {
+        return error;
+    }
+    let measured = timeout(Duration::from_secs(5), crate::clock::probe(relay))
+        .await
+        .ok()
+        .flatten();
+    if measured.is_some() {
+        publish_status(tx, |s| s.clock_skew_seconds = measured);
+    }
+    if crate::clock::explains_rejection(tx.borrow().clock_skew_seconds) {
+        "clock_skew"
+    } else {
+        "auth_rejected"
+    }
+}
 /// One connection: authenticate, observe until it ends, then wait out any
 /// backoff. Returns false on shutdown.
 async fn connect_and_observe(
@@ -1847,7 +1894,8 @@ async fn connect_and_observe(
     let mut conn = match connect_identity(relay, keys).await {
         Ok(connection) => connection,
         Err(error) => {
-            return wait_after_failure(error, backoff, retry, tx, setup, Some((relay, keys))).await
+            let error = explain_rejection(error, relay, tx).await;
+            return wait_after_failure(error, backoff, retry, tx, setup, Some((relay, keys))).await;
         }
     };
     let exit = observe_sending(
@@ -1864,6 +1912,7 @@ async fn connect_and_observe(
         ConnectionExit::Shutdown => false,
         ConnectionExit::Failure(error) => {
             drop(conn);
+            let error = explain_rejection(error, relay, tx).await;
             wait_after_failure(error, backoff, retry, tx, setup, Some((relay, keys))).await
         }
     }

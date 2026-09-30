@@ -7,6 +7,7 @@ mod agents_service;
 mod attachments;
 mod auth;
 mod catalog;
+mod clock;
 mod compatibility;
 mod config;
 mod dm_open;

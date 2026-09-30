@@ -127,6 +127,7 @@ Item {
   property string helperExecutable: Quickshell.env("HOME") + "/.local/bin/omarchy-buzz"
   property string connection: "unavailable"
   property string category: "helper_unavailable"
+  property var clockSkewSeconds: null
   property string instanceId: ""
   property string relay: ""
   property bool sessionFailed: true
@@ -408,9 +409,9 @@ Item {
     ? (historyLive ? "Live" : automaticHistorySupported ? "Auto-refreshing snapshot" : "Snapshot") + " · " + historyRows.length + (historyRows.length === 1 ? " message" : " messages") + " shown · completeness unknown"
       + (!historyHasMore ? "" : historyCategory === "history_older_unheld" ? " · older messages exist but are not held" : " · older history available")
       + (historyOlderState === "unavailable" && !olderLoading ? " · older messages could not be loaded" : "") : ({request_busy: "Helper busy · refresh again", history_timeout: "History request timed out", history_invalid: "History response could not be validated", history_access_denied: "History unavailable for this room"})[historyCategory] || "History not available yet"
-  readonly property string barLabel: sampleMode ? "TEST" : ({unconfigured: "Setup", connecting: "Connecting", authenticated: "Connected", identity_locked: "Locked", disconnected: "Offline", unavailable: "Error"})[connection] || "Error"
-  readonly property string barSymbol: sampleMode ? "T" : ({unconfigured: "?", connecting: "…", authenticated: "✓", identity_locked: "!", disconnected: "○", unavailable: "!"})[connection] || "!"
-  readonly property string statusLabel: sampleMode ? "Sample data" : category === "incompatible_response" ? "Incompatible helper" : category === "identity_access_pending" ? "Waiting for secret store unlock" : ({
+  readonly property string barLabel: sampleMode ? "TEST" : category === "clock_skew" && connection !== "authenticated" ? "Clock" : ({unconfigured: "Setup", connecting: "Connecting", authenticated: "Connected", identity_locked: "Locked", disconnected: "Offline", unavailable: "Error"})[connection] || "Error"
+  readonly property string barSymbol: sampleMode ? "T" : category === "clock_skew" && connection !== "authenticated" ? "!" : ({unconfigured: "?", connecting: "…", authenticated: "✓", identity_locked: "!", disconnected: "○", unavailable: "!"})[connection] || "!"
+  readonly property string statusLabel: sampleMode ? "Sample data" : category === "incompatible_response" ? "Incompatible helper" : category === "identity_access_pending" ? "Waiting for secret store unlock" : category === "clock_skew" && connection !== "authenticated" ? clockSkewText(clockSkewSeconds) : ({
     unconfigured: "Setup required", connecting: "Connecting", authenticated: historyState === "snapshot" ? "Authenticated · recent snapshot" : historyState === "loading" ? "Authenticated · history loading" : "Authenticated · history unavailable",
     identity_locked: "Identity locked", disconnected: "Disconnected", unavailable: "Helper unavailable"
   })[connection] || "Unavailable"
@@ -421,6 +422,8 @@ Item {
     ? "Install a matching Buzz plugin and helper release, restart the helper service, then Retry. Updating the Omarchy plugin alone does not replace its helper. Your existing identity stays in the secret store."
     : (category === "config_unavailable" || category === "invalid_config")
     ? "Check your local helper configuration, then Retry. Credentials do not belong in that file."
+    : category === "clock_skew" && connection !== "authenticated"
+    ? "This computer's clock disagrees with the relay's, so the relay refuses its sign-in. This often happens after the machine was suspended. On Omarchy run sudo systemctl restart systemd-timesyncd (or check timedatectl), then Retry. The helper keeps trying for a short while on its own."
     : (connection === "identity_locked" || category === "identity_access_pending")
       ? "Unlock your OS secret store, then Retry. Your existing identity is retained."
       : connection === "authenticated"
@@ -1685,6 +1688,18 @@ Item {
     generation = 0
     connection = "connecting"
     category = ""
+    clockSkewSeconds = null
+  }
+  // `status.clockSkewSeconds`: relay minus local seconds, informational only.
+  // Absent from helpers older than `clock_skew`; bounded to ±10 years.
+  function validClockSkew(value) {
+    return value === undefined || value === null || (Number.isInteger(value) && Math.abs(value) <= 315576000)
+  }
+  function clockSkewText(seconds) {
+    if (!Number.isInteger(seconds)) return "Clock is off"
+    var minutes = Math.round(Math.abs(seconds) / 60)
+    var amount = minutes < 120 ? minutes + " min" : Math.round(minutes / 60) + " h"
+    return "Clock is off by " + amount + " " + (seconds > 0 ? "behind" : "ahead")
   }
   function fail(reason) {
     clearTransfers()
@@ -1830,9 +1845,10 @@ Item {
     }
     var state = frame.status
     var states = ["unconfigured", "connecting", "authenticated", "identity_locked", "disconnected", "unavailable"]
-    var categories = ["identity_access_pending", "identity_missing", "identity_locked", "identity_invalid", "identity_unavailable", "auth_rejected", "relay_timeout", "relay_unavailable", "relay_protocol_error", "config_unavailable", "invalid_config"]
+    var categories = ["identity_access_pending", "identity_missing", "identity_locked", "identity_invalid", "identity_unavailable", "auth_rejected", "clock_skew", "relay_timeout", "relay_unavailable", "relay_protocol_error", "config_unavailable", "invalid_config"]
     if (states.indexOf(state.connection) === -1
         || (state.category !== null && categories.indexOf(state.category) === -1)
+        || !validClockSkew(state.clockSkewSeconds)
         || (state.identity !== null && (!boundedString(state.identity, 64) || !/^[a-f0-9]{64}$/.test(state.identity)))
         || (state.relay !== null && (!boundedString(state.relay, 2048) || !/^wss?:\/\//.test(state.relay) || state.relay.indexOf("@") !== -1))) {
       fail("invalid_response"); return false
@@ -1997,6 +2013,7 @@ Item {
     relay = state.relay || ""
     connection = state.connection
     category = state.category || ""
+    clockSkewSeconds = state.clockSkewSeconds === undefined ? null : state.clockSkewSeconds
     sendSupported = supportsSend
     identity = state.identity || ""
     dmOpenSupported = supportsDmOpen

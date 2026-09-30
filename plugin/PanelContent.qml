@@ -1417,6 +1417,7 @@ FocusScope {
             onClicked: Qt.openUrlExternally("https://buzz.xyz")
           }
           Text {
+            objectName: "buzzSetupInstructions"
             Layout.fillWidth: true
             text: root.service ? root.service.setupInstructions : "Enable the plugin and reopen this panel."
             textFormat: Text.PlainText
