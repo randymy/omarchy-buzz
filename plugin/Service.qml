@@ -89,6 +89,37 @@ Item {
       root.notificationPreferenceDirty = false
     }
   }
+  // The room last chosen by the user, restored after a shell restart. Only a
+  // public room ID and its relay and identity scope are stored; no message data.
+  readonly property string viewSettingsPath: notificationSettingsDir + "/view.json"
+  property string rememberedScope: ""
+  property string rememberedRoom: ""
+  function loadViewSettings(raw) {
+    try {
+      var parsed = JSON.parse(raw)
+      if (parsed && parsed.version === 1 && uuidValue(parsed.roomId) && boundedString(parsed.scope, 2200) && parsed.scope !== "") {
+        rememberedScope = parsed.scope
+        rememberedRoom = parsed.roomId
+      }
+    } catch (error) { /* Missing or malformed settings select the first room. */ }
+  }
+  function rememberRoom(roomId) {
+    // Both a relay and an identity are required: an incomplete scope is never remembered.
+    if (sampleMode || !/^[^|]+\|[^|]+$/.test(draftScopeKey) || !uuidValue(roomId)
+        || (rememberedScope === draftScopeKey && rememberedRoom === roomId)) return
+    rememberedScope = draftScopeKey
+    rememberedRoom = roomId
+    if (notificationSettingsDirReady) viewSettingsFile.setText(JSON.stringify({version: 1, scope: rememberedScope, roomId: rememberedRoom}) + "\n")
+  }
+  FileView {
+    id: viewSettingsFile
+    path: root.viewSettingsPath
+    watchChanges: false
+    atomicWrites: true
+    printErrors: false
+    blockLoading: true
+    onLoaded: root.loadViewSettings(text())
+  }
   property string helperExecutable: Quickshell.env("HOME") + "/.local/bin/omarchy-buzz"
   property string connection: "unavailable"
   property string category: "helper_unavailable"
@@ -246,6 +277,7 @@ Item {
     if (rooms.some(function(room) { return room.id === roomId })) {
       if (selectedRoomId !== roomId) { clearHistory(); clearRecipients() }
       selectedRoomId = roomId
+      rememberRoom(roomId)
       if (!sampleMode) { refreshHistory(); refreshRecipients() }
     }
   }
@@ -857,7 +889,8 @@ Item {
         && !catalogRooms.some(function(room) { return room.id === root.selectedRoomId })) {
       clearHistory()
       clearRecipients()
-      selectedRoomId = catalogRooms.length ? catalogRooms[0].id : ""
+      var remembered = rememberedScope === incomingScope && catalogRooms.some(function(room) { return room.id === root.rememberedRoom })
+      selectedRoomId = remembered ? rememberedRoom : catalogRooms.length ? catalogRooms[0].id : ""
     }
     historySupported = supportsHistory
     if (state.connection !== "authenticated" || !supportsHistory || ["loading", "unavailable"].indexOf(catalogState) !== -1) clearHistory()
