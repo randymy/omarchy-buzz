@@ -116,3 +116,16 @@ claim route is exempt, so invites are redeemed over HTTP while the helper is
 Still unverified: a real relay's join-policy, acceptance and claim answers,
 the NIP-98 `u` binding behind a proxy, rate limiting, and 9021/9022 on the
 deployed relay.
+
+## Inviting
+
+The other side of a claim: the relay's owner or an admin mints an invite with
+the NIP-98 `POST /api/invites` (`{max_uses, ttl_secs}` → `{code, expires_at,
+max_uses, uses_remaining, url}`; no role, claims always grant `member`; no list
+or revoke route at this revision). Settings → **Invite people** does this
+through the helper's `mint_invite` (capability `invite_mint`) and offers the
+two forms `claim_invite` and Desktop accept, `buzz://join?relay=<wss://host>&code=<code>`
+and `https://<host>/invite/<code>`, plus a message telling newcomers to install
+Buzz for Omarchy (or Buzz Desktop elsewhere), choose the relay, create an
+identity and paste the invite. Details in `docs/CHECKPOINT.md`, "Invite people
+from Settings".
