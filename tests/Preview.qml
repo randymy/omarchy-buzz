@@ -62,6 +62,48 @@ ShellRoot {
     if (!setupService.acceptFrame(setupFrame("status", 3, assist, "disconnected", "relay_unavailable", "wss://fixture.example/", key))
         || shown("buzzSetupRelay") !== 1 || shown("buzzCreateIdentity") || shown("buzzExistingIdentityNote"))
       throw new Error("Disconnected setup controls incorrect")
+    // A rejected sign-in explained by the relay's clock (`clock_skew`).
+    function skewFrame(connection, category, skew) {
+      var f = JSON.parse(setupFrame("status", 3, assist, connection, category, "wss://fixture.example/", key))
+      f.status.clockSkewSeconds = skew
+      return JSON.stringify(f)
+    }
+    if (!setupService.acceptFrame(skewFrame("connecting", "clock_skew", 4380))
+        || setupService.clockSkewSeconds !== 4380
+        || setupService.statusLabel !== "Clock is off by 73 min behind"
+        || setupService.barLabel !== "Clock" || setupService.barSymbol !== "!"
+        || setupService.setupInstructions.indexOf("clock disagrees with the relay") === -1
+        || setupService.setupInstructions.indexOf("sudo systemctl restart systemd-timesyncd") === -1
+        || setupService.setupInstructions.indexOf("timedatectl") === -1
+        || setupService.setupInstructions.indexOf("suspended") === -1
+        || setupService.setupInstructions.indexOf("Retry") === -1
+        || findNamed(setupView, "buzzSetupInstructions", [])[0].text !== setupService.setupInstructions
+        || shown("buzzSetupInstructions") !== 1)
+      throw new Error("Clock skew state incorrect")
+    if (!setupService.acceptFrame(skewFrame("disconnected", "clock_skew", -4410))
+        || setupService.statusLabel !== "Clock is off by 74 min ahead" || setupService.barLabel !== "Clock")
+      throw new Error("Clock ahead of the relay mislabelled")
+    if (!setupService.acceptFrame(skewFrame("disconnected", "clock_skew", 3 * 3600))
+        || setupService.statusLabel !== "Clock is off by 3 h behind")
+      throw new Error("Large clock skew mislabelled")
+    if (!setupService.acceptFrame(skewFrame("disconnected", "clock_skew", null)) || setupService.statusLabel !== "Clock is off")
+      throw new Error("Unknown clock skew mislabelled")
+    // A small offset stays informational: an ordinary rejection keeps its text.
+    if (!setupService.acceptFrame(skewFrame("disconnected", "auth_rejected", 30))
+        || setupService.statusLabel !== "Disconnected" || setupService.barLabel !== "Offline"
+        || setupService.setupInstructions.indexOf("clock") !== -1)
+      throw new Error("Small skew changed the rejected state")
+    var badSkews = [1.5, "60", 315576001, -315576001, true, {}]
+    for (var b = 0; b < badSkews.length; b++) {
+      setupService.beginSession()
+      setupService.acceptFrame(setupFrame("hello", 1, assist, "unconfigured", null, null, null))
+      if (setupService.acceptFrame(skewFrame("disconnected", "clock_skew", badSkews[b])))
+        throw new Error("Invalid clockSkewSeconds accepted: " + JSON.stringify(badSkews[b]))
+    }
+    setupService.beginSession()
+    if (!setupService.acceptFrame(setupFrame("hello", 1, assist, "unconfigured", null, null, null))
+        || setupService.clockSkewSeconds !== null)
+      throw new Error("A helper without clockSkewSeconds was refused")
     if (!setupService.acceptFrame(setupFrame("status", 3, assist, "unavailable", "identity_access_pending", "wss://fixture.example/", key))
         || shown("buzzSetupRelay") || setupService.setupRelay("wss://other.example") || setupService.createIdentity())
       throw new Error("Setup offered while the secret store is unlocking")
