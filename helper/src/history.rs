@@ -7,6 +7,10 @@ use uuid::Uuid;
 const EVENTS: usize = 200;
 const BYTES: usize = 512 * 1024;
 const ROWS: usize = 20;
+const SUMMARY_REPLIES: u64 = 1_000_000;
+const SUMMARY_PARTICIPANTS: usize = 10;
+// 9999-12-31T23:59:59Z; the panel rejects later instants as unrepresentable.
+const SUMMARY_TIME: u64 = 253_402_300_799;
 
 /// Observed live reactions in this bounded page, not authoritative agent state.
 #[derive(Clone, Debug, Default, Serialize)]
@@ -25,6 +29,16 @@ pub struct Row {
     pub truncated: bool,
     pub unavailable: bool,
     pub reactions: Option<Reactions>,
+    pub thread: Option<ThreadSummary>,
+}
+/// Bounded projection of a relay-signed NIP-CW `kind:39005` thread summary.
+/// Metadata about a row, never a row, a cursor input or a content claim.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadSummary {
+    pub replies: u64,
+    pub last_reply_at: Option<u64>,
+    pub participants: Vec<String>,
 }
 #[derive(Clone, Debug)]
 pub struct History {
@@ -38,6 +52,16 @@ pub struct History {
 struct Cursor {
     created_at: u64,
     id: String,
+}
+// NIP-CW: clients MUST ignore unknown overlay content fields, so no
+// deny_unknown_fields here; the known fields are required and typed.
+#[derive(Deserialize)]
+struct SummaryContent {
+    reply_count: u64,
+    #[allow(dead_code)]
+    descendant_count: u64,
+    last_reply_at: Option<u64>,
+    participants: Vec<String>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -77,6 +101,52 @@ fn targets(event: &Event) -> Result<Vec<String>, &'static str> {
         return Err("history_invalid_shape");
     }
     Ok(values)
+}
+/// Verify a `kind:39005` overlay's exact tags and typed content. Returns the
+/// summarized row id and the bounded projection. The signer is checked by the
+/// caller; room scope (`h`) is checked with every other event.
+fn summary(event: &Event, scope: &str) -> Result<(String, ThreadSummary), &'static str> {
+    const INVALID: &str = "history_invalid_summary";
+    // Exact tag cardinality: one `e`, one `d`, one `h`, nothing else.
+    if event.tags.len() != 3 || event.tags.iter().any(|t| t.as_slice().len() != 2) {
+        return Err(INVALID);
+    }
+    let e = one(event, "e").map_err(|_| INVALID)?.ok_or(INVALID)?;
+    let d = one(event, "d").map_err(|_| INVALID)?.ok_or(INVALID)?;
+    if one(event, "h").map_err(|_| INVALID)? != Some(scope) || e != d {
+        return Err(INVALID);
+    }
+    let target = hex_id(e).map_err(|_| INVALID)?;
+    let shape: serde_json::Value = serde_json::from_str(&event.content).map_err(|_| INVALID)?;
+    // `last_reply_at` may be null but must be present; serde would default it.
+    if shape.get("last_reply_at").is_none() {
+        return Err(INVALID);
+    }
+    let content: SummaryContent = serde_json::from_value(shape).map_err(|_| INVALID)?;
+    if content.last_reply_at.is_some_and(|at| at > SUMMARY_TIME)
+        || content.participants.len() > SUMMARY_PARTICIPANTS
+    {
+        return Err(INVALID);
+    }
+    let mut distinct = BTreeSet::new();
+    for participant in &content.participants {
+        let key = PublicKey::from_hex(participant).map_err(|_| INVALID)?;
+        if key.to_hex() != *participant || !distinct.insert(key) {
+            return Err(INVALID);
+        }
+    }
+    Ok((
+        target,
+        ThreadSummary {
+            replies: content.reply_count.min(SUMMARY_REPLIES),
+            last_reply_at: content.last_reply_at,
+            participants: content
+                .participants
+                .into_iter()
+                .take(SUMMARY_PARTICIPANTS)
+                .collect(),
+        },
+    ))
 }
 fn author(event: &Event, relay: PublicKey) -> Result<PublicKey, &'static str> {
     // No ordinary mention (`p`) ever changes authorship. Only a relay-signed
@@ -125,6 +195,7 @@ pub fn reduce(
     let mut edits = Vec::new();
     let mut deletions = Vec::new();
     let mut reactions = Vec::new();
+    let mut summaries = Vec::new();
     for event in events {
         event.verify().map_err(|_| "history_invalid_signature")?;
         if event.created_at.as_secs() > now.saturating_add(60) {
@@ -157,6 +228,13 @@ pub fn reduce(
             7 => {
                 targets(event)?;
                 reactions.push(event);
+            }
+            39005 => {
+                if event.pubkey != relay {
+                    return Err("history_invalid_summary");
+                }
+                let (target, value) = summary(event, &scope)?;
+                summaries.push((target, event, value));
             }
             39006 => {
                 if now.saturating_sub(event.created_at.as_secs()) > 60 {
@@ -199,6 +277,27 @@ pub fn reduce(
             .any(|target| originals.contains_key(target))
         {
             return Err("history_invalid_scope");
+        }
+    }
+    // The pinned relay emits a summary only while iterating the rows it is
+    // returning (bridge.rs, step 3), so a summary naming anything else is a
+    // relay contract violation. Buzz Desktop skips such a summary, but here it
+    // is treated like an unmatched edit or reaction: the page is rejected as a
+    // whole rather than partially trusted. NIP-CW: key by `d`, latest wins.
+    let mut threads: BTreeMap<String, (&Event, ThreadSummary)> = BTreeMap::new();
+    for (target, event, value) in summaries {
+        if !originals.contains_key(&target) {
+            return Err("history_invalid_scope");
+        }
+        match threads.get(&target) {
+            Some((old, _)) if old.created_at == event.created_at => {
+                // Two different same-second summaries give no latest one.
+                return Err("history_invalid_summary");
+            }
+            Some((old, _)) if old.created_at > event.created_at => {}
+            _ => {
+                threads.insert(target, (event, value));
+            }
         }
     }
     let mut deleted = BTreeSet::new();
@@ -290,8 +389,12 @@ pub fn reduce(
                 working: working.len(),
             })
         };
+        // A relay-authored reply summary is kept even when the row's content
+        // is unavailable: it does not depend on the unresolved edit/delete.
+        let thread = threads.remove(&id).map(|(_, value)| value);
         rows.push(Row {
             reactions,
+            thread,
             id,
             author_pubkey: author(original, relay)?.to_hex(),
             timestamp: original.created_at.as_secs(),

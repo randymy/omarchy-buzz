@@ -394,7 +394,7 @@ async fn loopback_fetch_uses_one_bounded_nip_cw_query_and_projects_only_rows() {
             let length=head.lines().find_map(|l|l.strip_prefix("content-length: ")).unwrap().trim().parse::<usize>().unwrap();
             assert!(length<=8192);let mut body=vec![0;length];stream.read_exact(&mut body).await.unwrap();
             let actual:serde_json::Value=serde_json::from_slice(&body).unwrap();
-            assert_eq!(actual,serde_json::json!([{"kinds":[9,40002],"#h":[room().to_string()],"limit":20,"top_level":true,"include_aux":true,"include_summaries":false}]));
+            assert_eq!(actual,serde_json::json!([{"kinds":[9,40002],"#h":[room().to_string()],"limit":20,"top_level":true,"include_aux":true,"include_summaries":true}]));
             stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",payload.len()).as_bytes()).await.unwrap();
             stream.write_all(&payload).await.unwrap();
         }).await.unwrap();
@@ -455,4 +455,294 @@ fn observed_agent_reactions_deduplicate_and_apply_deletions() {
     let result = reduce(room(), relay.public_key(), &uncertain, 200).unwrap();
     assert_eq!(result.rows[0].reactions.as_ref().unwrap().working, 0);
     assert!(!result.rows[0].unavailable);
+}
+fn summary_with(relay: &Keys, tag_values: &[&[&str]], content: &str, at: u64) -> Event {
+    event(relay, 39005, content, tags(tag_values), at)
+}
+fn summary(relay: &Keys, target: &Event, content: &str, at: u64) -> Event {
+    let id = target.id.to_hex();
+    summary_with(
+        relay,
+        &[&["e", &id], &["d", &id], &["h", &room().to_string()]],
+        content,
+        at,
+    )
+}
+fn two_replies(user: &Keys) -> String {
+    format!(
+        r#"{{"reply_count":2,"descendant_count":3,"last_reply_at":150,"participants":["{}"]}}"#,
+        user.public_key().to_hex()
+    )
+}
+#[test]
+fn thread_summary_projects_onto_its_row_and_tolerates_unknown_fields() {
+    let relay = key(1);
+    let user = key(2);
+    let other = key(3);
+    let replied = row(&user, "replied");
+    let quiet = event(&user, 9, "quiet", tags(&[&["h", &room().to_string()]]), 110);
+    let content = format!(
+        r#"{{"reply_count":2,"descendant_count":3,"last_reply_at":150,"participants":["{}","{}"],"future":{{"x":1}}}}"#,
+        other.public_key().to_hex(),
+        user.public_key().to_hex()
+    );
+    let page = [
+        replied.clone(),
+        quiet,
+        summary(&relay, &replied, &content, 199),
+        head(&relay),
+    ];
+    let result = reduce(room(), relay.public_key(), &page, 200).unwrap();
+    assert_eq!(
+        result.rows[0].thread,
+        Some(ThreadSummary {
+            replies: 2,
+            last_reply_at: Some(150),
+            participants: vec![other.public_key().to_hex(), user.public_key().to_hex()],
+        })
+    );
+    assert_eq!(result.rows[1].thread, None);
+    assert_eq!(
+        serde_json::to_value(&result.rows[0].thread).unwrap(),
+        serde_json::json!({"replies":2,"lastReplyAt":150,"participants":[other.public_key().to_hex(),user.public_key().to_hex()]})
+    );
+    // Null recency and zero participants are valid, typed values.
+    let empty = r#"{"reply_count":0,"descendant_count":0,"last_reply_at":null,"participants":[]}"#;
+    let result = reduce(
+        room(),
+        relay.public_key(),
+        &[
+            replied.clone(),
+            summary(&relay, &replied, empty, 199),
+            head(&relay),
+        ],
+        200,
+    )
+    .unwrap();
+    assert_eq!(
+        result.rows[0].thread,
+        Some(ThreadSummary {
+            replies: 0,
+            last_reply_at: None,
+            participants: vec![],
+        })
+    );
+    // Relay-authored reply metadata survives unresolved content authority.
+    let result = reduce(
+        room(),
+        relay.public_key(),
+        &[
+            replied.clone(),
+            deletion(&other, &replied),
+            summary(&relay, &replied, &two_replies(&user), 199),
+            head(&relay),
+        ],
+        200,
+    )
+    .unwrap();
+    assert!(result.rows[0].unavailable);
+    assert_eq!(result.rows[0].thread.as_ref().unwrap().replies, 2);
+}
+#[test]
+fn thread_summary_signer_tags_and_scope_are_exact() {
+    let relay = key(1);
+    let user = key(2);
+    let r = row(&user, "root");
+    let id = r.id.to_hex();
+    let other_id = "ab".repeat(32);
+    let scope = room().to_string();
+    let other_room = Uuid::new_v4().to_string();
+    let content = two_replies(&user);
+    let reject = |overlay: Event| {
+        reduce(
+            room(),
+            relay.public_key(),
+            &[r.clone(), overlay, head(&relay)],
+            200,
+        )
+        .unwrap_err()
+    };
+    assert_eq!(
+        reject(summary(&user, &r, &content, 199)),
+        "history_invalid_summary"
+    );
+    for bad in [
+        vec![vec!["e", &id], vec!["h", &scope]],
+        vec![vec!["d", &id], vec!["h", &scope]],
+        vec![
+            vec!["e", &id],
+            vec!["d", &id],
+            vec!["h", &scope],
+            vec!["p", &id],
+        ],
+        vec![
+            vec!["e", &id],
+            vec!["e", &id],
+            vec!["d", &id],
+            vec!["h", &scope],
+        ],
+        vec![
+            vec!["e", &id, "wss://relay"],
+            vec!["d", &id],
+            vec!["h", &scope],
+        ],
+        vec![vec!["e", &id], vec!["d", &other_id], vec!["h", &scope]],
+        vec![
+            vec!["e", &id.to_uppercase()],
+            vec!["d", &id.to_uppercase()],
+            vec!["h", &scope],
+        ],
+        vec![vec!["e", "root"], vec!["d", "root"], vec!["h", &scope]],
+    ] {
+        let rows: Vec<&[&str]> = bad.iter().map(Vec::as_slice).collect();
+        assert_eq!(
+            reject(summary_with(&relay, &rows, &content, 199)),
+            "history_invalid_summary",
+            "{bad:?}"
+        );
+    }
+    assert_eq!(
+        reject(summary_with(
+            &relay,
+            &[&["e", &id], &["d", &id], &["h", &other_room]],
+            &content,
+            199
+        )),
+        "history_invalid_scope"
+    );
+    assert_eq!(
+        reject(summary_with(
+            &relay,
+            &[&["e", &id], &["d", &id]],
+            &content,
+            199
+        )),
+        "history_invalid_scope"
+    );
+}
+#[test]
+fn thread_summary_content_is_typed_and_bounded() {
+    let relay = key(1);
+    let user = key(2);
+    let r = row(&user, "root");
+    let p = user.public_key().to_hex();
+    let eleven: Vec<String> = (10..21).map(|n| key(n).public_key().to_hex()).collect();
+    for content in [
+        "not json".to_string(),
+        "[]".to_string(),
+        r#"{"reply_count":-1,"descendant_count":0,"last_reply_at":null,"participants":[]}"#.into(),
+        r#"{"reply_count":1.5,"descendant_count":2,"last_reply_at":null,"participants":[]}"#.into(),
+        r#"{"reply_count":"2","descendant_count":2,"last_reply_at":null,"participants":[]}"#.into(),
+        r#"{"reply_count":1,"descendant_count":-1,"last_reply_at":null,"participants":[]}"#.into(),
+        r#"{"reply_count":1,"last_reply_at":null,"participants":[]}"#.into(),
+        r#"{"reply_count":1,"descendant_count":1,"participants":[]}"#.into(),
+        r#"{"reply_count":1,"descendant_count":1,"last_reply_at":null}"#.into(),
+        r#"{"descendant_count":1,"last_reply_at":null,"participants":[]}"#.into(),
+        r#"{"reply_count":1,"descendant_count":1,"last_reply_at":-5,"participants":[]}"#.into(),
+        r#"{"reply_count":1,"descendant_count":1,"last_reply_at":253402300800,"participants":[]}"#
+            .into(),
+        r#"{"reply_count":1,"descendant_count":1,"last_reply_at":null,"participants":"x"}"#.into(),
+        r#"{"reply_count":1,"descendant_count":1,"last_reply_at":null,"participants":[7]}"#.into(),
+        r#"{"reply_count":1,"descendant_count":1,"last_reply_at":null,"participants":["zz"]}"#
+            .into(),
+        format!(
+            r#"{{"reply_count":1,"descendant_count":1,"last_reply_at":null,"participants":["{}"]}}"#,
+            p.to_uppercase()
+        ),
+        format!(
+            r#"{{"reply_count":2,"descendant_count":2,"last_reply_at":null,"participants":["{p}","{p}"]}}"#
+        ),
+        serde_json::json!({"reply_count":11,"descendant_count":11,"last_reply_at":1,"participants":eleven})
+            .to_string(),
+    ] {
+        assert_eq!(
+            reduce(
+                room(),
+                relay.public_key(),
+                &[r.clone(), summary(&relay, &r, &content, 199), head(&relay)],
+                200
+            )
+            .unwrap_err(),
+            "history_invalid_summary",
+            "{content}"
+        );
+    }
+    // Caps: an implausible count is bounded; ten distinct participants pass.
+    let ten = &eleven[..10];
+    let content = serde_json::json!({"reply_count":5_000_000u64,"descendant_count":u64::MAX,"last_reply_at":253402300799u64,"participants":ten}).to_string();
+    let result = reduce(
+        room(),
+        relay.public_key(),
+        &[r.clone(), summary(&relay, &r, &content, 199), head(&relay)],
+        200,
+    )
+    .unwrap();
+    let thread = result.rows[0].thread.as_ref().unwrap();
+    assert_eq!(thread.replies, 1_000_000);
+    assert_eq!(thread.last_reply_at, Some(253_402_300_799));
+    assert_eq!(thread.participants, ten);
+}
+#[test]
+fn newest_thread_summary_per_row_wins_and_ties_fail() {
+    let relay = key(1);
+    let user = key(2);
+    let r = row(&user, "root");
+    let older = summary(&relay, &r, &two_replies(&user), 190);
+    let newer_content =
+        r#"{"reply_count":3,"descendant_count":3,"last_reply_at":180,"participants":[]}"#;
+    let newer = summary(&relay, &r, newer_content, 195);
+    for page in [
+        [r.clone(), older.clone(), newer.clone(), head(&relay)],
+        [r.clone(), newer.clone(), older.clone(), head(&relay)],
+    ] {
+        let result = reduce(room(), relay.public_key(), &page, 200).unwrap();
+        let thread = result.rows[0].thread.as_ref().unwrap();
+        assert_eq!((thread.replies, thread.last_reply_at), (3, Some(180)));
+    }
+    let tie = summary(&relay, &r, newer_content, 190);
+    assert_eq!(
+        reduce(
+            room(),
+            relay.public_key(),
+            &[r.clone(), older, tie, head(&relay)],
+            200
+        )
+        .unwrap_err(),
+        "history_invalid_summary"
+    );
+}
+#[test]
+fn thread_summary_for_a_row_not_on_the_page_fails_the_page() {
+    let relay = key(1);
+    let user = key(2);
+    let r = row(&user, "root");
+    let absent = row(&user, "not returned");
+    let changed = edit(&user, &r, "edited", 150);
+    for target in [&absent, &changed] {
+        assert_eq!(
+            reduce(
+                room(),
+                relay.public_key(),
+                &[
+                    r.clone(),
+                    changed.clone(),
+                    summary(&relay, target, &two_replies(&user), 199),
+                    head(&relay)
+                ],
+                200
+            )
+            .unwrap_err(),
+            "history_invalid_scope"
+        );
+    }
+    // Summaries count against the page's event budget like any other event.
+    let mut page: Vec<Event> = (0..200)
+        .map(|n| summary(&relay, &r, &two_replies(&user), n))
+        .collect();
+    page.push(r.clone());
+    page.push(head(&relay));
+    assert_eq!(
+        reduce(room(), relay.public_key(), &page, 200).unwrap_err(),
+        "history_oversized"
+    );
 }

@@ -82,6 +82,7 @@ mod tests {
     fn row(id: &str) -> Row {
         Row {
             reactions: None,
+            thread: None,
             id: id.into(),
             author_pubkey: "other".into(),
             timestamp: 100,
