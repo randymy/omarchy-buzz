@@ -7,6 +7,33 @@ import qs.Commons
 FocusScope {
   id: root
   property var service: null
+  // This helper's public key (never a secret): short form, full key on hover, copy.
+  component PublicKeyRow: RowLayout {
+    id: keyRow
+    property var service: null
+    Layout.fillWidth: true
+    spacing: Style.space(8)
+    Text {
+      objectName: "buzzPublicKey"
+      Layout.fillWidth: true
+      text: keyRow.service ? "Public key " + keyRow.service.shortPublicKey : ""
+      textFormat: Text.PlainText
+      elide: Text.ElideRight
+      color: Color.foreground
+      font.family: Style.font.family
+      font.pixelSize: Style.font.body
+      Controls.ToolTip.visible: keyHover.containsMouse
+      Controls.ToolTip.text: keyRow.service ? keyRow.service.identity : ""
+      MouseArea { id: keyHover; anchors.fill: parent; hoverEnabled: true; acceptedButtons: Qt.NoButton }
+    }
+    Ui.Button {
+      objectName: "buzzCopyPublicKey"
+      text: keyRow.service && keyRow.service.publicKeyCopied ? "Copied" : "Copy public key"
+      tooltipText: "Copy the public key to share it with a community owner"
+      focusable: true
+      onClicked: if (keyRow.service) keyRow.service.copyPublicKey()
+    }
+  }
   property bool presentationSwitchEnabled: false
   property bool windowMode: false
   property alias recipientPickerExpanded: roomComposer.pickerExpanded
@@ -623,12 +650,112 @@ FocusScope {
             font.family: Style.font.family
             font.pixelSize: Style.font.body
           }
+          // Setup assist: only with a helper that offers `setup_assist` and is
+          // not authenticated. Older helpers keep the terminal instructions.
+          RowLayout {
+            Layout.fillWidth: true
+            spacing: Style.space(8)
+            visible: !!root.service && root.service.setupAssistAvailable
+            Ui.TextField {
+              id: relayField
+              objectName: "buzzSetupRelayUrl"
+              Layout.fillWidth: true
+              verticalPadding: Style.space(4)
+              maximumLength: 2048
+              placeholderText: "wss://your-community.example"
+              inputMethodHints: Qt.ImhUrlCharactersOnly | Qt.ImhNoPredictiveText
+              onAccepted: if (root.service) root.service.setupRelay(text)
+              Component.onCompleted: if (root.service && root.service.relay) text = root.service.relay
+            }
+            Ui.Button {
+              objectName: "buzzSetupRelay"
+              text: "Use this relay"
+              tooltipText: "Save this relay address in the helper"
+              focusable: true
+              onClicked: if (root.service) root.service.setupRelay(relayField.text)
+            }
+          }
+          Connections {
+            target: root.service
+            // Show the helper's saved relay once, without overwriting typing.
+            function onRelayChanged() { if (root.service.relay && !relayField.activeFocus) relayField.text = root.service.relay }
+          }
+          ColumnLayout {
+            Layout.fillWidth: true
+            spacing: Style.space(6)
+            visible: !!root.service && root.service.identitySetupAvailable
+            Text {
+              objectName: "buzzExistingIdentityNote"
+              Layout.fillWidth: true
+              text: "I already have a Buzz identity: enroll it in a terminal with hidden input, then Retry. Never paste a key into this panel.\nomarchy-buzz setup identity enroll"
+              textFormat: Text.PlainText
+              wrapMode: Text.WordWrap
+              color: Color.foreground
+              opacity: 0.7
+              font.family: Style.font.family
+              font.pixelSize: Style.font.body
+            }
+            Ui.Button {
+              objectName: "buzzCreateIdentity"
+              visible: !!root.service && root.service.identity === ""
+              text: "Create a new identity on this device"
+              tooltipText: "The helper generates a key and keeps it in your secret store"
+              focusable: true
+              onClicked: if (root.service) root.service.createIdentity()
+            }
+            Text {
+              objectName: "buzzNewIdentityNote"
+              visible: !!root.service && root.service.identity === ""
+              Layout.fillWidth: true
+              text: "A new identity belongs to no community yet. To take part, you will need an invitation to a community or an open room to join."
+              textFormat: Text.PlainText
+              wrapMode: Text.WordWrap
+              color: Color.foreground
+              opacity: 0.7
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+            }
+          }
+          Text {
+            objectName: "buzzSetupStatus"
+            Layout.fillWidth: true
+            visible: text !== "" && !!root.service && root.service.setupAssistAvailable
+            text: root.service ? root.service.setupCategoryLabel : ""
+            textFormat: Text.PlainText
+            wrapMode: Text.WordWrap
+            color: Color.foreground
+            font.family: Style.font.family
+            font.pixelSize: Style.font.body
+          }
+          PublicKeyRow {
+            service: root.service
+            visible: !!root.service && root.service.setupAssistAvailable && root.service.shortPublicKey !== ""
+          }
           Ui.Button {
             text: "Retry connection"
             focusable: true
             visible: !!root.service
             onClicked: if (root.service) root.service.retry()
           }
+        }
+        // A new identity created here, now connected: it still belongs to no community.
+        ColumnLayout {
+          objectName: "buzzCreatedIdentity"
+          Layout.fillWidth: true
+          spacing: Style.space(4)
+          visible: root.connected && !!root.service && !root.service.sampleMode
+            && root.service.createdIdentity !== "" && root.service.createdIdentity === root.service.identity
+          Text {
+            Layout.fillWidth: true
+            text: "New identity created on this device. It belongs to no community yet: ask for an invitation, or join an open room, to start chatting."
+            textFormat: Text.PlainText
+            wrapMode: Text.WordWrap
+            color: Color.foreground
+            opacity: 0.7
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+          }
+          PublicKeyRow { service: root.service }
         }
         BuzzScroll {
           id: historyScroll

@@ -404,7 +404,79 @@ Item {
       ? "Unlock your OS secret store, then Retry. Your existing identity is retained."
       : connection === "authenticated"
         ? "Relay authentication succeeded. Choose a joined room to fetch a recent snapshot. Use the composer to send plain text. Select exact room recipients when available; agent execution is configured separately."
+        : setupAssistAvailable
+          ? providerInstructions + "\nEnter that relay address below and choose Use this relay. Hosted account sign-in stays in your browser. Never enter keys or account tokens in this panel."
         : providerInstructions + "\nLink manually in a terminal after installing the helper:\nomarchy-buzz setup relay <community-url>\nomarchy-buzz setup identity enroll\nEnroll the same existing Buzz identity using hidden input and your OS secret store, then Retry. Hosted account sign-in stays in your browser. Never enter keys or account tokens in this panel."
+
+  // Setup assist (`setup_assist`): relay choice and identity creation go to the
+  // helper only while it is not authenticated. The secret never reaches QML;
+  // the helper answers with a status frame whose `identity` is the public key.
+  property bool setupAssistSupported: false
+  property string setupState: "idle"
+  property string setupCategory: ""
+  property string setupRequestId: ""
+  property string setupRequestKind: ""
+  property string setupInstance: ""
+  property string createdIdentity: ""
+  property bool publicKeyCopied: false
+  readonly property bool setupAssistAvailable: setupAssistSupported && !sampleMode && !sessionFailed && instanceId !== ""
+    && ["unconfigured", "disconnected", "unavailable"].indexOf(connection) !== -1 && category !== "identity_access_pending"
+  readonly property bool identitySetupAvailable: setupAssistAvailable && connection === "unconfigured" && relay !== ""
+    && (identity === "" || category === "identity_missing")
+  // Only a relay without an identity can take a new one; the helper refuses otherwise.
+  readonly property bool canCreateIdentity: identitySetupAvailable && identity === "" && setupState !== "sending"
+  readonly property string setupCategoryLabel: setupState === "failed" ? (({
+    setup_invalid_relay: "That relay address was not accepted. Use wss://… (ws:// only for this computer), without a path or login.",
+    identity_exists: "This device already has an identity for this relay.",
+    identity_unavailable: "The secret store could not keep a new identity. Unlock it and try again.",
+    relay_unavailable: "Could not reach the relay to verify it. Check the address and try again.",
+    setup_busy: "The helper is busy or did not confirm in time. Check the status above, then try again.",
+    setup_not_allowed: "Setup is only available while this helper is not connected.",
+    config_unavailable: "The helper could not save its configuration. Check its configuration folder."
+  })[setupCategory] || "Setup did not complete. Try again.") : setupState === "sending" ? (setupRequestKind === "create_identity" ? "Creating identity…" : "Saving relay…") : ""
+  readonly property string shortPublicKey: /^[a-f0-9]{64}$/.test(identity) ? identity.slice(0, 12) + "…" : ""
+  function beginSetup(kind) {
+    setupRequestId = correlationUuid()
+    setupRequestKind = kind
+    setupInstance = instanceId
+    setupState = "sending"
+    setupCategory = ""
+    setupTimeout.restart()
+  }
+  function refuseSetup(category) {
+    setupTimeout.stop()
+    setupState = "failed"
+    setupCategory = category
+    setupRequestId = ""
+  }
+  function loseSetup() {
+    setupTimeout.stop()
+    if (setupState === "sending") { setupState = "idle"; setupCategory = "" }
+    setupRequestId = ""
+  }
+  function setupRelay(url) {
+    if (!setupAssistAvailable || !bridge.running || setupState === "sending") return false
+    var value = typeof url === "string" ? url.trim() : ""
+    // Shape only; the helper applies the same checks as `omarchy-buzz setup relay`.
+    if (!value || value.length > 2048 || !/^wss?:\/\/[^\s@]+$/.test(value)) { refuseSetup("setup_invalid_relay"); return false }
+    beginSetup("set_relay")
+    bridge.write(JSON.stringify({version: 1, id: setupRequestId, type: "set_relay", url: value}) + "\n")
+    return true
+  }
+  function createIdentity() {
+    if (!canCreateIdentity || !bridge.running) return false
+    beginSetup("create_identity")
+    bridge.write(JSON.stringify({version: 1, id: setupRequestId, type: "create_identity"}) + "\n")
+    return true
+  }
+  function copyPublicKey() {
+    // Only the public key ever reaches the clipboard.
+    if (!/^[a-f0-9]{64}$/.test(identity)) return false
+    Quickshell.clipboardText = identity
+    publicKeyCopied = true
+    return true
+  }
+  onIdentityChanged: publicKeyCopied = false
 
   function chooseSetupProvider(provider) {
     // Presentation only: choosing a provider never writes config or sends IPC.
@@ -857,10 +929,10 @@ Item {
     if (!sampleMode) selectedRoomId = ""
   }
   function validCapabilities(capabilities) {
-    return Array.isArray(capabilities) && capabilities.length >= 1 && capabilities.length <= 14
+    return Array.isArray(capabilities) && capabilities.length >= 1 && capabilities.length <= 15
       && capabilities.indexOf("connection_status") !== -1
       && capabilities.every(function(cap, index) {
-        return ["connection_status", "room_catalog", "room_history", "message_send", "room_recipients", "history_auto_refresh", "room_activity", "agent_profiles", "thread_replies", "thread_send", "thread_summaries", "dm_open", "older_history", "live_updates"].indexOf(cap) !== -1 && capabilities.indexOf(cap) === index
+        return ["connection_status", "room_catalog", "room_history", "message_send", "room_recipients", "history_auto_refresh", "room_activity", "agent_profiles", "thread_replies", "thread_send", "thread_summaries", "dm_open", "older_history", "live_updates", "setup_assist"].indexOf(cap) !== -1 && capabilities.indexOf(cap) === index
       })
   }
   // Streams carry no participants and are never hidden. A DM lists 2-9 distinct
@@ -946,6 +1018,8 @@ Item {
       nextCursor: cursor === null ? null : {createdAt: cursor.createdAt, id: cursor.id}, olderState: olderState, live: live}
   }
   function beginSession() {
+    loseSetup()
+    setupAssistSupported = false
     losePendingDelivery()
     loseDmOpen()
     dmOpenSupported = false
@@ -965,6 +1039,8 @@ Item {
     category = ""
   }
   function fail(reason) {
+    loseSetup()
+    setupAssistSupported = false
     losePendingDelivery()
     loseDmOpen()
     dmOpenSupported = false
@@ -990,9 +1066,14 @@ Item {
     var frame
     try { frame = JSON.parse(line) } catch (_) { fail("invalid_response"); return false }
     if (frame && frame.version === 1 && frame.type === "error" && ["request_busy", "send_busy", "send_scope_changed", "send_request_reused", "send_invalid", "send_unavailable", "send_access_denied", "send_ledger_unavailable", "delivery_unknown",
-        "dm_open_busy", "dm_open_scope_changed", "dm_open_request_reused", "dm_open_invalid", "dm_open_unavailable", "dm_open_access_denied", "dm_open_unknown"].indexOf(frame.category) !== -1) {
+        "dm_open_busy", "dm_open_scope_changed", "dm_open_request_reused", "dm_open_invalid", "dm_open_unavailable", "dm_open_access_denied", "dm_open_unknown",
+        "setup_invalid_relay", "identity_exists", "identity_unavailable", "relay_unavailable", "setup_busy", "setup_not_allowed", "config_unavailable"].indexOf(frame.category) !== -1) {
       if (instanceId === "" || frame.instanceId !== instanceId) return false
       if (!boundedString(frame.id, 128) || !/^ui-[0-9]+$/.test(frame.id) && !uuidValue(frame.id)) { fail("invalid_response"); return false }
+      if (frame.id === setupRequestId && setupState === "sending") {
+        refuseSetup(frame.category === "request_busy" ? "setup_busy" : frame.category)
+        return true
+      }
       if (frame.id === dmOpenRequestId && dmOpenState === "sending") {
         // Refusals are known: nothing was signed. A lost helper reply is not.
         dmOpenTimeout.stop()
@@ -1216,6 +1297,14 @@ Item {
     identity = state.identity || ""
     dmOpenSupported = supportsDmOpen
     if (!supportsDmOpen) loseDmOpen()
+    setupAssistSupported = frame.capabilities.indexOf("setup_assist") !== -1
+    if (frame.type === "status" && setupState === "sending" && frame.id === setupRequestId && frame.instanceId === setupInstance) {
+      setupTimeout.stop()
+      if (setupRequestKind === "create_identity" && identity !== "") createdIdentity = identity
+      setupState = "idle"
+      setupRequestId = ""
+    }
+    if (createdIdentity !== "" && createdIdentity !== identity) createdIdentity = ""
     applyDelivery(delivery)
     applyDmOpen(dmOpen)
     handshake.stop()
@@ -1375,6 +1464,13 @@ Item {
     onTriggered: root.loseDmOpen()
   }
   Timer {
+    id: setupTimeout
+    // Beyond the helper's own 60-second bound. No answer is not a refusal:
+    // the status line shows whether the change was saved.
+    interval: 70000
+    onTriggered: root.refuseSetup("setup_busy")
+  }
+  Timer {
     id: deliveryTimeout
     interval: 30000
     onTriggered: root.losePendingDelivery()
@@ -1387,6 +1483,8 @@ Item {
     // Drain diagnostics without exposing raw helper output or secrets to logs/UI.
     stderr: SplitParser { onRead: function(line) {} }
     onExited: {
+      root.loseSetup()
+      root.setupAssistSupported = false
       root.losePendingDelivery()
       root.loseDmOpen()
       root.dmOpenSupported = false
