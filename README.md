@@ -14,7 +14,7 @@ Enrollment verifies the relay's signing identity before saving a human key and r
 
 The helper owns identity access through Linux Secret Service. Enrollment uses hidden terminal input; QML receives bounded presentation data and never identity keys. Missing or failed helpers leave the panel usable with setup instructions and Retry. Authentication is not a claim that room synchronization works.
 
-The community plugin will remain generic. vPerps is a downstream integration, described in the design, rather than a separate plugin fork. This project is independently maintained and is not presented as an official Block or Omarchy product.
+The community plugin will remain generic. A downstream project consumes it as a separate integration, described in the design, rather than a separate plugin fork. This project is independently maintained and is not presented as an official Block or Omarchy product.
 
 ## Compatibility
 
@@ -139,7 +139,7 @@ Claude room deployment and native agent-state controls remain unfinished.
 
 [DESIGN.md](DESIGN.md) records the inspected interfaces, security boundary, release gates, and milestones. The QML service consumes a versioned, bounded presentation protocol through the helper bridge. Signed room discovery and recent history are projected in Rust. History is a partial snapshot, with explicit truncation and unavailable-content markers; it does not claim complete edits/deletions or live synchronization. Synthetic rooms are available only in explicit test mode.
 
-Real-relay messaging components and synthetic ACP mention routing have passed on disposable CI; see [recorded evidence](docs/CHECKPOINT.md#isolated-relay-progress-2026-09-26). Release gates still include full daemon/UI real-relay coverage, real agent validation, and bounded upstream WebSocket buffering. Local observed activity and self-described agent profiles are implemented; neither proves synchronized unread state or agent execution. vPerps-specific behavior remains in downstream configuration and separate integrations.
+Real-relay messaging components and synthetic ACP mention routing have passed on disposable CI; see [recorded evidence](docs/CHECKPOINT.md#isolated-relay-progress-2026-09-26). Release gates still include full daemon/UI real-relay coverage, real agent validation, and bounded upstream WebSocket buffering. Local observed activity and self-described agent profiles are implemented; neither proves synchronized unread state or agent execution. Downstream-project-specific behavior remains in downstream configuration and separate integrations.
 
 Upstream review artifacts are ready for the [WebSocket resource limits](docs/upstream/WS_RESOURCE_LIMITS.md)
 and [ACP interactive authentication](docs/upstream/ACP_INTERACTIVE_LOGIN.md).
@@ -160,5 +160,3 @@ distinguishes startup login restrictions from actual Pro-account and billing ver
 ## License
 
 [Apache-2.0](LICENSE). The UI implementation is original; Omarchy components are imported at runtime. Upstream Omarchy and Buzz retain their own licenses and trademarks.
-
-Advanced downstream use: [vPerps integration plan](docs/VPERPS_INTEGRATION.md).

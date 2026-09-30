@@ -153,7 +153,7 @@ enough free space. No source depends on these temporary paths. Local Git history
 is the primary checkpoint; a Git bundle under `~/.cache/omarchy-buzz/` provides a
 second local copy. Committed source is backed up to the private GitHub remote;
 ignored artifacts remain local. No public release or marketplace listing exists. No private relay addresses or desktop screenshots are committed.
-Upstream Buzz, Omarchy and vPerps source files remain unmodified.
+Upstream Buzz, Omarchy and downstream project source files remain unmodified.
 
 ## Isolated relay progress, 2026-09-26
 
@@ -487,7 +487,7 @@ agent invocations are used for testing.
 Real ACP execution remains blocked by inspected upstream credential propagation
 and implicit permission granting. ACP_READINESS.md records exact source evidence,
 implemented discovery, and concrete upstream acceptance criteria. No Buzz fork,
-Omarchy fork, vPerps modification, fake approval mechanism or live agent launch
+Omarchy fork, downstream-project modification, fake approval mechanism or live agent launch
 was introduced. Full task/branch/PR dashboards require reliable upstream telemetry.
 
 Validation before installation: all 99 Rust tests pass; the two deliberately
@@ -517,8 +517,8 @@ See ACP_READINESS.md for concrete upstream changes and acceptance tests. Public
 community submission also remains gated by upstream WS resource bounds,
 dependency-notice/provenance review and broader desktop compatibility checks.
 Current local activity is deliberately sampled, session-only and distinct from
-Buzz synchronized unread state. Native messaging and the generic vPerps desktop
-consumption path are operational without a fork. GitHub workflows stay manual.
+Buzz synchronized unread state. Native messaging and the generic downstream-project
+desktop consumption path are operational without a fork. GitHub workflows stay manual.
 
 ## Upstream readiness work, 2026-09-28
 
@@ -1512,7 +1512,7 @@ The transient test unit was stopped and replaced with the manually started
 `omarchy-buzz-codex.service`, memory-limited to 2 GiB and 128 tasks, with core
 dumps disabled and whole-cgroup cleanup. It is not enabled at login. Per-turn
 limits are 180 seconds absolute and 60 seconds idle. It has its own workspace,
-not the vPerps checkout. Stock agent tools hold their dedicated Buzz signing key;
+not another project's checkout. Stock agent tools hold their dedicated Buzz signing key;
 room/owner filters route input and do not restrict all possible signed events.
 Shared network and provider credentials inside the dedicated profile remain
 explicit trust limits. Do not present this as a hostile-code or network sandbox,
@@ -1522,7 +1522,8 @@ a future vMachine authority layer, human approval UI, or full agent-state dashbo
 
 The operator reported `Incompatible helper` despite matching 0.0.8 files.
 `omarchy restart shell` followed by normal-window summon resolved it. A targeted
-window capture confirmed authenticated rooms and VASSIVE DEV messages. The
+window capture confirmed authenticated rooms and messages in the approved private
+room. The
 earlier helper/socket verification did not establish that old compiled QML had
 unloaded. Future upgrades must include the actual rendered-window check.
 

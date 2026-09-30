@@ -120,8 +120,8 @@ Do not claim full live desktop acceptance solely from helper/socket tests.
    login/refresh mechanisms; do not copy provider credentials into plugin state.
 3. **Prepare community distribution.** Review ARM64 and x86-64 packages, notices,
    install/update/uninstall and version compatibility; clean up stale docs and
-   prepare release/listing. vPerps consumes this same generic plugin through
-   configuration or separate extensions, never a trading-branded fork.
+   prepare release/listing. Downstream projects consume this same generic plugin
+   through configuration or separate extensions, never a product-specific fork.
 
 These priorities are recommendations, not authorization to expand an agent's
 workspace, start arbitrary model work, invite users, or publish externally.
@@ -148,7 +148,7 @@ QML must never own keys, provider tokens, capability credentials or authority.
 The approved stock runtime automatically permits tools **inside its filesystem
 sandbox**. It has shared network access, its dedicated provider profile and its
 own Buzz signing key so the stock CLI can publish replies. It does not mount
-normal HOME, desktop D-Bus/display or the vPerps checkout. Room/owner filters are
+normal HOME, desktop D-Bus/display or another project's checkout. Room/owner filters are
 routing controls, not cryptographic restrictions on everything that key can sign.
 The service has 2 GiB/128-task bounds, 180-second turn/60-second idle limits and
 core dumps disabled. Raw stdout/stderr are suppressed; absence of journal text
