@@ -84,3 +84,25 @@ whose click downloads through the app with a same-origin `/media/` check
 Token lifetime and `server` scoping; retention; behaviour behind the proxy for
 `url` host matching; that the helper's identity has NIP-43 membership for
 media routes (it does for messages).
+
+## Built on branch `attachments` — September 30
+
+The plan above is implemented (helper `attachments.rs`, `media.rs`,
+`sending.rs`; panel `BuzzMessage.qml`, `BuzzComposer.qml`, `Service.qml`); the
+checkpoint's entry of the same date has the contract and evidence. Differences
+from the plan and corrections to the map:
+
+- The `t=get` signing is `desktop/src-tauri/src/commands/media.rs:311-339`
+  (`sign_blossom_get_auth_header`, 600 s at `:300`), not
+  `media_download.rs:37-71` (that is `validate_download_url`, the same-origin
+  `/media/` check). Desktop's read token has no `x`; the helper adds one.
+- Default limits are set in `crates/buzz-relay/src/config.rs:857-872` (images
+  50 MiB, GIF 10 MiB, video 500 MiB, files 100 MiB). The helper caps video like
+  a file (100 MiB) and refuses HTML, which the relay accepts as an inert download.
+- `upload_attachment` also carries `roomId` and optional `rootId`: the room and
+  thread composers are visible together, so the draft scope cannot be implied.
+- Four attachments on every held row do not fit the 1 MiB frame; at most 48 are
+  projected across channel rows and 48 across thread replies (newest first).
+- Added `status.upload` and the category `attachment_storage_unavailable`.
+- Images are uploaded as they are; Desktop strips metadata by re-encoding and
+  the relay refuses metadata-bearing images (`validation.rs` `validate_image_metadata_free`).

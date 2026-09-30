@@ -52,7 +52,7 @@ pub const PENDING: usize = 4;
 pub const PENDING_TOTAL: usize = 16;
 /// Hard cap for any download.
 pub const DOWNLOAD_CAP: u64 = 1 << 30;
-/// The relay's default upload limits (`crates/buzz-media/src/config.rs`):
+/// The relay's default upload limits (`crates/buzz-relay/src/config.rs:857-872`):
 /// generic files 100 MiB, images 50 MiB, GIF 10 MiB. Video is capped like a file.
 pub const FILE_LIMIT: u64 = 100 * 1024 * 1024;
 pub const IMAGE_LIMIT: u64 = 50 * 1024 * 1024;
