@@ -23,6 +23,25 @@ ShellRoot {
     return found
   }
   function shown(name) { return test.findNamed(view, name, []).filter(function(item) { return item.visible && item.height > 0 }) }
+  // One avatar per lead row; grouped rows keep an empty slot of the same width.
+  function checkAvatars(area, leads, grouped) {
+    var avatars = test.findNamed(area, "buzzAvatar", [])
+    var seenLeads = 0, seenGrouped = 0, slot = -1
+    avatars.forEach(function(avatar) {
+      var message = avatar.parent
+      while (message && typeof message.lead !== "boolean") message = message.parent
+      if (!message) throw new Error("Avatar outside a message row")
+      if (avatar.visible !== message.lead) throw new Error("Avatar shown on a grouped row or missing on a lead row")
+      if (message.lead) seenLeads++
+      else seenGrouped++
+      if (slot === -1) slot = avatar.parent.width
+      if (avatar.parent.width !== slot || slot <= 0) throw new Error("Avatar slot widths differ, text would not align")
+      if (message.lead && avatar.key !== message.row.author)
+        throw new Error("Avatar not keyed by its author")
+    })
+    if (seenLeads !== leads || seenGrouped !== grouped)
+      throw new Error("Expected " + leads + " lead and " + grouped + " grouped avatars, found " + seenLeads + " and " + seenGrouped)
+  }
   function atNewest(scroll) {
     return Math.abs(scroll.contentItem.contentY - (scroll.contentItem.contentHeight - scroll.contentItem.height)) <= 1
   }
@@ -157,6 +176,8 @@ ShellRoot {
             || captions.length !== 1 || captions[0].text !== "↳ replying to " + "a".repeat(12) + "…"
             || test.findNamed(replies[1], "buzzThreadReplyCaption", []).indexOf(captions[0]) === -1)
           throw new Error("Nested reply was not indented under a caption naming its parent's author")
+        test.checkAvatars(scroll, 1, 14)
+        test.checkAvatars(panel, 3, 0)
         if (!scroll.visible || scroll.width <= 0 || panel.mapToItem(view, 0, 0).x <= scroll.mapToItem(view, 0, 0).x)
           throw new Error("Thread did not open to the right of a visible room")
         if (test.shown("buzzThreadToggle").length !== 15) throw new Error("Opening a thread changed the room's messages")

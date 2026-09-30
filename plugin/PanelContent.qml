@@ -33,6 +33,14 @@ FocusScope {
     agentEditorOpen = false
     agentEditorId = ""
   }
+  // Sidebar rows use a smaller avatar so each stays close to one button high.
+  readonly property int sidebarAvatarSize: Math.max(6, Math.round(Style.font.caption * 0.8))
+  // A direct message shows the first participant other than this identity.
+  function dmPartner(room) {
+    if (!room || !Array.isArray(room.participants) || !service) return ""
+    var others = room.participants.filter(function(key) { return key !== root.service.identity })
+    return others.length ? others[0] : ""
+  }
   readonly property bool threadOpen: !agentEditorShown && !!service && service.threadRootId !== "" && service.threadRoot !== null
   // An open thread sits beside the room. Narrow windows give up the room list
   // first, then the room itself, so the thread always has a readable column.
@@ -391,16 +399,25 @@ FocusScope {
             }
             Repeater {
               model: root.service ? root.service.dmRooms : []
-              delegate: Ui.Button {
+              delegate: RowLayout {
                 required property var modelData
                 Layout.fillWidth: true
-                clip: true
-                text: modelData.name + (root.service && root.service.roomActivityCount(modelData.id) > 0 ? " · " + root.service.roomActivityCount(modelData.id) + "+" : "")
-                tooltipText: modelData.name + (root.service && root.service.roomActivityCount(modelData.id) > 0 ? " · new activity seen on this device, not synced unread" : "")
-                leftAlign: true
-                focusable: true
-                selected: root.service && root.service.selectedRoomId === modelData.id
-                onClicked: root.service.selectRoom(modelData.id)
+                spacing: Style.space(4)
+                BuzzAvatar {
+                  key: root.dmPartner(modelData)
+                  name: modelData.name
+                  pixelSize: root.sidebarAvatarSize
+                }
+                Ui.Button {
+                  Layout.fillWidth: true
+                  clip: true
+                  text: modelData.name + (root.service && root.service.roomActivityCount(modelData.id) > 0 ? " · " + root.service.roomActivityCount(modelData.id) + "+" : "")
+                  tooltipText: modelData.name + (root.service && root.service.roomActivityCount(modelData.id) > 0 ? " · new activity seen on this device, not synced unread" : "")
+                  leftAlign: true
+                  focusable: true
+                  selected: root.service && root.service.selectedRoomId === modelData.id
+                  onClicked: root.service.selectRoom(modelData.id)
+                }
               }
             }
             Text {
@@ -421,6 +438,12 @@ FocusScope {
                 required property var modelData
                 Layout.fillWidth: true
                 spacing: Style.space(4)
+                BuzzAvatar {
+                  key: root.agentService.avatarKey(modelData)
+                  name: modelData.name
+                  art: root.agentService.avatarArtFor(modelData.id)
+                  pixelSize: root.sidebarAvatarSize
+                }
                 Ui.Button {
                   objectName: "buzzAgentRow"
                   readonly property string agentId: modelData.id

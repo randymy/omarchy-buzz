@@ -277,7 +277,8 @@ The installer requires this checkout's exact version and Buzz dependency pin.
 rendered QML check against synthetic frames or a stdio fixture:
 `--send-bridge`, `--thread-send`, `--thread-replies`, `--live-updates`,
 `--catalog-refresh`, `--catalog-refresh-send`, `--new-dm`, `--older-history`,
-`--last-room`, `--mentions`, `--author-names`, `--activity`, `--room-activity`,
+`--last-room`, `--mentions`, `--author-names`, `--identicon` (identicons and
+pasted avatar art), `--activity`, `--room-activity`,
 `--notification-preference`, `--agents` (the Agents section against a fake agent
 service), `--presentation` (needs Wayland) and `--bridge` (needs
 `BUZZ_TEST_HELPER` set to a built helper).

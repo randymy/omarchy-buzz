@@ -53,6 +53,21 @@ Column {
   RowLayout {
     width: root.width - root.indent
     spacing: Style.space(8)
+    // Lead rows show the author's avatar; grouped rows keep its width so text aligns.
+    Item {
+      Layout.alignment: Qt.AlignTop
+      Layout.topMargin: Style.space(2)
+      implicitWidth: avatar.implicitWidth
+      implicitHeight: avatar.visible ? avatar.implicitHeight : 0
+      BuzzAvatar {
+        id: avatar
+        visible: root.lead && root.ready
+        key: root.ready ? root.row.author : ""
+        name: !root.ready ? "" : root.sample ? root.row.author : root.service.messageAuthorName(root.row.author)
+        // Pasted art of this machine's own enrolled agents; everyone else has an identicon.
+        art: root.ready && !root.sample && root.service.agents ? root.service.agents.avatarArtForKey(root.row.author) : ""
+      }
+    }
     Column {
       Layout.fillWidth: true
       Layout.alignment: Qt.AlignTop
