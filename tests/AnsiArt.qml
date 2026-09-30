@@ -236,14 +236,14 @@ ShellRoot {
     check(service.agents.avatarArtForKey(test.me) === before, "Refused path changed the avatar")
   }
 
-  // Browse… opens the chooser (a stub here, never the dialog); a cancelled,
+  // Browse… opens the chooser (a stub here, never the picker); a cancelled,
   // relative or .. choice leaves the field and the avatar as they were.
   function chooserCases(loader) {
     var chooser = findNamed(loader, "buzzBrowse", [])[0]
     check(chooser && chooser.visible && chooser.nameFilters.join("|") === "ANSI or text art (*.ans *.txt)", "Avatar Browse missing or filters wrong")
     chooser.stub = chooserStub
     input.mouseClick(chooser, chooser.width / 2, chooser.height / 2)
-    check(chooserStub.opens === 1 && chooser.dialog === null, "Browse did not open the stub chooser, or made a dialog")
+    check(chooserStub.opens === 1 && !chooser.picking, "Browse did not open the stub chooser, or started the picker")
     var before = service.agents.avatarArtForKey(test.me)
     test.one("buzzMyAvatarPath").text = "/typed/by/hand.ans"
     loader.status = "idle"

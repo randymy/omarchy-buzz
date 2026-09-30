@@ -149,14 +149,14 @@ ShellRoot {
           click("buzzComposerAttachToggle")
           test.stage = 41
         } else if (test.stage === 41) {
-          // Browse… opens the chooser (a stub here); the dialog itself is never made.
+          // Browse… opens the chooser (a stub here); the picker itself is never started.
           var chooser = one("buzzBrowse", one("buzzComposerAttachRow"))
           chooser.stub = chooserStub
           // By keyboard: the paperclip's hover tooltip can still cover this row offscreen.
           chooser.forceActiveFocus()
           input.keyClick(Qt.Key_Return)
-          check(chooserStub.opens === 1 && chooser.dialog === null, "Browse did not open the stub chooser, or made a dialog: " + chooserStub.opens)
-          check(chooser.folder.indexOf("file:///") === 0 && chooser.nameFilters.join("|") === "All files (*)|Images (*.png *.jpg *.jpeg *.gif *.webp)",
+          check(chooserStub.opens === 1 && !chooser.picking, "Browse did not open the stub chooser, or started the picker: " + chooserStub.opens)
+          check(chooser.folder.indexOf("/") === 0 && chooser.nameFilters.join("|") === "All files (*)|Images (*.png *.jpg *.jpeg *.gif *.webp)",
             "Chooser folder or filters wrong: " + chooser.folder + " " + chooser.nameFilters)
           type(one("buzzComposerAttachPath"), "typed/by hand")
           var localBefore = service.uploadLocal

@@ -1,32 +1,33 @@
 import QtQuick
-import QtQuick.Dialogs
 import Quickshell
+import Quickshell.Io
 import qs.Ui as Ui
 import qs.Commons
 
-// "Browse…" opens the desktop's file chooser (through xdg-desktop-portal on
-// Wayland) and hands on the chosen file as a plain absolute path. The dialog
-// is created only on the first click, so nothing is opened or created until a
-// person asks for it. Tests set `stub` to an object with open(), accepted(path)
-// and rejected(): the stub stands in for the dialog, which is then never made.
+// "Browse…" opens the desktop's file chooser and hands on the chosen file as a
+// plain absolute path. The chooser is the portal's own dialog
+// (xdg-desktop-portal-gtk on Omarchy), asked for by scripts/pick-file in a
+// process of its own: a QtQuick file dialog made inside omarchy-shell brought
+// the whole shell down. Nothing runs until a person clicks. Tests set `stub`
+// to an object with open(), accepted(path) and rejected(): the stub stands in
+// for the picker, which is then never started.
 Ui.Button {
   id: root
   objectName: "buzzBrowse"
-  text: "Browse…"
+  text: picking ? "Choosing…" : "Browse…"
   tooltipText: "Choose a file"
   fontSize: Style.font.caption
   focusable: true
+  enabled: !picking
 
   property string title: "Choose a file"
+  // "Label (*.ext *.other)" entries, shown by the chooser as its filters.
   property var nameFilters: ["All files (*)"]
   // Where the chooser opens; it follows the last file chosen here, for this session.
-  property string folder: {
-    var home = Quickshell.env("HOME") || ""
-    return home.startsWith("/") ? "file://" + encodeURI(home) : "file:///"
-  }
+  property string folder: Quickshell.env("HOME") || "/"
   property var stub: null
-  // Made lazily; null until the first real open.
-  property var dialog: null
+  // True while the picker process is up (a dialog is on screen).
+  readonly property bool picking: picker.running
   // Why the last choice was refused, or "".
   property string problem: ""
   signal chosen(string path)
@@ -55,20 +56,25 @@ Ui.Button {
       return false
     }
     problem = ""
-    folder = "file://" + encodeURI(path.slice(0, path.lastIndexOf("/")) || "/")
+    folder = path.slice(0, path.lastIndexOf("/")) || "/"
     chosen(path)
     return true
   }
   function open() {
     if (stub) { stub.open(); return }
-    if (!dialog) dialog = dialogComponent.createObject(root)
-    if (!dialog) return
-    dialog.title = root.title
-    dialog.nameFilters = root.nameFilters
-    dialog.currentFolder = root.folder
-    dialog.open()
+    if (picker.running) return
+    var command = ["/usr/bin/python3", pickerScript, root.title, root.folder]
+    for (var i = 0; i < root.nameFilters.length; i++) command.push(String(root.nameFilters[i]))
+    picker.command = command
+    picker.running = true
   }
   onClicked: open()
+
+  // scripts/pick-file, beside the plugin directory, as a plain path.
+  readonly property string pickerScript: {
+    var url = Qt.resolvedUrl("../scripts/pick-file").toString()
+    return url.startsWith("file://") ? decodeURIComponent(url.slice(7)) : url
+  }
 
   Connections {
     target: root.stub
@@ -76,12 +82,18 @@ Ui.Button {
     function onAccepted(path) { root.take(path) }
     function onRejected() { root.canceled() }
   }
-  Component {
-    id: dialogComponent
-    FileDialog {
-      fileMode: FileDialog.OpenFile
-      onAccepted: root.take(selectedFile.toString())
-      onRejected: root.canceled()
+  Process {
+    id: picker
+    stdout: StdioCollector { id: pickerOutput }
+    stderr: StdioCollector { id: pickerErrors }
+    onExited: function(exitCode) {
+      var line = pickerOutput.text.split("\n")[0] || ""
+      if (exitCode === 0) { root.take(line); return }
+      if (exitCode === 1) { root.canceled(); return }
+      root.problem = "The file chooser could not be opened."
+      var detail = pickerErrors.text.trim()
+      if (detail !== "") console.warn("Buzz: " + detail.split("\n")[0])
+      root.refused(root.problem)
     }
   }
 }

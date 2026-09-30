@@ -1,0 +1,136 @@
+#!/usr/bin/python3
+"""Ask the desktop portal for one file and print its path.
+
+The plugin runs this instead of opening a file dialog inside the shell: a
+dialog made inside omarchy-shell brought the shell down, and the portal's
+chooser (xdg-desktop-portal-gtk on Omarchy) runs in its own process anyway.
+
+Usage: pick-file TITLE [FOLDER [FILTER...]]
+
+Each FILTER is "Label (*.ext *.other)", as QtQuick name filters are written;
+the first one is selected.
+
+Exit 0 and the chosen absolute path on stdout; exit 1 when the person
+cancels; exit 2 when the portal is missing, fails, or gives no local file.
+Nothing else is printed on stdout. python-gobject is present on every
+Omarchy install (uwsm needs it).
+"""
+import os
+import re
+import sys
+import urllib.parse
+
+try:
+    import gi
+    gi.require_version("Gio", "2.0")
+    gi.require_version("GLib", "2.0")
+    from gi.repository import Gio, GLib
+except (ImportError, ValueError) as error:
+    print(f"pick-file: python-gobject is missing: {error}", file=sys.stderr)
+    sys.exit(2)
+
+PORTAL = "org.freedesktop.portal.Desktop"
+PORTAL_PATH = "/org/freedesktop/portal/desktop"
+TIMEOUT_SECONDS = 15 * 60
+
+
+def local_path(uri):
+    parts = urllib.parse.urlsplit(uri)
+    if parts.scheme != "file" or parts.netloc not in ("", "localhost"):
+        return ""
+    path = urllib.parse.unquote(parts.path)
+    if not path.startswith("/") or ".." in path.split("/") or any(ord(c) < 32 or ord(c) == 127 for c in path):
+        return ""
+    return path
+
+
+def parse_filter(text):
+    """"Images (*.png *.jpg)" -> ("Images", ["*.png", "*.jpg"]), or None."""
+    match = re.fullmatch(r"\s*(.*?)\s*\(([^()]*)\)\s*", text)
+    if not match:
+        return None
+    patterns = [p for p in match.group(2).split() if p and "/" not in p]
+    if not patterns:
+        return None
+    return (match.group(1) or " ".join(patterns), patterns)
+
+
+def main(argv):
+    title = argv[1] if len(argv) > 1 and argv[1] else "Choose a file"
+    folder = argv[2] if len(argv) > 2 else ""
+    filters = [f for f in (parse_filter(text) for text in argv[3:]) if f]
+    if not folder.startswith("/") or not os.path.isdir(folder):
+        folder = os.path.expanduser("~")
+
+    try:
+        bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+    except GLib.Error as error:
+        print(f"pick-file: no session bus: {error.message}", file=sys.stderr)
+        return 2
+
+    token = "buzz" + os.urandom(8).hex()
+    sender = bus.get_unique_name()[1:].replace(".", "_")
+    expected = f"/org/freedesktop/portal/desktop/request/{sender}/{token}"
+    loop = GLib.MainLoop()
+    outcome = {"code": None, "uris": []}
+
+    def on_response(_bus, _sender, _path, _iface, _signal, params):
+        code, results = params.unpack()
+        outcome["code"] = code
+        outcome["uris"] = list(results.get("uris", []))
+        loop.quit()
+
+    def subscribe(path):
+        return bus.signal_subscribe(PORTAL, "org.freedesktop.portal.Request", "Response",
+                                    path, None, Gio.DBusSignalFlags.NONE, on_response)
+
+    subscription = subscribe(expected)
+    options = {
+        "handle_token": GLib.Variant("s", token),
+        "multiple": GLib.Variant("b", False),
+        "directory": GLib.Variant("b", False),
+        "modal": GLib.Variant("b", False),
+        "current_folder": GLib.Variant("ay", folder.encode() + b"\0"),
+    }
+    if filters:
+        options["filters"] = GLib.Variant("a(sa(us))", [(label, [(0, p) for p in patterns]) for label, patterns in filters])
+        options["current_filter"] = GLib.Variant("(sa(us))", (filters[0][0], [(0, p) for p in filters[0][1]]))
+    try:
+        reply = bus.call_sync(PORTAL, PORTAL_PATH, "org.freedesktop.portal.FileChooser", "OpenFile",
+                              GLib.Variant("(ssa{sv})", ("", title, options)),
+                              GLib.VariantType("(o)"), Gio.DBusCallFlags.NONE, 30_000, None)
+    except GLib.Error as error:
+        print(f"pick-file: the file chooser portal is unavailable: {error.message}", file=sys.stderr)
+        return 2
+    handle = reply.unpack()[0]
+    if handle != expected:
+        # Older portals choose their own request path.
+        bus.signal_unsubscribe(subscription)
+        subscribe(handle)
+
+    GLib.timeout_add_seconds(TIMEOUT_SECONDS, loop.quit)
+    loop.run()
+
+    if outcome["code"] is None:
+        # Timed out: ask the portal to close the dialog, then treat it as cancelled.
+        try:
+            bus.call_sync(PORTAL, handle, "org.freedesktop.portal.Request", "Close", None,
+                          None, Gio.DBusCallFlags.NONE, 5_000, None)
+        except GLib.Error:
+            pass
+        return 1
+    if outcome["code"] == 1:
+        return 1
+    if outcome["code"] != 0:
+        print("pick-file: the file chooser failed.", file=sys.stderr)
+        return 2
+    path = local_path(outcome["uris"][0]) if outcome["uris"] else ""
+    if path == "":
+        print("pick-file: the choice was not a local file.", file=sys.stderr)
+        return 2
+    sys.stdout.write(path + "\n")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

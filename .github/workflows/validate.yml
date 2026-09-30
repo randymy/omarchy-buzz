@@ -35,6 +35,7 @@ jobs:
           python3 tests/package_helper.py
           python3 tests/helper_install.py
           python3 tests/helper_notices.py
+          python3 tests/pick_file.py
           python3 tests/relay_conformance_runner.py
           python3 tests/acp_fixture.py
           node tests/activity_observer.cjs

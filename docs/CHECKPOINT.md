@@ -2408,6 +2408,39 @@ Upstream references are to the pinned Buzz `781d3951`; the research map is
   (`PanelWindow`) presentation and the returned URL form for names with
   non-ASCII characters.
 
+## File chooser moved out of the shell (`scripts/pick-file`) — September 30
+
+- Live result of the section above: clicking **Browse…** brought omarchy-shell
+  down (SIGABRT in a GLib "dconf worker" thread, `coredumpctl` on the
+  maintainer's machine, twice). A `QtQuick.Dialogs` `FileDialog` inside the
+  shell process is not viable; a dialog from a standalone `qs` window had
+  worked, which is why it was not caught earlier.
+- Replacement: `scripts/pick-file` (Python, `Gio` from python-gobject, which
+  every Omarchy install has through `uwsm`) asks xdg-desktop-portal
+  `org.freedesktop.portal.FileChooser.OpenFile` for one file, with a fresh
+  `handle_token`, subscribes to the request's `Response` (re-subscribing when
+  an older portal picks its own handle), passes `current_folder` and the
+  button's `nameFilters` as portal `filters` (`"Label (*.a *.b)"` parsed to
+  glob patterns; the first is `current_filter`), and prints the chosen file's
+  absolute path (`file://` and `localhost` URLs only, no `..`, no controls).
+  Exit 0 chosen, 1 cancelled (also after a 15-minute timeout, when it asks the
+  portal to `Close` the dialog), 2 portal missing or failed (a reason on
+  stderr). The dialog is the portal's own process (xdg-desktop-portal-gtk on
+  Omarchy); killing the script closes it.
+- `plugin/BuzzFileChooser.qml` now runs that script through `Quickshell.Io`
+  `Process` (`/usr/bin/python3 <plugin>/../scripts/pick-file TITLE FOLDER
+  FILTER...`, path from `Qt.resolvedUrl`) and reads stdout with a
+  `StdioCollector`; `picking` is true while the process runs (button reads
+  "Choosing…" and is disabled); exit 0 → `take(path)`, 1 → `canceled()`, else
+  `problem`/`refused` with the first stderr line in the console log. `folder`
+  is now a plain path. The `stub` path, `localPath`/`take`, signals and object
+  name are unchanged; tests assert `!chooser.picking` instead of
+  `dialog === null`. `tests/pick_file.py` (in `validate.yml`) covers filter
+  parsing and URL acceptance without a bus.
+- Verified: the script alone opens a portal dialog titled as asked, in
+  `~/Downloads`, with filters; `--attachments` and `--ansi-art` pass; the live
+  shell check follows the plugin update.
+
 ## Clock skew detection (`clock_skew`) — September 30
 
 Branch `clock-skew` (not merged or installed; no real relay contacted, the
