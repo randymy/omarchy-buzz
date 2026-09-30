@@ -217,8 +217,16 @@ fn claim_responses_are_strict() {
 pub(crate) async fn http_fixture(
     script: Vec<(u16, String)>,
 ) -> (String, tokio::task::JoinHandle<Vec<(String, Vec<u8>)>>) {
+    http_fixture_for(|_| script).await
+}
+
+/// `http_fixture` whose script is built from the relay address it serves.
+pub(crate) async fn http_fixture_for(
+    script: impl FnOnce(&str) -> Vec<(u16, String)>,
+) -> (String, tokio::task::JoinHandle<Vec<(String, Vec<u8>)>>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let relay = format!("ws://{}/", listener.local_addr().unwrap());
+    let script = script(&relay);
     let task = tokio::spawn(async move {
         let mut seen = Vec::new();
         for (status, body) in script {
@@ -253,7 +261,7 @@ pub(crate) async fn http_fixture(
     (relay, task)
 }
 
-fn header<'a>(head: &'a str, name: &str) -> Option<&'a str> {
+pub(crate) fn header<'a>(head: &'a str, name: &str) -> Option<&'a str> {
     head.lines().find_map(|line| {
         let (key, value) = line.split_once(':')?;
         key.eq_ignore_ascii_case(name).then(|| value.trim())
@@ -262,7 +270,7 @@ fn header<'a>(head: &'a str, name: &str) -> Option<&'a str> {
 
 /// The NIP-98 proof on a claim: signed by the joining key, kind 27235, bound to
 /// the exact URL, method and body hash.
-fn check_nip98(head: &str, body: &[u8], url: &str, keys: &Keys) {
+pub(crate) fn check_nip98(head: &str, body: &[u8], url: &str, keys: &Keys) {
     let value = header(head, "authorization").expect("authorization");
     let encoded = value.strip_prefix("Nostr ").unwrap();
     let event = nostr::Event::from_json(STANDARD.decode(encoded).unwrap()).unwrap();

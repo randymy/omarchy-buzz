@@ -284,7 +284,7 @@ pub(crate) async fn offline_command(
             // A new member reconnects at once: its identity may now authenticate.
             return invite_redeemed(result, reply, tx);
         }
-        Command::RoomAction(_, _, _, reply) => {
+        Command::RoomAction(_, _, _, reply) | Command::MintInvite(_, _, reply) => {
             let _ = reply.send(Some("relay_unavailable"));
         }
         Command::SendChecked(_, reply) => {
@@ -354,6 +354,8 @@ fn setup_done(
     setup: &crate::setup::Setup,
 ) -> bool {
     if result.is_ok() {
+        // An invite minted for another relay or identity is not shown again.
+        publish_status(tx, |s| s.invites = Default::default());
         let _ = apply_loaded_config(tx, setup.load());
     }
     let _ = reply.send(result.err());
@@ -587,6 +589,10 @@ async fn observe_sending(
         if matches!(s.setup.state.as_str(), "checking" | "claiming") {
             s.setup = crate::join::failed("relay_unavailable");
         }
+        // A mint may have reached the relay; an unshown invite is only unused.
+        if s.invites.state == "minting" {
+            s.invites = crate::invites::failed("relay_unavailable");
+        }
     });
     // Every exit (Retry, shutdown, failure) closes the live subscription first,
     // under a short deadline; a dead socket is dropped by the caller anyway.
@@ -618,6 +624,8 @@ async fn observe_inner(
     let mut pending: Option<String> = None;
     // At most one invite request (HTTP) and one open-rooms read at a time.
     let mut invite_jobs = tokio::task::JoinSet::new();
+    // At most one mint at a time (`invite_mint`).
+    let mut mint_jobs = tokio::task::JoinSet::new();
     let mut open_jobs = tokio::task::JoinSet::new();
     let mut open_ticket = 0_u64;
     // Re-read open rooms once the catalog settles after a join or leave.
@@ -857,6 +865,13 @@ async fn observe_inner(
                     });
                 },
                 Some(Command::FetchOpenRooms)=> {spawn_open_rooms!();},
+                Some(Command::MintInvite(max_uses,hours,reply))=> {
+                    if !mint_jobs.is_empty() {let _=reply.send(Some("setup_busy"));continue;}
+                    if !fresh {let _=reply.send(Some("relay_unavailable"));continue;}
+                    publish_status(tx,|s|s.invites=crate::invites::minting());
+                    let relay=relay.to_owned();let keys=keys.clone();
+                    mint_jobs.spawn(async move {(crate::invites::mint(&relay,&keys,max_uses,hours).await,reply)});
+                },
                 Some(Command::RoomAction(action,request_id,room,reply))=> {
                     if reply.is_closed() {continue;}
                     let prepared={let status=tx.borrow();actions.prepare(action,&request_id,&room,keys,&status,fresh,relay_pin.is_some())};
@@ -1028,6 +1043,17 @@ async fn observe_inner(
                     },
                     // A panicked request proves nothing; its reply was dropped (unknown).
                     _=>publish_status(tx,|s|s.setup=crate::join::failed("relay_unavailable")),
+                }
+            },
+            result=mint_jobs.join_next(), if !mint_jobs.is_empty()=> {
+                // The code is published to the panel only; nothing here logs it.
+                match result {
+                    Some(Ok((minted,reply)))=> {
+                        let category=minted.as_ref().err().copied();
+                        publish_status(tx,|s|s.invites=match minted {Ok(m)=>crate::invites::minted(m),Err(c)=>crate::invites::failed(c)});
+                        let _=reply.send(category);
+                    },
+                    _=>publish_status(tx,|s|s.invites=crate::invites::failed("relay_unavailable")),
                 }
             },
             result=open_jobs.join_next(), if !open_jobs.is_empty()=> {
