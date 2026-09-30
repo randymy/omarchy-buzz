@@ -21,7 +21,7 @@ Column {
   readonly property real indent: Math.min(Math.max(depth - 1, 0), 3) * Style.space(14)
   signal threadRequested()
   // The author's avatar was clicked: the panel shows a profile card.
-  signal avatarRequested(string key, string name, string art)
+  signal avatarRequested(string key, string name, string art, real brightness)
   spacing: Style.space(2)
   leftPadding: indent
 
@@ -68,8 +68,9 @@ Column {
         name: !root.ready ? "" : root.sample ? root.row.author : root.service.messageAuthorName(root.row.author)
         // Art kept on this machine: its enrolled agents' and this user's own; everyone else has an identicon.
         art: root.ready && !root.sample && root.service.agents ? root.service.agents.avatarArtForKey(root.row.author) : ""
+        brightness: root.ready && !root.sample && root.service.agents ? root.service.agents.avatarBrightnessForKey(root.row.author) : 0
         clickable: visible
-        onActivated: root.avatarRequested(key, name, art)
+        onActivated: root.avatarRequested(key, name, art, brightness)
       }
     }
     Column {

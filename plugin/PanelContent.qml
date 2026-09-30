@@ -3,6 +3,7 @@ import QtQuick.Layouts
 import QtQuick.Controls as Controls
 import qs.Ui as Ui
 import qs.Commons
+import "AnsiArt.js" as AnsiArt
 
 FocusScope {
   id: root
@@ -67,8 +68,9 @@ FocusScope {
   readonly property bool myAvatarAvailable: !!service && !service.sampleMode && !!agentService
     && /^[a-f0-9]{64}$/.test(service.identity)
   readonly property string myAvatarArt: myAvatarAvailable ? agentService.avatarArtForKey(service.identity) : ""
-  function openAvatarCard(key, name, art) {
-    avatarCard.show(key, name, art)
+  readonly property real myAvatarBrightness: myAvatarAvailable ? agentService.avatarBrightnessForKey(service.identity) : 0
+  function openAvatarCard(key, name, art, brightness) {
+    avatarCard.show(key, name, art, brightness)
     return true
   }
   // A direct message shows the first participant other than this identity.
@@ -326,6 +328,7 @@ FocusScope {
               key: root.myAvatarAvailable ? root.service.identity : ""
               name: "You"
               art: root.myAvatarArt
+              brightness: root.myAvatarBrightness
               pixelSize: root.sidebarAvatarSize
             }
             Ui.Button {
@@ -346,11 +349,20 @@ FocusScope {
             fieldName: "buzzMyAvatarPath"
             showClear: true
             canClear: root.myAvatarArt !== ""
+            // A newly loaded file starts at the default brightness (auto-levels, 1.5).
             onArtLoaded: function(art) {
-              if (!root.myAvatarAvailable || !root.agentService.setOwnAvatarArt(root.service.identity, art))
+              if (!root.myAvatarAvailable || !root.agentService.setOwnAvatarArt(root.service.identity, art, AnsiArt.DEFAULT_BRIGHTNESS))
                 fail("The avatar could not be kept.")
             }
             onClearRequested: if (root.myAvatarAvailable) root.agentService.setOwnAvatarArt(root.service.identity, "")
+          }
+          // Applied as it is changed, so the thumbnail beside it is the preview.
+          AvatarBrightness {
+            visible: myAvatarLoader.visible && root.myAvatarBrightness > 0
+            Layout.fillWidth: true
+            fieldName: "buzzMyAvatarBrightness"
+            value: root.myAvatarBrightness > 0 ? root.myAvatarBrightness : AnsiArt.DEFAULT_BRIGHTNESS
+            onChosen: function(value) { root.agentService.setOwnAvatarArt(root.service.identity, root.myAvatarArt, value) }
           }
         }
         Controls.ScrollView {
@@ -520,6 +532,7 @@ FocusScope {
                   key: root.agentService.avatarKey(modelData)
                   name: modelData.name
                   art: root.agentService.avatarArtFor(modelData.id)
+                  brightness: root.agentService.avatarBrightnessFor(modelData.id)
                   pixelSize: root.sidebarAvatarSize
                 }
                 Ui.Button {
@@ -849,7 +862,7 @@ FocusScope {
                 threadLink: true
                 threadSelected: !!root.service && root.service.threadRootId === row.id
                 onThreadRequested: root.toggleThread(row.id)
-                onAvatarRequested: function(key, name, art) { root.openAvatarCard(key, name, art) }
+                onAvatarRequested: function(key, name, art, brightness) { root.openAvatarCard(key, name, art, brightness) }
               }
             }
           }
@@ -970,7 +983,7 @@ FocusScope {
               service: root.service
               row: root.threadOpen ? root.service.threadRoot : ({})
               showDate: true
-              onAvatarRequested: function(key, name, art) { root.openAvatarCard(key, name, art) }
+              onAvatarRequested: function(key, name, art, brightness) { root.openAvatarCard(key, name, art, brightness) }
             }
             Item {
               objectName: "buzzThreadDetails"
@@ -1004,7 +1017,7 @@ FocusScope {
                 topPadding: row.grouped ? Style.space(3) : Style.space(8)
                 service: root.service
                 row: JSON.parse(payload)
-                onAvatarRequested: function(key, name, art) { root.openAvatarCard(key, name, art) }
+                onAvatarRequested: function(key, name, art, brightness) { root.openAvatarCard(key, name, art, brightness) }
               }
             }
           }
