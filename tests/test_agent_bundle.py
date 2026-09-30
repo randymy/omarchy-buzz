@@ -135,6 +135,10 @@ class BundleAssembly(unittest.TestCase):
         for name in ("room-agent", "room-sandbox", "agent-login", "agent-bundle"):
             self.assertTrue((bundle / "launcher" / name).is_file())
         self.assertEqual(bundle_tool.check(bundle, "claude-code")["harness"], "claude-code")
+        self.assertEqual(record["scriptSources"], {name: sha((SCRIPTS / name).read_bytes()) for name in (
+            "room-agent-entry", "room-claude-acp", "room-claude", "room-agent", "room-sandbox", "agent-login",
+            "agent-bundle")})
+        self.assertEqual(bundle_tool.state(bundle, "claude-code", SCRIPTS), "ready")
         with self.assertRaisesRegex(bundle_tool.Refused, "bundle_harness_mismatch"):
             bundle_tool.check(bundle, "codex")
         self.assertEqual(sorted(p.name for p in self.root.iterdir() if p.name.startswith(".")), [])
@@ -190,22 +194,204 @@ class BundleAssembly(unittest.TestCase):
 class BundleCheck(unittest.TestCase):
     """--check on a synthetic tree written directly, through the command line."""
 
+    def scripts(self, root):
+        """A synthetic scripts directory holding the launcher scripts."""
+        scripts = root / "scripts"
+        scripts.mkdir(mode=0o700)
+        for name in bundle_tool.LAUNCHER:
+            (scripts / name).write_bytes(b"#!/bin/sh\n# current " + name.encode() + b"\n")
+            (scripts / name).chmod(0o755)
+        return scripts
+
     def make(self, root, harness="codex"):
         bundle = root / ("agent-" + harness)
+        scripts = root / "scripts"
+        if not scripts.exists():
+            self.scripts(root)
         for relative in bundle_tool.entrypoints(harness).values():
             (bundle / relative).parent.mkdir(parents=True, exist_ok=True)
             (bundle / relative).write_bytes(b"content of " + relative.encode())
             (bundle / relative).chmod(0o755)
+        for name in bundle_tool.LAUNCHER:
+            (bundle / "launcher" / name).write_bytes((scripts / name).read_bytes())
+            (bundle / "launcher" / name).chmod(0o755)
+        self.record(bundle, harness)
+        return bundle
+
+    def record(self, bundle, harness="codex"):
         files = {rel: {"sha256": bundle_tool.digest(item), "bytes": item.stat().st_size,
                        "mode": format(item.stat().st_mode & 0o777, "04o")}
-                 for rel, item in bundle_tool.walk_bundle(bundle)}
+                 for rel, item in bundle_tool.walk_bundle(bundle) if rel != "bundle.json"}
         (bundle / "bundle.json").write_text(json.dumps({
             "schemaVersion": 1, "harness": harness, "entrypoints": bundle_tool.entrypoints(harness),
             "files": files}))
-        return bundle
 
-    def check(self, bundle, harness="codex"):
-        return run("agent-bundle", harness, "--check", "--output", str(bundle))
+    def check(self, bundle, harness="codex", scripts=None):
+        scripts = scripts or bundle.parent / "scripts"
+        return run("agent-bundle", harness, "--check", "--output", str(bundle), "--scripts", str(scripts))
+
+    def refresh(self, bundle, harness="codex", scripts=None):
+        scripts = scripts or bundle.parent / "scripts"
+        return run("agent-bundle", harness, "--refresh-launcher", "--output", str(bundle), "--scripts", str(scripts))
+
+    def expect(self, result, returncode, word, category=None):
+        self.assertEqual((result.returncode, result.stdout.strip()), (returncode, word), result.stderr)
+        if category is None:
+            self.assertEqual(result.stderr, "")
+        else:
+            self.assertEqual(json.loads(result.stderr), {"error": category})
+
+    def snapshot(self, bundle):
+        return {rel: item.read_bytes() for rel, item in bundle_tool.walk_bundle(bundle)}
+
+    def test_stale_launcher_is_detected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            bundle = self.make(root)
+            scripts = root / "scripts"
+            self.expect(self.check(bundle), 0, "ready")
+            # A changed script: the bundle still matches its own bundle.json.
+            original = (scripts / "room-agent").read_bytes()
+            (scripts / "room-agent").write_bytes(original + b"# --answers-dms\n")
+            self.expect(self.check(bundle), 3, "stale", "launcher_outdated")
+            self.assertEqual(bundle_tool.check(bundle, "codex")["harness"], "codex")
+            (scripts / "room-agent").write_bytes(original)
+            self.expect(self.check(bundle), 0, "ready")
+            # A script missing from the scripts directory.
+            (scripts / "room-sandbox").rename(root / "room-sandbox.saved")
+            self.expect(self.check(bundle), 3, "stale", "launcher_outdated")
+            (root / "room-sandbox.saved").rename(scripts / "room-sandbox")
+            # A launcher file missing from the bundle, even when bundle.json agrees.
+            (bundle / "launcher/agent-login").unlink()
+            self.expect(self.check(bundle), 3, "stale", "launcher_outdated")
+            self.record(bundle)
+            self.expect(self.check(bundle), 3, "stale", "launcher_outdated")
+            (bundle / "launcher/agent-login").write_bytes((scripts / "agent-login").read_bytes())
+            (bundle / "launcher/agent-login").chmod(0o755)
+            self.record(bundle)
+            self.expect(self.check(bundle), 0, "ready")
+            # A launcher file changed in place, against bundle.json: stale, a refresh replaces it.
+            (bundle / "launcher/agent-bundle").write_bytes(b"#!/bin/sh\n# edited\n")
+            self.expect(self.check(bundle), 3, "stale", "launcher_outdated")
+
+    def test_scripts_override(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            bundle = self.make(root)
+            other = root / "other"
+            other.mkdir()
+            for name in bundle_tool.LAUNCHER:
+                (other / name).write_bytes(b"other " + name.encode())
+            self.expect(self.check(bundle, scripts=other), 3, "stale", "launcher_outdated")
+            self.expect(self.check(bundle, scripts=root / "scripts"), 0, "ready")
+            # A bundle made from this checkout matches the checkout's scripts/.
+            checkout = root / "checkout"
+            checkout.mkdir()
+            (checkout / "scripts").mkdir()
+            for name in bundle_tool.LAUNCHER:
+                (checkout / "scripts" / name).write_bytes((SCRIPTS / name).read_bytes())
+                (checkout / "scripts" / name).chmod(0o755)
+            real = self.make(checkout)
+            self.expect(self.check(real, scripts=SCRIPTS), 0, "ready")
+
+    def test_refresh_replaces_only_launcher_files(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            bundle = self.make(root)
+            scripts = root / "scripts"
+            before = self.snapshot(bundle)
+            record_before = json.loads((bundle / "bundle.json").read_text())
+            (scripts / "room-agent").write_bytes(b"#!/bin/sh\n# new room-agent --answers-dms\n")
+            (bundle / "launcher/__pycache__").mkdir()
+            (bundle / "launcher/__pycache__/x.pyc").write_bytes(b"cache")
+            self.expect(self.check(bundle), 3, "stale", "launcher_outdated")
+            self.expect(self.refresh(bundle), 0, "ready")
+            after = self.snapshot(bundle)
+            changed = sorted(rel for rel in set(before) | set(after) if before.get(rel) != after.get(rel))
+            self.assertEqual(changed, ["bundle.json", "launcher/room-agent"])
+            self.assertEqual(after["launcher/room-agent"], (scripts / "room-agent").read_bytes())
+            self.assertEqual((bundle / "launcher/room-agent").stat().st_mode & 0o777, 0o755)
+            record = json.loads((bundle / "bundle.json").read_text())
+            self.assertEqual(record["files"]["launcher/room-agent"],
+                             {"sha256": sha((scripts / "room-agent").read_bytes()),
+                              "bytes": len((scripts / "room-agent").read_bytes()), "mode": "0755"})
+            for rel, entry in record_before["files"].items():
+                if rel != "launcher/room-agent":
+                    self.assertEqual(record["files"][rel], entry)
+            self.assertEqual(record["scriptSources"],
+                             {name: sha((scripts / name).read_bytes()) for name in bundle_tool.LAUNCHER})
+            self.assertIn("launcherRefreshedAt", record)
+            self.assertEqual(sorted(p.name for p in bundle.iterdir()),
+                             ["adapter", "bin", "bundle.json", "launcher"])
+            self.assertFalse((bundle / "launcher/__pycache__").exists())
+            self.expect(self.check(bundle), 0, "ready")
+            bundle_tool.check(bundle, "codex")
+            # An interrupted refresh (launcher swapped, bundle.json not yet) is stale and repaired.
+            (scripts / "room-sandbox").write_bytes(b"#!/bin/sh\n# newer sandbox\n")
+            leftover = bundle / (bundle_tool.REFRESH_PREFIX + "crashed")
+            (leftover / "launcher").mkdir(parents=True)
+            (leftover / "launcher/room-agent").write_bytes(b"old")
+            (bundle / "launcher/room-sandbox").write_bytes((scripts / "room-sandbox").read_bytes())
+            self.expect(self.check(bundle), 3, "stale", "launcher_outdated")
+            self.expect(self.refresh(bundle), 0, "ready")
+            self.assertFalse(leftover.exists())
+
+    def test_refresh_refusals(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.scripts(root)
+            self.expect(self.refresh(root / "absent"), 1, "", "bundle_missing")
+            bundle = self.make(root)
+            scripts = root / "scripts"
+            (scripts / "room-agent").write_bytes(b"#!/bin/sh\n# new\n")
+            before = self.snapshot(bundle)
+            entry = bundle / "adapter" / bundle_tool.ADAPTERS["codex"]["entry"]
+            original = entry.read_bytes()
+            entry.write_bytes(b"// tampered\n")
+            self.expect(self.refresh(bundle), 1, "", "bundle_hash_mismatch")
+            self.expect(self.check(bundle), 1, "missing", "bundle_hash_mismatch")
+            entry.write_bytes(original)
+            self.assertEqual(self.snapshot(bundle), before)
+            (bundle / "bin/extra").write_text("unrecorded")
+            self.expect(self.refresh(bundle), 1, "", "bundle_unexpected_file")
+            (bundle / "bin/extra").unlink()
+            # Unsafe script sources: a link, group- or other-writable, the directory itself.
+            source = scripts / "room-sandbox"
+            source.rename(root / "sandbox-real")
+            source.symlink_to(root / "sandbox-real")
+            self.expect(self.refresh(bundle), 1, "", "launcher_source_unsafe")
+            source.unlink()
+            (root / "sandbox-real").rename(source)
+            source.chmod(0o775)
+            self.expect(self.refresh(bundle), 1, "", "launcher_source_unsafe")
+            source.chmod(0o757)
+            self.expect(self.refresh(bundle), 1, "", "launcher_source_unsafe")
+            source.chmod(0o755)
+            scripts.chmod(0o777)
+            self.expect(self.refresh(bundle), 1, "", "launcher_source_unsafe")
+            scripts.chmod(0o700)
+            linked = root / "linked-scripts"
+            linked.symlink_to(scripts)
+            self.expect(self.refresh(bundle, scripts=linked), 1, "", "launcher_source_unsafe")
+            source.unlink()
+            self.expect(self.refresh(bundle), 1, "", "launcher_source_missing")
+            self.assertEqual(self.snapshot(bundle), before)
+            self.assertEqual(sorted(p.name for p in bundle.iterdir()),
+                             ["adapter", "bin", "bundle.json", "launcher"])
+
+    def test_owner_check_refuses_foreign_scripts(self):
+        # Files owned by another user cannot be created here; the check reads st_uid
+        # from the opened descriptor, so a mismatching uid is refused.
+        with tempfile.TemporaryDirectory() as temporary:
+            scripts = Path(temporary)
+            (scripts / "room-agent").write_bytes(b"x")
+            real = os.getuid
+            try:
+                bundle_tool.os.getuid = lambda: real() + 1
+                with self.assertRaisesRegex(bundle_tool.Refused, "launcher_source_unsafe"):
+                    bundle_tool.read_source(scripts, "room-agent")
+            finally:
+                bundle_tool.os.getuid = real
 
     def test_valid_missing_and_changed(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -3,18 +3,31 @@
 
   agent-bundle <harness> [--output DIR] [--buzz-bin DIR] [--node FILE]
                [--adapter DIR | --npm-ci --npm-cli FILE] [--claude-cli FILE]
-  agent-bundle <harness> --check [--output DIR]
+  agent-bundle <harness> --check [--output DIR] [--scripts DIR]
+  agent-bundle <harness> --refresh-launcher [--output DIR] [--scripts DIR]
 
 Assembly copies pinned, verified inputs into a new directory (default
 ~/.local/share/omarchy-buzz/agent-<harness>) and records bundle.json with
-versions and a SHA-256 for every file. Nothing is downloaded unless --npm-ci
-is given. An existing bundle is never modified or replaced.
+versions, the SHA-256 of every source script it copied and a SHA-256 for every
+file. Nothing is downloaded unless --npm-ci is given. Assembly never modifies
+or replaces an existing bundle; only --refresh-launcher changes one, and only
+its launcher/ files.
 
---check prints `ready` (exit 0) or `missing` (exit 1, category on stderr).
-It detects changed, missing or extra files; bundle.json is self-recorded and
-is not proof of origin.
+--check prints `ready` (exit 0), `stale` (exit 3, launcher_outdated on stderr)
+or `missing` (exit 1, category on stderr). It detects changed, missing or extra
+files, then compares every launcher/ file with the same-named script in the
+scripts directory (--scripts; default ~/.local/share/omarchy-buzz/scripts when
+it exists, else this checkout's scripts/): any difference, or a launcher file
+that is missing on either side, is `stale`. A launcher/ file that differs from
+bundle.json is also `stale` (a refresh replaces it); any other difference is
+`missing`. bundle.json is self-recorded and is not proof of origin.
+
+--refresh-launcher replaces launcher/ with the current scripts and rewrites
+their bundle.json entries, then prints the new --check result. It refuses a
+missing bundle, any mismatch outside launcher/, and an unsafe script source.
 """
 import argparse
+import ctypes
 import datetime
 import hashlib
 import json
@@ -71,6 +84,9 @@ ADAPTERS = {
 }
 SUBSCRIPTION_SETTINGS = b'{"forceLoginMethod": "claudeai"}\n'
 LAUNCHER = ('room-agent', 'room-sandbox', 'agent-login', 'agent-bundle')
+INSTALLED_SCRIPTS = HOME / '.local/share/omarchy-buzz/scripts'
+REFRESH_PREFIX = '.launcher-refresh-'
+STALE_EXIT = 3
 
 
 class Refused(Exception):
@@ -79,6 +95,15 @@ class Refused(Exception):
 
 def default_bundle(harness):
     return HOME / '.local/share/omarchy-buzz' / ('agent-' + harness)
+
+
+def default_scripts():
+    """The installed scripts, else this checkout's scripts/ (never a bundle's launcher/)."""
+    if INSTALLED_SCRIPTS.is_dir() and not INSTALLED_SCRIPTS.is_symlink():
+        return INSTALLED_SCRIPTS
+    if SCRIPTS == ROOT / 'scripts' and (ROOT / 'helper').is_dir():
+        return SCRIPTS
+    return None
 
 
 def digest(path):
@@ -293,6 +318,8 @@ def assemble(args):
             copy_file(SCRIPTS / script, staging / 'bin' / command, 0o755)
         for script in LAUNCHER:
             copy_file(SCRIPTS / script, staging / 'launcher' / script, 0o755)
+        sources = {script: digest(SCRIPTS / script)
+                   for script in ('room-agent-entry', *ADAPTERS[harness]['wrappers'].values(), *LAUNCHER)}
         copy_adapter(adapter, staging / 'adapter', harness)
         if cli is not None:
             copy_file(cli, staging / 'claude/claude', 0o755)
@@ -314,7 +341,7 @@ def assemble(args):
                   'assembledAt': datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds'),
                   'plugin': plugin_revision(), 'buzz': provenance, 'versions': versions,
                   'adapterSource': 'npm-ci' if args.npm_ci else 'prepared-tree',
-                  'entrypoints': entrypoints(harness), 'files': files}
+                  'entrypoints': entrypoints(harness), 'scriptSources': sources, 'files': files}
         missing = set(record['entrypoints'].values()) - set(files)
         if missing:
             raise Refused('entrypoint_missing')
@@ -330,7 +357,14 @@ def assemble(args):
     return output
 
 
-def check(bundle, harness):
+def launcher_path(relative):
+    """launcher/<name> and leftovers of an interrupted refresh: what a refresh may replace."""
+    return relative.startswith('launcher/') or relative.startswith(REFRESH_PREFIX)
+
+
+def verify(bundle, harness):
+    """Self-consistency against bundle.json. Differences outside launcher/ raise;
+    launcher differences are returned as categories (a refresh replaces them)."""
     if bundle.is_symlink() or any(p.is_symlink() for p in bundle.parents) or not bundle.is_dir():
         raise Refused('bundle_missing')
     manifest = bundle / 'bundle.json'
@@ -346,27 +380,157 @@ def check(bundle, harness):
         raise Refused('bundle_manifest_invalid')
     if record.get('harness') != harness or record.get('entrypoints') != entrypoints(harness):
         raise Refused('bundle_harness_mismatch')
+    launcher = []
+
+    def problem(relative, category):
+        if not launcher_path(relative):
+            raise Refused(category)
+        launcher.append(category)
+
     present = dict(walk_bundle(bundle))
     present.pop('bundle.json')
     for relative, expected in files.items():
         item = present.pop(relative, None)
         if item is None:
-            raise Refused('bundle_file_missing')
+            problem(relative, 'bundle_file_missing')
+            continue
         info = item.stat()
         if (not isinstance(expected, dict) or info.st_size != expected.get('bytes') or
                 format(stat.S_IMODE(info.st_mode), '04o') != expected.get('mode') or
                 digest(item) != expected.get('sha256')):
-            raise Refused('bundle_hash_mismatch')
-    if present:
-        raise Refused('bundle_unexpected_file')
+            problem(relative, 'bundle_hash_mismatch')
+    for relative in present:
+        problem(relative, 'bundle_unexpected_file')
+    return record, launcher
+
+
+def check(bundle, harness):
+    """Strict self-consistency: any difference from bundle.json raises."""
+    record, launcher = verify(bundle, harness)
+    if launcher:
+        raise Refused(launcher[0])
     return record
+
+
+def state(bundle, harness, scripts):
+    """`ready` or `stale`; raises for `missing`."""
+    record, launcher = verify(bundle, harness)
+    if launcher:
+        return 'stale'
+    recorded = {rel.removeprefix('launcher/'): entry['sha256']
+                for rel, entry in record['files'].items() if rel.startswith('launcher/')}
+    if set(recorded) != set(LAUNCHER):
+        return 'stale'
+    for name, sha in recorded.items():
+        source = scripts / name
+        if source.is_symlink() or not source.is_file() or digest(source) != sha:
+            return 'stale'
+    return 'ready'
+
+
+def read_source(scripts, name):
+    """A launcher script's bytes, read through one O_NOFOLLOW descriptor that must
+    be a regular file owned by this user and not writable by group or others."""
+    try:
+        fd = os.open(scripts / name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
+    except FileNotFoundError as exc:
+        raise Refused('launcher_source_missing') from exc
+    except OSError as exc:
+        raise Refused('launcher_source_unsafe') from exc
+    with os.fdopen(fd, 'rb') as stream:
+        info = os.fstat(stream.fileno())
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022 or
+                info.st_size > 4 * 1024 * 1024):
+            raise Refused('launcher_source_unsafe')
+        return stream.read()
+
+
+def exchange(first, second):
+    """Atomically swap two paths (renameat2 RENAME_EXCHANGE)."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    renameat2 = getattr(libc, 'renameat2', None)
+    if renameat2 is None:
+        raise Refused('launcher_exchange_unsupported')
+    at_fdcwd, rename_exchange = -100, 2
+    if renameat2(at_fdcwd, os.fsencode(first), at_fdcwd, os.fsencode(second), rename_exchange) != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error), str(second))
+
+
+def fsync_directory(path):
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def refresh(bundle, harness, scripts):
+    """Replace launcher/ with the current scripts and rewrite their bundle.json entries.
+
+    The new launcher/ and bundle.json are staged in <bundle>/.launcher-refresh-*/,
+    launcher/ is swapped in with one atomic exchange, then bundle.json is replaced
+    with one rename. An interruption leaves only launcher differences, which
+    --check reports as `stale` and a new refresh repairs."""
+    record, _ = verify(bundle, harness)
+    if scripts is None or not os.path.lexists(scripts):
+        raise Refused('launcher_source_missing')
+    info = os.lstat(scripts)
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022:
+        raise Refused('launcher_source_unsafe')
+    sources = {name: read_source(scripts, name) for name in LAUNCHER}
+    for leftover in bundle.iterdir():
+        if leftover.name.startswith(REFRESH_PREFIX) and leftover.is_dir() and not leftover.is_symlink():
+            shutil.rmtree(leftover)
+    staging = Path(tempfile.mkdtemp(prefix=REFRESH_PREFIX, dir=bundle))
+    try:
+        files = {rel: entry for rel, entry in record['files'].items() if not rel.startswith('launcher/')}
+        (staging / 'launcher').mkdir(mode=0o755)
+        for name, data in sources.items():
+            target = staging / 'launcher' / name
+            with open(target, 'xb') as stream:
+                stream.write(data)
+                stream.flush()
+                os.fchmod(stream.fileno(), 0o755)
+                os.fsync(stream.fileno())
+            files['launcher/' + name] = {'sha256': hashlib.sha256(data).hexdigest(), 'bytes': len(data),
+                                         'mode': '0755'}
+        fsync_directory(staging / 'launcher')
+        record['files'] = files
+        script_sources = record.get('scriptSources') if isinstance(record.get('scriptSources'), dict) else {}
+        script_sources.update({name: hashlib.sha256(data).hexdigest() for name, data in sources.items()})
+        record['scriptSources'] = script_sources
+        record['launcherRefreshedAt'] = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds')
+        with open(staging / 'bundle.json', 'x') as stream:
+            stream.write(json.dumps(record, indent=2, sort_keys=True) + '\n')
+            stream.flush()
+            os.fchmod(stream.fileno(), 0o644)
+            os.fsync(stream.fileno())
+        current = bundle / 'launcher'
+        if current.is_dir() and not current.is_symlink():
+            exchange(staging / 'launcher', current)
+        elif os.path.lexists(current):
+            raise Refused('bundle_link_refused')
+        else:
+            os.rename(staging / 'launcher', current)
+        os.replace(staging / 'bundle.json', bundle / 'bundle.json')
+        fsync_directory(bundle)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+    return state(bundle, harness, scripts)
 
 
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('harness')
-    p.add_argument('--check', action='store_true')
+    mode = p.add_mutually_exclusive_group()
+    mode.add_argument('--check', action='store_true')
+    mode.add_argument('--refresh-launcher', action='store_true',
+                      help='replace launcher/ with the current scripts and rewrite their bundle.json entries')
     p.add_argument('--output', type=Path, help='bundle directory (default ~/.local/share/omarchy-buzz/agent-<harness>)')
+    p.add_argument('--scripts', type=Path,
+                   help='scripts compared with launcher/ (default ~/.local/share/omarchy-buzz/scripts, '
+                        "else this checkout's scripts/)")
     p.add_argument('--buzz-bin', type=Path, default=HOME / '.local/share/omarchy-buzz/stock-agent-codex/bin',
                    help='directory with official buzz-acp, buzz and buzz-admin (stock bundle bin/ or CI artifact bin/)')
     p.add_argument('--node', type=Path, help=f'Node {NODE_VERSION} ARM64 binary (default: <buzz-bin>/node)')
@@ -382,10 +546,19 @@ def main():
         return 2
     if args.output is None:
         args.output = default_bundle(args.harness)
+    scripts = args.scripts if args.scripts is not None else default_scripts()
     try:
-        if args.check:
-            check(args.output, args.harness)
-            print('ready')
+        if args.check or args.refresh_launcher:
+            if args.refresh_launcher:
+                result = refresh(args.output, args.harness, scripts)
+            elif scripts is None:
+                raise Refused('launcher_source_missing')
+            else:
+                result = state(args.output, args.harness, scripts)
+            print(result)
+            if result == 'stale':
+                print(json.dumps({'error': 'launcher_outdated'}), file=sys.stderr)
+                return STALE_EXIT
             return 0
         if args.npm_ci and (args.adapter is not None or args.npm_cli is None):
             raise Refused('npm_ci_arguments_invalid')
