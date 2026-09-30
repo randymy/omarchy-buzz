@@ -4,7 +4,7 @@
 
 - Read DESIGN.md before implementation and docs/CHECKPOINT.md for current capabilities and remaining gates. Historical milestone evidence is not a claim about the current installed build. Do not treat proposed interfaces as existing upstream APIs.
 - Keep the public plugin generic. Downstream trading, registry, credential, deployment, and authority integrations belong outside the base plugin.
-- Do not maintain a Buzz/Omarchy product fork, modify installed upstream sources, or modify vPerps as part of base plugin work. The user approved a contribution-only Buzz fork and signed-off draft WebSocket PR on September 29; this does not authorize deploying patched upstream as a production dependency.
+- Do not maintain a Buzz/Omarchy product fork, modify installed upstream sources, or modify a downstream project's repository as part of base plugin work. The user approved a contribution-only Buzz fork and signed-off draft WebSocket PR on September 29; this does not authorize deploying patched upstream as a production dependency.
 - First-release room publication uses ordinary Buzz permissions, explicitly approved September 29. Atomic member-bound publication is an optional future extension, not a required relay API. Preserve the documented open-room removal race and all credential, permission, subscription and lifecycle checks.
 - QML is a presentation/control surface. Never put identity keys, bearer tokens, provider credentials, raw agent telemetry, or arbitrary command execution into its data model.
 - Use upstream signing, event, and agent implementations. Pin inspected dependency revisions and distinguish source compatibility from runtime verification.

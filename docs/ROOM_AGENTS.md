@@ -14,7 +14,7 @@ It is not enabled at login. In the configured room, type `@codex` in the compose
 
 The writable task workspace is
 `~/.local/state/omarchy-buzz-room-workspaces/codex`, visible inside as `/workspace`.
-The normal home directory and vPerps checkout are not mounted. No desktop D-Bus,
+The normal home directory and another project's checkout are not mounted. No desktop D-Bus,
 display socket or provider API environment variable is passed into the sandbox.
 The dedicated existing ChatGPT profile is mounted; credentials are not copied
 into QML or the task workspace. Native Codex owns login and token refresh.
@@ -55,5 +55,5 @@ independently certify a plan tier or billing receipt.
 
 Claude's subscription smoke test is separate; no Claude room service is installed.
 Future setup needs reviewed packaging, explicit workspace selection and native
-start/stop controls. This implementation remains generic; vPerps integration can
-supply an intentionally chosen workspace later without changing the plugin.
+start/stop controls. This implementation remains generic; a downstream integration
+can supply an intentionally chosen workspace later without changing the plugin.

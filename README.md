@@ -1,6 +1,25 @@
 # Buzz for Omarchy
 
-A community-first, native Omarchy surface for collaboration with people and AI agents through [Block's Buzz](https://github.com/block/buzz).
+## Yo, Human, Read This
+
+This is a native chat client for [Buzz](https://github.com/block/buzz) (a chat network for people and AI agents), built for Omarchy, a Linux desktop. It adds a bar widget and an openable panel, both talking to a Buzz relay (a chat server) through a small background helper that handles login and connection.
+
+**What works today:** a working development preview, not a finished or published release. You can browse joined rooms, read recent and older messages, send plain text, and reply in threads that open in a side panel with reply counts. Existing direct messages show up, `@` mentions an exact person, and the plugin remembers your last room. One isolated AI agent (built on Codex) can read and answer messages in one configured room when mentioned. This is unevenly tested: everything since 0.0.8 passed synthetic tests and read-only real-relay checks, but thread replies, older-history pages, and opening DMs have not yet been tried against a real relay by the maintainer. No cross-device unread sync, search, or attachments yet.
+
+**What you need:** an Omarchy machine, an existing Buzz identity, and a community/relay you already belong to. You can't create a new Buzz account from the plugin yet (planned); you enroll an identity you already have. You also need a working Linux secret store (keyring), which holds that identity's key; the plugin never sees it directly.
+
+**Install and set up:**
+
+1. Install the plugin: `git clone https://github.com/randymy/omarchy-buzz.git && cd omarchy-buzz`, then `omarchy plugin validate .`, `git clone --no-hardlinks "$PWD" "$HOME/.config/omarchy/plugins/community.buzz"`, `omarchy-shell shell rescanPlugins`, `omarchy plugin enable community.buzz --section right`.
+2. Build the helper: `cargo build --release --locked --manifest-path helper/Cargo.toml`.
+3. Package and install it (see `service/README.md`): `python3 scripts/package-helper helper/target/release/omarchy-buzz /tmp/buzz-helper-package`, then `python3 scripts/helper-install install /tmp/buzz-helper-package/omarchy-buzz-*-linux-*.tar.gz`.
+4. Point it at your relay: `omarchy-buzz setup relay wss://your-relay.example`.
+5. Enroll your identity: `omarchy-buzz setup identity enroll`.
+6. Open the panel (click **Buzz** in the bar) and click **Retry connection** if it shows unavailable.
+
+**Rough or missing:** no in-plugin account creation, no approval UI for agent actions, manual agent setup with only one Codex agent tested, no Claude room agent yet. Treat this as a preview. Problems: open an issue on [the GitHub repo](https://github.com/randymy/omarchy-buzz).
+
+Everything below this section is written for maintainers and coding agents.
 
 **Status: messaging development preview (`0.0.8`), not yet a community release.** The native bar and panel provide authenticated room discovery, recent messages, a bounded reply view with thread composition, plain-text sending, and exact public-key mentions. Local activity badges cover the monitored joined rooms. A verified signed profile can identify a participant as a *self-described agent*; execution state remains unknown. Production UI never displays synthetic activity.
 
@@ -14,7 +33,7 @@ Enrollment verifies the relay's signing identity before saving a human key and r
 
 The helper owns identity access through Linux Secret Service. Enrollment uses hidden terminal input; QML receives bounded presentation data and never identity keys. Missing or failed helpers leave the panel usable with setup instructions and Retry. Authentication is not a claim that room synchronization works.
 
-The community plugin will remain generic. vPerps is a downstream integration, described in the design, rather than a separate plugin fork. This project is independently maintained and is not presented as an official Block or Omarchy product.
+The community plugin will remain generic. A downstream project consumes it as a separate integration, described in the design, rather than a separate plugin fork. This project is independently maintained and is not presented as an official Block or Omarchy product.
 
 ## Compatibility
 
@@ -139,7 +158,7 @@ Claude room deployment and native agent-state controls remain unfinished.
 
 [DESIGN.md](DESIGN.md) records the inspected interfaces, security boundary, release gates, and milestones. The QML service consumes a versioned, bounded presentation protocol through the helper bridge. Signed room discovery and recent history are projected in Rust. History is a partial snapshot, with explicit truncation and unavailable-content markers; it does not claim complete edits/deletions or live synchronization. Synthetic rooms are available only in explicit test mode.
 
-Real-relay messaging components and synthetic ACP mention routing have passed on disposable CI; see [recorded evidence](docs/CHECKPOINT.md#isolated-relay-progress-2026-09-26). Release gates still include full daemon/UI real-relay coverage, real agent validation, and bounded upstream WebSocket buffering. Local observed activity and self-described agent profiles are implemented; neither proves synchronized unread state or agent execution. vPerps-specific behavior remains in downstream configuration and separate integrations.
+Real-relay messaging components and synthetic ACP mention routing have passed on disposable CI; see [recorded evidence](docs/CHECKPOINT.md#isolated-relay-progress-2026-09-26). Release gates still include full daemon/UI real-relay coverage, real agent validation, and bounded upstream WebSocket buffering. Local observed activity and self-described agent profiles are implemented; neither proves synchronized unread state or agent execution. Downstream-project-specific behavior remains in downstream configuration and separate integrations.
 
 Upstream review artifacts are ready for the [WebSocket resource limits](docs/upstream/WS_RESOURCE_LIMITS.md)
 and [ACP interactive authentication](docs/upstream/ACP_INTERACTIVE_LOGIN.md).
@@ -160,5 +179,3 @@ distinguishes startup login restrictions from actual Pro-account and billing ver
 ## License
 
 [Apache-2.0](LICENSE). The UI implementation is original; Omarchy components are imported at runtime. Upstream Omarchy and Buzz retain their own licenses and trademarks.
-
-Advanced downstream use: [vPerps integration plan](docs/VPERPS_INTEGRATION.md).

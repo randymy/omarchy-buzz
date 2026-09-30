@@ -4,7 +4,7 @@ Status: **ready for design review, not an implementation or a release claim**.
 
 Historical M1 implementation note (2026-09-26; see [current checkpoint](docs/CHECKPOINT.md) for subsequent messaging work): The M1 connection preview runs natively through the installed systemd helper, with hosted/custom setup and no production sample rooms. Twenty ARM64 Rust tests pass, including synthetic NIP-42 authentication and bounded signed HTTP `/query` conformance. Isolated Secret Service enrollment, socket idle reactivation, and QML/helper integration passed. HTTP transport is not yet wired to room discovery or UI. M1 still has upstream WS resource-limit, heartbeat/recovery, relay trust/discovery, and deployed-relay validation gates. No production identity, relay authentication, messaging, or ACP integration has been exercised.
 
-Research date: 2026-09-25 America/Chicago (some upstream commits are dated 2026-09-26 UTC). Scope: community plugin first; vPerps as an independent downstream consumer. No upstream, installed desktop, or vPerps implementation files were changed. No relay, authenticated CLI, or agent was started during research.
+Research date: 2026-09-25 America/Chicago (some upstream commits are dated 2026-09-26 UTC). Scope: community plugin first; a downstream project as an independent downstream consumer. No upstream, installed desktop, or downstream-project implementation files were changed. No relay, authenticated CLI, or agent was started during research.
 
 ## 1. Decision and product boundary
 
@@ -22,13 +22,13 @@ The first useful release provides joined stream rooms, recent conversation, safe
 | --- | --- | --- |
 | [Omarchy](https://github.com/omacom/omarchy/tree/7b336b1b0da722e7bb864a7136f91e784ef731bf) | `7b336b1b0da722e7bb864a7136f91e784ef731bf` | Fresh default-branch clone in `../omarchy`; source `version` says `4.0.0.alpha`. |
 | [Buzz](https://github.com/block/buzz/tree/781d39510cf23cfe224e8f521ae06a23377e06de) | `781d39510cf23cfe224e8f521ae06a23377e06de` | Fresh default-branch clone in `../buzz`; workspace version `0.1.0`, Rust minimum `1.88.0`. Version alone is insufficient to identify this rapidly changing interface. |
-| [vPerps](https://github.com/vperps/vperps/tree/1a455281aa94c1b9652e0f04b3216c6b35fc1c6f) | fetched `origin/dev`: `1a455281aa94c1b9652e0f04b3216c6b35fc1c6f` | Existing checkout stays at `86b8282ba8fa9129188266abb8963173db22d659`. Overlay is identical across those revisions. Existing untracked `.claude/worktrees/` preserved. |
-| [vPerps Local](https://github.com/tendryl-frank/vperps-local/tree/e28f59d84572cd21042f13342e8665acb9d64317) | `e28f59d84572cd21042f13342e8665acb9d64317` | Local HEAD equals refreshed `origin/main`; clean checkout. |
-| [vPerps Windows](https://github.com/tendryl-frank/vperps-windows/tree/d013e461fafd761825e932851532ffa6c734a711) | `d013e461fafd761825e932851532ffa6c734a711` | Local HEAD equals refreshed `origin/main`; clean checkout. |
+| Downstream project (primary repo) | fetched `origin/dev`: `1a455281aa94c1b9652e0f04b3216c6b35fc1c6f` | Existing checkout stays at `86b8282ba8fa9129188266abb8963173db22d659`. Overlay is identical across those revisions. Existing untracked `.claude/worktrees/` preserved. |
+| Downstream project (local service) | `e28f59d84572cd21042f13342e8665acb9d64317` | Local HEAD equals refreshed `origin/main`; clean checkout. |
+| Downstream project (Windows companion) | `d013e461fafd761825e932851532ffa6c734a711` | Local HEAD equals refreshed `origin/main`; clean checkout. |
 
 The local machine is ARM64. `omarchy version` reports package version `4.0.3-1`, while `/usr/share/omarchy/version` reports `4.0.0.alpha`. These are different version surfaces, not proof that all Omarchy 4.x installations share one API. Compatibility must identify tested package/source combinations and required interfaces.
 
-Source references below use paths relative to these repositories, at the revisions above. Public upstream links are immutable. vPerps references may require repository access and are supplementary; installing or building the community plugin must never require that access. Conclusions are source inspection, not runtime certification.
+Source references below use paths relative to these repositories, at the revisions above. Public upstream links are immutable. Downstream-project references may require repository access and are supplementary; installing or building the community plugin must never require that access. Conclusions are source inspection, not runtime certification.
 
 ### 2.2 Omarchy findings
 
@@ -100,16 +100,16 @@ The WebSocket library needs careful integration: it has a pre-response event buf
 
 A future detailed dashboard can map `turn_started` and `turn_completed` to narrowly defined states for an authorized observer. It must handle missing ephemeral frames and process-local sequence resets. Do not infer completed work from the absence of typing, or thinking/reviewing/waiting-for-approval from prose. More detailed status remains unknown when evidence is unavailable.
 
-### 2.5 vPerps downstream findings
+### 2.5 Downstream-project findings
 
-The existing overlay already demonstrates an independent integration: `overlay/README.md`, `install.sh`, `omarchy/extensions/vperps-menu.jsonc`, `omarchy/plugins/vperps.health/manifest.json`, `omarchy/hypr/vperps-windows.lua`, `bin/vperps*`, and `systemd/user/`.
+The existing overlay already demonstrates an independent integration: `overlay/README.md`, `install.sh`, a menu extension manifest, a health-check plugin manifest, a window-launcher Lua config, CLI launcher scripts under `bin/`, and `systemd/user/`.
 
-- The overlay merges an owned menu block, installs window webapps, supplies `vperps.health`, and discovers CLI verbs by filename. Buzz can be another independent package consumed by this overlay.
-- vPerps Local serves its API on loopback 8080 and a separate stream daemon on 8091; installed wrappers use `VPERPS_LOCAL_DIR`. The tunnel unit is presently a `/bin/true` placeholder. Registry fallback fixtures are not proof of a populated, attributed runtime registry.
-- Local's `ai_registry.py` gates tool permissions explicitly; `claude_agent.py` has CLI tool and path restrictions with documented limitations. Inspected runtime lanes are Claude CLI and Ollama; a product reference to Codex does not establish a current Local Codex integration.
-- `credentials.py` uses keyring-backed individual credentials, while some existing system/team credentials remain configuration-based. `server.py` loopback/CORS settings are not a hostile-local-process security boundary. No Buzz process should receive those credentials or direct signing access.
-- Core `AGENTS.md` requires explicit review requests, prohibits agents placing real orders, and reserves production deployment/migrations for operator approval. A Buzz mention must not bypass those rules. `CLAUDE.md` describes repository-specific attribution/review work; it is not a universal agent-launch protocol.
-- `docs/business/VPERPS_LOCAL_PRD.md` describes signed Core, separate signing, delegated keys, immutable images, attestation, and isolated vendor guests. The download overlay explicitly lacks several of these features. No implemented vMachine authority service was established by this inspection; the user-provided vMachine model is the design direction, not a current API.
+- The overlay merges an owned menu block, installs window webapps, supplies a health-check plugin, and discovers CLI verbs by filename. Buzz can be another independent package consumed by this overlay.
+- The downstream project's local service serves its API on loopback 8080 and a separate stream daemon on 8091; installed wrappers use a project-specific directory environment variable. The tunnel unit is presently a `/bin/true` placeholder. Registry fallback fixtures are not proof of a populated, attributed runtime registry.
+- The local service's registry module gates tool permissions explicitly; its Claude-agent module has CLI tool and path restrictions with documented limitations. Inspected runtime lanes are Claude CLI and Ollama; a product reference to Codex does not establish a current local-service Codex integration.
+- Its credentials module uses keyring-backed individual credentials, while some existing system/team credentials remain configuration-based. Its server's loopback/CORS settings are not a hostile-local-process security boundary. No Buzz process should receive those credentials or direct signing access.
+- The downstream project's own AGENTS.md requires explicit review requests, prohibits agents placing real orders, and reserves production deployment/migrations for operator approval. A Buzz mention must not bypass those rules. Its CLAUDE.md describes repository-specific attribution/review work; it is not a universal agent-launch protocol.
+- A downstream product-requirements document describes signed Core, separate signing, delegated keys, immutable images, attestation, and isolated vendor guests. The download overlay explicitly lacks several of these features. No implemented vMachine authority service was established by this inspection; the user-provided vMachine model is the design direction, not a current API.
 
 ## 3. Proposed process architecture
 
@@ -139,7 +139,7 @@ Omarchy shell (one existing Quickshell process)
               ├── claude-agent-acp
               └── goose acp
 
-Later: external vPerps event publishers / vMachine authority adapters
+Later: external downstream-project event publishers / vMachine authority adapters
        communicate through supported Buzz interfaces and explicit local adapters.
        They never receive authority from a QML property or a chat badge.
 ```
@@ -182,7 +182,7 @@ The **daemon alone owns access to the human Buzz identity used by this integrati
 
 Use an existing human identity only through explicit secure enrollment; do not silently create a second user or read Buzz Desktop's multi-secret blob. If a user chooses a new identity, show that it requires relay membership and is not their existing desktop identity. Shared cross-client identity provisioning is a usability question and an M1 release gate. Storage access failures report `identity_unavailable` because the current keyring wrapper cannot reliably distinguish locked from unavailable; a pending lookup is identified separately. Public context is retained and sends remain disabled.
 
-Agent identities and LLM credentials remain with independently configured ACP processes. The base helper never needs exchange keys, wallets, GitHub tokens, cloud credentials, vPerps sessions, or vMachine leases. Detailed owner telemetry requires explicit support and authorization in M4; do not import agent private keys to read it.
+Agent identities and LLM credentials remain with independently configured ACP processes. The base helper never needs exchange keys, wallets, GitHub tokens, cloud credentials, downstream-project sessions, or vMachine leases. Detailed owner telemetry requires explicit support and authorization in M4; do not import agent private keys to read it.
 
 ### 4.2 Honest isolation guarantees
 
@@ -222,7 +222,7 @@ Included:
 
 Excluded: agent installation/orchestration, tool approval, workflow execution, cross-device unread sync, identity administration, room creation/membership changes, DMs, attachments, voice, full forums/search, GitHub synchronization, automatic application launch from events, trading integration, and vMachine authority. These exclusions constrain the release, not the long-term architecture.
 
-The acceptance scenario involving an agent investigating vPerps Local is **M4/M6**, not the definition of v0.1. v0.1 must nevertheless send a correct signed mention to an already configured agent and display its room responses.
+The acceptance scenario involving an agent investigating the downstream project's local service is **M4/M6**, not the definition of v0.1. v0.1 must nevertheless send a correct signed mention to an already configured agent and display its room responses.
 
 ## 6. Data acquisition and presentation model
 
@@ -346,13 +346,13 @@ No empty code scaffold or fake manifest is needed during design review. Proposed
 
 Install the helper as a versioned, independently verifiable package; source build is supported. Publish x86_64 and ARM64 artifacts only after testing them. No binaries auto-downloaded by QML and no `curl | sh`. The normal Omarchy plugin command manages the plugin checkout; explicit helper setup manages its user unit and optional menu/shortcut entries. Installation must explain that both components are needed.
 
-Removal instructions cover disabling/removing the plugin, stopping/disabling/removing both helper socket and service units, and removing only owned optional desktop entries. Preserve user-edited entries and warn on conflict. Preserve identity and read-state by default; explicit credential deletion is separate. Native `omarchy plugin remove` has no reliable external-helper uninstall hook, so use disconnect-on-last-client plus explicit unit removal rather than promise automatic cleanup. No agent or vPerps unit is owned by this plugin.
+Removal instructions cover disabling/removing the plugin, stopping/disabling/removing both helper socket and service units, and removing only owned optional desktop entries. Preserve user-edited entries and warn on conflict. Preserve identity and read-state by default; explicit credential deletion is separate. Native `omarchy plugin remove` has no reliable external-helper uninstall hook, so use disconnect-on-last-client plus explicit unit removal rather than promise automatic cleanup. No agent or downstream-project unit is owned by this plugin.
 
 Pin Buzz crate Git revisions and commit `Cargo.lock`; do not track mutable `main` at build/runtime. Prefer the tested Omarchy source/package combination over a broad “4.x supported” claim. Helper hello advertises protocol version, build revision, tested backend revision, and capabilities; the UI rejects incompatible major versions. Upgrading the Git-managed UI need not upgrade the installed helper simultaneously. Maintain compatibility across at least the documented UI/helper release pair, with a visible mismatch state and rollback instructions.
 
 The marketplace requires a public root manifest, README install/removal instructions, license, dependencies, and unique permanent ID. Listing and subsequent verification refer to exact commits and maintainer review. The current marketplace [submission guide](https://github.com/omacom/omarchy-plugin-marketplace/blob/main/SUBMISSION.md) and [security policy](https://github.com/omacom/omarchy-plugin-marketplace/blob/main/SECURITY.md) were checked during research; recheck them when publishing. This design stage creates no remote repository, listing, or submission.
 
-## 9. Extension model and vPerps/vMachine consumption
+## 9. Extension model and downstream-project/vMachine consumption
 
 ### 9.1 Generic seams
 
@@ -364,13 +364,13 @@ Start with data/configuration seams, not an arbitrary plugin-loading framework:
 - Navigation uses locally registered handler IDs and validated typed resource IDs. Repository roots and allowed URL origins are configured locally. Do not map arbitrary event text to shell commands, filesystem paths, or custom URL schemes.
 - Approval adapters are separately installed integrations with an authoritative backend. The UI passes an opaque request reference and decision intent; the backend verifies the action and human evidence. QML is never the final authorizer.
 
-Do not add a general extension ABI until a real second integration requires it. Tests should first exercise one generic mock producer and a separate vPerps integration package against the same stable view model.
+Do not add a general extension ABI until a real second integration requires it. Tests should first exercise one generic mock producer and a separate downstream-project integration package against the same stable view model.
 
-### 9.2 vPerps downstream plan
+### 9.2 Downstream-project consumption plan
 
-vPerps's overlay installs the public plugin/helper at tested versions, selects its community/preferred rooms, and adds an owned menu entry. The base repository contains no trading room defaults, ports 8080/8091, venue names, account logic, registry credentials, or deploy commands.
+The downstream project's overlay installs the public plugin/helper at tested versions, selects its community/preferred rooms, and adds an owned menu entry. The base repository contains no trading room defaults, ports 8080/8091, venue names, account logic, registry credentials, or deploy commands.
 
-A separate vPerps publisher can read permitted Local service health and publish sanitized operations messages. A separate navigation integration maps repository/PR/application references into the existing vPerps CLI/window launchers. vPerps owns its registry semantics, venue telemetry, redaction, risk policy, and execution permissions. Existing fixtures remain labeled fixtures; they must not become claimed production observations in a Buzz room.
+A separate downstream-project publisher can read permitted local-service health and publish sanitized operations messages. A separate navigation integration maps repository/PR/application references into the existing downstream-project CLI/window launchers. The downstream project owns its registry semantics, venue telemetry, redaction, risk policy, and execution permissions. Existing fixtures remain labeled fixtures; they must not become claimed production observations in a Buzz room.
 
 Development agent setup selects the local repository/workspace and obeys its AGENTS instructions. A mention requesting a service investigation is not permission to trade, deploy, migrate production, or disclose credentials. Local agents' existing CLI/tool permissions are not automatically equivalent to an ACP harness policy. Validate each adapter's actual permissions before the demo.
 
@@ -386,7 +386,7 @@ CI should run manifest validation against the pinned Omarchy checkout; Rust form
 
 Meaningful tests include malformed/oversized input rejected before Qt; wrong-user socket attempts; unknown protocol version; cross-community stale responses; keyring locked without identity replacement; log output containing no fixture sentinel secrets; exact mention recipients; same-event send retry; lost acknowledgment; permission revocation clearing data; membership/agent identity forgery; edited/deleted message handling; timestamp collisions and capped catch-up; helper crash while panel is open; and disable/remove/reload without duplicate services or sends. Avoid tests that merely repeat implementation expressions.
 
-Integration tests need a disposable relay with separate Compose project, ports, storage and synthetic identities, explicitly isolated from Buzz Desktop, vPerps, and production. No use of existing private rooms as test fixtures. Recording a skipped graphical, ARM64, keyring, or agent test is not a pass.
+Integration tests need a disposable relay with separate Compose project, ports, storage and synthetic identities, explicitly isolated from Buzz Desktop, the downstream project, and production. No use of existing private rooms as test fixtures. Recording a skipped graphical, ARM64, keyring, or agent test is not a pass.
 
 | Milestone | Deliverable | Exit evidence / gate |
 | --- | --- | --- |
@@ -397,14 +397,14 @@ Integration tests need a disposable relay with separate Compose project, ports, 
 | M3 — native experience / v0.1 | Theme-aware UI, opt-in shortcut/menu, notifications, documented packaging and compatibility | Multi-monitor/keyboard/lock/DND/error-state verification; reversible setup/removal; user-visible partial states; community release candidate. |
 | M4 — ACP integration | Independently configured Codex/Claude/Goose where available, mentions, authorized reliable telemetry | Adapter-by-adapter architecture/permission tests; owner routing; no automatic tool approvals hidden behind UI. Address secret-env/tempfile behavior and authority limitations. |
 | M5 — agents surface | Agent/run list, exact identities, room/task/repo links where evidenced, safe supported cancellation | Unknown/stale/ended distinctions, telemetry reconnect gaps, correct target authorization; no implied orchestration. |
-| M6 — vPerps consumption spike | Same public plugin installed by overlay; separate room/config/navigation integrations | Isolated observe-only service investigation demo through ACP; no base plugin fork and no money/deploy actions. |
+| M6 — downstream-project consumption spike | Same public plugin installed by overlay; separate room/config/navigation integrations | Isolated observe-only service investigation demo through ACP; no base plugin fork and no money/deploy actions. |
 | Later — approvals/workflows | Real authority-backed approval surface | Upstream workflow gate or external authority works end to end, including deny, expiry, replay and action binding. No date or fake implementation promised. |
 
 ## 11. Final review checklist and recommendations
 
 ### 11.1 Architecture recommendation
 
-Proceed with thin native QML, a separately supervised Rust helper with a credential-free UI bridge, existing Buzz client/SDK primitives, and separately owned ACP processes. Keep the public plugin generic. Choose explicit uncertainty over plausible fake state. No Buzz fork, Omarchy fork, or vPerps-specific plugin fork is needed.
+Proceed with thin native QML, a separately supervised Rust helper with a credential-free UI bridge, existing Buzz client/SDK primitives, and separately owned ACP processes. Keep the public plugin generic. Choose explicit uncertainty over plausible fake state. No Buzz fork, Omarchy fork, or product-specific plugin fork is needed.
 
 ### 11.2 Interfaces intended for use
 
@@ -440,7 +440,7 @@ These are focused implementation investigations and upstream questions, not requ
 
 ### 11.7 Proposed milestone breakdown
 
-Review this design, then M0 → M1 → M2 → M3/v0.1. Develop and validate independent ACP integration in M4, expose evidence-backed agent runs in M5, and demonstrate unchanged-plugin vPerps consumption in M6. Authority-backed approval follows only when the corresponding backend contract is real. Keep each milestone as small reviewable commits with recorded validation and supported versions.
+Review this design, then M0 → M1 → M2 → M3/v0.1. Develop and validate independent ACP integration in M4, expose evidence-backed agent runs in M5, and demonstrate unchanged-plugin downstream-project consumption in M6. Authority-backed approval follows only when the corresponding backend contract is real. Keep each milestone as small reviewable commits with recorded validation and supported versions.
 
 ### 11.8 Conflicts with the prompt or earlier assumptions
 
@@ -452,6 +452,6 @@ Review this design, then M0 → M1 → M2 → M3/v0.1. Develop and validate inde
 - Standard plugin add/remove does not install/uninstall a binary or systemd service. Helper packaging and cleanup need explicit documented ownership.
 - `Super+B` is available in the inspected defaults/local file, but cannot be reserved on every user's desktop. Installation must remain opt-in and conflict-aware.
 - Buzz Linux desktop ARM64 distribution is not established; native plugin messaging does not require the desktop app. Our earlier desktop-launch-first recommendation is superseded by this source-grounded helper design.
-- Buzz's signed event/audit model records collaboration; it does not certify all local agent actions, automatically synchronize GitHub, or implement vMachine authority. Several vPerps appliance/security features remain roadmap items.
+- Buzz's signed event/audit model records collaboration; it does not certify all local agent actions, automatically synchronize GitHub, or implement vMachine authority. Several downstream-project appliance/security features remain roadmap items.
 
 This design preserves the product vision while making the first release and every security claim testable.
