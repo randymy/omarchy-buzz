@@ -19,6 +19,16 @@ class Refused(Exception):
 
 
 PROFILE_DIRS = ("home", "provider", "config", "data", "cache", "state")
+HARNESSES = ("codex", "claude-code")
+# Non-secret, fixed per-harness additions to the clean sandbox environment.
+# Claude keeps its configuration and credentials in the shared provider
+# directory; the updater is disabled so the pinned bundle CLI stays in use.
+HARNESS_ENV = {
+    "codex": {},
+    "claude-code": {"CLAUDE_CONFIG_DIR": "/profile/provider", "DISABLE_AUTOUPDATER": "1"},
+}
+INSTRUCTIONS_TARGET = "/run/agent/instructions"
+INSTRUCTIONS_LIMIT = 16 * 1024
 
 
 def private_directory(path):
@@ -56,6 +66,32 @@ def validate(profile, workspace, bundle):
         raise Refused("bubblewrap_unavailable")
 
 
+def instructions_file(path, profile, workspace, bundle):
+    """Validate the service-written persona instructions file (0600, private parent)."""
+    if not path.is_absolute() or ".." in path.parts:
+        raise Refused("absolute_instructions_file_required")
+    for part in (path, *path.parents):
+        if part.is_symlink():
+            raise Refused("linked_instructions_path")
+    if any(path == other or path.is_relative_to(other)
+           for other in (profile, workspace, bundle)):
+        raise Refused("instructions_path_overlap")
+    private_directory(path.parent)
+    try:
+        info = path.stat()
+    except OSError as exc:
+        raise Refused("instructions_file_missing") from exc
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+        raise Refused("instructions_file_permissions_unsafe")
+    if info.st_size > INSTRUCTIONS_LIMIT:
+        raise Refused("instructions_file_too_large")
+    try:
+        path.read_bytes().decode("utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise Refused("instructions_file_invalid") from exc
+    return path
+
+
 def relay_url(value):
     parsed = urllib.parse.urlsplit(value)
     if (parsed.scheme not in ("ws", "wss") or not parsed.hostname or
@@ -69,10 +105,20 @@ def relay_url(value):
     return value.rstrip("/")
 
 
-def build_command(profile, workspace, bundle, command, relay=None, bwrap="/usr/bin/bwrap"):
-    """Return the exact argv; command paths must name files inside the sandbox."""
+def build_command(profile, workspace, bundle, command, relay=None, bwrap="/usr/bin/bwrap",
+                  harness="codex", instructions=None, extra_env=None):
+    """Return the exact argv; command paths must name files inside the sandbox.
+
+    `instructions` (already validated) is bound read-only at INSTRUCTIONS_TARGET.
+    `extra_env` may only carry ANTHROPIC_MODEL, the Claude model authority.
+    """
     if not command or not command[0].startswith("/"):
         raise Refused("absolute_sandbox_command_required")
+    if harness not in HARNESSES:
+        raise Refused("harness_unknown")
+    extra_env = dict(extra_env or {})
+    if set(extra_env) - {"ANTHROPIC_MODEL"}:
+        raise Refused("sandbox_environment_refused")
     args = [bwrap, "--unshare-all", "--unshare-user", "--share-net", "--disable-userns",
             "--new-session", "--die-with-parent", "--clearenv",
             "--ro-bind", "/usr", "/usr", "--symlink", "usr/bin", "/bin",
@@ -92,6 +138,8 @@ def build_command(profile, workspace, bundle, command, relay=None, bwrap="/usr/b
     for name in PROFILE_DIRS:
         args += ["--bind", str(profile / name), "/profile/" + name]
     args += ["--tmpfs", "/run", "--dir", "/run/user", "--dir", "/run/user/" + str(os.getuid())]
+    if instructions is not None:
+        args += ["--dir", "/run/agent", "--ro-bind", str(instructions), INSTRUCTIONS_TARGET]
     env = {"HOME": "/profile/home", "CODEX_HOME": "/profile/provider",
            "XDG_CONFIG_HOME": "/profile/config", "XDG_DATA_HOME": "/profile/data",
            "XDG_CACHE_HOME": "/profile/cache", "XDG_STATE_HOME": "/profile/state",
@@ -103,6 +151,8 @@ def build_command(profile, workspace, bundle, command, relay=None, bwrap="/usr/b
         env["SSL_CERT_FILE"] = "/etc/ca-certificates/extracted/tls-ca-bundle.pem"
     if relay is not None:
         env["BUZZ_RELAY_URL"] = relay_url(relay)
+    env.update(HARNESS_ENV[harness])
+    env.update(extra_env)
     for key, value in env.items():
         args += ["--setenv", key, value]
     return args + ["--chdir", "/workspace", "--", *command]
