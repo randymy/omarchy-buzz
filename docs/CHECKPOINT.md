@@ -1572,3 +1572,20 @@ zero remaining 👀/💬 reactions for the completed turn. The shell was restart
 the normal window was visually checked authenticated. The expanded last-message
 viewport and snapshot reaction rendering were validated in a rendered synthetic
 fixture; no new production turn was generated for these tests.
+
+## Quiet background updates
+
+The displayed lists were replaced on every status frame, including identical
+five-second history snapshots. The eight-second thread timer also called the
+initial-open path, clearing replies and toggling loading on every poll.
+Same-scope refreshes now retain the validated snapshot while loading; errors,
+revocation, room/identity changes and unavailable results still clear it.
+Unchanged catalog/history/thread/recipient projections retain their model identity.
+The message view uses keyed rows so actual additions and reaction changes update
+existing delegates without rebuilding the conversation. Background updates never
+invoke the explicit thread-reveal scroll action.
+
+The rendered thread regression verifies repeated snapshot identity, quiet loading,
+new-message delegate retention, unchanged scroll position and open-thread retention.
+Mention, thread-send and author-name checks passed. No helper or relay change and
+no production message/model turn was needed.

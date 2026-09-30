@@ -7,6 +7,27 @@ import qs.Commons
 FocusScope {
   id: root
   property var service: null
+  // Keep delegates alive across snapshots; only changed rows are updated.
+  readonly property var incomingMessages: service ? service.messages : []
+  onIncomingMessagesChanged: syncMessages()
+  ListModel { id: messageModel; dynamicRoles: true }
+  function syncMessages() {
+    var rows = incomingMessages || []
+    for (var i = 0; i < rows.length; i++) {
+      var key = rows[i].id || ("sample-" + i)
+      var found = -1
+      for (var j = i; j < messageModel.count; j++) {
+        if (messageModel.get(j).eventKey === key) { found = j; break }
+      }
+      var serialized = JSON.stringify(rows[i])
+      if (found === -1) messageModel.insert(i, {eventKey: key, payload: serialized})
+      else {
+        if (found !== i) messageModel.move(found, i, 1)
+        if (messageModel.get(i).payload !== serialized) messageModel.setProperty(i, "payload", serialized)
+      }
+    }
+    if (messageModel.count > rows.length) messageModel.remove(rows.length, messageModel.count - rows.length)
+  }
   property bool recipientPickerExpanded: false
   property bool presentationSwitchEnabled: false
   property bool windowMode: false
@@ -399,10 +420,11 @@ FocusScope {
             height: childrenRect.height
             spacing: Style.space(root.service && root.service.sampleMode ? 22 : 10)
             Repeater {
-              model: root.service ? root.service.messages : []
+              model: messageModel
               delegate: Column {
                 id: messageRow
-                required property var modelData
+                required property string payload
+                readonly property var modelData: JSON.parse(payload)
                 width: parent.width
                 height: childrenRect.height
                 spacing: Style.space(6)

@@ -14,6 +14,26 @@ ShellRoot {
   }
   property var crowdedFrame: null
   property string openedRoot: ""
+  property var retainedToggle: null
+  property real retainedScroll: 0
+  Timer {
+    id: checkQuietUpdate
+    interval: 100
+    onTriggered: {
+      try {
+        var scroll = test.findNamed(view, "buzzHistoryScroll", [])[0]
+        var toggles = test.findNamed(view, "buzzThreadToggle", [])
+        if (toggles.indexOf(test.retainedToggle) === -1)
+          throw new Error("Incoming message rebuilt existing delegates")
+        if (Math.abs(scroll.contentItem.contentY - test.retainedScroll) > 1)
+          throw new Error("Incoming message moved the reader's scroll position")
+        if (service.threadRootId !== test.openedRoot || service.threadState !== "snapshot")
+          throw new Error("Incoming message interrupted the open thread")
+        console.log("PASS: replies visible; quiet snapshots and incoming messages preserve delegates, scroll, and open thread")
+        Qt.quit()
+      } catch (error) { console.error(error); Qt.exit(1) }
+    }
+  }
   function findNamed(item, name, found) {
     if (item.objectName === name) found.push(item)
     for (var i = 0; i < item.children.length; i++) findNamed(item.children[i], name, found)
@@ -65,8 +85,15 @@ ShellRoot {
             + " contentHeight=" + scroll.contentItem.contentHeight
             + " available=" + scroll.availableHeight + " viewport=" + scroll.contentItem.height
             + " rowY=" + details.parent.y + " detailsY=" + details.y)
-        console.log("PASS: thread root scope, stale results, invalid reply rejection, and expanded replies in viewport")
-        Qt.quit()
+        test.retainedToggle = test.findNamed(view, "buzzThreadToggle", []).filter(function(item) {
+          return item.parent.modelData.id === test.openedRoot
+        })[0]
+        test.retainedScroll = scroll.contentItem.contentY
+        if (!service.acceptFrame(JSON.stringify(test.crowdedFrame))) throw new Error("Repeated snapshot rejected")
+        test.crowdedFrame.status.history.rows.push({id:"0".repeat(64),author:"a".repeat(64),time:102,
+          text:"New incoming message",edited:false,truncated:false,unavailable:false})
+        if (!service.acceptFrame(JSON.stringify(test.crowdedFrame))) throw new Error("New message snapshot rejected")
+        checkQuietUpdate.start()
       } catch (error) { console.error(error); Qt.exit(1) }
     }
   }
@@ -102,6 +129,28 @@ ShellRoot {
           throw new Error("Busy thread lookup did not retain scoped retry")
         accept(snapshot(frame(),rootId))
         if (service.threadRows.length !== 1 || service.threadState !== "snapshot") throw new Error("Reply not displayed")
+        var retainedHistory = service.historyRows
+        var retainedReplies = service.threadRows
+        var retainedCatalog = service.catalogRooms
+        accept(snapshot(frame(),rootId))
+        if (service.historyRows !== retainedHistory || service.threadRows !== retainedReplies || service.catalogRooms !== retainedCatalog)
+          throw new Error("Identical background snapshot replaced displayed models")
+        service.refreshHistory()
+        var historyLoading = snapshot(frame(),rootId)
+        historyLoading.status.history = {state:"loading",roomId:room,rows:[],hasMore:null,category:null}
+        accept(historyLoading)
+        if (service.historyRows !== retainedHistory || service.historyState !== "snapshot" || service.threadRootId !== rootId)
+          throw new Error("History refresh interrupted visible conversation")
+        accept(snapshot(frame(),rootId))
+        service.refreshThread()
+        if (service.threadState !== "snapshot" || service.threadRows !== retainedReplies)
+          throw new Error("Background refresh cleared visible replies")
+        var loading = frame()
+        loading.status.thread = {state:"loading",roomId:room,rootId:rootId,rows:[],hasMore:null,category:null}
+        accept(loading)
+        if (service.threadState !== "snapshot" || service.threadRows !== retainedReplies)
+          throw new Error("Refresh loading frame cleared visible replies")
+        accept(snapshot(frame(),rootId))
         service.openThread(rootId)
         accept(snapshot(frame(),"3".repeat(64)))
         if (service.threadRows.length || service.threadState !== "loading") throw new Error("Late foreign thread accepted")

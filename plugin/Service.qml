@@ -421,9 +421,8 @@ Item {
     historyHasMore = null
   }
   function refreshHistory() {
-    clearHistory()
     if (sampleMode || !historySupported || connection !== "authenticated" || !selectedRoom) return
-    historyState = "loading"
+    if (historyState !== "snapshot") historyState = "loading"
     send("fetch_recent", selectedRoomId)
   }
   function clearThread() {
@@ -451,7 +450,18 @@ Item {
     threadRetryGeneration = generation
     send("fetch_thread", selectedRoomId, id)
   }
-  function refreshThread() { if (threadRootId) openThread(threadRootId) }
+  function refreshThread() {
+    if (!threadRootId || pendingThreadRequestId) return
+    if (threadState !== "snapshot") { openThread(threadRootId); return }
+    // Refresh an already displayed thread without clearing it or entering loading.
+    threadRetryBudget = 2
+    threadRetryRoom = selectedRoomId
+    threadRetryRoot = threadRootId
+    threadRetryInstance = instanceId
+    threadRetryGeneration = generation
+    send("fetch_thread", selectedRoomId, threadRootId)
+  }
+  function sameProjection(before, after) { return JSON.stringify(before) === JSON.stringify(after) }
   function closeThread() { clearThread(); if (threadSupported) send("close_thread") }
   function validatedThread(value) {
     var categories = ["thread_unavailable", "thread_timeout", "thread_invalid", "thread_access_denied", "thread_completeness_unknown"]
@@ -738,7 +748,7 @@ Item {
     if (state.connection !== "authenticated") catalog = {state: "unavailable", rooms: [], category: ""}
     if (frame.generation !== generation || state.connection !== "authenticated") clearCatalog()
     var selectedBeforeCatalog = selectedRoomId
-    catalogRooms = catalog.rooms
+    if (!sameProjection(catalogRooms, catalog.rooms)) catalogRooms = catalog.rooms
     catalogState = catalog.state
     catalogCategory = catalog.category
     if (["partial", "ready"].indexOf(catalogState) !== -1
@@ -750,10 +760,12 @@ Item {
     historySupported = supportsHistory
     if (state.connection !== "authenticated" || !supportsHistory || ["loading", "unavailable"].indexOf(catalogState) !== -1) clearHistory()
     else if (history && history.roomId === selectedRoomId && selectedRoomId !== "") {
-      historyRows = history.rows
-      historyState = history.state
-      historyCategory = history.category
-      historyHasMore = history.hasMore
+      if (!(history.state === "loading" && historyState === "snapshot")) {
+        if (!sameProjection(historyRows, history.rows)) historyRows = history.rows
+        historyState = history.state
+        historyCategory = history.category
+        historyHasMore = history.hasMore
+      }
       if (history.state === "snapshot" && typeof state.identity === "string") {
         var observed = ActivityObserver.observe(activityObservation,
           incomingScope + "|" + frame.instanceId + "|" + frame.generation + "|" + selectedRoomId,
@@ -767,10 +779,14 @@ Item {
     if (!supportsThread || state.connection !== "authenticated" || historyState !== "snapshot"
         || !historyRows.some(function(row) { return row.id === root.threadRootId && !row.unavailable })) clearThread()
     else if (thread && thread.roomId === selectedRoomId && thread.rootId === threadRootId) {
-      threadRows = thread.rows
-      threadState = thread.state
-      threadCategory = thread.category
-      threadHasMore = thread.hasMore
+      // Loading frames for a same-scope refresh carry an empty row list.
+      // Keep the last validated snapshot visible until the refresh finishes.
+      if (!(thread.state === "loading" && threadState === "snapshot")) {
+        if (!sameProjection(threadRows, thread.rows)) threadRows = thread.rows
+        threadState = thread.state
+        threadCategory = thread.category
+        threadHasMore = thread.hasMore
+      }
       if (thread.state !== "loading") {
         threadRetry.stop()
         pendingThreadRequestId = ""
@@ -779,8 +795,8 @@ Item {
     if (state.connection !== "authenticated" || !supportsRecipients || ["loading", "unavailable"].indexOf(catalogState) !== -1) clearRecipients()
     else if (recipients && recipients.roomId === selectedRoomId && selectedRoomId !== "") {
       recipientsRoomId = recipients.roomId
-      recipientEntries = recipients.entries
-      agentProfiles = agents
+      if (!sameProjection(recipientEntries, recipients.entries)) recipientEntries = recipients.entries
+      if (!sameProjection(agentProfiles, agents)) agentProfiles = agents
       recipientsState = recipients.state
       recipientsCategory = recipients.category
       recipientsPartial = recipients.partial
@@ -844,7 +860,7 @@ Item {
     id: threadRetry
     interval: 300
     onTriggered: {
-      if (root.sessionFailed || root.connection !== "authenticated" || root.threadState !== "loading"
+      if (root.sessionFailed || root.connection !== "authenticated" || ["loading", "snapshot"].indexOf(root.threadState) === -1
           || root.selectedRoomId !== root.threadRetryRoom || root.threadRootId !== root.threadRetryRoot
           || root.instanceId !== root.threadRetryInstance || root.generation !== root.threadRetryGeneration
           || !root.canOpenThread(root.threadRetryRoot)) return
@@ -864,7 +880,7 @@ Item {
   Timer {
     interval: 8000
     repeat: true
-    running: root.panelOpen && root.threadState === "snapshot" && root.canOpenThread(root.threadRootId)
+    running: root.panelOpen && root.threadState === "snapshot" && !root.pendingThreadRequestId && root.canOpenThread(root.threadRootId)
     onTriggered: root.refreshThread()
   }
   Timer {
