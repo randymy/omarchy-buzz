@@ -42,6 +42,7 @@ fn selected_root(status: &mut Status, room: &str, root: &str) {
         category: None,
         next_cursor: None,
         older_state: "idle".into(),
+        live: false,
     };
     status.thread = crate::protocol::Thread {
         state: "snapshot".into(),

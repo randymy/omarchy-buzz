@@ -316,6 +316,8 @@ async fn recheck_fixture_every(first: Option<Discovery>, catalog: Duration) -> R
                                 .unwrap();
                         }
                     }
+                    // The live subscription is never primed here: polling is under test.
+                    "REQ" | "CLOSE" => {}
                     other => panic!("observer emitted unsupported request {other}"),
                 }
             }
@@ -415,6 +417,7 @@ async fn recheck_fixture_every(first: Option<Discovery>, catalog: Duration) -> R
                 interval: Duration::from_secs(2),
                 response: Duration::from_secs(1),
                 catalog,
+                ..FRESHNESS
             },
             &mut sender,
         )

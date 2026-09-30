@@ -440,6 +440,7 @@ FocusScope {
             font.bold: true
           }
           Text {
+            objectName: "buzzHistoryLabel"
             Layout.fillWidth: true
             visible: root.connected && !!root.service.selectedRoom
             text: root.service ? (root.service.sampleMode && root.service.selectedRoom ? root.service.selectedRoom.description : root.service.historyLabel) : ""

@@ -12,6 +12,7 @@ mod enrollment;
 mod history;
 mod ipc;
 mod ledger;
+mod live;
 mod protocol;
 mod query;
 #[cfg(test)]

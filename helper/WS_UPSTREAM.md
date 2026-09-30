@@ -47,3 +47,34 @@ isolated client/consumer tests pass. The official current client files are uncha
 `ebe99a46e8802b9ff20fdf6a1028ce93bdefaa43`. The patch is submitted as [draft PR #7976](https://github.com/block/buzz/pull/7976).
 It has not been merged or adopted by the installed helper; this release gate
 remains open.
+
+## Live subscription mitigation, 2026-09-30
+
+Branch `live-updates` keeps one `REQ` open for the selected room
+(`helper/src/live.rs`), which widens what the relay may send while the pinned
+client is inside `authenticate`. The helper therefore:
+
+- Sends `["CLOSE", id]` for the live subscription and marks it down before every
+  mid-session `authenticate` (the relay's `AUTH` arm in `auth.rs`). It re-arms only
+  after the exact liveness `COUNT` restores freshness and a new verified head page
+  arrives. The initial `connect_authenticated` runs before any subscription exists.
+  Sends and DM opens already use `send_raw` with `OK` matching in the observer loop,
+  never `send_event`/`wait_for_ok`, so no other upstream wait buffers frames.
+- Closes the subscription on room change, `fetch_recent`, `Retry`, shutdown and
+  every connection exit, and after more than 200 unverifiable frames in 60 s
+  (5-minute pause, polling meanwhile).
+
+What this bounds: during an `authenticate` wait only live frames already in
+flight when `CLOSE` was written can join the replay queue (the pinned relay
+deregisters the subscription before answering `CLOSED`, `handlers/close.rs:15-32`).
+Outside authentication, live frames are consumed one at a time by `next_event`;
+each is at most one Schnorr verification of an event under 64 KiB and at most one
+debounced page refetch (300 ms, 2 s when busy).
+
+What it does not bound: the upstream pre-auth `VecDeque` still has no frame or
+byte cap, transport limits are still Tungstenite's defaults, and a relay can still
+send unsolicited frames or large frames during that window. An unparseable
+`EVENT` frame still fails `next_event` and drops the connection
+(`relay_protocol_error`, explicit Retry), as any malformed frame did before. The
+unit's `MemoryMax=256M` remains the hard memory bound, and this release gate
+stays open until an upstream option such as draft PR #7976 is adopted.

@@ -668,6 +668,7 @@ impl Held {
             ),
             next_cursor: self.continuation().cloned(),
             older_state: self.older_state.into(),
+            live: false,
             rows: self
                 .older
                 .iter()

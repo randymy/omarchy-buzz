@@ -23,6 +23,8 @@ elif [[ ${1:-} == --thread-send ]]; then
   cp "$project_root/tests/ThreadSend.qml" "$preview_dir/shell.qml"
 elif [[ ${1:-} == --thread-replies ]]; then
   cp "$project_root/tests/ThreadReplies.qml" "$preview_dir/shell.qml"
+elif [[ ${1:-} == --live-updates ]]; then
+  cp "$project_root/tests/LiveUpdates.qml" "$preview_dir/shell.qml"
 elif [[ ${1:-} == --catalog-refresh-send ]]; then
   cp "$project_root/tests/CatalogRefreshSend.qml" "$preview_dir/shell.qml"
   cp "$project_root/tests/catalog_refresh_fixture.py" "$preview_dir/helper-fixture"

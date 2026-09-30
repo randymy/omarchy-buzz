@@ -292,6 +292,9 @@ pub struct History {
     /// `idle`, `loading` or `unavailable`: the latest older-page request. A
     /// failed older page never clears the rows already shown.
     pub older_state: String,
+    /// True only while the live subscription for this room is primed. Live
+    /// events only trigger refetches; rows always come from verified pages.
+    pub live: bool,
 }
 impl History {
     pub fn unavailable(room: Option<String>, category: Option<&str>) -> Self {
@@ -303,6 +306,7 @@ impl History {
             category: category.map(str::to_owned),
             next_cursor: None,
             older_state: "idle".into(),
+            live: false,
         }
     }
 }
@@ -409,7 +413,7 @@ impl Status {
     }
 }
 pub fn envelope(kind: &str, id: Option<&str>, instance: &str, s: &Status) -> serde_json::Value {
-    serde_json::json!({"version":1,"type":kind,"id":id,"instanceId":instance,"generation":s.generation,"capabilities":["connection_status","room_catalog","room_history","message_send","thread_send","room_recipients","history_auto_refresh","room_activity","agent_profiles","thread_replies","thread_summaries","dm_open","older_history"],"backendRevision":crate::compatibility::BUZZ_REVISION,"status":s})
+    serde_json::json!({"version":1,"type":kind,"id":id,"instanceId":instance,"generation":s.generation,"capabilities":["connection_status","room_catalog","room_history","message_send","thread_send","room_recipients","history_auto_refresh","room_activity","agent_profiles","thread_replies","thread_summaries","dm_open","older_history","live_updates"],"backendRevision":crate::compatibility::BUZZ_REVISION,"status":s})
 }
 pub async fn read_line<R: tokio::io::AsyncBufRead + Unpin>(
     r: &mut R,
@@ -514,7 +518,8 @@ mod state_tests {
                 "thread_replies",
                 "thread_summaries",
                 "dm_open",
-                "older_history"
+                "older_history",
+                "live_updates"
             ])
         );
         assert_eq!(v["status"]["catalog"]["state"], "unavailable");
