@@ -56,6 +56,8 @@ elif [[ ${1:-} == --catalog-refresh ]]; then
   cp "$project_root/tests/CatalogRefresh.qml" "$preview_dir/shell.qml"
 elif [[ ${1:-} == --mentions ]]; then
   cp "$project_root/tests/Mentions.qml" "$preview_dir/shell.qml"
+elif [[ ${1:-} == --identicon ]]; then
+  cp "$project_root/tests/Identicon.qml" "$preview_dir/shell.qml"
 elif [[ ${1:-} == --author-names ]]; then
   cp "$project_root/tests/AuthorNames.qml" "$preview_dir/shell.qml"
 elif [[ ${1:-} == --presentation ]]; then
