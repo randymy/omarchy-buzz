@@ -211,9 +211,21 @@ enum ConnectionExit {
     Shutdown,
     Failure(&'static str),
 }
-fn offline_command(command: Command, tx: &watch::Sender<Status>) -> bool {
+pub(crate) async fn offline_command(
+    command: Command,
+    tx: &watch::Sender<Status>,
+    setup: &crate::setup::Setup,
+) -> bool {
     match command {
         Command::Retry => return true,
+        Command::SetRelay(url, reply) => {
+            let result = crate::setup::set_relay(setup, &url).await;
+            return setup_done(result.map(|_| ()), reply, tx, setup);
+        }
+        Command::CreateIdentity(reply) => {
+            let result = crate::setup::create_identity(setup).await;
+            return setup_done(result.map(|_| ()), reply, tx, setup);
+        }
         Command::SendChecked(_, reply) => {
             let _ = reply.send(Some("send_unavailable"));
         }
@@ -233,9 +245,28 @@ fn offline_command(command: Command, tx: &watch::Sender<Status>) -> bool {
     }
     false
 }
-async fn next_retry(commands: &mut mpsc::Receiver<Command>, tx: &watch::Sender<Status>) -> bool {
+/// Publishes a saved setup change before answering, so the status frame that
+/// follows the reply already carries the new relay or public identity. A
+/// saved change then reconnects like `retry_connection`.
+fn setup_done(
+    result: Result<(), &'static str>,
+    reply: tokio::sync::oneshot::Sender<Option<&'static str>>,
+    tx: &watch::Sender<Status>,
+    setup: &crate::setup::Setup,
+) -> bool {
+    if result.is_ok() {
+        let _ = apply_loaded_config(tx, setup.load());
+    }
+    let _ = reply.send(result.err());
+    result.is_ok()
+}
+async fn next_retry(
+    commands: &mut mpsc::Receiver<Command>,
+    tx: &watch::Sender<Status>,
+    setup: &crate::setup::Setup,
+) -> bool {
     while let Some(command) = commands.recv().await {
-        if offline_command(command, tx) {
+        if offline_command(command, tx, setup).await {
             return true;
         }
     }
@@ -352,19 +383,31 @@ async fn wait_after_failure(
     backoff: &mut Backoff,
     retry: &mut mpsc::Receiver<Command>,
     tx: &watch::Sender<Status>,
+    setup: &crate::setup::Setup,
 ) -> bool {
     if let Some(delay) = backoff.delay(error) {
-        tokio::select! {
-            _=tokio::time::sleep(delay)=>true,
-            r=next_retry(retry,tx)=> { if r { backoff.reset(); true } else { false } }
+        let sleep = tokio::time::sleep(delay);
+        tokio::pin!(sleep);
+        loop {
+            // A received command is handled outside the select, so the backoff
+            // timer can never cancel a setup change halfway through.
+            let command = tokio::select! {
+                _=&mut sleep=>return true,
+                command=retry.recv()=>command,
+            };
+            let Some(command) = command else {
+                return false;
+            };
+            if offline_command(command, tx, setup).await {
+                backoff.reset();
+                return true;
+            }
         }
+    } else if next_retry(retry, tx, setup).await {
+        backoff.reset();
+        true
     } else {
-        if next_retry(retry, tx).await {
-            backoff.reset();
-            true
-        } else {
-            false
-        }
+        false
     }
 }
 // Independent timer deadlines remain effective even when a relay emits unrelated
@@ -574,6 +617,8 @@ async fn observe_inner(
             command=retry.recv()=>match command {
                 Some(Command::Retry)=> {backoff.reset(); update(tx,"connecting",None); return ConnectionExit::Retry;},
                 None=>{update(tx,"disconnected",None);return ConnectionExit::Shutdown;},
+                // Setup never replaces a working session.
+                Some(Command::SetRelay(_,reply) | Command::CreateIdentity(reply))=> {let _=reply.send(Some("setup_not_allowed"));},
                 Some(command @ (Command::Send(_) | Command::SendChecked(..)))=> {
                     let (intent,reply)=match command {Command::Send(intent)=>(intent,None),Command::SendChecked(intent,reply)=>(intent,Some(reply)),_=>unreachable!()};
                     if reply.as_ref().is_some_and(|reply|reply.is_closed()) {continue;}
@@ -1172,18 +1217,19 @@ pub async fn run(
     let mut sending_scope: Option<(Option<String>, Option<String>)> = None;
     let mut pin_origin: Option<String> = None;
     let mut relay_pin: Option<nostr::PublicKey> = None;
+    let setup = crate::setup::Setup::system();
     loop {
         // Coalesce retry requests already queued for this attempt. Only this
         // sequential task owns key lookups, including any pending prompt.
         while let Ok(command) = retry.try_recv() {
-            if offline_command(command, &tx) {
+            if offline_command(command, &tx, &setup).await {
                 backoff.reset();
             }
         }
         let c = match apply_loaded_config(&tx, config::load()) {
             Ok(c) => c,
             Err(()) => {
-                if !next_retry(&mut retry, &tx).await {
+                if !next_retry(&mut retry, &tx, &setup).await {
                     return;
                 }
                 backoff.reset();
@@ -1201,7 +1247,7 @@ pub async fn run(
         }
         if c.relay.is_none() || c.identity.is_none() {
             update(&tx, "unconfigured", None);
-            if !next_retry(&mut retry, &tx).await {
+            if !next_retry(&mut retry, &tx, &setup).await {
                 return;
             }
             backoff.reset();
@@ -1223,7 +1269,7 @@ pub async fn run(
         // its single operation to finish, then reload before any relay auth.
         let mut retry_requested = false;
         while let Ok(command) = retry.try_recv() {
-            if offline_command(command, &tx) {
+            if offline_command(command, &tx, &setup).await {
                 retry_requested = true;
             }
         }
@@ -1243,7 +1289,7 @@ pub async fn run(
                     },
                     Some(e),
                 );
-                if !next_retry(&mut retry, &tx).await {
+                if !next_retry(&mut retry, &tx, &setup).await {
                     return;
                 }
                 backoff.reset();
@@ -1251,7 +1297,7 @@ pub async fn run(
             }
             Err(_) => {
                 update(&tx, "unavailable", Some("identity_unavailable"));
-                if !next_retry(&mut retry, &tx).await {
+                if !next_retry(&mut retry, &tx, &setup).await {
                     return;
                 }
                 backoff.reset();
@@ -1264,7 +1310,7 @@ pub async fn run(
             Ok(connection) => connection,
             Err(error) => {
                 update(&tx, "disconnected", Some(error));
-                if !wait_after_failure(error, &mut backoff, &mut retry, &tx).await {
+                if !wait_after_failure(error, &mut backoff, &mut retry, &tx, &setup).await {
                     return;
                 }
                 continue;
@@ -1292,7 +1338,7 @@ pub async fn run(
             ConnectionExit::Failure(error) => {
                 drop(conn);
                 update(&tx, "disconnected", Some(error));
-                if !wait_after_failure(error, &mut backoff, &mut retry, &tx).await {
+                if !wait_after_failure(error, &mut backoff, &mut retry, &tx, &setup).await {
                     return;
                 }
             }
