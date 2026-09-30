@@ -26,6 +26,7 @@ ColumnLayout {
   property string draftRespondTo: "owner-only"
   property string draftWorkspace: ""
   property bool draftStartAtLogin: false
+  property bool draftAnswersDms: false
   // Pasted avatar art: kept on this machine only, never sent to the agent service.
   property string draftArt: ""
   property string pendingCreateArt: ""
@@ -44,6 +45,7 @@ ColumnLayout {
     draftRespondTo = source ? source.respondTo : "owner-only"
     draftWorkspace = source ? source.workspace : ""
     draftStartAtLogin = source ? source.startAtLogin : false
+    draftAnswersDms = source ? source.answersDms : false
     draftArt = source ? agents.avatarArtFor(source.id) : ""
   }
   onAgentIdChanged: load()
@@ -57,7 +59,11 @@ ColumnLayout {
   Component.onCompleted: load()
 
   readonly property var draftFields: ({name: draftName, description: draftDescription, instructions: draftInstructions,
-    harness: draftHarness, model: draftModel, rooms: draftRooms, respondTo: draftRespondTo, workspace: draftWorkspace})
+    harness: draftHarness, model: draftModel, rooms: draftRooms, respondTo: draftRespondTo, workspace: draftWorkspace,
+    answersDms: draftAnswersDms})
+  // The service stops a running agent before saving these; it runs again on Start.
+  readonly property bool stopsOnSave: !!entry && entry.unit === "active"
+    && ["harness", "workspace", "rooms", "respondTo", "answersDms"].some(function(key) { return root.changedFields.hasOwnProperty(key) })
   // Only what differs from the saved persona is sent on update.
   readonly property var changedFields: {
     if (creating || !entry) return ({})
@@ -362,6 +368,21 @@ ColumnLayout {
           onClicked: root.draftRespondTo = "mentions"
         }
       }
+      Ui.Button {
+        objectName: "buzzAgentDms"
+        text: "Answers direct messages: " + (root.draftAnswersDms ? "on" : "off")
+        tooltipText: "Also listen in direct messages opened with this agent"
+        fontSize: Style.font.caption
+        focusable: true
+        selected: root.draftAnswersDms
+        onClicked: root.draftAnswersDms = !root.draftAnswersDms
+      }
+      Caption {
+        Layout.fillWidth: true
+        text: "On: the agent listens in every room and direct message it belongs to, and answers only you in a direct message."
+        wrapMode: Text.WordWrap
+        elide: Text.ElideNone
+      }
       Caption { text: "Workspace" }
       Ui.TextField {
         id: workspaceField
@@ -389,6 +410,13 @@ ColumnLayout {
     }
   }
 
+  Caption {
+    objectName: "buzzAgentRestartNote"
+    visible: root.stopsOnSave
+    text: "Saving stops the running agent; start it again to apply."
+    wrapMode: Text.WordWrap
+    elide: Text.ElideNone
+  }
   Caption {
     objectName: "buzzAgentProblem"
     visible: text !== ""

@@ -106,7 +106,7 @@ ShellRoot {
   function persona(overrides) {
     var value = {id: agentId, name: "Fixture agent", description: "", instructions: "", harness: "codex", model: "",
       acpCommand: "buzz-acp", rooms: [roomA], respondTo: "owner-only", workspace: "/home/fixture/w", identity: "b".repeat(64),
-      enrolled: true, unit: "inactive", startAtLogin: false, published: true, lastError: null}
+      enrolled: true, unit: "inactive", startAtLogin: false, answersDms: false, published: true, lastError: null}
     return Object.assign(value, overrides || {})
   }
   function agentFrame(type, capabilities, status) {
@@ -157,6 +157,8 @@ ShellRoot {
       agentFrame("hello", ["agent_manager"], {harnesses: [{id: "codex", bundle: "ready", signedIn: true}, {id: "codex", bundle: "missing", signedIn: null}], agents: [], pending: null}),
       agentFrame("hello", ["agent_manager"], validStatus([Object.assign(persona(), {token: "x"})])),
       agentFrame("hello", ["agent_manager"], validStatus([persona({unit: "running"})])),
+      agentFrame("hello", ["agent_manager"], validStatus([persona({answersDms: "yes"})])),
+      agentFrame("hello", ["agent_manager"], validStatus([(function() { var p = persona(); delete p.answersDms; return p })()])),
       agentFrame("hello", ["agent_manager"], validStatus([persona({id: "33333333-3333-1333-8333-333333333333"})])),
       agentFrame("hello", ["agent_manager"], validStatus([persona({name: ""})])),
       agentFrame("hello", ["agent_manager"], validStatus([persona({name: "Evil\u202eagent"})])),
@@ -253,10 +255,11 @@ ShellRoot {
           test.one(view, "buzzAgentWorkspace").text = ""
           if (!test.one(view, "buzzAgentSave").enabled) throw new Error("Create disabled for a valid agent")
           // Local rules refuse what the contract forbids before anything is written.
-          var base = {name: "x", description: "", instructions: "", harness: "codex", model: "", rooms: [test.roomA], respondTo: "owner-only", workspace: ""}
+          var base = {name: "x", description: "", instructions: "", harness: "codex", model: "", rooms: [test.roomA], respondTo: "owner-only", workspace: "", answersDms: false}
           if (agents.createAgent(Object.assign({}, base, {rooms: ["99999999-9999-4999-8999-999999999999"]}))
               || agents.createAgent(Object.assign({}, base, {name: "bad\u0007"})) || agents.createAgent(Object.assign({}, base, {model: "a b"}))
               || agents.createAgent(Object.assign({}, base, {command: "sh"})) || agents.createAgent(Object.assign({}, base, {harness: "goose"}))
+              || agents.createAgent(Object.assign({}, base, {answersDms: "yes"})) || agents.updateAgent(test.agentId, {answersDms: 1})
               || agents.updateAgent(test.agentId, {}) || agents.updateAgent(test.agentId, {workspace: ""}) || agents.signIn("codex"))
             throw new Error("Invalid request passed local validation")
           test.one(view, "buzzAgentSave").clicked()
@@ -281,6 +284,18 @@ ShellRoot {
           if (test.shown(view, "buzzAgentStart").length || test.shown(view, "buzzAgentRow")[1].text !== "Created agent · not enrolled")
             throw new Error("Unenrolled agent offered Start")
           test.shown(view, "buzzAgentRow")[0].clicked()
+          // Answering direct messages: a toggle saved as one changed field.
+          var dms = test.one(view, "buzzAgentDms")
+          if (dms.text !== "Answers direct messages: off" || test.shown(view, "buzzAgentRestartNote").length)
+            throw new Error("Direct message toggle not loaded off")
+          dms.clicked()
+          if (dms.text !== "Answers direct messages: on" || !test.one(view, "buzzAgentSave").enabled)
+            throw new Error("Direct message toggle did not change the draft")
+          test.one(view, "buzzAgentSave").clicked()
+          test.stage = 20
+        } else if (test.stage === 20 && agents.requestState === "done" && agents.agent(test.agentId).answersDms === true) {
+          if (test.one(view, "buzzAgentDms").text !== "Answers direct messages: on" || test.one(view, "buzzAgentSave").enabled)
+            throw new Error("Saved direct message choice not shown")
           test.one(view, "buzzAgentStart").clicked()
           if (agents.requestState !== "working") throw new Error("Start was not sent")
           // One mutating request at a time: every other action is refused meanwhile.
@@ -293,12 +308,19 @@ ShellRoot {
         } else if (test.stage === 3 && agents.requestState === "done" && agents.agent(test.agentId).unit === "active") {
           if (test.shown(view, "buzzAgentRow")[0].text !== "Fixture agent · running" || test.shown(view, "buzzAgentStart").length)
             throw new Error("Running agent not shown")
+          // Like rooms, the choice changes how the agent is launched: saving stops it.
+          test.one(view, "buzzAgentDms").clicked()
+          if (test.one(view, "buzzAgentRestartNote").text.indexOf("stops the running agent") === -1)
+            throw new Error("Restart note not shown for a running agent")
+          test.one(view, "buzzAgentDms").clicked()
+          if (test.shown(view, "buzzAgentRestartNote").length) throw new Error("Restart note shown without a change")
           var sent = test.requests()
-          if (sent.map(function(r) { return r.type }).join(",") !== "subscribe,create_agent,create_agent,start_agent") return
+          if (sent.map(function(r) { return r.type }).join(",") !== "subscribe,create_agent,create_agent,update_agent,start_agent") return
           var created = sent[2].fields
           if (JSON.stringify(created) !== JSON.stringify({name: "Created agent", description: "", instructions: "", harness: "claude-code",
-              model: "", rooms: [test.roomB], respondTo: "owner-only", workspace: "", startAtLogin: false, acpCommand: "buzz-acp"})
-              || sent[1].id === sent[2].id || sent[3].agentId !== test.agentId)
+              model: "", rooms: [test.roomB], respondTo: "owner-only", workspace: "", answersDms: false, startAtLogin: false, acpCommand: "buzz-acp"})
+              || sent[1].id === sent[2].id || JSON.stringify(sent[3].fields) !== JSON.stringify({answersDms: true})
+              || sent[4].agentId !== test.agentId)
             throw new Error("Create or start request fields wrong: " + JSON.stringify(sent))
           test.one(view, "buzzAgentStop").clicked()
           test.stage = 4
@@ -309,7 +331,7 @@ ShellRoot {
               || !test.shown(view, "buzzHistoryScroll").length || agents.requestState !== "unknown")
             throw new Error("Malformed status did not end the agent session")
           test.validationCases()
-          console.log("PASS: Agents section lists the service's agents, edits, creates, starts and shows refusals; one request at a time; malformed frames end the session; no agent_manager hides the section; pasted avatar art is clipped, previewed, kept locally and restored, damaged avatar files fail closed")
+          console.log("PASS: Agents section lists the service's agents, edits, creates, starts and shows refusals; one request at a time; malformed frames end the session; no agent_manager hides the section; pasted avatar art is clipped, previewed, kept locally and restored, damaged avatar files fail closed; the direct message toggle round-trips and notes the restart")
           Qt.quit()
         }
       } catch (error) { console.error(error.message); Qt.exit(1) }
