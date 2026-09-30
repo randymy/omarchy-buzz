@@ -1772,3 +1772,43 @@ worst-case rows and 200 thread replies measure 818,238 bytes, under the 1 MiB bo
 Evidence is synthetic only: locked helper tests (unit, loopback NIP-98 and observer
 fixtures) and every `scripts/preview` mode, including the new `--older-history`.
 Helpers without the new `older_history` capability are read as having no cursor.
+
+## Live updates for the open room — September 30, 2026
+
+Branch `live-updates`, section C of [PAGING_LIVE_MAP.md](PAGING_LIVE_MAP.md); not
+merged, installed or run against a relay. After a verified head page for the selected
+room the helper sends one `["REQ", "omarchy-buzz-live-<uuid>", {"kinds":[9,40002,40003,5,9005,7,39005],
+"#h":[room], "since": now}]` on its authenticated socket. The pinned relay requires
+authentication and `messages:read` scope, caps a connection at 1024 subscriptions and
+checks `#h` membership (`handlers/req.rs:52-210`); `kinds` is not required for an
+`#h`-scoped WebSocket REQ (the p-gated check only guards global filters, `req.rs:232`;
+the kindless rejection Desktop notes is for its `/query` thread read) but it is sent to
+narrow traffic. Activity sampling of other rooms is unchanged.
+
+Live events are triggers, never content. An event counts only if it is signed, of a
+subscribed kind, under 64 KiB, and carries exactly one `h` equal to the room (a
+deletion or reaction without `h` must reference a row the helper holds; a thread
+summary must be signed by the pinned relay). It schedules a head refetch through the
+verified `history::fetch` path, at most one per 300 ms (2 s after more than 20 events
+in 10 s), and, if a thread is open and the event has an `e` tag, a thread refetch
+through `thread::fetch` with the `fetch_thread` scope checks. Anything else is ignored
+and counted; more than 200 in 60 s closes the subscription for five minutes. `EOSE`
+primes it; relay `CLOSED` falls back to polling and re-arms after 5 s, 30 s, then
+5 min; `NOTICE` is ignored. Before re-authenticating on a relay `AUTH` the helper sends
+`CLOSE` first (see [WS_UPSTREAM.md](../helper/WS_UPSTREAM.md)) and re-arms only after
+freshness and a new head page. Room change, `fetch_recent`, Retry, shutdown and any
+connection exit close it.
+
+While primed the head poll runs every 30 s instead of 5 s and the helper refreshes an
+open thread every 30 s itself; unprimed, the old cadence applies. `history.live` is
+true only while primed, behind the new `live_updates` capability (14 capabilities).
+The panel then reads `Live · …` and slows its thread refresh from 8 to 30 s; a
+refresh or loss of the subscription returns the old label.
+
+Evidence is synthetic only: locked helper tests (unit tests of the trigger rules and
+six loopback observer fixtures: exact REQ, one refetch per event and per burst,
+rejected frames and the flood close, CLOSE before AUTH and re-arm, CLOSED fallback and
+backoff, room change and Retry, the 30 s primed cadence, thread refetch on `e` tags and
+the periodic thread refresh), `tests/helper_smoke.py`, and every `scripts/preview`
+mode including the new `--live-updates`. Not verified: live delivery timing and
+`CLOSED` reasons of a real relay, and behaviour under a real burst.

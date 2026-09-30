@@ -64,16 +64,19 @@ the head page and re-arms the REQ (`desktop/src/features/messages/hooks.ts:407-4
 `NIP-CW.md:170`); the live feed never fills gaps. Relay allows 1024
 subscriptions per connection (`crates/buzz-relay/src/handlers/req.rs:26,74`).
 
-The helper's authenticated connection loop (`auth.rs:773-801`) sends only
-`COUNT` liveness frames and handles `Auth`/`Ok`/`Count`/`Closed`. A live REQ
-can use `conn.send_raw`; the loop needs `Event`/`Eose`/`Closed` arms with
-signature and `h` scope checks reusing `history::reduce` validators, a bounded
-queue (200 events / 256 KiB, then force `FetchRecent`), teardown and re-arm on
-the `Auth` path (`auth.rs:782-798`), and at most one channel subscription plus
-one thread subscription. Prerequisite: the vendored WebSocket client has no
-frame or byte cap on its pre-authentication replay queue
-(`helper/WS_UPSTREAM.md`; upstream draft PR #7976). Always-open live traffic
-widens exposure to that gap, so it must be fixed or explicitly accepted first.
+Implemented on branch `live-updates` (September 30, 2026; not merged or
+installed) with a narrower design than first mapped here: one subscription for the
+selected room only (no thread subscription), and live events are refetch triggers,
+never content, so no event queue is needed. A verified event (signed, subscribed
+kind, one `h` equal to the room, under 64 KiB) schedules a debounced head refetch
+through `history::fetch` and, for an open thread and an `e`-tagged event, a
+`thread::fetch`. The subscription is closed before every mid-session
+`authenticate`, on room change, `fetch_recent`, Retry and every connection exit,
+and after more than 200 unverifiable frames per minute; `CLOSED` falls back to
+polling with 5 s/30 s/5 min re-arm. While primed, polling slows to 30 s but
+remains the safety net. The owner requested this design with that mitigation;
+the upstream pre-authentication buffer itself stays unbounded and its release
+gate stays open (`helper/WS_UPSTREAM.md`, September 30 checkpoint entry).
 
 ## Order of work
 
