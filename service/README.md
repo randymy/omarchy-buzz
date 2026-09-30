@@ -38,14 +38,16 @@ rejects symlinks, partial installations, edited units, unexpected directories,
 and architecture mismatches. It stops the old helper before replacement and
 keeps copies of the managed files that already exist under
 `~/.local/share/omarchy-buzz/backups/`. The tool reloads systemd and enables
-the socket. If activation fails, it restores the old files and prior socket
+both sockets. If activation fails, it restores the old files and prior socket
 state. Both the messaging and agent-manager sockets are enabled. Upgrades from
 the earlier messaging-only installation add the agent-manager files and socket.
 Review an error before retrying; no configuration or identity is changed.
 
 Before uninstalling, stop and delete managed agents through the panel while the
 agent manager is available. Deletion stops/disables their generated units and
-keeps the identity by default; workspaces and relay membership remain. Separately
+keeps the identity and workspace by default. For enrolled agents, deletion also
+requests removal from their relay rooms; a failed removal must be resolved
+before treating deletion as complete. Separately
 configured room agents require their own removal procedure. The helper
 uninstaller does not remove per-agent units, agent bundles, or provider profiles.
 
@@ -97,8 +99,9 @@ units. Installing the manager does not install harness bundles, sign in to a
 provider, enroll an agent identity, or create and start an individual agent.
 Those operations require separate setup and explicit actions in the panel.
 
-The merged manager has synthetic test evidence, but real systemd, Secret Service,
-provider sign-in and relay acceptance are not established by that evidence. Treat
-the older installed messaging build and stock Codex room-agent results separately
-from acceptance of the new manager. Review the implementation limitations in
+Release 0.0.13 passed ARM64 CI and a recorded installed manager/bridge check.
+Creating and starting an individual agent through the panel, including real
+identity enrollment and relay publication, still require deployment acceptance.
+Treat the earlier stock Codex room-agent result separately from acceptance of
+the new manager. Review the implementation limitations in
 [AGENTS_SERVICE.md](../docs/AGENTS_SERVICE.md) before enabling individual agents.

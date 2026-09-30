@@ -20,7 +20,7 @@ Everything below this line is written for maintainers and coding agents.
 
 ## Read Me Details
 
-**Status: development preview, not yet a community release.** The manifest and helper currently report `0.0.12`; this checkout also includes the newly merged agent manager and its installation path. Earlier installed-build evidence does not validate that entire checkout. The native bar and panel provide authenticated room discovery, recent messages, a bounded reply view with thread composition, plain-text sending, and exact public-key mentions. Local activity badges cover the monitored joined rooms. A verified signed profile can identify a participant as a *self-described agent*; execution state remains unknown. Production UI never displays synthetic activity.
+**Status: development preview, not yet a community release.** The manifest and helper report `0.0.13`, including the agent manager and its installation path. ARM64 CI and an installed manager/bridge check passed; creating, enrolling and starting the first agent through the panel still need real deployment acceptance. The native bar and panel provide authenticated room discovery, recent messages, a bounded reply view with thread composition, plain-text sending, and exact public-key mentions. Local activity badges cover the monitored joined rooms. A verified signed profile can identify a participant as a *self-described agent*; execution state remains unknown. Production UI never displays synthetic activity.
 
 Open **View replies**, then **Reply in thread** to compose a reply. Room and thread drafts are kept separately. **Back to room** returns to a top-level message. A missing thread target disables sending until it can be verified again; it never silently turns your reply into a room message. Update the helper and plugin together for this feature.
 
@@ -63,7 +63,7 @@ omarchy plugin enable community.buzz --section right
 omarchy-shell shell summon community.buzz '{}'
 ```
 
-Git refuses to replace an existing destination. Keep any existing plugin of this ID; do not overwrite it. `community.buzz` is a development ID pending marketplace acceptance; no active or retired collision was found on September 30, 2026. The repository was private at that review, which blocks marketplace submission until the owner makes it public. The plugin has not been submitted to the marketplace.
+Git refuses to replace an existing destination. Keep any existing plugin of this ID; do not overwrite it. `community.buzz` is a development ID pending marketplace acceptance; no active or retired collision was found on September 30, 2026. The owner made the repository public on September 30, 2026 for marketplace submission. The plugin has not been submitted to the marketplace.
 
 Click **Buzz** to toggle the panel, then use **Close** or Escape. An optional,
 reversible [Super+B shortcut](docs/NATIVE.md) checks for conflicts before installation. Without the separately installed helper/socket, the panel shows an unavailable state. No menu entry, shortcut, service, or credentials are installed by the plugin itself. Omarchy's enable command changes its plugin configuration through the native manager.
