@@ -7,8 +7,9 @@ use crate::{config, enrollment};
 use std::{path::PathBuf, sync::Arc};
 use zeroize::Zeroizing;
 
-/// Fixed categories returned to the panel.
-pub const CATEGORIES: [&str; 7] = [
+/// Fixed categories returned to the panel (`ipc` adds none of its own).
+#[cfg(test)]
+const CATEGORIES: [&str; 7] = [
     "setup_invalid_relay",
     "identity_exists",
     "identity_unavailable",

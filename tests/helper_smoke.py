@@ -47,7 +47,7 @@ def status(frame, kind):
     assert frame["status"]["connection"] == "unconfigured", frame
     assert frame["status"]["identity"] is None, frame
     assert frame["status"]["relay"] is None, frame
-    assert frame["capabilities"] == ["connection_status", "room_catalog", "room_history", "message_send", "thread_send", "room_recipients", "history_auto_refresh", "room_activity", "agent_profiles", "thread_replies", "thread_summaries", "dm_open", "older_history", "live_updates"], frame
+    assert frame["capabilities"] == ["connection_status", "room_catalog", "room_history", "message_send", "thread_send", "room_recipients", "history_auto_refresh", "room_activity", "agent_profiles", "thread_replies", "thread_summaries", "dm_open", "older_history", "live_updates", "setup_assist"], frame
     assert frame["status"]["catalog"]["state"] == "unavailable", frame
     assert frame["status"]["catalog"]["rooms"] == [], frame
     assert frame["status"]["history"] == {
@@ -163,12 +163,40 @@ def main():
                 _, error = invalid_bridge.communicate(payload, timeout=5)
                 assert invalid_bridge.returncode != 0 and error.strip() == category, error
 
+            with socket.socket(socket.AF_UNIX) as client:
+                # Setup assist: a bad relay is refused by category and writes nothing.
+                client.settimeout(5)
+                client.connect(str(endpoint))
+                frames = Frames(client.fileno())
+                status(frames.read(), "hello")
+                for index, url in enumerate(("http://relay.invalid", "ws://relay.invalid", "wss://user@relay.invalid")):
+                    client.sendall(json.dumps({"version": 1, "id": f"relay{index}", "type": "set_relay", "url": url}).encode() + b"\n")
+                    error = frames.matching(f"relay{index}")
+                    assert error["type"] == "error" and error["category"] == "setup_invalid_relay", error
+                assert not list((base / "config").rglob("*")), "refused relay wrote configuration"
+                # No relay yet: nothing to create an identity for.
+                client.sendall(request("create0", "create_identity"))
+                error = frames.matching("create0")
+                assert error["type"] == "error" and error["category"] == "setup_invalid_relay", error
+                # A closed loopback port: saved, then identity creation fails at relay
+                # discovery before anything reaches a secret store.
+                client.sendall(json.dumps({"version": 1, "id": "relay9", "type": "set_relay", "url": "ws://127.0.0.1:1"}).encode() + b"\n")
+                reply = frames.matching("relay9")
+                assert reply["type"] == "status" and reply["status"]["relay"] == "ws://127.0.0.1:1/", reply
+                assert reply["status"]["identity"] is None and reply["status"]["connection"] == "unconfigured", reply
+                assert reply["generation"] == 2, reply
+                client.sendall(request("create1", "create_identity"))
+                error = frames.matching("create1")
+                assert error["type"] == "error" and error["category"] == "relay_unavailable", error
+                config_file = base / "config/omarchy-buzz/config.toml"
+                assert config_file.read_text() == 'relay = "ws://127.0.0.1:1/"\n', config_file.read_text()
+                assert stat.S_IMODE(config_file.stat().st_mode) == 0o600
+
             assert daemon.poll() is None, "bad clients killed daemon"
             daemon.send_signal(signal.SIGTERM)
             assert daemon.wait(timeout=5) == 0, "SIGTERM did not stop daemon cleanly"
             assert not endpoint.exists(), "standalone daemon left its socket behind"
-            assert not list((base / "config").rglob("*")), "unconfigured run wrote configuration"
-            print("PASS: unconfigured hello/status, malformed and oversized requests, bridge EOF, SIGTERM socket cleanup")
+            print("PASS: unconfigured hello/status, malformed and oversized requests, bridge EOF, setup assist refusals and relay save, SIGTERM socket cleanup")
         finally:
             for process in reversed(processes):
                 stop(process)
