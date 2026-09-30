@@ -174,6 +174,12 @@ ShellRoot {
     if (!agents.acceptFrame(agentFrame("hello", ["agent_manager"], validStatus())) || !agents.available
         || one(offlineView, "buzzAgentsHeading").text !== "Agents" || shown(offlineView, "buzzAgentsUnavailable").length)
       throw new Error("Valid agent service hello refused")
+    // A stale bundle is a documented state; its refusal category is known.
+    if (!agents.acceptFrame(agentFrame("status", ["agent_manager"], {harnesses: [{id: "codex", bundle: "stale", signedIn: true}],
+        agents: [persona()], pending: {requestId: "00000000-0000-4000-8000-000000000008", type: "start_agent", state: "failed", category: "bundle_stale"}}))
+        || !agents.bundleStale("codex") || agents.startAgent(test.agentId)
+        || agents.categorySentence("bundle_stale") !== "The harness bundle needs a refresh.")
+      throw new Error("Stale bundle status refused")
     // The service's own pending work refuses every mutation.
     var working = {requestId: "00000000-0000-4000-8000-000000000009", type: "start_agent", state: "working", category: null}
     if (!agents.acceptFrame(agentFrame("status", ["agent_manager"], validStatus(null, working))) || agents.canMutate
@@ -195,6 +201,7 @@ ShellRoot {
       agentFrame("hello", ["agent_manager"], Object.assign(validStatus(), {extra: true})),
       agentFrame("hello", ["agent_manager"], {harnesses: [{id: "goose", bundle: "ready", signedIn: true}], agents: [], pending: null}),
       agentFrame("hello", ["agent_manager"], {harnesses: [{id: "codex", bundle: "ready", signedIn: "yes"}], agents: [], pending: null}),
+      agentFrame("hello", ["agent_manager"], {harnesses: [{id: "codex", bundle: "outdated", signedIn: true}], agents: [], pending: null}),
       agentFrame("hello", ["agent_manager"], {harnesses: [{id: "codex", bundle: "ready", signedIn: true}, {id: "codex", bundle: "missing", signedIn: null}], agents: [], pending: null}),
       agentFrame("hello", ["agent_manager"], validStatus([Object.assign(persona(), {token: "x"})])),
       agentFrame("hello", ["agent_manager"], validStatus([persona({unit: "running"})])),
@@ -262,7 +269,13 @@ ShellRoot {
             throw new Error("Editor did not load the fixture's agent")
           var rooms = test.shown(view, "buzzAgentRoom")
           if (rooms.length !== 2 || !rooms[0].checked || rooms[1].checked) throw new Error("Room choices are not the verified rooms")
-          test.one(view, "buzzAgentStart")
+          // The Codex bundle's launcher is stale: Start waits for a refresh.
+          var start = test.one(view, "buzzAgentStart")
+          if (start.enabled || start.tooltipText !== "Harness bundle needs a refresh"
+              || test.one(view, "buzzAgentStatus").text !== "Harness bundle needs a refresh"
+              || test.one(view, "buzzRefreshBundle").text !== "Refresh bundle" || agents.startAgent(test.agentId)
+              || test.shown(view, "buzzAgentHarness").filter(function(b) { return b.harnessId === "codex" })[0].text !== "Codex · needs refresh")
+            throw new Error("Stale harness bundle not shown or Start not held")
           if (test.shown(view, "buzzAgentEnroll").length || test.shown(view, "buzzAgentStop").length || test.shown(view, "buzzAgentSignIn").length)
             throw new Error("Enrolled, stopped, signed-in agent offered the wrong actions")
           if (test.one(view, "buzzAgentSave").enabled) throw new Error("Save enabled with nothing changed")
@@ -337,6 +350,15 @@ ShellRoot {
         } else if (test.stage === 20 && agents.requestState === "done" && agents.agent(test.agentId).answersDms === true) {
           if (test.one(view, "buzzAgentDms").text !== "Answers direct messages: on" || test.one(view, "buzzAgentSave").enabled)
             throw new Error("Saved direct message choice not shown")
+          if (test.one(view, "buzzAgentStart").enabled) throw new Error("Start enabled for a stale bundle")
+          test.one(view, "buzzRefreshBundle").clicked()
+          if (agents.requestState !== "working" || agents.refreshBundle("codex")) throw new Error("Refresh was not sent once")
+          test.stage = 21
+        } else if (test.stage === 21 && agents.requestState === "done" && agents.harness("codex").bundle === "ready") {
+          if (test.one(view, "buzzAgentStatus").text !== "Refreshing harness bundle · done" || test.shown(view, "buzzRefreshBundle").length
+              || !test.one(view, "buzzAgentStart").enabled || test.one(view, "buzzAgentStart").tooltipText !== "")
+            throw new Error("Refreshed bundle did not release Start: " + test.one(view, "buzzAgentStatus").text)
+          if (agents.refreshBundle("codex")) throw new Error("Refresh offered for a ready bundle")
           test.one(view, "buzzAgentStart").clicked()
           if (agents.requestState !== "working") throw new Error("Start was not sent")
           // One mutating request at a time: every other action is refused meanwhile.
@@ -356,12 +378,13 @@ ShellRoot {
           test.one(view, "buzzAgentDms").clicked()
           if (test.shown(view, "buzzAgentRestartNote").length) throw new Error("Restart note shown without a change")
           var sent = test.requests()
-          if (sent.map(function(r) { return r.type }).join(",") !== "subscribe,create_agent,create_agent,update_agent,start_agent") return
+          if (sent.map(function(r) { return r.type }).join(",") !== "subscribe,create_agent,create_agent,update_agent,refresh_bundle,start_agent") return
           var created = sent[2].fields
           if (JSON.stringify(created) !== JSON.stringify({name: "Created agent", description: "", instructions: "", harness: "claude-code",
               model: "", rooms: [test.roomB], respondTo: "owner-only", workspace: "", answersDms: false, startAtLogin: false, acpCommand: "buzz-acp"})
               || sent[1].id === sent[2].id || JSON.stringify(sent[3].fields) !== JSON.stringify({answersDms: true})
-              || sent[4].agentId !== test.agentId)
+              || sent[4].harness !== "codex" || Object.keys(sent[4]).sort().join(",") !== "harness,id,instanceId,type,version"
+              || sent[5].agentId !== test.agentId)
             throw new Error("Create or start request fields wrong: " + JSON.stringify(sent))
           test.one(view, "buzzAgentStop").clicked()
           test.stage = 4
@@ -372,7 +395,7 @@ ShellRoot {
               || !test.shown(view, "buzzHistoryScroll").length || agents.requestState !== "unknown")
             throw new Error("Malformed status did not end the agent session")
           test.validationCases()
-          console.log("PASS: Agents section lists the service's agents, edits, creates, starts and shows refusals; one request at a time; malformed frames end the session; no agent_manager hides the section; pasted avatar art is clipped, previewed, kept locally and restored, colored art from a file is previewed, brightened, saved and cleared, damaged avatar files fail closed; the direct message toggle round-trips and notes the restart")
+          console.log("PASS: Agents section lists the service's agents, edits, creates, starts and shows refusals; one request at a time; malformed frames end the session; no agent_manager hides the section; pasted avatar art is clipped, previewed, kept locally and restored, colored art from a file is previewed, brightened, saved and cleared, damaged avatar files fail closed; the direct message toggle round-trips and notes the restart; a stale harness bundle holds Start until Refresh bundle makes it ready")
           Qt.quit()
         }
       } catch (error) { console.error(error.message); Qt.exit(1) }

@@ -96,6 +96,7 @@ ColumnLayout {
   readonly property bool canSave: !!agents && (creating || !!entry)
     && (creating || serviceChanged ? agents.canMutate && problem === "" : artChanged)
   readonly property var harnessState: agents ? agents.harness(entry ? entry.harness : draftHarness) : null
+  readonly property bool bundleStale: !!harnessState && harnessState.bundle === "stale"
 
   function save() {
     if (!canSave) return false
@@ -334,7 +335,8 @@ ColumnLayout {
             objectName: "buzzAgentHarness"
             readonly property string harnessId: modelData
             readonly property var harnessEntry: root.agents.harness(modelData)
-            text: root.agents.harnessLabel(modelData) + (harnessEntry && harnessEntry.bundle === "missing" ? " · not installed" : "")
+            text: root.agents.harnessLabel(modelData) + (harnessEntry && harnessEntry.bundle === "missing" ? " · not installed"
+              : harnessEntry && harnessEntry.bundle === "stale" ? " · needs refresh" : "")
             fontSize: Style.font.caption
             focusable: true
             selected: root.draftHarness === modelData
@@ -478,6 +480,7 @@ ColumnLayout {
       var parts = []
       if (root.agents.statusLabel) parts.push(root.agents.statusLabel)
       if (root.entry && root.entry.lastError) parts.push("Last error: " + root.agents.categorySentence(root.entry.lastError))
+      if (root.bundleStale) parts.push("Harness bundle needs a refresh")
       if (root.harnessState && root.harnessState.signedIn === null) parts.push(root.agents.harnessLabel(root.harnessState.id) + " sign-in state unknown")
       return parts.join(" · ")
     }
@@ -510,11 +513,23 @@ ColumnLayout {
       objectName: "buzzAgentStart"
       visible: !!root.entry && root.entry.enrolled && root.entry.unit !== "active"
       text: "Start"
+      tooltipText: root.bundleStale ? "Harness bundle needs a refresh" : ""
+      fontSize: Style.font.caption
+      focusable: true
+      enabled: !!root.agents && root.agents.canMutate && !root.bundleStale
+      opacity: enabled ? 1 : 0.5
+      onClicked: root.agents.startAgent(root.agentId)
+    }
+    Ui.Button {
+      objectName: "buzzRefreshBundle"
+      visible: root.bundleStale
+      text: "Refresh bundle"
+      tooltipText: "Replace the harness bundle's launcher scripts with the installed ones"
       fontSize: Style.font.caption
       focusable: true
       enabled: !!root.agents && root.agents.canMutate
       opacity: enabled ? 1 : 0.5
-      onClicked: root.agents.startAgent(root.agentId)
+      onClicked: root.agents.refreshBundle(root.harnessState.id)
     }
     Ui.Button {
       objectName: "buzzAgentStop"

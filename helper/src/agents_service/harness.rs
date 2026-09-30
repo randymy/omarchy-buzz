@@ -1,8 +1,14 @@
 //! Harness readiness and provider sign-in through the reviewed scripts, run
 //! with fixed argv arrays only (never a shell):
 //!
-//! - `<bundle>/launcher/agent-bundle --check <harness>` prints `ready` or
-//!   `missing`; only an exit status of 0 with `ready` counts as ready.
+//! - `<scripts>/agent-bundle --check --output <bundle> --scripts <scripts>
+//!   <harness>` prints `ready` (exit 0), `stale` (exit 3: the bundle's
+//!   `launcher/` differs from the installed scripts) or `missing`; any other
+//!   output, status, failure or timeout is `missing`. The installed checker
+//!   runs, never the bundle's own copy, which may predate the comparison.
+//! - `<scripts>/agent-bundle --refresh-launcher --output <bundle> --scripts
+//!   <scripts> <harness>` replaces only the bundle's `launcher/` files; its
+//!   outcome is read back through `--check`.
 //! - `<scripts>/agent-login --status <harness>` prints `signed-in`,
 //!   `signed-out` or `unknown`; `unknown`, any other output, a failure to run
 //!   or a timeout is reported as `null`.
@@ -74,8 +80,8 @@ pub fn login_environment(
     env
 }
 
-pub fn bundle_script(paths: &Paths, harness: &str) -> PathBuf {
-    paths.bundle(harness).join("launcher/agent-bundle")
+pub fn bundle_script(paths: &Paths) -> PathBuf {
+    paths.scripts_dir().join("agent-bundle")
 }
 pub fn login_script(paths: &Paths) -> PathBuf {
     paths.scripts_dir().join("agent-login")
@@ -85,8 +91,20 @@ fn argv(script: &Path, args: &[&str]) -> Vec<String> {
         .chain(args.iter().map(|a| (*a).to_owned()))
         .collect()
 }
+fn bundle_argv(paths: &Paths, mode: &str, harness: &str) -> Vec<String> {
+    let bundle = paths.bundle(harness);
+    let scripts = paths.scripts_dir();
+    let (bundle, scripts) = (bundle.to_string_lossy(), scripts.to_string_lossy());
+    argv(
+        &bundle_script(paths),
+        &[mode, "--output", &bundle, "--scripts", &scripts, harness],
+    )
+}
 pub fn check_argv(paths: &Paths, harness: &str) -> Vec<String> {
-    argv(&bundle_script(paths, harness), &["--check", harness])
+    bundle_argv(paths, "--check", harness)
+}
+pub fn refresh_argv(paths: &Paths, harness: &str) -> Vec<String> {
+    bundle_argv(paths, "--refresh-launcher", harness)
 }
 pub fn status_argv(paths: &Paths, harness: &str) -> Vec<String> {
     argv(&login_script(paths), &["--status", harness])
@@ -95,14 +113,23 @@ pub fn login_argv(paths: &Paths, harness: &str) -> Vec<String> {
     argv(&login_script(paths), &[harness])
 }
 
+/// Exit status of `agent-bundle --check` for a stale launcher.
+pub const STALE_EXIT: i32 = 3;
+
 /// Current readiness of both harnesses. Absent scripts report `missing`/`null`.
 pub fn inspect(paths: &Paths, spawner: &dyn Spawner) -> Vec<HarnessView> {
     HARNESSES
         .iter()
         .map(|harness| {
-            let ready = spawner.present(&bundle_script(paths, harness))
-                && matches!(spawner.output(&check_argv(paths, harness)),
-                    Ok((Some(0), out)) if out.trim_end() == "ready");
+            let bundle = if spawner.present(&bundle_script(paths)) {
+                match spawner.output(&check_argv(paths, harness)) {
+                    Ok((Some(0), out)) if out.trim_end() == "ready" => "ready",
+                    Ok((Some(STALE_EXIT), out)) if out.trim_end() == "stale" => "stale",
+                    _ => "missing",
+                }
+            } else {
+                "missing"
+            };
             let signed_in = if spawner.present(&login_script(paths)) {
                 // The printed word decides; a timeout or signal is unknown.
                 match spawner.output(&status_argv(paths, harness)) {
@@ -115,7 +142,7 @@ pub fn inspect(paths: &Paths, spawner: &dyn Spawner) -> Vec<HarnessView> {
             };
             HarnessView {
                 id: (*harness).into(),
-                bundle: if ready { "ready" } else { "missing" },
+                bundle,
                 signed_in,
             }
         })
@@ -159,11 +186,13 @@ impl Spawner for Processes {
 }
 
 /// In-memory spawner: scripts are absent unless `present` is set; outputs
-/// come from `outputs` keyed by the argv joined with spaces (exit status 0).
+/// come from `outputs` keyed by the argv joined with spaces, with the exit
+/// status from `codes` under the same key (default 0; 1 without an output).
 #[derive(Default)]
 pub struct FakeSpawner {
     pub present: Mutex<bool>,
     pub outputs: Mutex<std::collections::BTreeMap<String, String>>,
+    pub codes: Mutex<std::collections::BTreeMap<String, i32>>,
     pub calls: Mutex<Vec<Vec<String>>>,
     pub spawned: Mutex<Vec<Vec<String>>>,
     pub spawned_env: Mutex<Vec<Vec<(OsString, OsString)>>>,
@@ -174,8 +203,12 @@ impl Spawner for FakeSpawner {
     }
     fn output(&self, argv: &[String]) -> Result<(Option<i32>, String), &'static str> {
         self.calls.lock().unwrap().push(argv.to_vec());
-        match self.outputs.lock().unwrap().get(&argv.join(" ")) {
-            Some(out) => Ok((Some(0), out.clone())),
+        let key = argv.join(" ");
+        match self.outputs.lock().unwrap().get(&key) {
+            Some(out) => {
+                let code = self.codes.lock().unwrap().get(&key).copied().unwrap_or(0);
+                Ok((Some(code), out.clone()))
+            }
             None => Ok((Some(1), String::new())),
         }
     }

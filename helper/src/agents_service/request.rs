@@ -98,7 +98,7 @@ pub fn parse(bytes: &[u8]) -> Result<Request, Option<String>> {
         "delete_agent" => &["agentId", "forget"],
         "enroll_agent" | "start_agent" | "stop_agent" => &["agentId"],
         "set_start_at_login" => &["agentId", "enabled"],
-        "sign_in" => &["harness"],
+        "sign_in" | "refresh_bundle" => &["harness"],
         _ => return Err(refuse()),
     };
     let present: Vec<&str> = keys(&raw)
@@ -167,6 +167,7 @@ mod tests {
             serde_json::json!({"type":"stop_agent","agentId":AGENT}),
             serde_json::json!({"type":"set_start_at_login","agentId":AGENT,"enabled":true}),
             serde_json::json!({"type":"sign_in","harness":"codex"}),
+            serde_json::json!({"type":"refresh_bundle","harness":"claude-code"}),
         ] {
             let r = parse(&frame(extra.clone())).unwrap_or_else(|_| panic!("{extra}"));
             assert_eq!(r.id, ID);
@@ -211,6 +212,9 @@ mod tests {
             serde_json::json!({"type":"set_start_at_login","agentId":AGENT}),
             serde_json::json!({"type":"sign_in"}),
             serde_json::json!({"type":"sign_in","harness":"codex","command":"login"}),
+            serde_json::json!({"type":"refresh_bundle"}),
+            serde_json::json!({"type":"refresh_bundle","harness":"codex","scripts":"/tmp"}),
+            serde_json::json!({"type":"refresh_bundle","agentId":AGENT}),
             serde_json::json!({"type":"stop_agent","agentId":AGENT,"forget":null}),
         ] {
             assert_eq!(

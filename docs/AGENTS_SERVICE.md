@@ -61,7 +61,7 @@ Frames from the service have exactly the keys
 
 ```
 status: {
-  harnesses: [{id:"claude-code"|"codex", bundle:"ready"|"missing", signedIn:true|false|null}],
+  harnesses: [{id:"claude-code"|"codex", bundle:"ready"|"stale"|"missing", signedIn:true|false|null}],
   agents: [{id,name,description,instructions,harness,model,acpCommand,rooms,respondTo,workspace,
             identity|null, enrolled:bool, unit:"active"|"inactive"|"failed"|"unknown",
             startAtLogin:bool, answersDms:bool, published:bool, lastError:string|null}],
@@ -71,7 +71,7 @@ status: {
 
 Each agent has exactly those 17 keys; `id` is a lowercase UUID v4; `enrolled`
 is true only with a non-null `identity`; at most 16 agents. `pending.type` is
-one of the eight mutating types; `category` is non-null exactly when `state` is
+one of the nine mutating types; `category` is non-null exactly when `state` is
 `failed`. Error frames have exactly `{"version":1,"type":"error","id":<request
 UUID>,"instanceId":…,"category":…}`.
 
@@ -87,6 +87,7 @@ The target agent is `agentId` because `id` is the request UUID:
 | `enroll_agent`, `start_agent`, `stop_agent` | `agentId` |
 | `set_start_at_login` | `agentId`, `enabled` |
 | `sign_in` | `harness` |
+| `refresh_bundle` | `harness` |
 
 `update_agent` stops a running agent first only when `harness`, `workspace`,
 `rooms`, `respondTo` or `answersDms` change; other edits republish and take effect on next
@@ -97,13 +98,22 @@ keeps the identity in Secret Service unless `forget: true`. `enroll_agent` gener
 signs the NIP-OA attestation with the owner key, publishes kind 30175 persona
 and kind 30177 managed-agent records, and adds the agent to each room as the
 owner does in Desktop. `sign_in` opens a terminal running the vendor CLI login
-against the shared harness profile.
+against the shared harness profile. `refresh_bundle` (added September 30)
+replaces a harness bundle's `launcher/` files with the installed scripts
+(`agent-bundle --refresh-launcher`, see Bundles and sign-in) and re-reads
+readiness: `done` when the bundle is then `ready`, `bundle_stale` when it is
+still stale, `harness_missing` when the script is absent or the bundle is
+missing or was refused. A `stale` bundle matches its own `bundle.json` but its
+launcher differs from the installed scripts; `start_agent` refuses it with
+`bundle_stale`. Running agents keep the launcher they started with until they
+are restarted.
 
 The outcome of a request is either an error frame with its `id` (malformed or
 refused before it runs, `agent_busy`) or `status.pending` with its `requestId`
 reaching `done`/`failed`; the service then also answers with a status frame
 carrying the request `id`. The panel waits up to 60 s. Errors use the fixed
 categories `agent_invalid`, `agent_busy`, `agent_limit`, `harness_missing`,
+`bundle_stale`,
 `not_signed_in`, `enroll_failed`, `unit_failed`, `workspace_refused`,
 `relay_unavailable`. At most 16 personas. One mutating request at a time. Rooms
 are stream-room UUIDs from the helper's verified catalog.
@@ -230,8 +240,13 @@ and rooms are added again (memberships recorded under the previous owner are
 forgotten, not left).
 
 **Harness scripts** (through a spawner trait, argv only, 15 s bound):
-`<bundle>/launcher/agent-bundle --check <harness>` (exit 0 and `ready` → ready,
-else `missing`), `~/.local/share/omarchy-buzz/scripts/agent-login --status
+`~/.local/share/omarchy-buzz/scripts/agent-bundle --check --output <bundle>
+--scripts ~/.local/share/omarchy-buzz/scripts <harness>` (exit 0 and `ready` →
+ready, exit 3 and `stale` → stale, anything else → `missing`; the installed
+checker, never the bundle's own copy, which may predate the launcher
+comparison), the same script with `--refresh-launcher` in place of `--check`
+for `refresh_bundle` (its output is not read; `--check` decides the outcome),
+`~/.local/share/omarchy-buzz/scripts/agent-login --status
 <harness>` (`signed-in`/`signed-out`, anything else → `null`) and
 `~/.local/share/omarchy-buzz/scripts/agent-login <harness>` for `sign_in`
 (started without waiting, never read). `sign_in` gives the script a cleared
@@ -246,8 +261,8 @@ with `PassEnvironment=` (`XDG_RUNTIME_DIR`, `DBUS_SESSION_BUS_ADDRESS`,
 `XDG_CURRENT_DESKTOP`, `XDG_SESSION_TYPE`, `XDG_DATA_DIRS`,
 `XDG_CONFIG_DIRS`; `PATH` and `HOME` are always set for user units). A script must be an unlinked regular file owned
 by the user, executable and not group/other-writable; otherwise `missing`/`null`
-and `sign_in` answers `harness_missing`. `start_agent` rechecks both and refuses
-with `harness_missing`/`not_signed_in`.
+and `sign_in`/`refresh_bundle` answer `harness_missing`. `start_agent` rechecks
+both and refuses with `harness_missing`/`bundle_stale`/`not_signed_in`.
 
 **Other behaviour.** `start_agent` requires an enrolled, published agent,
 writes the instructions and attestation files, renders and writes the unit
@@ -280,7 +295,10 @@ round trip and refusals, request shapes, status/error key sets and the 1 MiB
 worst case, golden unit file (`testdata/agent.service`), argv and state mapping,
 fake start/stop/enable/status, enrollment against a loopback relay (exact
 events and tags, no secret material, OK/rejection/closed/timeout/refused-AUTH),
-`sign_in` refusals, and the socket protocol over a socket pair.
+`sign_in` refusals, `stale` mapping, `refresh_bundle` (argv, re-inspection,
+`bundle_stale`/`harness_missing`), `start_agent` refusing a stale bundle, and
+the socket protocol over a socket pair (including `agent_busy` for
+`refresh_bundle`).
 `tests/agents_smoke.py <binary>` runs the real daemon and bridge in fake mode in
 private directories (use a short `TMPDIR` such as `/tmp`: Unix socket paths are
 limited to 108 bytes).
@@ -290,8 +308,12 @@ limited to 108 bytes).
    and package the helper as in `service/README.md`.
 2. Extend `scripts/helper-install` (separately reviewed) to install
    `omarchy-buzz-agents.service` and `omarchy-buzz-agents.socket` into
-   `~/.config/systemd/user/` and to place the reviewed `agent-login` script in
-   `~/.local/share/omarchy-buzz/scripts/` (owner-only writable, executable).
+   `~/.config/systemd/user/` and to place the reviewed `agent-login`,
+   `agent-bundle` and launcher scripts (`room-agent`, `room-sandbox`,
+   `room-agent-entry`, `room-codex`, `room-codex-acp`, `room-claude`,
+   `room-claude-acp`) in `~/.local/share/omarchy-buzz/scripts/` (owner-only
+   writable, executable). The service runs that `agent-bundle` for readiness
+   and `refresh_bundle`: without it every bundle reads `missing`.
 3. Install the harness bundles under `~/.local/share/omarchy-buzz/agent-<harness>/`
    (with `launcher/room-agent` and `launcher/agent-bundle`).
 4. `systemctl --user daemon-reload` and
@@ -445,16 +467,48 @@ updater is off (`DISABLE_AUTOUPDATER=1`); the bundle is read-only inside.
 Updating any pin is a reviewed source change followed by a new bundle.
 
 `bundle.json` records `harness`, plugin revision, Buzz revision and
-provenance, `versions`, `entrypoints`, and `files` (SHA-256, size and mode of
-every file). `agent-bundle <harness> --check [--output DIR]` prints `ready`
-(exit 0) or `missing` (exit 1, `{"error": category}` on stderr:
-`bundle_missing`, `bundle_manifest_invalid`, `bundle_harness_mismatch`,
-`bundle_file_missing`, `bundle_hash_mismatch`, `bundle_unexpected_file`,
-`bundle_link_refused`); unknown harness exits 2 with `harness_unknown`. It
-hashes the whole bundle (about 0.5 s warm for 600 MB). The service calls
-`<bundle>/launcher/agent-bundle <harness> --check` for `harnesses[].bundle`
-(a missing directory is `missing` without calling it). The manifest is
-self-recorded: it detects changes, not a forged bundle.
+provenance, `versions`, `entrypoints`, `scriptSources` (SHA-256 of each source
+script copied at assembly: `room-agent-entry`, the two wrappers and the four
+launcher scripts; bundles assembled before September 30 evening lack it) and
+`files` (SHA-256, size and mode of every file).
+
+`agent-bundle <harness> --check [--output DIR] [--scripts DIR]` prints `ready`
+(exit 0), `stale` (exit 3, `{"error": "launcher_outdated"}` on stderr) or
+`missing` (exit 1, `{"error": category}` on stderr: `bundle_missing`,
+`bundle_manifest_invalid`, `bundle_harness_mismatch`, `bundle_file_missing`,
+`bundle_hash_mismatch`, `bundle_unexpected_file`, `bundle_link_refused`,
+`launcher_source_missing` when no scripts directory can be found); unknown
+harness exits 2 with `harness_unknown`. It first checks the bundle against its
+own `bundle.json`; a difference outside `launcher/` is `missing`, a difference
+inside `launcher/` (or a leftover `.launcher-refresh-*` directory) is `stale`.
+It then compares every `launcher/` file with the same-named file in the scripts
+directory: `--scripts`, else `~/.local/share/omarchy-buzz/scripts` when it
+exists, else the checkout's `scripts/` when run from a checkout (never the
+bundle's own `launcher/`). A difference, a launcher file missing on either
+side, or a launcher set other than `room-agent`, `room-sandbox`, `agent-login`,
+`agent-bundle` is `stale`. It hashes the whole bundle (about 0.5 s warm for
+600 MB). The manifest is self-recorded: it detects changes, not a forged
+bundle. `bin/room-agent-entry` and the `bin/` wrappers are script copies too,
+but are not compared or refreshed (a change to them still needs a new bundle).
+
+`agent-bundle <harness> --refresh-launcher [--output DIR] [--scripts DIR]`
+replaces only `launcher/` (the four launcher scripts, as assembly copies them,
+mode 0755) and rewrites their `files` entries, `scriptSources` entries and
+`launcherRefreshedAt` in `bundle.json`; adapters, Node, CLIs, `bin/` and
+profiles are never touched. It refuses (exit 1, category on stderr) a missing
+bundle, any difference from `bundle.json` outside `launcher/`
+(`bundle_hash_mismatch` etc.), and an unsafe script source
+(`launcher_source_unsafe`: the scripts directory or a script is a link, not
+owned by the user, or group/other-writable; `launcher_source_missing`). Each
+script is read through one `O_NOFOLLOW` descriptor and checked with `fstat`.
+The new `launcher/` and `bundle.json` are written and fsynced in
+`<bundle>/.launcher-refresh-*/`, `launcher/` is swapped in with one
+`renameat2(RENAME_EXCHANGE)`, then `bundle.json` is replaced with one rename
+and the staging directory (holding the old launcher) is removed. An
+interruption between the two renames leaves only launcher differences, which
+`--check` reports as `stale` and the next refresh repairs (it removes leftover
+staging directories first). On success it prints the new `--check` word
+(`ready`, or `stale` with exit 3 if the scripts changed meanwhile).
 
 ### Subscription login
 

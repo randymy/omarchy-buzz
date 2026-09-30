@@ -51,7 +51,7 @@ def agents_service():
     instance = "agents-service-fixture"
     record = {"requests": []}
     harnesses = [{"id": "claude-code", "bundle": "ready", "signedIn": False},
-                 {"id": "codex", "bundle": "ready", "signedIn": True}]
+                 {"id": "codex", "bundle": "stale", "signedIn": True}]
     agents = [{"id": AGENT, "name": "Fixture agent", "description": "Synthetic persona", "instructions": "Answer briefly.",
                "harness": "codex", "model": "", "acpCommand": "buzz-acp", "rooms": [ROOM_A], "respondTo": "owner-only",
                "workspace": "/home/fixture/.local/state/omarchy-buzz-room-workspaces/" + AGENT, "identity": "b" * 64,
@@ -114,8 +114,14 @@ def agents_service():
             working(request)
             agents[0]["answersDms"] = True
             done(request)
+        elif kind == "refresh_bundle":
+            assert sorted(request) == ["harness", "id", "instanceId", "type", "version"] and request["harness"] == "codex"
+            working(request)
+            harnesses[1]["bundle"] = "ready"
+            done(request)
         elif kind == "start_agent":
             assert sorted(request) == ["agentId", "id", "instanceId", "type", "version"] and request["agentId"] == AGENT
+            assert harnesses[1]["bundle"] == "ready", "start sent for a stale bundle"
             working(request)
             agents[0]["unit"] = "active"
             done(request)

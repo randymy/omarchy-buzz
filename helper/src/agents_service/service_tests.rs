@@ -845,16 +845,156 @@ async fn harness_status_comes_from_the_reviewed_scripts() {
     assert_eq!(h[0].id, "claude-code");
     assert_eq!((h[0].bundle, h[0].signed_in), ("ready", Some(true)));
     assert_eq!((h[1].bundle, h[1].signed_in), ("missing", None));
-    let bundle = f
-        .home
-        .paths
-        .data
-        .join("omarchy-buzz/agent-claude-code/launcher/agent-bundle");
+    // The installed checker runs, never the bundle's own copy.
+    let data = &f.home.paths.data;
     assert!(f.spawner.calls.lock().unwrap().contains(&vec![
-        bundle.to_str().unwrap().to_string(),
+        data.join("omarchy-buzz/scripts/agent-bundle")
+            .to_str()
+            .unwrap()
+            .to_string(),
         "--check".into(),
+        "--output".into(),
+        data.join("omarchy-buzz/agent-claude-code")
+            .to_str()
+            .unwrap()
+            .to_string(),
+        "--scripts".into(),
+        data.join("omarchy-buzz/scripts")
+            .to_str()
+            .unwrap()
+            .to_string(),
         "claude-code".into()
     ]));
+}
+
+/// Makes `harness`'s check print `word` with `code`, as `agent-bundle` does.
+fn bundle_state(f: &Fixture, harness: &str, word: &str, code: i32) {
+    let key = super::harness::check_argv(&f.home.paths, harness).join(" ");
+    f.spawner
+        .outputs
+        .lock()
+        .unwrap()
+        .insert(key.clone(), format!("{word}\n"));
+    f.spawner.codes.lock().unwrap().insert(key, code);
+}
+fn bundle_of(f: &Fixture, harness: &str) -> &'static str {
+    f.service
+        .snapshot()
+        .harnesses
+        .into_iter()
+        .find(|h| h.id == harness)
+        .unwrap()
+        .bundle
+}
+
+#[tokio::test]
+async fn stale_launchers_are_reported_only_with_the_stale_exit_status() {
+    let f = fixture(UNREACHABLE);
+    f.ready("codex");
+    bundle_state(&f, "codex", "stale", 3);
+    f.service.inspect_harnesses().await;
+    assert_eq!(bundle_of(&f, "codex"), "stale");
+    // `stale` with another status, or another word with status 3, is missing.
+    for (word, code) in [("stale", 0), ("stale", 1), ("ready", 3), ("missing", 3)] {
+        bundle_state(&f, "codex", word, code);
+        f.service.inspect_harnesses().await;
+        assert_eq!(bundle_of(&f, "codex"), "missing", "{word} {code}");
+    }
+    bundle_state(&f, "codex", "ready", 0);
+    f.service.inspect_harnesses().await;
+    assert_eq!(bundle_of(&f, "codex"), "ready");
+}
+
+#[tokio::test]
+async fn refresh_bundle_runs_the_installed_script_and_reports_the_result() {
+    let f = fixture(UNREACHABLE);
+    let refused = f.request(serde_json::json!({"type":"refresh_bundle","harness":"bash"}));
+    assert_eq!(
+        f.service
+            .execute(&refused, f.service.begin().unwrap())
+            .await,
+        Err("agent_invalid")
+    );
+    // Without the installed script nothing runs.
+    assert_eq!(
+        f.run(serde_json::json!({"type":"refresh_bundle","harness":"codex"}))
+            .await,
+        Err("harness_missing")
+    );
+    assert!(f.spawner.calls.lock().unwrap().is_empty());
+    f.ready("codex");
+    bundle_state(&f, "codex", "stale", 3);
+    // The refresh did not help: still stale.
+    assert_eq!(
+        f.run(serde_json::json!({"type":"refresh_bundle","harness":"codex"}))
+            .await,
+        Err("bundle_stale")
+    );
+    let refresh = super::harness::refresh_argv(&f.home.paths, "codex");
+    let data = &f.home.paths.data;
+    assert_eq!(
+        refresh,
+        [
+            data.join("omarchy-buzz/scripts/agent-bundle")
+                .to_str()
+                .unwrap(),
+            "--refresh-launcher",
+            "--output",
+            data.join("omarchy-buzz/agent-codex").to_str().unwrap(),
+            "--scripts",
+            data.join("omarchy-buzz/scripts").to_str().unwrap(),
+            "codex",
+        ]
+    );
+    assert!(f.spawner.calls.lock().unwrap().contains(&refresh));
+    // A refresh that left the bundle ready is done; readiness was re-read after it.
+    bundle_state(&f, "codex", "ready", 0);
+    f.spawner.calls.lock().unwrap().clear();
+    f.run(serde_json::json!({"type":"refresh_bundle","harness":"codex"}))
+        .await
+        .unwrap();
+    let calls = f.spawner.calls.lock().unwrap().clone();
+    let check = super::harness::check_argv(&f.home.paths, "codex");
+    let at = |argv: &Vec<String>| calls.iter().position(|c| c == argv).unwrap();
+    assert!(at(&refresh) < at(&check));
+    assert_eq!(bundle_of(&f, "codex"), "ready");
+    // A bundle the refresh refused (for example a tampered adapter) is missing.
+    bundle_state(&f, "codex", "missing", 1);
+    assert_eq!(
+        f.run(serde_json::json!({"type":"refresh_bundle","harness":"codex"}))
+            .await,
+        Err("harness_missing")
+    );
+}
+
+#[tokio::test]
+async fn start_refuses_a_stale_bundle_until_it_is_refreshed() {
+    let _network_fixture = crate::NETWORK_TEST_LOCK.lock().await;
+    let relay = relay(|_| Answer::Accept, false).await;
+    let f = fixture(&relay.url);
+    let id = f.create(serde_json::json!({})).await.unwrap();
+    f.run(serde_json::json!({"type":"enroll_agent","agentId":id}))
+        .await
+        .unwrap();
+    f.ready("codex");
+    bundle_state(&f, "codex", "stale", 3);
+    f.control.calls.lock().unwrap().clear();
+    assert_eq!(
+        f.run(serde_json::json!({"type":"start_agent","agentId":id}))
+            .await,
+        Err("bundle_stale")
+    );
+    assert!(f.control.calls.lock().unwrap().is_empty());
+    assert!(std::fs::symlink_metadata(f.home.paths.unit_file(&id)).is_err());
+    // The refresh (here: the fake check now answers ready) lets it start.
+    bundle_state(&f, "codex", "ready", 0);
+    f.run(serde_json::json!({"type":"refresh_bundle","harness":"codex"}))
+        .await
+        .unwrap();
+    f.run(serde_json::json!({"type":"start_agent","agentId":id}))
+        .await
+        .unwrap();
+    assert!(!f.control.calls.lock().unwrap().is_empty());
 }
 
 #[tokio::test]
