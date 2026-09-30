@@ -2029,3 +2029,51 @@ or room is the next, separate step and is not built.
   membership (it may report `auth_rejected` until invited). With
   `identity_missing` (identity configured, secret absent) the panel shows only
   the enrollment note; `create_identity` would answer `identity_exists`.
+
+## ANSI art avatars — September 30, 2026
+
+Branch `ansi-avatars` (from `404db2f`); QML and tests only, not installed.
+Avatar art can now be true-color ANSI art (`.ans`) as well as the 6 × 12
+pasted text.
+
+- `plugin/AnsiArt.js` parses text into a grid of `{ch, fg}` cells. It keeps
+  SGR `0`, `39`, `30–37`/`90–97` (fixed mid-tone palette), `38;5;n` (xterm
+  256 table) and `38;2;r;g;b`, and ignores bold and background. Every other
+  escape sequence (cursor movement, `ESC[K`, OSC, private modes, truncated
+  sequences), `\r`, control, C1 and direction characters, and anything after
+  the DOS end-of-file byte (SAUCE) is removed. Input is clipped to 64 KiB, 60
+  rows and 120 columns. The stored form is the grid re-serialized with
+  truecolor SGR only (`sanitize`, idempotent). A loaded plain `.txt` file is
+  stored the same way, so a leading reset marks grid art.
+- `BuzzAvatar` draws grid art as a `Canvas` thumbnail (`thumbnail(grid, 6,
+  12)`: for each block the centre cell, or the nearest non-blank cell when
+  the centre is blank, color kept, never averaged). Each cell is a filled
+  block of 1:2 aspect inside the identicon's own 5 × 3 footprint, so message
+  slots keep one width. Message-row avatars are clickable and open a
+  profile card (`AvatarCard.qml`, `buzzAvatarCard`) that draws the full grid
+  in its own characters and colors at the largest cell size that fits (4–12
+  px wide, at most 100 × 50 cells), with the display name and key prefix.
+  Escape or a click outside closes it.
+- **Set my avatar** in the sidebar (under the relay and room-list captions,
+  shown once the helper reports an identity) takes an absolute path to a
+  `.ans` or `.txt` file. `AvatarFileLoader.qml` refuses relative paths, `..`
+  and other extensions, runs `stat` to require a regular file of at most 64
+  KiB, reads it once with `FileView`, and checks the size again. It stores
+  only the sanitized art, never the path, in the existing `avatars.json`
+  keyed by the user's 64-hex public key. **Clear** removes it. This is local
+  only until profile avatars are published to the relay: other people still
+  see the identicon. The agent editor's **Load from file…** uses the same
+  loader for an agent's art. The store now accepts persona ids and 64-hex keys
+  (at most 32 entries) and writes synchronously.
+- Evidence (synthetic only): `scripts/preview --ansi-art`, which covers the
+  parser, clipping, thumbnail determinism, `toArt`, the stored form, slot width
+  with a colored avatar, the card opening on a real click and closing on
+  Escape or an outside click, and my avatar loaded from a fixture file,
+  persisted, restored by a fresh service, cleared, and refused on unsafe paths,
+  an oversized or missing file, and damaged stored art. `--agents` covers
+  colored art in the editor. All other preview modes pass.
+- Not verified: rendering in the installed shell under real themes and
+  fonts; CP437-encoded `.ans` files (read as UTF-8, so their block
+  characters are not converted); wide (double-column) characters, which count
+  as one cell. The thumbnail of a 100 × 50 portrait at 12 × 6 cells reads
+  as a head and shoulders with the right colors, not as a recognisable face.
