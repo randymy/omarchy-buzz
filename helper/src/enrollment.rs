@@ -3,7 +3,7 @@
 use std::{future::Future, io::IsTerminal};
 use zeroize::Zeroizing;
 
-async fn check_then_store<D, S, F>(
+pub(crate) async fn check_then_store<D, S, F>(
     candidate: nostr::PublicKey,
     discovery: D,
     store: S,
@@ -20,24 +20,71 @@ where
     store().await
 }
 
+/// Where a human identity secret is kept: the helper's own Secret Service
+/// namespace (`auth::SERVICE`, account `relay|identity`). Tests use a fake.
+pub(crate) trait IdentitySecrets: Send + Sync {
+    fn store(&self, account: &str, secret: &Zeroizing<String>) -> Result<(), &'static str>;
+    fn forget(&self, account: &str) -> Result<(), &'static str>;
+}
+pub(crate) struct SecretService;
+impl IdentitySecrets for SecretService {
+    fn store(&self, account: &str, secret: &Zeroizing<String>) -> Result<(), &'static str> {
+        keyring::Entry::new(crate::auth::SERVICE, account)
+            .map_err(|_| "identity_unavailable")?
+            .set_password(secret.as_str())
+            .map_err(|_| "identity_unavailable")
+    }
+    fn forget(&self, account: &str) -> Result<(), &'static str> {
+        match keyring::Entry::new(crate::auth::SERVICE, account)
+            .map_err(|_| "identity_unavailable")?
+            .delete_credential()
+        {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(_) => Err("identity_unavailable"),
+        }
+    }
+}
+
 fn store(
-    mut original: crate::config::Config,
+    original: crate::config::Config,
     secret: Zeroizing<String>,
     identity: String,
 ) -> Result<(), &'static str> {
+    store_in(
+        &crate::config::dir()?,
+        &SecretService,
+        original,
+        secret,
+        identity,
+        false,
+    )
+}
+
+/// Writes the secret, then the public identity to the configuration in `dir`.
+/// `fresh` marks a key generated here: if the configuration cannot be saved,
+/// its secret is removed again so no unreferenced key is left behind.
+pub(crate) fn store_in(
+    dir: &std::path::Path,
+    secrets: &dyn IdentitySecrets,
+    mut original: crate::config::Config,
+    secret: Zeroizing<String>,
+    identity: String,
+    fresh: bool,
+) -> Result<(), &'static str> {
     // An enrollment prompt may stay open while another process reconfigures
     // the helper. Reject scope changes observed before writing the key.
-    let current = crate::config::load()?;
+    let current = crate::config::load_from(dir)?;
     if current.relay != original.relay || current.identity != original.identity {
         return Err("identity_scope_changed");
     }
     original.identity = Some(identity);
-    let entry = keyring::Entry::new(crate::auth::SERVICE, &crate::config::account(&original)?)
-        .map_err(|_| "identity_unavailable")?;
-    entry
-        .set_password(secret.as_str())
-        .map_err(|_| "identity_unavailable")?;
-    crate::config::save(&original)
+    let account = crate::config::account(&original)?;
+    secrets.store(&account, &secret)?;
+    let saved = crate::config::save_to(dir, &original);
+    if saved.is_err() && fresh {
+        let _ = secrets.forget(&account);
+    }
+    saved
 }
 
 pub async fn enroll() -> Result<(), &'static str> {
