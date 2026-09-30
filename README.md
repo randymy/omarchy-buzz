@@ -8,8 +8,11 @@ people, and run an AI agent that answers in a room — all native, no browser.
 It is a development preview: it works day to day, but rough edges remain and
 new-account setup happens only partly inside the plugin. The setup panel can
 save your relay address and create a new Buzz identity on this device (or you
-can enroll an identity you already have in a terminal). Joining a community
-still needs an invitation or an open room, which the panel does not do yet.
+can enroll an identity you already have in a terminal). Joining now happens in
+the panel too: paste an invitation link or code, read and accept the
+community's terms, and you are in; once connected, the panel lists the open
+rooms you can join with one click, no approval needed, and each room has a
+Leave button. An agent can also be set to answer your direct messages.
 
 The easiest way to install it is to ask the coding agent on your Omarchy
 machine (Claude Code or Codex) to install this repository, giving it the URL.
@@ -103,7 +106,9 @@ later (it reports `setup_assist`) that is not connected, the panel takes the rel
 the helper generates the key, checks it is not the relay's signing key, keeps
 the secret in its Secret Service namespace and shows only the public key, which
 can be copied. A new identity belongs to no community until an invitation or an
-open room admits it. To use an identity you already have, or with an older
+open room admits it; with a helper that reports `community_join` the panel
+redeems invitations (**Redeem**, then **I accept** for the relay's terms) and
+joins or leaves open rooms (see [JOIN_MAP.md](docs/JOIN_MAP.md)). To use an identity you already have, or with an older
 helper, configure the relay and enroll in a terminal:
 
 ```bash

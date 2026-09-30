@@ -2029,3 +2029,45 @@ or room is the next, separate step and is not built.
   membership (it may report `auth_rejected` until invited). With
   `identity_missing` (identity configured, secret absent) the panel shows only
   the enrollment note; `create_identity` would answer `identity_exists`.
+
+## Onboarding step two and agent direct messages — September 30
+
+Branch `join-and-agent-dms` (from `404db2f`); not merged, installed or run
+against a relay, systemd, Secret Service or an agent.
+
+- Joining (capability `community_join`, details in [JOIN_MAP.md](JOIN_MAP.md)):
+  `claim_invite {input}` and `accept_invite {code, policyVersion|null}` redeem
+  an invite through the relay's HTTP API (join policy, acceptance receipt,
+  NIP-98 claim), allowed while authenticated or `disconnected` with a relay and
+  identity (a non-member cannot complete NIP-42, so a new identity redeems
+  while refused and reconnects after the claim). An invite naming another relay
+  is refused; the relay is never switched. `open_rooms` lists up to 50 open
+  stream rooms from a signer-pinned unscoped 39000 read; `join_room` /
+  `leave_room` publish kind 9021 / 9022 and resolve only on the exact `OK`.
+  New status views `setup`, `openRooms`, `roomAction`; fixed categories
+  `invite_invalid`, `invite_relay_mismatch`, `invite_rejected`,
+  `invite_rate_limited`, `policy_required`, `relay_unavailable`,
+  `setup_busy`, `setup_not_allowed`, `room_not_open`, `join_rejected`,
+  `leave_rejected`. Panel: invite field and **Redeem**, the terms with
+  **I accept**, **Open rooms** with **Join** and a no-approval note,
+  **Leave** (second click confirms) beside the room's ↻.
+- Direct messages now carry a `p` tag for every other participant, as in
+  Desktop; `buzz-acp`'s mention subscription filters on `#p`.
+- Agents: persona field `answersDms` (17th agent key; a store without it loads
+  false). On, `ExecStart` carries `--answers-dms` instead of `--room`, and
+  `room-agent` omits `--channels`, so the agent's memberships (its rooms and
+  DMs opened with it) define the scope; upstream answers only the owner in a
+  DM. Changing it stops a running agent like a rooms change. Editor toggle
+  **Answers direct messages** with a one-line explanation.
+- Evidence (synthetic): locked helper tests (invite grammar and refusals,
+  loopback join-policy/accept/claim fixtures including 403/429/malformed
+  answers and the NIP-98 proof, strict open-room pages and signer pin, 9021/9022
+  through the production observer with OK, rejection and timeout, IPC gating
+  and an offline redemption, unit rendering both ways, store migration),
+  `tests/helper_smoke.py`, `tests/agents_smoke.py`, the Python launcher tests
+  (argv golden without `--channels`), and every `scripts/preview` mode,
+  including the extended `--onboarding` (invite → terms → claim → open room
+  joined and left) and `--agents` (toggle round trip).
+- Not verified: a real relay's invite endpoints, policy text, rate limit and
+  9021/9022 handling; that `buzz-acp` without `--channels` picks up a DM opened
+  after it started; an agent answering a real DM.
