@@ -33,7 +33,7 @@ Open **View replies**, then **Reply in thread** to compose a reply. Room and thr
 
 Selected-room history refreshes about five seconds after a request finishes. A separate bounded worker checks other rooms in rotation, one every five seconds after completion, up to the catalog's 20-room limit. Slow requests and catalog refreshes increase that interval. Badges count newly observed messages since the local baseline, **not Buzz-synchronized unread messages**. Opening a room's snapshot clears its local badge. Counts are session-only and reset on gaps, failures, or reconnects; missed activity is possible.
 
-**Alerts: on** enables generic notifications for new observed activity outside the visible conversation. This default-off preference survives shell restarts and applies across communities. Alerts contain no message text or room names. Initial snapshots, own messages, and edited/unavailable rows do not alert. These are best-effort hints, not a delivery guarantee.
+**Alerts: on** (Settings → Notifications) enables generic notifications for new observed activity outside the visible conversation. This default-off preference survives shell restarts and applies across communities. Alerts contain no message text or room names. Initial snapshots, own messages, and edited/unavailable rows do not alert. These are best-effort hints, not a delivery guarantee.
 
 Enrollment verifies the relay's signing identity before saving a human key and rejects the server signing key. The relay must be reachable. Update helper and plugin together: 0.0.5 adds `room_activity` and `agent_profiles` capabilities. See [ACP readiness](docs/ACP_READINESS.md) for the remaining real-agent launch blockers.
 
@@ -75,9 +75,13 @@ Git refuses to replace an existing destination. Keep any existing plugin of this
 Click **Buzz** to toggle the panel, then use **Close** or Escape. An optional,
 reversible [Super+B shortcut](docs/NATIVE.md) checks for conflicts before installation. Without the separately installed helper/socket, the panel shows an unavailable state. No menu entry, shortcut, service, or credentials are installed by the plugin itself. Omarchy's enable command changes its plugin configuration through the native manager.
 
-Use **Window** in the panel to keep Buzz open as a normal resizable desktop
-window, or **Overlay** to switch back. Both presentations share the same view,
-draft and helper. See [native window and shortcut behavior](docs/NATIVE.md).
+Your account sits at the bottom left: avatar, name and a connection dot
+(green online, amber connecting, red offline, grey not set up). Click it for
+the community, **Send feedback** and **Settings** (also Ctrl+,). Settings holds
+your avatar, **Alerts**, the **Overlay**/**Window** choice, the shortcut note
+and the version and public key. **Window** keeps Buzz open as a normal
+resizable desktop window, **Overlay** switches back; both presentations share
+the same view, draft and helper. See [native window and shortcut behavior](docs/NATIVE.md).
 
 ## Install the development helper
 
