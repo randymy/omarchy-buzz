@@ -35,6 +35,8 @@ pub struct Catalog {
     pub state: &'static str,
     pub category: &'static str,
     pub rooms: Vec<Room>,
+    /// `relay − local` seconds from this discovery's NIP-11 `Date` header.
+    pub clock_skew: Option<i64>,
 }
 
 /// `self` is the signing identity. The NIP-11 `pubkey` contact is NOT authority.
@@ -55,10 +57,8 @@ fn info_signer(bytes: &[u8], pin: Option<PublicKey>) -> Result<PublicKey, &'stat
     Ok(signer)
 }
 
-/// TLS verifies the configured origin, not an independent identity assertion.
-/// Persisting the returned signer constitutes TOFU; rotation must be explicit.
-/// Unencrypted transport is accepted only for config's loopback fixture origins.
-pub async fn relay_signer(relay: &str, pin: Option<PublicKey>) -> Result<PublicKey, &'static str> {
+/// The relay's NIP-11 location: the configured origin over HTTP(S), `/info`.
+pub(crate) fn info_url(relay: &str) -> Result<url::Url, &'static str> {
     let canonical = crate::config::canonical_relay(relay).map_err(|_| "invalid_query_origin")?;
     let mut url = url::Url::parse(&canonical).map_err(|_| "invalid_query_origin")?;
     let scheme = if url.scheme() == "wss" {
@@ -69,7 +69,12 @@ pub async fn relay_signer(relay: &str, pin: Option<PublicKey>) -> Result<PublicK
     url.set_scheme(scheme).map_err(|_| "invalid_query_origin")?;
     // Pinned Buzz exposes the same NIP-11 document at /info and GET / with Accept.
     url.set_path("/info");
-    let client = Client::builder()
+    Ok(url)
+}
+
+/// No proxy, compression, retries or redirects; short deadlines.
+pub(crate) fn info_client() -> Result<Client, &'static str> {
+    Client::builder()
         .no_proxy()
         .no_gzip()
         .no_brotli()
@@ -80,13 +85,43 @@ pub async fn relay_signer(relay: &str, pin: Option<PublicKey>) -> Result<PublicK
         .connect_timeout(Duration::from_secs(3))
         .timeout(Duration::from_secs(10))
         .build()
-        .map_err(|_| "discovery_unavailable")?;
-    let mut response = client
+        .map_err(|_| "discovery_unavailable")
+}
+
+/// TLS verifies the configured origin, not an independent identity assertion.
+/// Persisting the returned signer constitutes TOFU; rotation must be explicit.
+/// Unencrypted transport is accepted only for config's loopback fixture origins.
+pub async fn relay_signer(relay: &str, pin: Option<PublicKey>) -> Result<PublicKey, &'static str> {
+    relay_info(relay, pin).await.0
+}
+
+/// `relay_signer`, with the clock offset read from the same response's `Date`
+/// header (`clock::from_headers`) whenever a response arrived.
+pub async fn relay_info(
+    relay: &str,
+    pin: Option<PublicKey>,
+) -> (Result<PublicKey, &'static str>, Option<i64>) {
+    let (url, client) = match info_url(relay).and_then(|url| Ok((url, info_client()?))) {
+        Ok(pair) => pair,
+        Err(error) => return (Err(error), None),
+    };
+    let response = match client
         .get(url)
         .header("Accept", "application/nostr+json")
         .send()
         .await
-        .map_err(|_| "discovery_unavailable")?;
+    {
+        Ok(response) => response,
+        Err(_) => return (Err("discovery_unavailable"), None),
+    };
+    let skew = crate::clock::from_headers(response.headers());
+    (info_body(response, pin).await, skew)
+}
+
+async fn info_body(
+    mut response: reqwest::Response,
+    pin: Option<PublicKey>,
+) -> Result<PublicKey, &'static str> {
     if response.status().is_redirection() {
         return Err("discovery_redirect_rejected");
     }
@@ -444,6 +479,7 @@ pub fn reconcile(
         state: "partial",
         category: "room_catalog_partial",
         rooms,
+        clock_skew: None,
     })
 }
 
@@ -546,7 +582,8 @@ pub async fn discover(
     pin: Option<PublicKey>,
 ) -> Result<Catalog, &'static str> {
     let _permit = DISCOVERY.try_acquire().map_err(|_| "discovery_busy")?;
-    let signer = relay_signer(relay, pin).await?;
+    let (signer, clock_skew) = relay_info(relay, pin).await;
+    let signer = signer?;
     let memberships = query(relay, keys, &QueryRequest::JoinedRooms { limit: LIMIT }).await?;
     // Validate authorship before letting returned IDs shape further requests.
     reconcile(
@@ -593,6 +630,7 @@ pub async fn discover(
     } else {
         "tls_origin"
     };
+    result.clock_skew = clock_skew;
     Ok(result)
 }
 

@@ -299,19 +299,22 @@ async fn loopback_info_uses_info_without_credentials_and_rejects_redirect() {
             let response = if redirect {
                 "HTTP/1.1 302 Found\r\nLocation: https://example.invalid/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".into()
             } else {
+                // The same response's `Date` measures the clock offset.
                 format!(
-                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    "HTTP/1.1 200 OK\r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                     payload.len(),
                     payload
                 )
             };
             stream.write_all(response.as_bytes()).await.unwrap();
         });
-        let result = relay_signer(&origin, Some(relay)).await;
+        let (result, skew) = relay_info(&origin, Some(relay)).await;
         if redirect {
             assert_eq!(result.unwrap_err(), "discovery_redirect_rejected");
+            assert_eq!(skew, None);
         } else {
             assert_eq!(result.unwrap(), relay);
+            assert_eq!(skew, Some(-crate::clock::BOUND));
         }
         tokio::time::timeout(Duration::from_secs(3), task)
             .await
