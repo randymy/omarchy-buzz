@@ -597,7 +597,8 @@ impl Held {
     fn next(&self) -> Option<&Cursor> {
         let head = self.head.as_ref()?;
         if self.pages == 0 {
-            head.next_cursor.as_ref()
+            // `reduce` guarantees `has_more` exactly when a cursor is present.
+            head.next_cursor.as_ref().filter(|_| head.has_more)
         } else {
             self.tail.as_ref()
         }
