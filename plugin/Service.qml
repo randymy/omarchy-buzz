@@ -173,6 +173,18 @@ Item {
   property bool recipientsPartial: false
   property string pendingRecipientsRequestId: ""
   property var submissionMentions: []
+  // Keys a send from the active composer notifies: the explicit choices, then
+  // hand-typed names resolved against this room's roster, at most 20 in all.
+  readonly property var typedMentions: resolveTypedMentions(draftText)
+  readonly property var outgoingMentions: {
+    var keys = selectedRecipients.slice()
+    typedMentions.forEach(function(key) { if (keys.indexOf(key) === -1 && keys.length < 20) keys.push(key) })
+    return keys
+  }
+  readonly property string outgoingMentionNames: outgoingMentions.map(function(key) {
+    var entry = recipientEntries.find(function(item) { return item.key === key })
+    return entry && entry.name && entry.name.trim() ? entry.name.trim() : key.slice(0, 12) + "…"
+  }).join(", ")
   readonly property bool recipientPickerLocked: deliveryState === "sending" || deliveryState === "unknown" || deliveryState === "rejected" || deliveryCategory === "send_request_reused"
   readonly property string recipientsLabel: recipientsState === "loading" ? "Loading recipients" : recipientsState === "snapshot" ? (recipientsPartial ? "Partial recipient list · " : "Room recipients · ") + recipientEntries.length : "Recipients unavailable"
 
@@ -470,6 +482,44 @@ Item {
     recipients[scope] = (recipients[scope] || []).filter(function(key) { return !removed.some(function(item) { return item.key === key }) })
     recipientDrafts = recipients
   }
+  // A hand-typed `@name` notifies someone only when it cannot mean anyone else.
+  // At an `@` that starts a word (same boundaries as picker tokens), take the
+  // longest roster form that follows, compared case-insensitively and ending at
+  // a word boundary. A form is an entry's trimmed name, or that name with its
+  // spaces removed or replaced by dashes. It resolves only if exactly one key
+  // has it; an ambiguous longest form resolves nothing at that position. Only
+  // this room's verified roster snapshot is used.
+  function resolveTypedMentions(text) {
+    if (!recipientsSupported || recipientsState !== "snapshot" || recipientsRoomId !== selectedRoomId || selectedRoomId === ""
+        || typeof text !== "string" || text.indexOf("@") === -1) return []
+    var forms = new Map()
+    recipientEntries.forEach(function(entry) {
+      var name = (entry.name || "").trim().toLowerCase()
+      if (!name) return
+      var variants = [name, name.replace(/\s+/g, ""), name.replace(/\s+/g, "-")]
+      variants.forEach(function(form) {
+        var keys = forms.get(form) || []
+        if (keys.indexOf(entry.key) === -1) keys.push(entry.key)
+        forms.set(form, keys)
+      })
+    })
+    var names = Array.from(forms.keys()).sort(function(a, b) { return b.length - a.length })
+    var found = []
+    for (var at = text.indexOf("@"); at !== -1; at = text.indexOf("@", at + 1)) {
+      if (at > 0 && !/[\s([{,;:]/.test(text[at - 1])) continue
+      for (var i = 0; i < names.length; i++) {
+        var form = names[i]
+        // A name whose lower case changes length never matches: fail closed.
+        if (text.substr(at + 1, form.length).toLowerCase() !== form) continue
+        var after = text[at + 1 + form.length] || ""
+        if (after && !/[\s.,!?;:)\]}]/.test(after)) continue
+        var keys = forms.get(form)
+        if (keys.length === 1 && found.indexOf(keys[0]) === -1) found.push(keys[0])
+        break
+      }
+    }
+    return found
+  }
   function insertMention(key, start, end) {
     if (recipientPickerLocked || recipientsState !== "snapshot" || recipientsRoomId !== selectedRoomId
         || !Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end > draftText.length || start >= end
@@ -527,12 +577,12 @@ Item {
   }
   function prepareSubmission() {
     if (!canSend) return null
-    if (!submissionId || submissionRoom !== selectedRoomId || submissionRoot !== replyRootId || submissionText !== draftText || JSON.stringify(submissionMentions) !== JSON.stringify(selectedRecipients)) submissionId = correlationUuid()
+    if (!submissionId || submissionRoom !== selectedRoomId || submissionRoot !== replyRootId || submissionText !== draftText || JSON.stringify(submissionMentions) !== JSON.stringify(outgoingMentions)) submissionId = correlationUuid()
     submissionRoom = selectedRoomId
     submissionRoot = replyRootId
     submissionDraftKey = composerKey
     submissionText = draftText
-    submissionMentions = selectedRecipients.slice()
+    submissionMentions = outgoingMentions.slice()
     submissionGeneration = generation
     submissionInstance = instanceId
     deliveryState = "sending"

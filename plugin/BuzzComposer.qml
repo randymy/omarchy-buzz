@@ -144,6 +144,18 @@ ColumnLayout {
       }
     }
   }
+  Text {
+    objectName: root.fieldName + "Notifies"
+    Layout.fillWidth: true
+    visible: root.active && !!root.service && root.service.outgoingMentions.length > 0
+    text: root.service ? "Notifies: " + root.service.outgoingMentionNames : ""
+    textFormat: Text.PlainText
+    wrapMode: Text.WordWrap
+    color: Color.foreground
+    opacity: 0.7
+    font.family: Style.font.family
+    font.pixelSize: Style.font.caption
+  }
   ColumnLayout {
     objectName: "buzzMentionSuggestions"
     Layout.fillWidth: true
