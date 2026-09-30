@@ -479,18 +479,18 @@ fn in_flight_replay_and_other_request_preserve_original_receipt() {
 fn distinct_requests_same_second_sign_distinct_events() {
     let (_sender, mut intent, keys, _status, path) = fixture();
     let stamp = nostr::Timestamp::from(1700000000);
-    let first = build_event(&intent, &keys, Some(stamp)).unwrap();
+    let first = build_event(&intent, &keys, &[], Some(stamp)).unwrap();
     first.verify().unwrap();
     assert!(first
         .tags
         .iter()
         .any(|t| t.as_slice() == ["omarchy-buzz-request", intent.request_id.as_str()]));
     assert_eq!(
-        build_event(&intent, &keys, Some(stamp)).unwrap().id,
+        build_event(&intent, &keys, &[], Some(stamp)).unwrap().id,
         first.id
     );
     intent.request_id = uuid::Uuid::new_v4().to_string();
-    let second = build_event(&intent, &keys, Some(stamp)).unwrap();
+    let second = build_event(&intent, &keys, &[], Some(stamp)).unwrap();
     second.verify().unwrap();
     assert_eq!(first.created_at, second.created_at);
     assert_ne!(first.id, second.id);
@@ -523,6 +523,57 @@ fn pending_uuid_binding_rejects_changed_text_mentions_or_scope() {
     changed.request_id = uuid::Uuid::new_v4().to_string();
     assert_eq!(sender.pending_error(&changed), Some("send_busy"));
     assert_eq!(sender.acknowledge(&id, true).unwrap().state, "acknowledged");
+    drop(sender);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn direct_messages_tag_every_other_participant_like_desktop() {
+    let (mut sender, mut intent, keys, mut status, path) = fixture();
+    let own = keys.public_key().to_hex();
+    let agent = Keys::generate().public_key().to_hex();
+    let friend = Keys::generate().public_key().to_hex();
+    let mut participants = vec![own.clone(), agent.clone(), friend.clone()];
+    participants.sort();
+    status.catalog.rooms[0].kind = "dm".into();
+    status.catalog.rooms[0].participants = participants;
+    // An explicit mention of a participant is not repeated.
+    status.recipients = crate::protocol::RecipientsView {
+        state: "snapshot".into(),
+        room_id: Some(intent.room.clone()),
+        entries: vec![crate::protocol::Recipient {
+            key: friend.clone(),
+            name: "friend".into(),
+        }],
+        agents: Vec::new(),
+        partial: false,
+        category: None,
+    };
+    intent.mentions = vec![friend.clone()];
+    let (_, event) = sender.prepare(intent, "ws://127.0.0.1/", &keys, &status, true, true);
+    let event = event.unwrap();
+    event.verify().unwrap();
+    let tagged: Vec<String> = event
+        .tags
+        .iter()
+        .filter(|t| t.as_slice()[0] == "p")
+        .map(|t| t.as_slice()[1].clone())
+        .collect();
+    let mut others = vec![agent, friend.clone()];
+    others.sort();
+    let expected: Vec<String> = std::iter::once(friend.clone())
+        .chain(others.into_iter().filter(|k| *k != friend))
+        .collect();
+    assert_eq!(tagged, expected);
+    assert!(!tagged.contains(&own));
+    drop(sender);
+    std::fs::remove_dir_all(path).unwrap();
+}
+#[test]
+fn stream_messages_tag_only_explicit_mentions() {
+    let (mut sender, intent, keys, status, path) = fixture();
+    let (_, event) = sender.prepare(intent, "ws://127.0.0.1/", &keys, &status, true, true);
+    assert!(!event.unwrap().tags.iter().any(|t| t.as_slice()[0] == "p"));
     drop(sender);
     std::fs::remove_dir_all(path).unwrap();
 }
