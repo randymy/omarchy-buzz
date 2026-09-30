@@ -43,6 +43,14 @@ ShellRoot {
     fresh.destroy()
     return art
   }
+  // A new reader each time: the file on disk, not a cached copy.
+  function readStore() {
+    var reader = Qt.createQmlObject('import Quickshell.Io\nFileView { blockLoading: true; printErrors: false }', test, "storeReader")
+    reader.path = avatarsFile.path
+    var text = reader.text()
+    reader.destroy()
+    return text
+  }
   function avatarCases() {
     var editor = findNamed(view, "buzzAgentEditor", [])[0]
     var field = one(view, "buzzAgentAvatarArt")
@@ -84,6 +92,18 @@ ShellRoot {
     if (service.agents.avatarArtFor(agentId) !== colored || !header[0].usesColor || !rowAvatar[0].usesColor
         || header[0].implicitWidth !== editor.artPreview.implicitWidth || freshArt(agentId) !== colored)
       throw new Error("Colored agent art not saved, shown or restored")
+    if (service.agents.avatarBrightnessFor(agentId) !== 1.5 || editor.draftBrightness !== 1.5 || header[0].brightness !== 1.5)
+      throw new Error("Colored agent art did not start at brightness 1.5")
+    // Brightness is a draft: the preview follows at once, Save keeps it.
+    var beforeThumb = JSON.stringify(editor.artPreview.thumbnail)
+    one(view, "buzzAgentAvatarBrightnessUp").clicked()
+    if (editor.draftBrightness !== 1.75 || editor.artPreview.brightness !== 1.75 || JSON.stringify(editor.artPreview.thumbnail) === beforeThumb
+        || header[0].brightness !== 1.5 || !one(view, "buzzAgentSave").enabled)
+      throw new Error("Brightness change not previewed as a draft")
+    one(view, "buzzAgentSave").clicked()
+    if (service.agents.avatarBrightnessFor(agentId) !== 1.75 || header[0].brightness !== 1.75 || rowAvatar[0].brightness !== 1.75
+        || JSON.stringify(JSON.parse(readStore()).avatars[agentId]) !== JSON.stringify({art: colored, brightness: 1.75}))
+      throw new Error("Agent brightness not saved")
     one(view, "buzzAgentAvatarPathClear").clicked()
     if (editor.draftArt !== "" || one(view, "buzzAgentAvatarArt").text !== "") throw new Error("Clear did not return to typed art")
     one(view, "buzzAgentAvatarArt").text = pastedArt
@@ -330,7 +350,7 @@ ShellRoot {
               || !test.shown(view, "buzzHistoryScroll").length || agents.requestState !== "unknown")
             throw new Error("Malformed status did not end the agent session")
           test.validationCases()
-          console.log("PASS: Agents section lists the service's agents, edits, creates, starts and shows refusals; one request at a time; malformed frames end the session; no agent_manager hides the section; pasted avatar art is clipped, previewed, kept locally and restored, colored art from a file is previewed, saved and cleared, damaged avatar files fail closed")
+          console.log("PASS: Agents section lists the service's agents, edits, creates, starts and shows refusals; one request at a time; malformed frames end the session; no agent_manager hides the section; pasted avatar art is clipped, previewed, kept locally and restored, colored art from a file is previewed, brightened, saved and cleared, damaged avatar files fail closed")
           Qt.quit()
         }
       } catch (error) { console.error(error.message); Qt.exit(1) }
