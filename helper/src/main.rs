@@ -3,6 +3,7 @@
 mod acp_relay_tests;
 mod activity;
 mod agents;
+mod agents_service;
 mod auth;
 mod catalog;
 mod compatibility;
@@ -30,11 +31,14 @@ async fn run() -> Result<(), &'static str> {
         ["daemon"]=>ipc::daemon(false).await,
         ["daemon","--keep-running"]=>ipc::daemon(true).await,
         ["ui-bridge"]=>ipc::bridge().await,
+        ["agents-daemon"]=>agents_service::daemon(false).await,
+        ["agents-daemon","--keep-running"]=>agents_service::daemon(true).await,
+        ["agents-bridge"]=>agents_service::bridge().await,
         ["--version"]=>{println!("{}",serde_json::json!({"helperVersion":env!("CARGO_PKG_VERSION"),"protocolVersion":1,"backendRevision":compatibility::BUZZ_REVISION}));Ok(())},
         ["inspect"]=>config::load().map(|c|println!("{}",serde_json::json!({"relay":c.relay,"identity":c.identity,"configured":c.relay.is_some()&&c.identity.is_some(),"helperVersion":env!("CARGO_PKG_VERSION"),"protocolVersion":1,"backendRevision":compatibility::BUZZ_REVISION}))),
         ["setup","relay",url]=>config::canonical_relay(url).and_then(|relay|{let mut c=config::load()?;if c.relay.as_deref()!=Some(&relay){c.identity=None;}c.relay=Some(relay);config::save(&c)}),
         ["setup","identity","enroll"]=>enrollment::enroll().await,
-        _=>Err("usage: omarchy-buzz daemon [--keep-running] | ui-bridge | inspect | --version | setup relay URL | setup identity enroll")
+        _=>Err("usage: omarchy-buzz daemon [--keep-running] | ui-bridge | agents-daemon [--keep-running] | agents-bridge | inspect | --version | setup relay URL | setup identity enroll")
     }
 }
 

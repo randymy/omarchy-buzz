@@ -81,13 +81,22 @@ fn category(e: &WsClientError) -> &'static str {
         _ => "relay_protocol_error",
     }
 }
-async fn connect_identity(
+pub(crate) async fn connect_identity(
     relay: &str,
     keys: &nostr::Keys,
 ) -> Result<NostrWsConnection, &'static str> {
+    connect_attested(relay, keys, None).await
+}
+/// `connect_identity`, optionally presenting a NIP-OA `auth` tag in the AUTH
+/// event (an agent key admitted through its owner).
+pub(crate) async fn connect_attested(
+    relay: &str,
+    keys: &nostr::Keys,
+    auth_tag: Option<&nostr::Tag>,
+) -> Result<NostrWsConnection, &'static str> {
     match timeout(
         Duration::from_secs(45),
-        NostrWsConnection::connect_authenticated(relay, keys, None),
+        NostrWsConnection::connect_authenticated(relay, keys, auth_tag),
     )
     .await
     {
