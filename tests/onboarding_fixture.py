@@ -3,7 +3,10 @@
 
 Answers `set_relay` and `create_identity` the way the helper does: a refusal is
 an error frame with a fixed category, success is a status frame carrying the
-new relay or public identity. No secret exists anywhere in this fixture.
+new relay or public identity. The new identity is refused by the relay (not a
+member yet); an invite is then redeemed (terms shown, accepted, claimed), the
+helper connects with no rooms, and an open room is joined and left. No secret
+exists anywhere in this fixture.
 """
 import json
 import os
@@ -13,11 +16,26 @@ import sys
 INSTANCE = "onboarding-fixture"
 IDENTITY = "5" * 64
 UUID = re.compile(r"^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$")
-CAPABILITIES = ["connection_status", "setup_assist"]
+CAPABILITIES = ["connection_status", "room_catalog", "setup_assist", "community_join"]
+CODE = "v2.AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+OPEN = {"id": "aaaaaaaa-0000-4000-8000-00000000000a", "name": "welcome", "description": "Say hello", "kind": "stream"}
+TERMS = "Be kind to one another."
+NO_CATALOG = {"state": "unavailable", "rooms": [], "category": None}
+IDLE_SETUP = {"state": "idle", "inviteCode": None, "joinPolicy": None, "claim": None, "category": None}
+NO_OPEN = {"state": "unavailable", "rooms": [], "category": None}
+IDLE_ACTION = {"state": "idle", "action": None, "requestId": None, "roomId": None, "category": None}
 assert sys.argv[1:] == ["ui-bridge"]
 record = {"requests": []}
-status = {"connection": "unconfigured", "identity": None, "relay": None, "generation": 1, "category": None}
+status = {"connection": "unconfigured", "identity": None, "relay": None, "generation": 1, "category": None,
+          "catalog": dict(NO_CATALOG), "setup": dict(IDLE_SETUP), "openRooms": dict(NO_OPEN),
+          "roomAction": dict(IDLE_ACTION)}
 creates = 0
+leaves = 0
+
+
+def action(state, request, room, category=None):
+    return {"state": state, "action": request["type"].split("_")[0], "requestId": request["id"],
+            "roomId": room, "category": category}
 
 
 def save():
@@ -67,7 +85,54 @@ for line in sys.stdin:
         emit(request_id=request["id"])
         status.update(connection="connecting")
         emit()
-        status.update(connection="authenticated")
+        # Not a relay member yet: the relay refuses authentication.
+        status.update(connection="disconnected", category="auth_rejected")
+        emit()
+    elif kind == "claim_invite":
+        assert UUID.fullmatch(request["id"]) and sorted(request) == ["id", "input", "type", "version"], request
+        assert status["connection"] == "disconnected" and status["identity"] == IDENTITY
+        if "other.example" in request["input"]:
+            status["setup"] = {**IDLE_SETUP, "state": "failed", "category": "invite_relay_mismatch"}
+            emit()
+            refuse(request["id"], "invite_relay_mismatch")
+            continue
+        assert request["input"] == "https://fixture.example/invite/" + CODE, request
+        status["setup"] = {**IDLE_SETUP, "state": "policy", "inviteCode": CODE,
+                           "joinPolicy": {"text": TERMS, "version": "v1", "ageRequired": True, "truncated": False}}
+        emit(request_id=request["id"])
+    elif kind == "accept_invite":
+        assert UUID.fullmatch(request["id"]) and sorted(request) == ["code", "id", "policyVersion", "type", "version"], request
+        assert request["code"] == CODE and request["policyVersion"] == "v1", request
+        status["setup"] = {**IDLE_SETUP, "state": "joined", "claim": {
+            "status": "joined", "communityId": "11111111-1111-4111-8111-111111111111", "host": "fixture.example", "role": "member"}}
+        emit(request_id=request["id"])
+        status.update(connection="connecting", category=None)
+        emit()
+        status.update(connection="authenticated", catalog={"state": "partial", "rooms": [], "category": "room_catalog_partial"})
+        emit()
+    elif kind == "open_rooms":
+        assert sorted(request) == ["id", "type", "version"] and status["connection"] == "authenticated", request
+        status["openRooms"] = {"state": "snapshot", "rooms": [dict(OPEN)], "category": None}
+        emit(request_id=request["id"])
+    elif kind in ("join_room", "leave_room"):
+        assert UUID.fullmatch(request["id"]) and sorted(request) == ["id", "roomId", "type", "version"], request
+        assert request["roomId"] == OPEN["id"], request
+        status["roomAction"] = action("sending", request, OPEN["id"])
+        emit(request_id=request["id"])
+        room = {"id": OPEN["id"], "name": OPEN["name"], "description": OPEN["description"], "kind": "stream",
+                "participants": [], "hidden": False}
+        if kind == "join_room":
+            status["roomAction"] = action("acknowledged", request, OPEN["id"])
+            status["catalog"] = {"state": "partial", "rooms": [room], "category": "room_catalog_partial"}
+            status["openRooms"] = {"state": "snapshot", "rooms": [], "category": None}
+        else:
+            leaves += 1
+            if leaves == 1:
+                status["roomAction"] = action("rejected", request, OPEN["id"], "leave_rejected")
+            else:
+                status["roomAction"] = action("acknowledged", request, OPEN["id"])
+                status["catalog"] = {"state": "partial", "rooms": [], "category": "room_catalog_partial"}
+                status["openRooms"] = {"state": "snapshot", "rooms": [dict(OPEN)], "category": None}
         emit()
     elif kind in ("subscribe", "get_snapshot", "retry_connection"):
         emit(request_id=request["id"])

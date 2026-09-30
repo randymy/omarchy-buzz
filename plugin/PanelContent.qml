@@ -34,6 +34,215 @@ FocusScope {
       onClicked: if (keyRow.service) keyRow.service.copyPublicKey()
     }
   }
+  // Onboarding step two: redeem an invite (the helper parses and claims it),
+  // read and accept the community's terms, and join open rooms. Used in the
+  // setup view and in the sidebar footer.
+  component JoinCommunity: ColumnLayout {
+    id: joinBox
+    property var service: null
+    property bool showOpenRooms: false
+    Layout.fillWidth: true
+    spacing: Style.space(6)
+    Text {
+      Layout.fillWidth: true
+      text: "Join with an invite"
+      textFormat: Text.PlainText
+      elide: Text.ElideRight
+      color: Color.foreground
+      opacity: 0.6
+      font.family: Style.font.family
+      font.pixelSize: Style.font.caption
+    }
+    RowLayout {
+      Layout.fillWidth: true
+      spacing: Style.space(6)
+      Ui.TextField {
+        id: inviteField
+        objectName: "buzzInviteInput"
+        Layout.fillWidth: true
+        verticalPadding: Style.space(4)
+        maximumLength: 4096
+        placeholderText: "Invite link or code"
+        inputMethodHints: Qt.ImhUrlCharactersOnly | Qt.ImhNoPredictiveText
+        onAccepted: if (joinBox.service) joinBox.service.redeemInvite(text)
+      }
+      Ui.Button {
+        objectName: "buzzInviteRedeem"
+        text: "Redeem"
+        tooltipText: "Check this invite with your relay"
+        fontSize: Style.font.caption
+        focusable: true
+        enabled: !!joinBox.service && joinBox.service.canRedeemInvite
+        opacity: enabled ? 1 : 0.5
+        onClicked: if (joinBox.service) joinBox.service.redeemInvite(inviteField.text)
+      }
+    }
+    Text {
+      objectName: "buzzInviteStatus"
+      Layout.fillWidth: true
+      visible: text !== ""
+      text: joinBox.service ? joinBox.service.inviteLabel : ""
+      textFormat: Text.PlainText
+      wrapMode: Text.WordWrap
+      color: Color.foreground
+      font.family: Style.font.family
+      font.pixelSize: Style.font.caption
+    }
+    ColumnLayout {
+      id: policyBox
+      objectName: "buzzJoinPolicy"
+      Layout.fillWidth: true
+      spacing: Style.space(4)
+      visible: !!joinBox.service && joinBox.service.policyShown
+      readonly property var policy: joinBox.service && joinBox.service.policyShown ? joinBox.service.joinSetup.joinPolicy : null
+      Text {
+        Layout.fillWidth: true
+        text: "Joining means accepting this community's terms (version " + (policyBox.policy ? policyBox.policy.version : "") + "):"
+        textFormat: Text.PlainText
+        wrapMode: Text.WordWrap
+        color: Color.foreground
+        opacity: 0.7
+        font.family: Style.font.family
+        font.pixelSize: Style.font.caption
+      }
+      Controls.ScrollView {
+        Layout.fillWidth: true
+        Layout.preferredHeight: Math.min(Style.space(160), policyText.implicitHeight + Style.space(8))
+        clip: true
+        contentWidth: availableWidth
+        Text {
+          id: policyText
+          objectName: "buzzJoinPolicyText"
+          width: parent.width
+          text: policyBox.policy ? (policyBox.policy.text || "(No text was provided.)") : ""
+          textFormat: Text.PlainText
+          wrapMode: Text.WordWrap
+          color: Color.foreground
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+        }
+      }
+      Text {
+        Layout.fillWidth: true
+        visible: !!policyBox.policy && (policyBox.policy.truncated || policyBox.policy.ageRequired)
+        text: !policyBox.policy ? "" : (policyBox.policy.truncated ? "The text is longer than shown; the full terms are at "
+            + joinBox.service.relay.replace(/^ws/, "http").replace(/\/$/, "") + "/api/join-policy/terms. " : "")
+          + (policyBox.policy.ageRequired ? "Accepting also confirms you meet the community's minimum age." : "")
+        textFormat: Text.PlainText
+        wrapMode: Text.WordWrap
+        color: Color.foreground
+        opacity: 0.7
+        font.family: Style.font.family
+        font.pixelSize: Style.font.caption
+      }
+      Ui.Button {
+        objectName: "buzzInviteAccept"
+        text: "I accept"
+        tooltipText: "Accept these terms and join the community"
+        fontSize: Style.font.caption
+        focusable: true
+        enabled: !!joinBox.service && joinBox.service.canAcceptInvite
+        opacity: enabled ? 1 : 0.5
+        onClicked: if (joinBox.service) joinBox.service.acceptInvite()
+      }
+    }
+    ColumnLayout {
+      objectName: "buzzOpenRooms"
+      Layout.fillWidth: true
+      spacing: Style.space(2)
+      visible: joinBox.showOpenRooms && !!joinBox.service && joinBox.service.openRoomsAvailable
+      RowLayout {
+        Layout.fillWidth: true
+        spacing: Style.space(4)
+        Text {
+          Layout.fillWidth: true
+          text: "Open rooms"
+          textFormat: Text.PlainText
+          elide: Text.ElideRight
+          color: Color.foreground
+          opacity: 0.6
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+        }
+        Ui.Button {
+          objectName: "buzzOpenRoomsRefresh"
+          text: "↻"
+          tooltipText: "Refresh open rooms"
+          horizontalPadding: Style.space(6)
+          verticalPadding: Style.space(2)
+          focusable: true
+          enabled: !!joinBox.service && joinBox.service.openRoomsState !== "loading"
+          opacity: enabled ? 1 : 0.5
+          onClicked: joinBox.service.refreshOpenRooms()
+        }
+      }
+      Text {
+        Layout.fillWidth: true
+        text: "Anyone in this community can join an open room; no approval is needed."
+        textFormat: Text.PlainText
+        wrapMode: Text.WordWrap
+        color: Color.foreground
+        opacity: 0.6
+        font.family: Style.font.family
+        font.pixelSize: Style.font.caption
+      }
+      Repeater {
+        model: joinBox.service ? joinBox.service.openRooms : []
+        delegate: RowLayout {
+          required property var modelData
+          objectName: "buzzOpenRoom"
+          readonly property string roomId: modelData.id
+          Layout.fillWidth: true
+          spacing: Style.space(4)
+          Text {
+            Layout.fillWidth: true
+            text: "# " + modelData.name
+            textFormat: Text.PlainText
+            elide: Text.ElideRight
+            color: Color.foreground
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+            Controls.ToolTip.visible: openRoomHover.containsMouse && modelData.description !== ""
+            Controls.ToolTip.text: modelData.description
+            MouseArea { id: openRoomHover; anchors.fill: parent; hoverEnabled: true; acceptedButtons: Qt.NoButton }
+          }
+          Ui.Button {
+            objectName: "buzzOpenRoomJoin"
+            text: "Join"
+            tooltipText: "Join #" + modelData.name + " now; open rooms need no approval"
+            fontSize: Style.font.caption
+            focusable: true
+            enabled: !!joinBox.service && !joinBox.service.roomActionBusy
+            opacity: enabled ? 1 : 0.5
+            onClicked: joinBox.service.joinRoom(modelData.id)
+          }
+        }
+      }
+      Text {
+        objectName: "buzzOpenRoomsStatus"
+        Layout.fillWidth: true
+        visible: text !== ""
+        text: joinBox.service ? joinBox.service.openRoomsLabel : ""
+        textFormat: Text.PlainText
+        wrapMode: Text.WordWrap
+        color: Color.foreground
+        opacity: 0.7
+        font.family: Style.font.family
+        font.pixelSize: Style.font.caption
+      }
+    }
+    Text {
+      objectName: "buzzRoomActionStatus"
+      Layout.fillWidth: true
+      visible: joinBox.showOpenRooms && text !== ""
+      text: joinBox.service ? joinBox.service.roomActionLabel : ""
+      textFormat: Text.PlainText
+      wrapMode: Text.WordWrap
+      color: Color.foreground
+      font.family: Style.font.family
+      font.pixelSize: Style.font.caption
+    }
+  }
   property bool presentationSwitchEnabled: false
   property bool windowMode: false
   property alias recipientPickerExpanded: roomComposer.pickerExpanded
@@ -80,10 +289,24 @@ FocusScope {
   // New direct message: a compact picker over the open room's verified members.
   readonly property bool newDmAvailable: !!service && service.dmOpenAvailable
   property bool newDmOpen: false
+  // The sidebar's join section: always when connected without rooms, else on request.
+  property bool joinOpen: false
+  readonly property bool joinFooterShown: connected && !!service && !service.sampleMode && service.joinAvailable
+    && (service.streamRooms.length === 0 || joinOpen)
+  // Leave room: a second click within five seconds confirms, like Delete.
+  property bool leaveArmed: false
+  Timer { id: leaveDisarm; interval: 5000; onTriggered: root.leaveArmed = false }
+  function requestLeave() {
+    if (!service || !service.canLeaveRoom) return false
+    if (!leaveArmed) { leaveArmed = true; leaveDisarm.restart(); return true }
+    leaveArmed = false
+    return service.leaveRoom(service.selectedRoomId)
+  }
   onNewDmAvailableChanged: if (!newDmAvailable) newDmOpen = false
   Connections {
     target: root.service
     function onDmOpenStateChanged() { if (root.service.dmOpenState === "acknowledged") root.newDmOpen = false }
+    function onSelectedRoomIdChanged() { root.leaveArmed = false }
   }
 
   // Keep delegates alive across snapshots; only changed rows are updated.
@@ -335,6 +558,18 @@ FocusScope {
                 onClicked: root.service.selectRoom(modelData.id)
               }
             }
+            Ui.Button {
+              objectName: "buzzJoinRoomsToggle"
+              visible: root.connected && !!root.service && !root.service.sampleMode && root.service.joinAvailable
+                && root.service.streamRooms.length > 0
+              Layout.fillWidth: true
+              text: root.joinOpen ? "Hide open rooms" : "+ Join rooms"
+              tooltipText: "Open rooms and invites"
+              fontSize: Style.font.caption
+              leftAlign: true
+              focusable: true
+              onClicked: { root.joinOpen = !root.joinOpen; if (root.joinOpen) root.service.refreshOpenRooms() }
+            }
             Text {
               visible: root.service && (root.service.dmRooms.length > 0 || root.newDmAvailable)
               Layout.fillWidth: true
@@ -512,6 +747,12 @@ FocusScope {
             }
           }
         }
+        JoinCommunity {
+          objectName: "buzzJoinFooter"
+          visible: root.joinFooterShown
+          service: root.service
+          showOpenRooms: true
+        }
         ColumnLayout {
           visible: root.service && root.service.agentProfiles.length > 0
           Layout.fillWidth: true
@@ -613,6 +854,35 @@ FocusScope {
             visible: root.service && !root.service.sampleMode && root.service.connection === "authenticated" && root.service.historySupported && root.service.selectedRoom !== null
             onClicked: if (root.service) { root.service.refreshHistory(); root.service.refreshRecipients() }
           }
+          Ui.Button {
+            objectName: "buzzLeaveRoom"
+            text: root.leaveArmed ? "Confirm leave" : "Leave"
+            tooltipText: "Leave this room; you can join again if it is open"
+            fontSize: Style.font.caption
+            horizontalPadding: Style.space(6)
+            verticalPadding: Style.space(2)
+            focusable: true
+            selected: root.leaveArmed
+            visible: !!root.service && root.service.communityJoinSupported && !root.service.sampleMode
+              && root.service.connection === "authenticated" && root.service.selectedRoom !== null
+              && root.service.selectedRoom.kind === "stream"
+            enabled: !!root.service && root.service.canLeaveRoom
+            opacity: enabled ? 1 : 0.5
+            onClicked: root.requestLeave()
+          }
+        }
+        Text {
+          objectName: "buzzLeaveStatus"
+          Layout.fillWidth: true
+          visible: root.connected && !!root.service && !root.joinFooterShown && root.service.roomAction.action === "leave"
+            && root.service.roomActionLabel !== ""
+          text: root.service ? root.service.roomActionLabel : ""
+          textFormat: Text.PlainText
+          wrapMode: Text.WordWrap
+          color: Color.foreground
+          opacity: 0.7
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
         }
         ColumnLayout {
           visible: !root.connected
@@ -730,6 +1000,11 @@ FocusScope {
           PublicKeyRow {
             service: root.service
             visible: !!root.service && root.service.setupAssistAvailable && root.service.shortPublicKey !== ""
+          }
+          JoinCommunity {
+            objectName: "buzzJoinSetup"
+            visible: !!root.service && root.service.joinAvailable
+            service: root.service
           }
           Ui.Button {
             text: "Retry connection"
