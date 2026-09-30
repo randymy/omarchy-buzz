@@ -101,6 +101,7 @@ async fn sdk_reaction_without_h_is_valid_aux_but_wrong_scope_or_signature_fails(
         QueryRequest::ThreadReplies {
             room,
             root: root.id,
+            after: None,
         },
     ] {
         let (origin, server_task) = server(response(

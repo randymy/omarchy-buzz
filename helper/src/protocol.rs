@@ -1,8 +1,9 @@
 use serde::{Deserialize, Serialize};
 pub const LIMIT: usize = 65536;
-// Status frames can contain one channel page and one bounded thread page.
+// Status frames can contain one channel page and up to 200 thread replies; the
+// worst case measured by `maximum_projected_snapshot_fits_ipc_frame` is ~428 KiB.
 // Incoming commands retain the smaller LIMIT; only projected output uses this.
-pub const RESPONSE_LIMIT: usize = 98304;
+pub const RESPONSE_LIMIT: usize = 512 * 1024;
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Request {
@@ -200,6 +201,17 @@ pub struct HistoryRow {
     pub truncated: bool,
     pub unavailable: bool,
 }
+/// A thread reply: a history row plus its place in the reply tree. Kept apart
+/// from `HistoryRow` so channel history frames are unchanged.
+#[derive(Clone, Serialize)]
+pub struct ThreadRow {
+    #[serde(flatten)]
+    pub row: HistoryRow,
+    /// 1..=64; 1 is a direct reply to the root.
+    pub depth: u8,
+    /// Lowercase event id: the root at depth 1, else an earlier row.
+    pub parent: String,
+}
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct History {
@@ -226,8 +238,21 @@ pub struct Thread {
     pub state: String,
     pub room_id: Option<String>,
     pub root_id: Option<String>,
-    pub rows: Vec<HistoryRow>,
+    /// Oldest first, at most 200 (`thread::ROWS`).
+    pub rows: Vec<ThreadRow>,
+    /// True only when the last page read was full: more replies likely exist
+    /// and are not shown. Heuristic; the legacy thread path signs no bounds.
     pub has_more: Option<bool>,
+    /// Snapshot categories (none is signed exhaustion):
+    /// - `thread_completeness_unknown`: the read ended on a short page, the
+    ///   legacy stop heuristic; access filtering can also shorten a page.
+    /// - `thread_more_unshown`: 200 replies read and the last page was full;
+    ///   more replies likely exist and are not shown (`has_more`).
+    /// - `thread_replies_hidden`: some replies were omitted because their parent
+    ///   is deleted, withheld or not loaded; `has_more` still reports the cap.
+    ///
+    /// Otherwise `thread_unavailable`, `thread_timeout`, `thread_invalid` or
+    /// `thread_access_denied` with no rows.
     pub category: Option<String>,
 }
 impl Thread {
@@ -555,7 +580,15 @@ mod state_tests {
             .collect();
         status.thread.room_id = Some("00000000-0000-4000-8000-000000000001".into());
         status.thread.root_id = Some("a".repeat(64));
-        status.thread.rows = status.history.rows.iter().take(8).cloned().collect();
+        status.thread.rows = (0..crate::thread::ROWS)
+            .map(|_| ThreadRow {
+                row: status.history.rows[0].clone(),
+                depth: 64,
+                parent: "e".repeat(64),
+            })
+            .collect();
+        status.thread.has_more = Some(true);
+        status.thread.category = Some("thread_replies_hidden".into());
         status.recipients.entries = (0..20)
             .map(|_| Recipient {
                 key: "c".repeat(64),

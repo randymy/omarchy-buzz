@@ -16,17 +16,41 @@ use uuid::Uuid;
 const RESPONSE_BYTES: usize = 512 * 1024;
 const REQUEST_BYTES: usize = 8192;
 const MAX_EVENTS: usize = 200;
+/// One legacy thread page: 50 reply rows plus their auxiliary closure.
+pub const THREAD_PAGE_EVENTS: usize = 400;
+pub const THREAD_PAGE_BYTES: usize = 1024 * 1024;
+pub const THREAD_PAGE_ROWS: u16 = 50;
+pub const THREAD_DEPTH: u16 = 64;
 static IN_FLIGHT: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
 
 /// Initial discovery reads only; member is always the enrolled signing identity.
 pub enum QueryRequest {
-    JoinedRooms { limit: u16 },
-    RoomMetadata { rooms: Vec<Uuid> },
-    RoomHistory { room: Uuid, limit: u16 },
-    ThreadReplies { room: Uuid, root: EventId },
-    RoomMembers { room: Uuid },
-    Profiles { authors: Vec<nostr::PublicKey> },
-    AgentProfiles { authors: Vec<nostr::PublicKey> },
+    JoinedRooms {
+        limit: u16,
+    },
+    RoomMetadata {
+        rooms: Vec<Uuid>,
+    },
+    RoomHistory {
+        room: Uuid,
+        limit: u16,
+    },
+    /// Desktop's legacy oldest-first thread read (NIP-CW "Legacy Oldest-first
+    /// Threads"); `after` is the last loaded reply's `(created_at, id)`.
+    ThreadReplies {
+        room: Uuid,
+        root: EventId,
+        after: Option<(u64, EventId)>,
+    },
+    RoomMembers {
+        room: Uuid,
+    },
+    Profiles {
+        authors: Vec<nostr::PublicKey>,
+    },
+    AgentProfiles {
+        authors: Vec<nostr::PublicKey>,
+    },
 }
 impl QueryRequest {
     fn body(&self, keys: &Keys) -> Result<Vec<u8>, &'static str> {
@@ -49,8 +73,13 @@ impl QueryRequest {
             Self::RoomHistory { room, limit } if (1..=20).contains(limit) => {
                 serde_json::json!({"kinds":[9,40002],"#h":[room.to_string()],"limit":limit,"top_level":true,"include_aux":true,"include_summaries":false})
             }
-            Self::ThreadReplies { room, root } => {
-                serde_json::json!({"thread_window":true,"#h":[room.to_string()],"#e":[root.to_hex()],"kinds":[9],"depth_limit":1,"limit":8,"include_aux":true})
+            Self::ThreadReplies { room, root, after } => {
+                let mut filter = serde_json::json!({"#h":[room.to_string()],"#e":[root.to_hex()],"kinds":[9,40002],"depth_limit":THREAD_DEPTH,"limit":THREAD_PAGE_ROWS,"include_aux":true});
+                if let Some((created_at, id)) = after {
+                    filter["thread_cursor"] = serde_json::json!(created_at);
+                    filter["thread_cursor_id"] = serde_json::json!(id.to_hex());
+                }
+                filter
             }
             _ => return Err("invalid_query"),
         };
@@ -59,6 +88,12 @@ impl QueryRequest {
             return Err("invalid_query");
         }
         Ok(bytes)
+    }
+    fn budget(&self) -> (usize, usize) {
+        match self {
+            Self::ThreadReplies { .. } => (THREAD_PAGE_EVENTS, THREAD_PAGE_BYTES),
+            _ => (MAX_EVENTS, RESPONSE_BYTES),
+        }
     }
     fn matches(&self, event: &Event, keys: &Keys) -> bool {
         match self {
@@ -102,7 +137,7 @@ impl QueryRequest {
                     .tags
                     .iter()
                     .any(|t| t.as_slice().first().map(String::as_str) == Some("h"));
-                matches!(kind, 9 | 40003 | 5 | 9005 | 7 | 39007)
+                matches!(kind, 9 | 40002 | 40003 | 5 | 9005 | 7)
                     && (matches!(kind, 5 | 9005)
                         || kind == 7 && !has_h
                         || event.tags.iter().any(|t| {
@@ -170,6 +205,7 @@ pub async fn query(
     let _permit = IN_FLIGHT.try_acquire().map_err(|_| "query_busy")?;
     let url = endpoint(relay)?;
     let body = request.body(keys)?;
+    let (max_events, max_bytes) = request.budget();
     let auth = authorization(keys, &url, &body)?;
     let client = Client::builder()
         .no_proxy()
@@ -209,7 +245,7 @@ pub async fn query(
     }
     if response
         .content_length()
-        .is_some_and(|length| length > RESPONSE_BYTES as u64)
+        .is_some_and(|length| length > max_bytes as u64)
     {
         return Err("query_oversized");
     }
@@ -221,14 +257,14 @@ pub async fn query(
             "query_transport_unavailable"
         }
     })? {
-        if bytes.len().saturating_add(chunk.len()) > RESPONSE_BYTES {
+        if bytes.len().saturating_add(chunk.len()) > max_bytes {
             return Err("query_oversized");
         }
         bytes.extend_from_slice(&chunk);
     }
     let events: Vec<Event> =
         serde_json::from_slice(&bytes).map_err(|_| "query_invalid_response")?;
-    if events.len() > MAX_EVENTS {
+    if events.len() > max_events {
         return Err("query_oversized");
     }
     for event in &events {
@@ -250,7 +286,7 @@ pub async fn query(
                     kind,
                     u8::from(has_h),
                     u8::from(room_h),
-                    u8::from(matches!(kind, 9 | 40003 | 5 | 9005 | 7 | 39007))
+                    u8::from(matches!(kind, 9 | 40002 | 40003 | 5 | 9005 | 7))
                 );
             }
             return Err("query_invalid_scope");

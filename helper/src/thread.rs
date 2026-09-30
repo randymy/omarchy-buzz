@@ -1,16 +1,41 @@
-//! Bounded first-page, depth-one NIP-CW thread preview for the selected root.
-use crate::query::{query, QueryRequest};
-use nostr::{
-    hashes::{sha256, Hash},
-    Event, EventId, Keys, PublicKey, Timestamp,
+//! Desktop's legacy oldest-first thread read (NIP-CW "Legacy Oldest-first
+//! Threads"): nested replies under the selected root, fetched in bounded pages.
+//!
+//! This path has no relay-signed bounds. Every event is still verified, scoped
+//! and chained to the root; completeness and "more exist" remain heuristics.
+use crate::query::{
+    query, QueryRequest, THREAD_DEPTH, THREAD_PAGE_BYTES, THREAD_PAGE_EVENTS, THREAD_PAGE_ROWS,
 };
-use serde::Deserialize;
+use nostr::{Event, EventId, Keys, PublicKey, Timestamp};
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::Duration;
 use uuid::Uuid;
 
-const ROWS: usize = 8;
-const EVENTS: usize = 200;
-const BYTES: usize = 512 * 1024;
+const PAGE: usize = THREAD_PAGE_ROWS as usize;
+const PAGES: usize = 4;
+/// Replies shown at most; a full last page means more may exist.
+pub const ROWS: usize = PAGE * PAGES;
+const EVENTS: usize = THREAD_PAGE_EVENTS;
+const BYTES: usize = THREAD_PAGE_BYTES;
+/// Whole-thread budget; root auxiliaries repeat on every page and count again.
+const TOTAL_EVENTS: usize = 1000;
+const TOTAL_BYTES: usize = 2 * 1024 * 1024;
+const BUSY_ATTEMPTS: usize = 3;
+
+#[derive(Clone, Debug)]
+pub struct Row {
+    pub id: String,
+    pub author_pubkey: String,
+    pub timestamp: u64,
+    pub text: String,
+    pub edited: bool,
+    pub truncated: bool,
+    pub unavailable: bool,
+    /// 1 for a direct reply to the root.
+    pub depth: u8,
+    /// The root for depth 1, else an earlier displayed row.
+    pub parent: String,
+}
 
 #[derive(Clone, Debug)]
 pub struct Thread {
@@ -18,22 +43,7 @@ pub struct Thread {
     pub root: String,
     pub category: &'static str,
     pub has_more: bool,
-    pub rows: Vec<crate::history::Row>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Cursor {
-    created_at: u64,
-    id: String,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Bounds {
-    version: u8,
-    direction: String,
-    has_more: bool,
-    next_cursor: Option<Cursor>,
+    pub rows: Vec<Row>,
 }
 
 fn one<'a>(event: &'a Event, name: &str) -> Result<Option<&'a str>, &'static str> {
@@ -93,289 +103,303 @@ fn text(value: &str) -> (String, bool) {
     (out, truncated)
 }
 
-/// Reproduce the pinned buzz-core `thread_window::Request::binding` array and
-/// `tenant::relay_url_authority`, including non-default ports.
-fn binding(
-    relay_url: &str,
-    reader: PublicKey,
-    room: Uuid,
-    root: EventId,
-) -> Result<String, &'static str> {
-    let canonical =
-        crate::config::canonical_relay(relay_url).map_err(|_| "thread_invalid_origin")?;
-    let url = url::Url::parse(&canonical).map_err(|_| "thread_invalid_origin")?;
-    let host = match url.host().ok_or("thread_invalid_origin")? {
-        url::Host::Domain(s) => s.to_string(),
-        url::Host::Ipv4(a) => a.to_string(),
-        url::Host::Ipv6(a) => format!("[{a}]"),
-    };
-    let mut host = match url.port() {
-        Some(port) => format!("{host}:{port}"),
-        None => host,
-    }
-    .to_ascii_lowercase();
-    if let Some(value) = host
-        .strip_suffix(":443")
-        .or_else(|| host.strip_suffix(":80"))
-    {
-        host = value.to_owned();
-    }
-    if let Some(value) = host.strip_suffix('.') {
-        host = value.to_owned();
-    }
-    let normalized = serde_json::json!([
-        "tw",
-        1,
-        "older",
-        host,
-        reader.to_hex(),
-        room.to_string(),
-        root.to_hex(),
-        ROWS,
-        1,
-        [9],
-        null,
-        true
-    ]);
-    Ok(format!(
-        "tw:1:{}",
-        sha256::Hash::hash(normalized.to_string().as_bytes())
-    ))
+type Cursor = (u64, EventId);
+
+/// Accumulated, individually verified pages of one thread read.
+#[derive(Default)]
+struct Pages {
+    /// Reply rows in relay order with their NIP-10 parent.
+    rows: Vec<(Event, String)>,
+    ids: BTreeSet<String>,
+    aux: BTreeMap<String, Event>,
+    events: usize,
+    bytes: usize,
 }
 
-/// Invalid or incomplete pages fail as a whole; no unsigned exhaustion.
-pub fn reduce(
-    relay_url: &str,
-    reader: PublicKey,
-    room: Uuid,
-    root: EventId,
-    relay: PublicKey,
-    events: &[Event],
-    now: u64,
-) -> Result<Thread, &'static str> {
-    if events.len() > EVENTS {
-        return Err("thread_oversized");
-    }
-    if serde_json::to_vec(events)
-        .map_err(|_| "thread_invalid_shape")?
-        .len()
-        > BYTES
+/// The NIP-10 parent of a reply under `root`, as the relay's ingest resolves it:
+/// a direct reply names the root as `reply` (a `root` marker, if any, is the
+/// root); a nested reply names its parent as `reply` and the root as `root`.
+fn parent(event: &Event, root: &str) -> Result<String, &'static str> {
+    let mut reply = None;
+    let mut marked_root = None;
+    for tag in event
+        .tags
+        .iter()
+        .filter(|t| t.as_slice().first().is_some_and(|v| v == "e"))
     {
-        return Err("thread_oversized");
-    }
-    let room_hex = room.to_string();
-    let root_hex = root.to_hex();
-    let expected = binding(relay_url, reader, room, root)?;
-    let mut seen = BTreeSet::new();
-    let mut bounds = None;
-    let mut originals = BTreeMap::new();
-    let mut edits = Vec::new();
-    let mut deletes = Vec::new();
-    let mut reactions = Vec::new();
-    for event in events {
-        event.verify().map_err(|_| "thread_invalid_signature")?;
-        if event.created_at.as_secs() > now.saturating_add(60) {
+        let parts = tag.as_slice();
+        if parts.len() < 4 {
+            continue;
+        }
+        let slot = match parts[3].as_str() {
+            "reply" => &mut reply,
+            "root" => &mut marked_root,
+            _ => continue,
+        };
+        if slot.is_some() {
             return Err("thread_invalid_shape");
         }
-        if !seen.insert(event.id.to_hex()) {
-            return Err("thread_duplicate_event");
+        *slot = Some(id(&parts[1])?);
+    }
+    match (reply, marked_root) {
+        (Some(reply), None) if reply == root => Ok(reply),
+        (Some(reply), Some(marked)) if marked == root => Ok(reply),
+        _ => Err("thread_invalid_scope"),
+    }
+}
+
+impl Pages {
+    /// Verify one page and append it, or reject it whole. Returns the
+    /// continuation cursor when the page is full.
+    fn add(
+        &mut self,
+        room: Uuid,
+        root: EventId,
+        after: Option<Cursor>,
+        events: Vec<Event>,
+        now: u64,
+    ) -> Result<Option<Cursor>, &'static str> {
+        let bytes = serde_json::to_vec(&events)
+            .map_err(|_| "thread_invalid_shape")?
+            .len();
+        if events.len() > EVENTS
+            || bytes > BYTES
+            || self.events + events.len() > TOTAL_EVENTS
+            || self.bytes + bytes > TOTAL_BYTES
+        {
+            return Err("thread_oversized");
         }
-        let kind = event.kind.as_u16();
-        let h = one(event, "h")?;
-        if matches!(kind, 5 | 9005 | 7) {
-            if h.is_some_and(|h| h != room_hex) {
-                return Err("thread_invalid_scope");
+        let room_hex = room.to_string();
+        let root_hex = root.to_hex();
+        let mut seen = BTreeSet::new();
+        let mut rows = Vec::new();
+        let mut aux = Vec::new();
+        let mut last = after.map(|(at, id)| (at, id.to_hex()));
+        let count = events.len();
+        for event in events {
+            event.verify().map_err(|_| "thread_invalid_signature")?;
+            if event.created_at.as_secs() > now.saturating_add(60) {
+                return Err("thread_invalid_shape");
             }
-        } else if h != Some(room_hex.as_str()) {
-            return Err("thread_invalid_scope");
-        }
-        match kind {
-            39007 => {
-                if now.saturating_sub(event.created_at.as_secs()) > 60 {
-                    return Err("thread_stale_bounds");
-                }
-                if bounds.is_some()
-                    || event.pubkey != relay
-                    || event.tags.len() != 3
-                    || one(event, "d")? != Some(expected.as_str())
-                    || one(event, "e")? != Some(root_hex.as_str())
-                {
-                    // Booleans only: diagnose pinned-relay compatibility without logging events or keys.
-                    eprintln!(
-                        "omarchy-buzz: thread bounds rejected: duplicate={} signer={} tags={} binding={} root={}",
-                        bounds.is_some(), event.pubkey == relay, event.tags.len() == 3,
-                        one(event, "d")? == Some(expected.as_str()), one(event, "e")? == Some(root_hex.as_str())
-                    );
-                    return Err("thread_invalid_bounds");
-                }
-                let raw: serde_json::Value =
-                    serde_json::from_str(&event.content).map_err(|_| "thread_invalid_bounds")?;
-                if raw.get("next_cursor").is_none() {
-                    return Err("thread_invalid_bounds");
-                }
-                let value: Bounds =
-                    serde_json::from_value(raw).map_err(|_| "thread_invalid_bounds")?;
-                if value.version != 1
-                    || value.direction != "older"
-                    || value.has_more != value.next_cursor.is_some()
-                {
-                    return Err("thread_invalid_bounds");
-                }
-                if let Some(cursor) = &value.next_cursor {
-                    id(&cursor.id).map_err(|_| "thread_invalid_bounds")?;
-                    if cursor.created_at > now.saturating_add(60) {
-                        return Err("thread_invalid_bounds");
-                    }
-                }
-                bounds = Some(value);
+            let event_id = event.id.to_hex();
+            if !seen.insert(event_id.clone()) || self.ids.contains(&event_id) {
+                return Err("thread_duplicate_event");
             }
-            9 => {
-                if event.id == root {
-                    continue;
-                } // Root auxiliary is never a reply row.
-                let mut reply = None;
-                let mut marked_root = None;
-                for tag in event
-                    .tags
-                    .iter()
-                    .filter(|t| t.as_slice().first().is_some_and(|v| v == "e"))
-                {
-                    let parts = tag.as_slice();
-                    if parts.len() < 4 {
-                        continue;
-                    }
-                    match parts[3].as_str() {
-                        "reply" => {
-                            if reply.is_some() {
-                                return Err("thread_invalid_shape");
-                            }
-                            reply = Some(id(&parts[1])?);
-                        }
-                        "root" => {
-                            if marked_root.is_some() {
-                                return Err("thread_invalid_shape");
-                            }
-                            marked_root = Some(id(&parts[1])?);
-                        }
-                        _ => {}
-                    }
-                }
-                if reply.as_deref() != Some(root_hex.as_str())
-                    || marked_root.is_some_and(|r| r != root_hex)
-                {
+            let kind = event.kind.as_u16();
+            let h = one(&event, "h")?;
+            if matches!(kind, 5 | 9005 | 7) {
+                if h.is_some_and(|h| h != room_hex) {
                     return Err("thread_invalid_scope");
                 }
-                originals.insert(event.id.to_hex(), event);
+            } else if h != Some(room_hex.as_str()) {
+                return Err("thread_invalid_scope");
             }
-            40003 => {
-                if targets(event)?.len() != 1 {
-                    return Err("thread_invalid_shape");
+            match kind {
+                9 | 40002 => {
+                    if event.id == root {
+                        continue; // The root is displayed from the channel snapshot.
+                    }
+                    let parent = parent(&event, &root_hex)?;
+                    // Relay order is (created_at, id) ascending, strictly after the cursor.
+                    let key = (event.created_at.as_secs(), event_id);
+                    if last.as_ref().is_some_and(|last| key <= *last) {
+                        return Err("thread_invalid_order");
+                    }
+                    last = Some(key);
+                    rows.push((event, parent));
                 }
-                edits.push(event);
+                40003 => {
+                    if targets(&event)?.len() != 1 {
+                        return Err("thread_invalid_shape");
+                    }
+                    aux.push(event);
+                }
+                5 | 9005 | 7 => {
+                    targets(&event)?;
+                    aux.push(event);
+                }
+                _ => return Err("thread_invalid_kind"),
             }
-            5 | 9005 => {
-                targets(event)?;
-                deletes.push(event);
-            }
-            7 => {
-                targets(event)?;
-                reactions.push(event);
-            }
-            _ => return Err("thread_invalid_kind"),
         }
+        if rows.len() > PAGE {
+            return Err("thread_oversized");
+        }
+        for event in &aux {
+            if self.ids.contains(&event.id.to_hex()) {
+                return Err("thread_duplicate_event");
+            }
+        }
+        let next = if rows.len() == PAGE {
+            rows.last()
+                .map(|(event, _)| (event.created_at.as_secs(), event.id))
+        } else {
+            None
+        };
+        self.events += count;
+        self.bytes += bytes;
+        for (event, parent) in rows {
+            self.ids.insert(event.id.to_hex());
+            self.rows.push((event, parent));
+        }
+        for event in aux {
+            // Root auxiliaries are returned again with every page.
+            self.aux.entry(event.id.to_hex()).or_insert(event);
+        }
+        Ok(next)
     }
-    let bounds = bounds.ok_or("thread_missing_bounds")?;
-    if originals.len() > ROWS {
-        return Err("thread_oversized");
-    }
-    for reaction in reactions {
-        if !targets(reaction)?
+
+    /// Apply the auxiliary closure and lay out the tree. A reply whose parent is
+    /// neither the root nor an earlier displayed reply is hidden, never re-parented.
+    fn project(
+        &self,
+        relay: PublicKey,
+        room: Uuid,
+        root: EventId,
+        capped: bool,
+    ) -> Result<Thread, &'static str> {
+        let root_hex = root.to_hex();
+        let originals: BTreeMap<String, &Event> = self
+            .rows
             .iter()
-            .any(|target| target == &root_hex || originals.contains_key(target))
-        {
-            return Err("thread_invalid_scope");
+            .map(|(event, _)| (event.id.to_hex(), event))
+            .collect();
+        let mut edits = Vec::new();
+        let mut deletes = Vec::new();
+        for event in self.aux.values() {
+            match event.kind.as_u16() {
+                40003 => edits.push(event),
+                5 | 9005 => deletes.push(event),
+                _ => {
+                    if !targets(event)?
+                        .iter()
+                        .any(|target| target == &root_hex || originals.contains_key(target))
+                    {
+                        return Err("thread_invalid_scope");
+                    }
+                }
+            }
         }
-    }
-    let mut deleted = BTreeSet::new();
-    let mut uncertain = BTreeSet::new();
-    let edit_ids: BTreeMap<_, _> = edits.iter().map(|e| (e.id.to_hex(), *e)).collect();
-    for marker in deletes {
-        for target in targets(marker)? {
-            let original = originals
-                .get(&target)
-                .copied()
-                .or_else(|| edit_ids.get(&target).copied());
-            if let Some(original) = original {
-                if marker.pubkey == author(original, relay)? {
-                    deleted.insert(target);
-                } else {
+        let mut deleted = BTreeSet::new();
+        let mut uncertain = BTreeSet::new();
+        let edit_ids: BTreeMap<_, _> = edits.iter().map(|e| (e.id.to_hex(), *e)).collect();
+        for marker in deletes {
+            for target in targets(marker)? {
+                let original = originals
+                    .get(&target)
+                    .copied()
+                    .or_else(|| edit_ids.get(&target).copied());
+                if let Some(original) = original {
+                    if marker.pubkey == author(original, relay)? {
+                        deleted.insert(target);
+                    } else {
+                        uncertain.insert(target);
+                    }
+                }
+            }
+        }
+        edits.sort_by_key(|edit| (edit.created_at, edit.id));
+        let mut latest: BTreeMap<String, &Event> = BTreeMap::new();
+        for edit in edits {
+            let target = targets(edit)?.pop().ok_or("thread_invalid_shape")?;
+            let Some(original) = originals.get(&target) else {
+                continue;
+            }; // Root auxiliary.
+            if uncertain.contains(&edit.id.to_hex()) {
+                uncertain.insert(target.clone());
+            }
+            if deleted.contains(&edit.id.to_hex()) || deleted.contains(&target) {
+                continue;
+            }
+            if edit.created_at < original.created_at {
+                return Err("thread_invalid_shape");
+            }
+            if edit.pubkey != author(original, relay)? {
+                uncertain.insert(target);
+                continue;
+            }
+            match latest.get(&target) {
+                Some(old) if old.created_at == edit.created_at && old.id != edit.id => {
                     uncertain.insert(target);
                 }
+                Some(old) if old.created_at > edit.created_at => {}
+                _ => {
+                    latest.insert(target, edit);
+                }
             }
         }
-    }
-    let mut latest: BTreeMap<String, &Event> = BTreeMap::new();
-    for edit in edits {
-        let target = targets(edit)?.pop().ok_or("thread_invalid_shape")?;
-        let Some(original) = originals.get(&target) else {
-            continue;
-        }; // Root or unseen-row aux.
-        if uncertain.contains(&edit.id.to_hex()) {
-            uncertain.insert(target.clone());
-        }
-        if deleted.contains(&edit.id.to_hex()) || deleted.contains(&target) {
-            continue;
-        }
-        if edit.created_at < original.created_at {
-            return Err("thread_invalid_shape");
-        }
-        if edit.pubkey != author(original, relay)? {
-            uncertain.insert(target);
-            continue;
-        }
-        match latest.get(&target) {
-            Some(old) if old.created_at == edit.created_at && old.id != edit.id => {
-                uncertain.insert(target);
+        let mut depths: BTreeMap<String, u8> = BTreeMap::new();
+        let mut hidden = false;
+        let mut rows = Vec::new();
+        for (original, parent) in &self.rows {
+            let id = original.id.to_hex();
+            if deleted.contains(&id) {
+                continue;
             }
-            Some(old) if old.created_at > edit.created_at => {}
-            _ => {
-                latest.insert(target, edit);
+            let depth = if *parent == root_hex {
+                1
+            } else if let Some(depth) = depths.get(parent) {
+                depth + 1
+            } else {
+                // Parent deleted, withheld, or not yet loaded (Desktop guesses a depth).
+                hidden = true;
+                continue;
+            };
+            if u16::from(depth) > THREAD_DEPTH {
+                return Err("thread_invalid_shape");
             }
+            depths.insert(id.clone(), depth);
+            let unavailable = uncertain.contains(&id);
+            let edit = latest.get(&id);
+            let (body, truncated) = if unavailable {
+                (String::new(), false)
+            } else {
+                text(edit.map_or(original.content.as_str(), |e| e.content.as_str()))
+            };
+            rows.push(Row {
+                author_pubkey: author(original, relay)?.to_hex(),
+                timestamp: original.created_at.as_secs(),
+                text: body,
+                edited: edit.is_some(),
+                truncated,
+                unavailable,
+                depth,
+                parent: parent.clone(),
+                id,
+            });
         }
+        Ok(Thread {
+            room: room.to_string(),
+            root: root_hex,
+            category: if hidden {
+                "thread_replies_hidden"
+            } else if capped {
+                "thread_more_unshown"
+            } else {
+                "thread_completeness_unknown"
+            },
+            has_more: capped,
+            rows,
+        })
     }
-    let mut rows = Vec::new();
-    for (id, original) in originals {
-        if deleted.contains(&id) {
-            continue;
-        }
-        let unavailable = uncertain.contains(&id);
-        let edit = latest.get(&id);
-        let (body, truncated) = if unavailable {
-            (String::new(), false)
-        } else {
-            text(edit.map_or(original.content.as_str(), |e| e.content.as_str()))
-        };
-        rows.push(crate::history::Row {
-            reactions: None,
-            id,
-            author_pubkey: author(original, relay)?.to_hex(),
-            timestamp: original.created_at.as_secs(),
-            text: body,
-            edited: edit.is_some(),
-            truncated,
-            unavailable,
-        });
-    }
-    rows.sort_by(|a, b| a.timestamp.cmp(&b.timestamp).then_with(|| a.id.cmp(&b.id)));
-    Ok(Thread {
-        room: room_hex,
-        root: root_hex,
-        category: "thread_completeness_unknown",
-        has_more: bounds.has_more,
-        rows,
-    })
 }
 
+async fn page(
+    relay_url: &str,
+    keys: &Keys,
+    request: &QueryRequest,
+) -> Result<Vec<Event>, &'static str> {
+    // Reads only: other views may briefly hold both query slots.
+    for _ in 1..BUSY_ATTEMPTS {
+        match query(relay_url, keys, request).await {
+            Err("query_busy") => tokio::time::sleep(Duration::from_millis(250)).await,
+            other => return other,
+        }
+    }
+    query(relay_url, keys, request).await
+}
+
+/// Oldest-first pages of 50 until a short page or 200 replies. Any invalid
+/// page fails the whole read; nothing partial is returned.
 pub async fn fetch(
     relay_url: &str,
     keys: &Keys,
@@ -385,19 +409,19 @@ pub async fn fetch(
 ) -> Result<Thread, &'static str> {
     let root = EventId::from_hex(root_hex).map_err(|_| "thread_invalid_root")?;
     if root.to_hex() != root_hex {
-        // Keep the request identity and signed bounds in one canonical form.
         return Err("thread_invalid_root");
     }
-    let events = query(relay_url, keys, &QueryRequest::ThreadReplies { room, root }).await?;
-    reduce(
-        relay_url,
-        keys.public_key(),
-        room,
-        root,
-        signer,
-        &events,
-        Timestamp::now().as_secs(),
-    )
+    let mut pages = Pages::default();
+    let mut after = None;
+    for _ in 0..PAGES {
+        let request = QueryRequest::ThreadReplies { room, root, after };
+        let events = page(relay_url, keys, &request).await?;
+        match pages.add(room, root, after, events, Timestamp::now().as_secs())? {
+            Some(next) => after = Some(next),
+            None => return pages.project(signer, room, root, false),
+        }
+    }
+    pages.project(signer, room, root, true)
 }
 
 #[cfg(test)]
