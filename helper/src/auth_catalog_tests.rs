@@ -163,7 +163,18 @@ struct Discovery {
 struct Script {
     next: std::collections::VecDeque<Discovery>,
     joined: Vec<String>,
+    // How the fixture answers a kind 41010 DM open, and what it received.
+    dm: DmReply,
+    dm_events: Vec<Event>,
 }
+#[derive(Clone, Copy, PartialEq)]
+enum DmReply {
+    Silent,
+    Open,
+    Reject,
+}
+// The DM the fixture opens: the viewer and the other roster member.
+const DM_ROOM: &str = "33333333-3333-4333-8333-333333333333";
 struct Recheck {
     a: String,
     b: String,
@@ -219,6 +230,9 @@ const ROOM_B: &str = "22222222-2222-4222-8222-222222222222";
 const FORBIDDEN: &str = "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
 
 async fn recheck_fixture(first: Option<Discovery>) -> Recheck {
+    recheck_fixture_every(first, Duration::from_millis(400)).await
+}
+async fn recheck_fixture_every(first: Option<Discovery>, catalog: Duration) -> Recheck {
     let user = Keys::generate();
     let other = Keys::generate();
     let relay_keys = Keys::generate();
@@ -228,6 +242,8 @@ async fn recheck_fixture(first: Option<Discovery>) -> Recheck {
     let script = std::sync::Arc::new(std::sync::Mutex::new(Script {
         next: first.into_iter().collect(),
         joined: vec![a.clone(), b.clone()],
+        dm: DmReply::Silent,
+        dm_events: Vec::new(),
     }));
     let (count_tx, discoveries) = watch::channel(0_usize);
     let count_tx = std::sync::Arc::new(count_tx);
@@ -255,8 +271,10 @@ async fn recheck_fixture(first: Option<Discovery>) -> Recheck {
         ))
         .await
         .unwrap();
-        // Liveness probes are answered; EVENTs are never acknowledged, so a
-        // submitted message stays pending for the whole fixture.
+        // Liveness probes are answered; kind-9 EVENTs are never acknowledged,
+        // so a submitted message stays pending for the whole fixture. A DM open
+        // is answered as the script says; opening joins the viewer to DM_ROOM.
+        let dm_script = served.clone();
         handlers.spawn(async move {
             while let Some(Ok(Message::Text(text))) = ws.next().await {
                 let frame: Value = serde_json::from_str(&text).unwrap();
@@ -267,7 +285,37 @@ async fn recheck_fixture(first: Option<Discovery>) -> Recheck {
                         ))
                         .await
                         .unwrap(),
-                    "EVENT" => {}
+                    "EVENT" => {
+                        let event: Event = serde_json::from_value(frame[1].clone()).unwrap();
+                        if event.kind.as_u16() != 41010 {
+                            continue;
+                        }
+                        event.verify().unwrap();
+                        assert_eq!(event.pubkey, public);
+                        let id = event.id.to_hex();
+                        let reply = {
+                            let mut script = dm_script.lock().unwrap();
+                            script.dm_events.push(event);
+                            match script.dm {
+                                DmReply::Silent => None,
+                                DmReply::Reject => {
+                                    Some(json!(["OK", id, false, "restricted: fixture refusal"]))
+                                }
+                                DmReply::Open => {
+                                    if !script.joined.iter().any(|room| room == DM_ROOM) {
+                                        script.joined.push(DM_ROOM.into());
+                                    }
+                                    let answer = json!({"channel_id": DM_ROOM, "created": true});
+                                    Some(json!(["OK", id, true, format!("response:{answer}")]))
+                                }
+                            }
+                        };
+                        if let Some(reply) = reply {
+                            ws.send(Message::Text(reply.to_string().into()))
+                                .await
+                                .unwrap();
+                        }
+                    }
                     other => panic!("observer emitted unsupported request {other}"),
                 }
             }
@@ -317,10 +365,14 @@ async fn recheck_fixture(first: Option<Discovery>) -> Recheck {
                             let room = tagged("#d").remove(0);
                             if joined.contains(&room) { ok(&serde_json::to_string(&vec![membership(&room)]).unwrap()) } else { FORBIDDEN.into() }
                         }
-                        39000 => ok(&serde_json::to_string(&tagged("#d").iter().filter(|room| joined.contains(room)).map(|room| note(&relay_keys, 39000, "", vec![
-                            Tag::parse(["d", room.as_str()]).unwrap(), Tag::parse(["name", "Fixture"]).unwrap(), Tag::parse(["t", "stream"]).unwrap(),
-                        ])).collect::<Vec<_>>()).unwrap()),
-                        0 | 10100 => ok("[]"),
+                        39000 => ok(&serde_json::to_string(&tagged("#d").iter().filter(|room| joined.contains(room)).map(|room| note(&relay_keys, 39000, "", if room == DM_ROOM {
+                            vec![Tag::parse(["d", room.as_str()]).unwrap(), Tag::parse(["name", "DM"]).unwrap(), Tag::parse(["t", "dm"]).unwrap(), Tag::parse(["hidden"]).unwrap(),
+                                Tag::parse(["p", &public.to_hex()]).unwrap(), Tag::parse(["p", &other.public_key().to_hex()]).unwrap()]
+                        } else {
+                            vec![Tag::parse(["d", room.as_str()]).unwrap(), Tag::parse(["name", "Fixture"]).unwrap(), Tag::parse(["t", "stream"]).unwrap()]
+                        })).collect::<Vec<_>>()).unwrap()),
+                        // No NIP-DV snapshot: nothing is hidden.
+                        0 | 10100 | 30622 => ok("[]"),
                         9 => {
                             let room = tagged("#h").remove(0);
                             if joined.contains(&room) {
@@ -362,7 +414,7 @@ async fn recheck_fixture(first: Option<Discovery>) -> Recheck {
             FreshnessPolicy {
                 interval: Duration::from_secs(2),
                 response: Duration::from_secs(1),
-                catalog: Duration::from_millis(400),
+                catalog,
             },
             &mut sender,
         )
@@ -654,3 +706,7 @@ async fn first_room_check_after_authentication_publishes_loading() {
     .await
     .expect("first room check fixture deadline");
 }
+
+#[cfg(test)]
+#[path = "auth_dm_open_tests.rs"]
+mod dm_open_integration;
