@@ -192,6 +192,8 @@ impl RecipientsView {
 pub struct HistoryRow {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reactions: Option<crate::history::Reactions>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thread: Option<crate::history::ThreadSummary>,
     pub id: String,
     pub author: String,
     pub time: u64,
@@ -302,7 +304,7 @@ impl Status {
     }
 }
 pub fn envelope(kind: &str, id: Option<&str>, instance: &str, s: &Status) -> serde_json::Value {
-    serde_json::json!({"version":1,"type":kind,"id":id,"instanceId":instance,"generation":s.generation,"capabilities":["connection_status","room_catalog","room_history","message_send","thread_send","room_recipients","history_auto_refresh","room_activity","agent_profiles","thread_replies"],"backendRevision":crate::compatibility::BUZZ_REVISION,"status":s})
+    serde_json::json!({"version":1,"type":kind,"id":id,"instanceId":instance,"generation":s.generation,"capabilities":["connection_status","room_catalog","room_history","message_send","thread_send","room_recipients","history_auto_refresh","room_activity","agent_profiles","thread_replies","thread_summaries"],"backendRevision":crate::compatibility::BUZZ_REVISION,"status":s})
 }
 pub async fn read_line<R: tokio::io::AsyncBufRead + Unpin>(
     r: &mut R,
@@ -404,7 +406,8 @@ mod state_tests {
                 "history_auto_refresh",
                 "room_activity",
                 "agent_profiles",
-                "thread_replies"
+                "thread_replies",
+                "thread_summaries"
             ])
         );
         assert_eq!(v["status"]["catalog"]["state"], "unavailable");
@@ -544,6 +547,7 @@ mod state_tests {
         status.history.rows = (0..20)
             .map(|_| HistoryRow {
                 reactions: None,
+                thread: None,
                 id: "a".repeat(64),
                 author: "b".repeat(64),
                 time: u64::MAX,
@@ -555,7 +559,24 @@ mod state_tests {
             .collect();
         status.thread.room_id = Some("00000000-0000-4000-8000-000000000001".into());
         status.thread.root_id = Some("a".repeat(64));
-        status.thread.rows = status.history.rows.iter().take(8).cloned().collect();
+        for row in &mut status.history.rows {
+            row.thread = Some(crate::history::ThreadSummary {
+                replies: 1_000_000,
+                last_reply_at: Some(u64::MAX),
+                participants: vec!["c".repeat(64); 10],
+            });
+        }
+        status.thread.rows = status
+            .history
+            .rows
+            .iter()
+            .take(8)
+            .cloned()
+            .map(|row| HistoryRow {
+                thread: None,
+                ..row
+            })
+            .collect();
         status.recipients.entries = (0..20)
             .map(|_| Recipient {
                 key: "c".repeat(64),

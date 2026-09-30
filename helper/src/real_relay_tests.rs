@@ -319,6 +319,7 @@ async fn real_relay_messaging_conformance() {
                 .into_iter()
                 .map(|row| protocol::HistoryRow {
                     reactions: None,
+                    thread: None,
                     id: row.id,
                     author: row.author_pubkey,
                     time: row.timestamp,
