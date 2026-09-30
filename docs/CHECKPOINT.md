@@ -2459,3 +2459,56 @@ episodes, which were a suspended VM's clock 73 minutes behind.
   tolerates AUTH `created_at` drift (the 120 s threshold is ours), the catalog
   path publishing a measurement end to end (unit-tested at `relay_info` only),
   and the panel in the live shell.
+
+## Model check: harness model names and a live probe — September 30
+
+Branch `model-check` (not merged or installed; no vendor CLI turn, provider or
+relay was contacted). Until now any `Model` string was saved and a wrong or
+unavailable model failed silently on the agent's first turn. Contract in
+[AGENTS_SERVICE.md](AGENTS_SERVICE.md#model-check-added-september-30-branch-model-check).
+
+- Static check (`helper/src/agents_service/models.rs`): Claude Code takes the
+  aliases `opus`, `sonnet`, `haiku`, `fable` or `claude-[a-z0-9-]+`; Codex
+  `gpt-[a-z0-9.-]+`, `o[0-9][a-z0-9-]*` or `codex-[a-z0-9.-]+`; empty is the
+  harness default. `create_agent`, and `update_agent` when `model` or `harness`
+  changes, refuse anything else with `agent_invalid` and the new
+  `pending.detail` `model_not_for_harness`. Stored legacy models load and stay.
+- Live probe: `probe_model {agentId}` runs the harness launcher's new
+  `room-agent --probe-model <model>` in a transient `systemd-run --user
+  --scope` (agent unit limits), 90 s, 4 KiB of merged output, classified into
+  `status.modelProbe` (`idle|running|ok|unavailable|not_signed_in|failed`)
+  with one fixed sentence; the output is never kept. Gated like `start_agent`
+  (`harness_missing`, `bundle_stale`, `not_signed_in`), one mutation at a time.
+- `room-agent --probe-model`: the agent's `bwrap` view with a throwaway 0700
+  workspace, no relay, no fd 3 key or attestation, no `buzz-acp`, no Secret
+  Service lookup; `claude -p "Reply with exactly OK" --model <m> --max-turns 1
+  --output-format text --tools "" --no-session-persistence` or `codex exec
+  --model <m> --sandbox read-only --skip-git-repo-check --ephemeral --color
+  never "Reply with exactly OK"` through the bundle's forced-subscription
+  wrappers; its own 80 s deadline (exit 124) and cleanup. Flags were read from
+  `claude --help` (2.1.280; `--max-turns` is a hidden option in that build,
+  found in the CLI's option table) and `codex exec --help` (0.158.0).
+- Panel: alias chips under Model for Claude Code (a click fills the field), a
+  hint for Codex, inline refusal of the other harness's models, and `Test
+  model` (saved model, signed-in harness, ready bundle) with "A real model
+  turn: it may count toward the harness's usage." and the result sentence.
+- **Co-update:** status frames gain `modelProbe` and `pending.detail`; an
+  older panel refuses them (`invalid_response`), and this panel refuses an
+  older service. Install helper and plugin together. The launcher changed, so
+  installed bundles read `stale` until `Refresh bundle`.
+- Evidence (synthetic): Rust `models` tests (patterns per harness, panel
+  constants identical, classification of ok/unavailable/not signed in/busy/
+  timeout/refusal/garbage, bounded merged output and deadline kill, probe
+  environment), service tests (save-time refusal with detail, legacy model
+  kept, probe gating, exact argv, each outcome through the spawner fake,
+  `running` blocks other mutations, reset on edit/delete), request shapes;
+  Python: probe argv golden for both harnesses against the agent's own view,
+  a real `bwrap` run of a synthetic CLI (argv, `/workspace`, no key/relay
+  variables, merged stderr, workspace removed), bad model and extra-argument
+  refusals, deadline; `tests/Agents.qml` + fixture (chips, refused models,
+  probe states and fixed sentences, malformed probe frames); `agents_smoke.py`.
+- Not verified: a real probe turn with either CLI (so the exact vendor error
+  texts behind the patterns, whether `--max-turns 1` and `--tools ""` combine as
+  intended in 2.1.280, and Codex's `exec` output inside the sandbox),
+  `systemd-run --user --scope` from the socket-activated service, and the panel
+  against the real service.

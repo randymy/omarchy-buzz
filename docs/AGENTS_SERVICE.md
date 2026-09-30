@@ -37,7 +37,7 @@ installation and identity administration for this one component.
 | `description` | ≤ 256 chars, same sanitizing; shown on the agent's public profile |
 | `instructions` | ≤ 16 KiB UTF-8 text |
 | `harness` | `claude-code` or `codex` |
-| `model` | ≤ 64 chars matching `[A-Za-z0-9._:-]+`, or empty for the harness default |
+| `model` | ≤ 64 chars matching `[A-Za-z0-9._:-]+`, or empty for the harness default; on create, and on an update that changes `model` or `harness`, also a model of the harness (see Model check) |
 | `acpCommand` | `buzz-acp` only (reserved for parity) |
 | `rooms` | 1–8 channel UUIDs from the helper's verified joined-room list |
 | `respondTo` | `owner-only` (default) or `mentions` (any member's mention) |
@@ -65,14 +65,20 @@ status: {
   agents: [{id,name,description,instructions,harness,model,acpCommand,rooms,respondTo,workspace,
             identity|null, enrolled:bool, unit:"active"|"inactive"|"failed"|"unknown",
             startAtLogin:bool, answersDms:bool, published:bool, lastError:string|null}],
-  pending: {requestId,type,state:"working"|"done"|"failed",category:string|null} | null
+  pending: {requestId,type,state:"working"|"done"|"failed",category:string|null,detail:string|null} | null,
+  modelProbe: {agentId:uuid|null, state:"idle"|"running"|"ok"|"unavailable"|"not_signed_in"|"failed",
+               model:string, detail:string|null}
 }
 ```
 
 Each agent has exactly those 17 keys; `id` is a lowercase UUID v4; `enrolled`
 is true only with a non-null `identity`; at most 16 agents. `pending.type` is
-one of the nine mutating types; `category` is non-null exactly when `state` is
-`failed`. Error frames have exactly `{"version":1,"type":"error","id":<request
+one of the ten mutating types; `category` is non-null exactly when `state` is
+`failed`; `detail` (added with the model check) is null or, only when `failed`,
+a fixed code (so far only `model_not_for_harness`). `modelProbe` (see Model
+check) is always present: `idle` with a null `agentId`, empty `model` and null
+`detail`; `running` with a null `detail`; otherwise one of the fixed probe
+sentences. Error frames have exactly `{"version":1,"type":"error","id":<request
 UUID>,"instanceId":…,"category":…}`.
 
 Requests carry `version:1`, a UUID `id`, the daemon's `instanceId` and `type`.
@@ -88,6 +94,7 @@ The target agent is `agentId` because `id` is the request UUID:
 | `set_start_at_login` | `agentId`, `enabled` |
 | `sign_in` | `harness` |
 | `refresh_bundle` | `harness` |
+| `probe_model` | `agentId` (never a model, harness or command: the saved persona's are used) |
 
 `update_agent` stops a running agent first only when `harness`, `workspace`,
 `rooms`, `respondTo` or `answersDms` change; other edits republish and take effect on next
@@ -111,12 +118,99 @@ are restarted.
 The outcome of a request is either an error frame with its `id` (malformed or
 refused before it runs, `agent_busy`) or `status.pending` with its `requestId`
 reaching `done`/`failed`; the service then also answers with a status frame
-carrying the request `id`. The panel waits up to 60 s. Errors use the fixed
+carrying the request `id`. The panel waits up to 60 s (120 s for
+`probe_model`). Errors use the fixed
 categories `agent_invalid`, `agent_busy`, `agent_limit`, `harness_missing`,
 `bundle_stale`,
 `not_signed_in`, `enroll_failed`, `unit_failed`, `workspace_refused`,
 `relay_unavailable`. At most 16 personas. One mutating request at a time. Rooms
 are stream-room UUIDs from the helper's verified catalog.
+
+### Model check (added September 30, branch `model-check`)
+
+**Static.** `create_agent` refuses a non-empty `model` that is not a model of
+its `harness`, and `update_agent` does so when the update changes `model` or
+`harness`, with `agent_invalid` and `pending.detail`
+`model_not_for_harness` (a model saved before this check is kept until then;
+the store's character rule is unchanged). Models of a harness
+(`helper/src/agents_service/models.rs`; the panel applies the same rules):
+
+| harness | aliases | ids |
+| --- | --- | --- |
+| `claude-code` | `opus`, `sonnet`, `haiku`, `fable` | `claude-[a-z0-9-]+` |
+| `codex` | none | `gpt-[a-z0-9.-]+`, `o[0-9][a-z0-9-]*`, `codex-[a-z0-9.-]+` |
+
+The aliases are Claude Code 2.1.280's own tier aliases (its `--help` names
+`fable`, `opus` and `sonnet`; its alias list adds `haiku`, `best`,
+`opusplan` and `[1m]` forms, which are not offered). Codex 0.158.0 takes any
+`--model <MODEL>`. Buzz Desktop has no static catalog for these harnesses: it
+lists models live through `buzz-acp models --json`
+(`desktop/src-tauri/src/commands/agent_model_process.rs`).
+
+**Live probe.** `probe_model {agentId}` is a mutating request (one at a time,
+`agent_busy` otherwise). It refuses an unknown agent, an empty model (the
+harness default is not probed) or a model that fails the static check with
+`agent_invalid`; re-reads harness readiness and refuses like `start_agent`
+(`harness_missing`, `bundle_stale`, `not_signed_in`); and refuses a missing or
+unsafe bundle launcher with `harness_missing`. Otherwise it sets
+`modelProbe` to `running` and runs, with a 90 s bound, no shell and an
+environment of only `PATH`, `HOME`, `XDG_RUNTIME_DIR` and
+`DBUS_SESSION_BUS_ADDRESS`:
+
+```
+/usr/bin/systemd-run --user --scope --collect --quiet -p MemoryMax=2G -p TasksMax=128 --
+  ~/.local/share/omarchy-buzz/agent-<harness>/launcher/room-agent --probe-model <model>
+  --harness <harness> --profile ~/.local/state/omarchy-buzz-agent-preview/<harness>
+  --bundle ~/.local/share/omarchy-buzz/agent-<harness>
+```
+
+The scope gives the probe the agent unit's limits instead of the agent
+service's own 256 MiB. Standard output and error are read together, at most
+4 KiB (the rest is discarded), and reduced to a state and one fixed sentence;
+the output is never stored, logged or sent:
+
+| state | when (case-insensitive, first match) | detail |
+| --- | --- | --- |
+| `failed` | killed at 90 s, or exit 124 with `probe_timeout` | The probe did not finish in time. |
+| `ok` | exit 0 and a line that is `OK` (quotes, `.`, `!`, `*` ignored) | The model answered. |
+| `failed` | `room-agent: error:` (launcher refusal) | The sandbox launcher refused the probe. |
+| `not_signed_in` | `not logged in`, `please run /login`, `invalid api key`, `authentication_error`, `oauth token has expired`, `token has expired`, `api error: 401`, `401 unauthorized`, `status 401`, `codex login`, `log in again`, `could not be refreshed`, `refresh_token` | The provider did not accept the harness sign-in. Sign in again. |
+| `unavailable` | `issue with the selected model`, `may not exist or you may not have access`, `not_found_error`, `model_not_found`, `model is not supported`, `is not supported when using codex`, `unsupported model`, `does not exist or you do not have access`, `invalid model`, `unknown model`, `not available on your plan`, `does not have access to model` | The provider does not offer this model to this account. |
+| `failed` | `rate_limit`, `rate limit`, `api error: 429`, `429 too many requests`, `overloaded`, `usage limit`, `hit your limit`, `api error: 529` | The provider is busy or a usage limit was reached. Try again later. |
+| `failed` | exit 0 otherwise | The probe did not get the expected answer. |
+| `failed` | anything else (also a spawn failure) | The probe failed. |
+
+The request is then `done` whatever the outcome; the outcome is
+`modelProbe`. It returns to `idle` when that agent's model or harness is
+edited or the agent is deleted. A probe is a real model turn in the shared
+harness login and may count toward its usage.
+
+**Launcher.** `room-agent --probe-model <model> --harness <h> --profile <dir>
+--bundle <dir>` (`--probe-model` first; no other argument is accepted) checks
+the model (`model_invalid`: not `[A-Za-z0-9._:-]{1,64}`;
+`model_not_for_harness`: not a model of `<h>` as above), the bundle's
+adapter and CLI wrapper (`bundle_harness_mismatch`), the paths as for an
+agent and, for Claude Code, the profile's `settings.json`
+(`provider_settings_review_required`); refusals exit 2 before anything runs. It
+creates a throwaway 0700 workspace (`omarchy-buzz-probe-*` in
+`$XDG_RUNTIME_DIR` when that is a private directory, else the system
+temporary directory), builds the agent's `bwrap` view with it at
+`/workspace` (same profile binds, read-only bundle and `/etc` files, same
+clean environment) but without `BUZZ_RELAY_URL`, the fd 3 identity options,
+instructions or `ANTHROPIC_MODEL`, reads no Secret Service item and never
+starts `buzz-acp`. Inside it runs exactly:
+
+- Claude Code: `/opt/agent/bin/claude -p "Reply with exactly OK" --model <model>
+  --max-turns 1 --output-format text --tools "" --no-session-persistence`
+  (the bundle wrapper adds `--settings claude/subscription-settings.json`,
+  i.e. `forceLoginMethod: claudeai`, as for the agent);
+- Codex: `/opt/agent/bin/codex exec --model <model> --sandbox read-only
+  --skip-git-repo-check --ephemeral --color never "Reply with exactly OK"` (the
+  wrapper adds `-c forced_login_method=chatgpt`).
+
+Standard error goes to standard output; after 80 s the sandbox is killed,
+`room-agent: probe_timeout` printed and 124 returned. The workspace is removed
+in every case the launcher itself survives.
 
 ## Units
 
