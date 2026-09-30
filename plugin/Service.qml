@@ -30,7 +30,11 @@ Item {
   readonly property int observedActivityCount: activityVisible ? RoomActivity.total(roomActivity) : 0
   readonly property string observedActivityLabel: activityVisible ? RoomActivity.totalLabel(roomActivity) : "0"
   function roomActivityCount(room) { return activityVisible ? Math.min(999, RoomActivity.count(roomActivity, room)) : 0 }
-  onPanelOpenChanged: if (panelOpen && historyState === "snapshot") roomActivity = RoomActivity.markSeen(roomActivity, selectedRoomId)
+  onPanelOpenChanged: {
+    if (panelOpen && historyState === "snapshot") roomActivity = RoomActivity.markSeen(roomActivity, selectedRoomId)
+    // Opening the panel or Retry reconnects a lost agent session; nothing polls.
+    if (panelOpen && agentService.autoConnect) agentService.retry()
+  }
   function notifyActivity() {
     if (notificationsEnabled && !sampleMode && !notificationProcess.running && !notificationCooldown.running) {
       notificationProcess.running = true
@@ -1246,6 +1250,7 @@ Item {
   }
   function retry() {
     if (sampleMode) return
+    if (agentService.autoConnect) agentService.retry()
     if (!sessionFailed && bridge.running && instanceId !== "") send("retry_connection")
     else {
       if (!helperExecutable.startsWith("/")) { fail("helper_unavailable"); return }
@@ -1257,6 +1262,15 @@ Item {
   Component.onCompleted: {
     notificationSettingsDirProcess.running = true
     if (autoConnect && !sampleMode) retry()
+  }
+  // The separate agent service (docs/AGENTS_SERVICE.md), reached through the same
+  // helper binary. Fixtures without autoConnect start it explicitly.
+  readonly property alias agents: agentService
+  AgentService {
+    id: agentService
+    mainService: root
+    helperExecutable: root.helperExecutable
+    autoConnect: root.autoConnect && !root.sampleMode
   }
 
   Timer {
