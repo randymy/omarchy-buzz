@@ -147,6 +147,15 @@ async fn client(
                         else {None}};
                     if let Some(category)=refused {write(&mut out,&serde_json::json!({"version":1,"type":"error","id":r.id,"category":category,"instanceId":instance})).await?;continue;}
                 }
+                if matches!(r.kind.as_str(),"download_attachment"|"upload_attachment"|"thumbnail_attachment") {
+                    // Transfers need a working session; one download and one upload at a time.
+                    let refused={let current=status.borrow();
+                        if r.kind=="download_attachment" && current.download.state=="downloading" {Some("setup_busy")}
+                        else if r.kind=="upload_attachment" && current.upload.state=="uploading" {Some("setup_busy")}
+                        else if current.connection!="authenticated" {Some("relay_unavailable")}
+                        else {None}};
+                    if let Some(category)=refused {write(&mut out,&serde_json::json!({"version":1,"type":"error","id":r.id,"category":category,"instanceId":instance})).await?;continue;}
+                }
                 if r.kind=="join_room" || r.kind=="leave_room" {
                     let busy={let current=status.borrow();current.room_action.state=="sending" && current.room_action.request_id.as_deref()!=Some(r.id.as_str())};
                     if busy {write(&mut out,&serde_json::json!({"version":1,"type":"error","id":r.id,"category":"setup_busy","instanceId":instance})).await?;continue;}
@@ -158,9 +167,10 @@ async fn client(
                 let mut send_reply=None;
                 let setup=matches!(r.kind.as_str(),"set_relay"|"create_identity"|"claim_invite"|"accept_invite"|"mint_invite");
                 let room_action=r.kind=="join_room" || r.kind=="leave_room";
+                let media=matches!(r.kind.as_str(),"download_attachment"|"thumbnail_attachment"|"open_download"|"upload_attachment"|"remove_pending_attachment");
                 // A setup reply that never arrives is not a refusal; the next
                 // status frame shows whether the change was saved.
-                let unknown=if r.kind=="open_dm" {"dm_open_unknown"} else if setup || room_action {"setup_busy"} else {"delivery_unknown"};
+                let unknown=if r.kind=="open_dm" {"dm_open_unknown"} else if setup || room_action || media {"setup_busy"} else {"delivery_unknown"};
                 let command=match r.kind.as_str() {
                     "retry_connection"=>Some(protocol::Command::Retry),
                     "fetch_recent"=>Some(protocol::Command::FetchRecent(r.room_id.clone().unwrap())),
@@ -184,13 +194,18 @@ async fn client(
                     "join_room"|"leave_room"=>{let (reply,receiver)=tokio::sync::oneshot::channel();send_reply=Some(receiver);
                         let action=if r.kind=="join_room" {crate::join::Action::Join} else {crate::join::Action::Leave};
                         Some(protocol::Command::RoomAction(action,r.id.clone(),r.room_id.clone().unwrap(),reply))},
+                    "download_attachment"=>{let (reply,receiver)=tokio::sync::oneshot::channel();send_reply=Some(receiver);Some(protocol::Command::DownloadAttachment(r.event_id.clone().unwrap(),r.hash.clone().unwrap(),reply))},
+                    "thumbnail_attachment"=>{let (reply,receiver)=tokio::sync::oneshot::channel();send_reply=Some(receiver);Some(protocol::Command::ThumbnailAttachment(r.event_id.clone().unwrap(),r.hash.clone().unwrap(),reply))},
+                    "open_download"=>{let (reply,receiver)=tokio::sync::oneshot::channel();send_reply=Some(receiver);Some(protocol::Command::OpenDownload(r.path.clone().unwrap(),reply))},
+                    "upload_attachment"=>{let (reply,receiver)=tokio::sync::oneshot::channel();send_reply=Some(receiver);Some(protocol::Command::UploadAttachment(r.room_id.clone().unwrap(),r.root_id.clone(),r.path.clone().unwrap(),reply))},
+                    "remove_pending_attachment"=>{let (reply,receiver)=tokio::sync::oneshot::channel();send_reply=Some(receiver);Some(protocol::Command::RemovePendingAttachment(r.hash.clone().unwrap(),reply))},
                     _=>None,
                 };
-                if let Some(command)=command {if retry.try_send(command).is_err() {write(&mut out,&serde_json::json!({"version":1,"type":"error","id":r.id,"category":if setup || room_action {"setup_busy"} else {"request_busy"},"instanceId":instance})).await?;continue;}}
+                if let Some(command)=command {if retry.try_send(command).is_err() {write(&mut out,&serde_json::json!({"version":1,"type":"error","id":r.id,"category":if setup || room_action {"setup_busy"} else if media {"setup_busy"} else {"request_busy"},"instanceId":instance})).await?;continue;}}
                 if let Some(reply)=send_reply {
                     // Relay discovery (up to 13 s), a Secret Service write and an invite's
                     // three HTTP requests (10 s each) take longer than a send.
-                    let category=send_result(reply,Duration::from_secs(if setup {60} else {5}),unknown).await;
+                    let category=send_result(reply,Duration::from_secs(if setup {60} else if media {10} else {5}),unknown).await;
                     if let Some(category)=category {write(&mut out,&serde_json::json!({"version":1,"type":"error","id":r.id,"category":category,"instanceId":instance})).await?;continue;}
                 }
                 if r.kind=="subscribe" { subscribed=true; }
@@ -586,6 +601,87 @@ mod setup_tests {
             .unwrap()
             .unwrap();
         assert!(matches!(command, protocol::Command::MintInvite(5, 168, _)));
+    }
+
+    #[tokio::test]
+    async fn transfers_need_an_authenticated_session_and_one_at_a_time() {
+        let mut status = Status::new(&config::Config::default());
+        status.connection = "connecting".into();
+        let (tx, rx) = watch::channel(status);
+        let (commands, mut received) = mpsc::channel(1);
+        let (mut lines, mut write) = connect(rx, commands);
+        let mut seen = String::new();
+        assert_eq!(next(&mut lines, &mut seen).await["type"], "hello");
+        let (event, hash) = ("a".repeat(64), "b".repeat(64));
+        let room = "00000000-0000-4000-8000-000000000001";
+        let download = serde_json::json!({"version":1,"id":"ui-1","type":"download_attachment","eventId":event,"hash":hash}).to_string();
+        let upload = serde_json::json!({"version":1,"id":"ui-2","type":"upload_attachment","roomId":room,"path":"/home/u/a.png"}).to_string();
+        let thumb = serde_json::json!({"version":1,"id":"ui-3","type":"thumbnail_attachment","eventId":event,"hash":hash}).to_string();
+        for (request, id, download_state, upload_state, category) in [
+            (&download, "ui-1", "idle", "idle", "relay_unavailable"),
+            (&upload, "ui-2", "idle", "idle", "relay_unavailable"),
+            (&thumb, "ui-3", "idle", "idle", "relay_unavailable"),
+            (&download, "ui-1", "downloading", "idle", "setup_busy"),
+            (&upload, "ui-2", "idle", "uploading", "setup_busy"),
+        ] {
+            tx.send_modify(|s| {
+                s.connection = if category == "setup_busy" {
+                    "authenticated"
+                } else {
+                    "connecting"
+                }
+                .into();
+                s.download.state = download_state.into();
+                s.upload.state = upload_state.into();
+            });
+            write.write_all(request.as_bytes()).await.unwrap();
+            write.write_all(b"\n").await.unwrap();
+            let frame = answer(&mut lines, &mut seen, id).await;
+            assert_eq!(
+                (frame["type"].as_str(), frame["category"].as_str()),
+                (Some("error"), Some(category)),
+                "{request}"
+            );
+        }
+        assert!(
+            received.try_recv().is_err(),
+            "a refused transfer reached the actor"
+        );
+        tx.send_modify(|s| {
+            s.connection = "authenticated".into();
+            s.download.state = "done".into();
+        });
+        write.write_all(download.as_bytes()).await.unwrap();
+        write.write_all(b"\n").await.unwrap();
+        let command = timeout(Duration::from_secs(5), received.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let protocol::Command::DownloadAttachment(e, h, reply) = command else {
+            panic!("not a download");
+        };
+        assert_eq!((e.as_str(), h.as_str()), (event.as_str(), hash.as_str()));
+        reply.send(Some("attachment_unknown")).unwrap();
+        let frame = answer(&mut lines, &mut seen, "ui-1").await;
+        assert_eq!(frame["category"], "attachment_unknown");
+        // Opening and removing work without the relay; the actor decides.
+        let open = serde_json::json!({"version":1,"id":"ui-4","type":"open_download","path":"/home/u/Downloads/a.pdf"}).to_string();
+        tx.send_modify(|s| s.connection = "disconnected".into());
+        write.write_all(open.as_bytes()).await.unwrap();
+        write.write_all(b"\n").await.unwrap();
+        let command = timeout(Duration::from_secs(5), received.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let protocol::Command::OpenDownload(path, reply) = command else {
+            panic!("not an open");
+        };
+        assert_eq!(path, "/home/u/Downloads/a.pdf");
+        reply.send(None).unwrap();
+        assert_eq!(
+            answer(&mut lines, &mut seen, "ui-4").await["type"],
+            "status"
+        );
     }
 
     #[tokio::test]

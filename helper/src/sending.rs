@@ -1,7 +1,7 @@
 //! Human kind-9 sending. No retransmission and no plaintext persistence.
 use crate::{
     ledger::{Ledger, Outcome, Record},
-    protocol::{Delivery, SendIntent, Status},
+    protocol::{Delivery, PendingAttachment, SendIntent, Status},
 };
 use nostr::{Event, EventId, Keys, PublicKey};
 use tokio::time::{Duration, Instant};
@@ -12,6 +12,9 @@ pub struct Sender {
     // Only the current request intent is retained, to reject conflicting reuse.
     last: Option<SendIntent>,
     last_outcome: Option<Outcome>,
+    /// The draft scope and attachment hashes of the event in flight, cleared
+    /// from the pending list once the relay accepts it.
+    media: Option<(String, Vec<String>)>,
 }
 impl Sender {
     pub fn new(ledger: Option<Ledger>) -> Self {
@@ -20,7 +23,12 @@ impl Sender {
             pending: None,
             last: None,
             last_outcome: None,
+            media: None,
         }
+    }
+    /// The accepted event's draft scope and attachment hashes, once.
+    pub fn take_sent_media(&mut self) -> Option<(String, Vec<String>)> {
+        self.media.take()
     }
     pub fn clear_scope(&mut self) {
         self.last_outcome = None;
@@ -176,8 +184,20 @@ impl Sender {
                 None,
             );
         }
+        // Uploaded attachments waiting in this draft travel with the message.
+        let scope = crate::media::scope(&intent.room, intent.root_id.as_deref());
+        let media: Vec<PendingAttachment> = status
+            .pending_attachments
+            .iter()
+            .filter(|p| p.scope == scope)
+            .take(crate::media::PENDING)
+            .cloned()
+            .collect();
+        if intent.text.trim().is_empty() && media.is_empty() {
+            return (fail("send_invalid"), None);
+        }
         let recipients = recipients(&intent, keys, status);
-        let event = match build_event(&intent, keys, &recipients, None) {
+        let event = match build_event(&intent, keys, &recipients, &media, None) {
             Ok(event) => event,
             Err(_) => return (fail("send_invalid"), None),
         };
@@ -204,6 +224,8 @@ impl Sender {
         ));
         let status = delivery(&intent, Some(id), "sending", None);
         self.clear_scope();
+        self.media =
+            (!media.is_empty()).then(|| (scope, media.into_iter().map(|m| m.hash).collect()));
         self.last = Some(intent);
         self.last_outcome = Some(Outcome::Pending);
         (status, Some(event))
@@ -211,6 +233,9 @@ impl Sender {
     pub fn acknowledge(&mut self, id: &str, accepted: bool) -> Option<Delivery> {
         if !self.pending.as_ref().is_some_and(|p| p.1 == id) {
             return None;
+        }
+        if !accepted {
+            self.media = None;
         }
         self.finish(if accepted {
             Outcome::Acknowledged
@@ -226,6 +251,8 @@ impl Sender {
         }
     }
     pub fn unknown(&mut self) -> Option<Delivery> {
+        // Delivery unknown: the attachments stay in the draft.
+        self.media = None;
         let result = self.finish(Outcome::Unknown);
         self.clear_scope();
         result
@@ -273,11 +300,43 @@ fn recipients(intent: &SendIntent, keys: &Keys, status: &Status) -> Vec<String> 
     }
     all
 }
+/// One `imeta` tag per attachment in Desktop's key order
+/// (`imetaMediaMarkdown.ts` `buildImetaTags`): url, m, x, size, dim, filename.
+pub(crate) fn imeta_tags(media: &[PendingAttachment]) -> Vec<Vec<String>> {
+    media
+        .iter()
+        .map(|m| {
+            let mut tag = vec![
+                "imeta".to_owned(),
+                format!("url {}", m.url),
+                format!("m {}", m.mime),
+                format!("x {}", m.hash),
+                format!("size {}", m.size),
+            ];
+            if let Some(dim) = &m.dim {
+                tag.push(format!("dim {dim}"));
+            }
+            tag.push(format!("filename {}", m.name));
+            tag
+        })
+        .collect()
+}
+/// The text followed by Desktop's markdown line for each attachment
+/// (`buildOutgoingMessage`), so other clients show them.
+pub(crate) fn content_with(text: &str, media: &[PendingAttachment]) -> String {
+    let mut content = text.to_owned();
+    for m in media {
+        content.push('\n');
+        content.push_str(&crate::attachments::markdown_line(&m.mime, &m.name, &m.url));
+    }
+    content
+}
 // Local correlation extension; not a Buzz command, authority or protocol nonce.
 fn build_event(
     intent: &SendIntent,
     keys: &Keys,
     recipients: &[String],
+    media: &[PendingAttachment],
     created_at: Option<nostr::Timestamp>,
 ) -> Result<Event, &'static str> {
     let room = uuid::Uuid::parse_str(&intent.room).map_err(|_| "send_invalid")?;
@@ -297,11 +356,11 @@ fn build_event(
         .map_err(|_| "send_invalid")?;
     let mut builder = buzz_sdk::build_message(
         room,
-        &intent.text,
+        &content_with(&intent.text, media),
         thread.as_ref(),
         &mentions,
         false,
-        &[],
+        &imeta_tags(media),
         &[],
     )
     .map_err(|_| "send_invalid")?
@@ -339,7 +398,6 @@ fn valid(intent: &SendIntent) -> bool {
             .root_id
             .as_deref()
             .is_none_or(|root| EventId::from_hex(root).is_ok_and(|id| id.to_hex() == root))
-        && !intent.text.trim().is_empty()
         && !intent.text.contains('\0')
         && intent.text.len() <= 4096
         && intent.mentions.len() <= 20

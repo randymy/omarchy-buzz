@@ -15,6 +15,16 @@ ColumnLayout {
   property bool pickerExpanded: false
   property int mentionIndex: 0
   property bool mentionDismissed: false
+  // The 📎 control reveals a field for a file's full path; the helper checks it.
+  property bool attachOpen: false
+  readonly property var pending: service && service.attachmentsSupported ? service.pendingFor(rootId) : []
+  readonly property string uploadNote: service && service.attachmentsSupported ? service.uploadLabelFor(rootId) : ""
+  function attach() {
+    if (!service || !service.composeScope(rootId)) return false
+    if (!service.uploadAttachment(attachPath.text, rootId)) return false
+    attachPath.text = ""
+    return true
+  }
   readonly property alias field: area
   readonly property bool active: !!service && service.replyRootId === rootId
   readonly property string stored: service ? service.drafts[service.selectedRoomId + (rootId ? ":" + rootId : "")] || "" : ""
@@ -144,6 +154,93 @@ ColumnLayout {
       }
     }
   }
+  // Uploaded files waiting to go out with this draft.
+  Repeater {
+    model: root.pending
+    delegate: RowLayout {
+      required property var modelData
+      objectName: "buzzPendingAttachment"
+      Layout.fillWidth: true
+      spacing: Style.space(6)
+      Text {
+        text: modelData.kind === "image" ? "🖼" : modelData.kind === "video" ? "🎞" : "📄"
+        textFormat: Text.PlainText
+        color: Color.foreground
+        font.family: Style.font.family
+        font.pixelSize: Style.font.caption
+      }
+      Text {
+        objectName: "buzzPendingName"
+        Layout.fillWidth: true
+        text: modelData.name + " · " + root.service.formatSize(modelData.size)
+        textFormat: Text.PlainText
+        elide: Text.ElideMiddle
+        color: Color.foreground
+        font.family: Style.font.family
+        font.pixelSize: Style.font.caption
+      }
+      Ui.Button {
+        objectName: "buzzPendingRemove"
+        text: "×"
+        tooltipText: "Remove this file from the message"
+        fontSize: Style.font.caption
+        horizontalPadding: Style.space(6)
+        verticalPadding: Style.space(1)
+        focusable: true
+        enabled: root.service.deliveryState !== "sending"
+        onClicked: root.service.removePendingAttachment(modelData.hash)
+      }
+    }
+  }
+  RowLayout {
+    objectName: root.fieldName + "AttachRow"
+    Layout.fillWidth: true
+    visible: root.attachOpen && root.usable
+    spacing: Style.space(6)
+    Controls.TextField {
+      id: attachPath
+      objectName: root.fieldName + "AttachPath"
+      Layout.fillWidth: true
+      placeholderText: "Full path of a file, e.g. /home/you/Pictures/photo.png"
+      placeholderTextColor: Util.alpha(Color.foreground, 0.5)
+      color: Color.foreground
+      font.family: Style.font.family
+      font.pixelSize: Style.font.caption
+      maximumLength: 4096
+      background: Rectangle {
+        color: Color.popups.background
+        border.color: attachPath.activeFocus ? Color.popups.border : Util.alpha(Color.foreground, 0.25)
+        radius: Style.cornerRadius
+      }
+      onAccepted: root.attach()
+      Keys.onEscapePressed: function(event) { root.attachOpen = false; area.forceActiveFocus(); event.accepted = true }
+    }
+    Ui.Button {
+      objectName: root.fieldName + "Attach"
+      text: "Attach"
+      tooltipText: "Upload this file to the relay; it is sent with the message"
+      fontSize: Style.font.caption
+      bordered: true
+      focusable: true
+      // Never disabled under the pointer (its tooltip would stay up): the
+      // service refuses an empty path, a fifth file or a second upload.
+      enabled: !!root.service && root.service.attachmentsAvailable
+      opacity: attachPath.text.trim() !== "" && !root.service.uploadingFor(root.rootId) && root.pending.length < 4 ? 1 : 0.5
+      onClicked: root.attach()
+    }
+  }
+  Text {
+    objectName: root.fieldName + "UploadStatus"
+    Layout.fillWidth: true
+    visible: root.uploadNote !== ""
+    text: root.uploadNote
+    textFormat: Text.PlainText
+    wrapMode: Text.WordWrap
+    color: Color.foreground
+    opacity: 0.7
+    font.family: Style.font.family
+    font.pixelSize: Style.font.caption
+  }
   Text {
     objectName: root.fieldName + "Notifies"
     Layout.fillWidth: true
@@ -247,6 +344,20 @@ ColumnLayout {
       onClicked: {
         if (!root.service.composeScope(root.rootId)) return
         root.pickerExpanded = !root.pickerExpanded
+      }
+    }
+    Ui.Button {
+      objectName: root.fieldName + "AttachToggle"
+      Layout.alignment: Qt.AlignBottom
+      text: "📎" + (root.pending.length ? " " + root.pending.length : "")
+      tooltipText: "Attach a file by its full path (up to four per message)"
+      focusable: true
+      selected: root.attachOpen
+      visible: !!root.service && root.usable && root.service.attachmentsSupported
+      onClicked: {
+        if (!root.service.composeScope(root.rootId)) return
+        root.attachOpen = !root.attachOpen
+        if (root.attachOpen) attachPath.forceActiveFocus()
       }
     }
     Ui.Button {

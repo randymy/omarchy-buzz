@@ -110,6 +110,41 @@ do not widen that. They do let such a process switch an offline helper to
 another relay. A new identity belongs to no community; joining still requires
 an invitation or an open room and is not part of this surface.
 
+## File attachments (`attachments`)
+
+Downloads. The panel names an attachment only by `{eventId, hash}`; the helper
+looks it up on a row it verified and still holds (history, older pages or the
+open thread) and fetches only `<relay origin>/media/<hash>.<ext>` with a
+Blossom kind 24242 `t=get` token bound to that blob (`x`) and relay (`server`),
+valid 600 s, sent to no other origin (no redirects, proxies or decompression).
+Bytes are hashed while they are written to a new 0600 file under
+`$XDG_STATE_HOME/omarchy-buzz/downloads/`; a body longer than declared is cut
+off, and only a file whose size and SHA-256 equal the message's `imeta` is kept.
+It is then linked into `~/Downloads` under the sanitized name (no separators,
+controls or leading dot; ` (2)` before the extension instead of replacing a
+file), mode 0600, never executable; anything else is deleted. Previews are the
+same verified download of a JPEG, PNG, GIF or WebP of at most 8 MiB whose first
+bytes match its type (never SVG), kept as `thumbs/<hash>.<ext>` (0600, at most
+64 files and 256 MiB, least recently used first out); QML shows a preview only
+after the helper reports it. Nothing downloaded is executed. `open_download`
+runs `/usr/bin/xdg-open <path>` with a fixed argument vector and the session
+environment `agent-login` gets, and only for a path this helper saved in this
+process that is still a regular non-executable file of this user directly in
+`~/Downloads`; which application opens it is the desktop's MIME choice.
+
+Uploads. The only file QML ever names is the path the user types. The helper
+requires an absolute path without `.`/`..`, a regular file (not a link) owned by
+this user, within the relay's default limits (100 MiB files and video, 50 MiB
+images, 10 MiB GIF), and refuses SVG, JavaScript, HTML, programs (by extension
+and by ELF, PE and Mach-O magic) and the types the relay refuses (audio, other
+image and video containers). Image extensions must match their magic bytes. It
+hashes the file, opens it without following links, checks it is the same inode
+and size, and sends it with a `t=upload` token to `PUT /upload`; the answer must
+be a descriptor for exactly that hash and size on the relay's origin. Uploaded
+files are pending for one draft (room or thread, at most four) and go out as
+`imeta` tags with the message; the relay's own membership, hash and type checks
+still apply. Errors are fixed categories; no URL, path or byte is logged.
+
 ## Release gates
 
 - Upstream WS authentication buffers and frame controls need explicit resource

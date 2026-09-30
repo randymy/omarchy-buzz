@@ -130,6 +130,10 @@ fn apply_loaded_config(
                     s.setup = crate::protocol::JoinSetup::default();
                     s.open_rooms = crate::protocol::OpenRooms::unavailable(None);
                     s.room_action = crate::protocol::RoomAction::default();
+                    s.download = Default::default();
+                    s.thumbnails.clear();
+                    s.pending_attachments.clear();
+                    s.upload = Default::default();
                 }
             });
             Ok(c)
@@ -284,8 +288,16 @@ pub(crate) async fn offline_command(
             // A new member reconnects at once: its identity may now authenticate.
             return invite_redeemed(result, reply, tx);
         }
-        Command::RoomAction(_, _, _, reply) | Command::MintInvite(_, _, reply) => {
+        Command::RoomAction(_, _, _, reply)
+        | Command::MintInvite(_, _, reply)
+        | Command::DownloadAttachment(_, _, reply)
+        | Command::ThumbnailAttachment(_, _, reply)
+        | Command::UploadAttachment(_, _, _, reply) => {
             let _ = reply.send(Some("relay_unavailable"));
+        }
+        // Drafts and saved files do not need the relay.
+        command @ (Command::OpenDownload(..) | Command::RemovePendingAttachment(..)) => {
+            local_media_command(command, tx);
         }
         Command::SendChecked(_, reply) => {
             let _ = reply.send(Some("send_unavailable"));
@@ -305,6 +317,66 @@ pub(crate) async fn offline_command(
         _ => {}
     }
     false
+}
+/// `open_download` and `remove_pending_attachment`: no relay involved.
+fn local_media_command(command: Command, tx: &watch::Sender<Status>) {
+    match command {
+        Command::OpenDownload(path, reply) => {
+            let result = crate::media::Dirs::from_env()
+                .and_then(|dirs| crate::media::openable(&path, &dirs.downloads))
+                .and_then(|path| crate::media::open(&path));
+            let _ = reply.send(result.err());
+        }
+        Command::RemovePendingAttachment(hash, reply) => {
+            let known = tx
+                .borrow()
+                .pending_attachments
+                .iter()
+                .any(|p| p.hash == hash);
+            if known {
+                publish_status(tx, |s| s.pending_attachments.retain(|p| p.hash != hash));
+            }
+            let _ = reply.send((!known).then_some("attachment_unknown"));
+        }
+        _ => {}
+    }
+}
+/// Thread replies as published: attachments bounded per frame.
+fn thread_rows(mut rows: Vec<crate::protocol::ThreadRow>) -> Vec<crate::protocol::ThreadRow> {
+    crate::attachments::bound(
+        rows.iter_mut().map(|r| &mut r.row),
+        crate::attachments::FRAME_THREAD,
+    );
+    rows
+}
+/// A verified preview for an image attachment: the cached file when its bytes
+/// still hash to the attachment, else a verified download kept in the cache.
+async fn thumbnail(
+    keys: &nostr::Keys,
+    relay: &str,
+    attachment: &crate::attachments::Attachment,
+    dirs: &crate::media::Dirs,
+) -> Result<std::path::PathBuf, &'static str> {
+    let (thumbs, cached_attachment) = (dirs.thumbs.clone(), attachment.clone());
+    if let Ok(Some(path)) =
+        tokio::task::spawn_blocking(move || crate::media::cached(&thumbs, &cached_attachment)).await
+    {
+        return Ok(path);
+    }
+    let progress = std::sync::atomic::AtomicU64::new(0);
+    let temp = crate::media::fetch(
+        keys,
+        relay,
+        attachment,
+        &dirs.staging,
+        crate::media::THUMB_SOURCE_BYTES,
+        &progress,
+    )
+    .await?;
+    let (thumbs, attachment) = (dirs.thumbs.clone(), attachment.clone());
+    tokio::task::spawn_blocking(move || crate::media::keep_thumbnail(&temp, &thumbs, &attachment))
+        .await
+        .unwrap_or(Err("attachment_storage_unavailable"))
 }
 fn claiming() -> crate::protocol::JoinSetup {
     crate::protocol::JoinSetup {
@@ -593,6 +665,15 @@ async fn observe_sending(
         if s.invites.state == "minting" {
             s.invites = crate::invites::failed("relay_unavailable");
         }
+        // Transfers run with the connection's identity and end with it.
+        if s.download.state == "downloading" {
+            s.download.state = "failed".into();
+            s.download.category = Some("relay_unavailable".into());
+        }
+        if s.upload.state == "uploading" {
+            s.upload.state = "failed".into();
+            s.upload.category = Some("relay_unavailable".into());
+        }
     });
     // Every exit (Retry, shutdown, failure) closes the live subscription first,
     // under a short deadline; a dead socket is dropped by the caller anyway.
@@ -628,6 +709,15 @@ async fn observe_inner(
     let mut mint_jobs = tokio::task::JoinSet::new();
     let mut open_jobs = tokio::task::JoinSet::new();
     let mut open_ticket = 0_u64;
+    // Attachments: one download, one preview (from a bounded queue) and one
+    // upload at a time; each ends with this connection.
+    let mut download_jobs = tokio::task::JoinSet::new();
+    let download_progress = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let mut progress_due = tokio::time::Instant::now();
+    let mut thumb_jobs = tokio::task::JoinSet::new();
+    let mut thumb_queue: std::collections::VecDeque<crate::attachments::Attachment> =
+        std::collections::VecDeque::new();
+    let mut upload_jobs = tokio::task::JoinSet::new();
     // Re-read open rooms once the catalog settles after a join or leave.
     let mut open_after_catalog = false;
     let mut due = tokio::time::Instant::now();
@@ -771,6 +861,27 @@ async fn observe_inner(
             }
         }};
     }
+    macro_rules! pump_thumbs {
+        () => {{
+            if thumb_jobs.is_empty() {
+                if let (Some(attachment), Ok(dirs)) =
+                    (thumb_queue.pop_front(), crate::media::Dirs::from_env())
+                {
+                    let relay = relay.to_owned();
+                    let keys = keys.clone();
+                    thumb_jobs.spawn(async move {
+                        let result = timeout(
+                            Duration::from_secs(120),
+                            thumbnail(&keys, &relay, &attachment, &dirs),
+                        )
+                        .await
+                        .unwrap_or(Err("relay_unavailable"));
+                        (attachment.hash, result)
+                    });
+                }
+            }
+        }};
+    }
     loop {
         // Only the selected room of a fresh session may hold the live
         // subscription; every path that drops the selection closes it here.
@@ -872,6 +983,60 @@ async fn observe_inner(
                     let relay=relay.to_owned();let keys=keys.clone();
                     mint_jobs.spawn(async move {(crate::invites::mint(&relay,&keys,max_uses,hours).await,reply)});
                 },
+                Some(Command::DownloadAttachment(event_id,hash,reply))=> {
+                    if !download_jobs.is_empty() {let _=reply.send(Some("setup_busy"));continue;}
+                    if !fresh {let _=reply.send(Some("relay_unavailable"));continue;}
+                    let Some(attachment)=crate::media::held(&tx.borrow(),&event_id,&hash) else {let _=reply.send(Some("attachment_unknown"));continue;};
+                    let dirs=match crate::media::Dirs::from_env() {Ok(d)=>d,Err(c)=>{let _=reply.send(Some(c));continue;}};
+                    publish_status(tx,|s|s.download=crate::media::downloading(&event_id,&attachment));
+                    download_progress.store(0,std::sync::atomic::Ordering::Relaxed);
+                    progress_due=tokio::time::Instant::now()+Duration::from_millis(250);
+                    let relay=relay.to_owned();let keys=keys.clone();let progress=download_progress.clone();
+                    download_jobs.spawn(async move {
+                        let result=match timeout(Duration::from_secs(1800),crate::media::fetch(&keys,&relay,&attachment,&dirs.staging,crate::media::DOWNLOAD_CAP,&progress)).await {
+                            Ok(Ok(temp))=>{let (downloads,name)=(dirs.downloads.clone(),attachment.name.clone());
+                                tokio::task::spawn_blocking(move||crate::media::save(&temp,&downloads,&name)).await.unwrap_or(Err("attachment_storage_unavailable"))},
+                            Ok(Err(c))=>Err(c),
+                            Err(_)=>Err("relay_unavailable"),
+                        };
+                        (event_id,attachment,result)
+                    });
+                    let _=reply.send(None);
+                },
+                Some(Command::ThumbnailAttachment(event_id,hash,reply))=> {
+                    if !fresh {let _=reply.send(Some("relay_unavailable"));continue;}
+                    let Some(attachment)=crate::media::held(&tx.borrow(),&event_id,&hash) else {let _=reply.send(Some("attachment_unknown"));continue;};
+                    if attachment.kind!="image" || attachment.size>crate::media::THUMB_SOURCE_BYTES {let _=reply.send(Some("attachment_too_large"));continue;}
+                    let known=tx.borrow().thumbnails.iter().any(|t|t.hash==hash) || thumb_queue.iter().any(|a|a.hash==hash);
+                    if !known {
+                        if thumb_queue.len()>=crate::media::THUMB_QUEUE {let _=reply.send(Some("setup_busy"));continue;}
+                        thumb_queue.push_back(attachment);
+                        pump_thumbs!();
+                    }
+                    let _=reply.send(None);
+                },
+                Some(Command::UploadAttachment(room,root,path,reply))=> {
+                    if !upload_jobs.is_empty() {let _=reply.send(Some("setup_busy"));continue;}
+                    if !fresh {let _=reply.send(Some("relay_unavailable"));continue;}
+                    let scope=crate::media::scope(&room,root.as_deref());
+                    let refused={let status=tx.borrow();
+                        let in_room=status.catalog.rooms.iter().any(|r|r.id==room);
+                        let in_thread=root.as_deref().is_none_or(|root|status.thread.room_id.as_deref()==Some(room.as_str()) && status.thread.root_id.as_deref()==Some(root));
+                        let count=status.pending_attachments.iter().filter(|p|p.scope==scope).count();
+                        !in_room || !in_thread || count>=crate::media::PENDING || status.pending_attachments.len()>=crate::media::PENDING_TOTAL};
+                    if refused {let _=reply.send(Some("attachment_invalid"));continue;}
+                    let candidate=match crate::media::check_upload(&path) {Ok(c)=>c,Err(c)=> {
+                        publish_status(tx,|s|s.upload=crate::protocol::Upload {state:"failed".into(),scope:Some(scope),name:None,category:Some(c.into())});
+                        let _=reply.send(Some(c));continue;}};
+                    publish_status(tx,|s|s.upload=crate::protocol::Upload {state:"uploading".into(),scope:Some(scope.clone()),name:Some(candidate.name.clone()),category:None});
+                    let relay=relay.to_owned();let keys=keys.clone();
+                    upload_jobs.spawn(async move {
+                        let result=timeout(Duration::from_secs(900),crate::media::upload(&keys,&relay,candidate)).await.unwrap_or(Err("relay_unavailable"));
+                        (scope,result)
+                    });
+                    let _=reply.send(None);
+                },
+                Some(command @ (Command::OpenDownload(..) | Command::RemovePendingAttachment(..)))=> {local_media_command(command,tx);},
                 Some(Command::RoomAction(action,request_id,room,reply))=> {
                     if reply.is_closed() {continue;}
                     let prepared={let status=tx.borrow();actions.prepare(action,&request_id,&room,keys,&status,fresh,relay_pin.is_some())};
@@ -1045,6 +1210,53 @@ async fn observe_inner(
                     _=>publish_status(tx,|s|s.setup=crate::join::failed("relay_unavailable")),
                 }
             },
+            _=tokio::time::sleep_until(progress_due), if !download_jobs.is_empty()=> {
+                progress_due=tokio::time::Instant::now()+Duration::from_millis(250);
+                let received=download_progress.load(std::sync::atomic::Ordering::Relaxed);
+                if tx.borrow().download.received!=received {publish_status(tx,|s|if s.download.state=="downloading" {s.download.received=received;});}
+            },
+            result=download_jobs.join_next(), if !download_jobs.is_empty()=> {
+                publish_status(tx,|s|s.download=match result {
+                    Some(Ok((event_id,attachment,Ok(path))))=>crate::protocol::Download {
+                        state:"done".into(),path:Some(path.to_string_lossy().into_owned()),received:attachment.size,
+                        ..crate::media::downloading(&event_id,&attachment)},
+                    Some(Ok((event_id,attachment,Err(category))))=>crate::protocol::Download {
+                        state:"failed".into(),received:0,category:Some(category.into()),
+                        ..crate::media::downloading(&event_id,&attachment)},
+                    _=>crate::protocol::Download {state:"failed".into(),category:Some("relay_unavailable".into()),..s.download.clone()},
+                });
+            },
+            result=thumb_jobs.join_next(), if !thumb_jobs.is_empty()=> {
+                match result {
+                    Some(Ok((hash,Ok(path)))) if path.to_string_lossy().len()<=crate::media::THUMB_PATH_BYTES=>publish_status(tx,|s| {
+                        s.thumbnails.retain(|t|t.hash!=hash);
+                        s.thumbnails.push(crate::protocol::Thumbnail {hash,path:path.to_string_lossy().into_owned()});
+                        if s.thumbnails.len()>crate::media::THUMBNAILS {s.thumbnails.remove(0);}
+                    }),
+                    // A category only; no URL, path or bytes are logged.
+                    Some(Ok((_,Err(category))))=>eprintln!("omarchy-buzz: preview unavailable: {category}"),
+                    _=>{},
+                }
+                pump_thumbs!();
+            },
+            result=upload_jobs.join_next(), if !upload_jobs.is_empty()=> {
+                match result {
+                    Some(Ok((scope,Ok(mut pending))))=> {
+                        pending.scope=scope.clone();
+                        let name=pending.name.clone();
+                        publish_status(tx,|s| {
+                            let count=s.pending_attachments.iter().filter(|p|p.scope==scope).count();
+                            let fits=count<crate::media::PENDING && s.pending_attachments.len()<crate::media::PENDING_TOTAL;
+                            let duplicate=s.pending_attachments.iter().any(|p|p.scope==scope && p.hash==pending.hash);
+                            if fits && !duplicate {s.pending_attachments.push(pending);}
+                            s.upload=if fits || duplicate {crate::protocol::Upload {state:"done".into(),scope:Some(scope),name:Some(name),category:None}}
+                                else {crate::protocol::Upload {state:"failed".into(),scope:Some(scope),name:Some(name),category:Some("attachment_invalid".into())}};
+                        });
+                    },
+                    Some(Ok((scope,Err(category))))=>publish_status(tx,|s|s.upload=crate::protocol::Upload {state:"failed".into(),scope:Some(scope),name:s.upload.name.clone(),category:Some(category.into())}),
+                    _=>publish_status(tx,|s|s.upload=crate::protocol::Upload {state:"failed".into(),category:Some("relay_unavailable".into()),..s.upload.clone()}),
+                }
+            },
             result=mint_jobs.join_next(), if !mint_jobs.is_empty()=> {
                 // The code is published to the panel only; nothing here logs it.
                 match result {
@@ -1198,7 +1410,7 @@ async fn observe_inner(
                             Ok(thread) if thread.room==room && thread.root==root && thread.rows.len()<=crate::thread::ROWS=>Thread {
                                 state:"snapshot".into(),room_id:Some(room.clone()),root_id:Some(root.clone()),
                                 has_more:Some(thread.has_more),category:Some(thread.category.into()),
-                                rows:thread.rows.into_iter().map(|r|crate::protocol::ThreadRow{depth:r.depth,parent:r.parent,row:crate::protocol::HistoryRow{ reactions:None,thread:None,id:r.id,author:r.author_pubkey,time:r.timestamp,text:r.text,edited:r.edited,truncated:r.truncated,unavailable:r.unavailable}}).collect(),
+                                rows:thread_rows(thread.rows.into_iter().map(|r|crate::protocol::ThreadRow{depth:r.depth,parent:r.parent,row:crate::protocol::HistoryRow{ reactions:None,thread:None,id:r.id,author:r.author_pubkey,time:r.timestamp,text:r.text,edited:r.edited,truncated:r.truncated,unavailable:r.unavailable,attachments:r.attachments,attachments_unavailable:r.attachments_unavailable}}).collect()),
                             },
                             Ok(_)=>Thread::unavailable(Some(room.clone()),Some(root.clone()),Some("thread_invalid")),
                             Err(error)=> {
@@ -1473,7 +1685,14 @@ async fn observe_inner(
                     }
                 },
                 Ok(RelayMessage::Ok(ok))=> {
-                    if let Some(delivery)=sender.acknowledge(&ok.event_id,ok.accepted) {publish_status(tx, |s|s.delivery=delivery);}
+                    if let Some(delivery)=sender.acknowledge(&ok.event_id,ok.accepted) {
+                        // Accepted: the attachments it carried leave the draft.
+                        let sent=if delivery.state=="acknowledged" {sender.take_sent_media()} else {None};
+                        publish_status(tx, |s| {
+                            s.delivery=delivery;
+                            if let Some((scope,hashes))=sent {s.pending_attachments.retain(|p|!(p.scope==scope && hashes.contains(&p.hash)));}
+                        });
+                    }
                     else if let Some(view)=actions.acknowledge(&ok.event_id,ok.accepted) {
                         // Re-check joined rooms now; open rooms follow that result.
                         if view.state=="acknowledged" && fresh {jobs.abort_all();catalog_due=tokio::time::Instant::now();open_after_catalog=true;}
@@ -1752,6 +1971,8 @@ mod thread_policy_tests {
                 edited: false,
                 truncated: false,
                 unavailable: false,
+                attachments: vec![],
+                attachments_unavailable: false,
             }],
             has_more: Some(false),
             category: Some("history_completeness_unknown".into()),
@@ -1863,6 +2084,8 @@ mod thread_policy_tests {
                 edited: false,
                 truncated: false,
                 unavailable: false,
+                attachments: vec![],
+                attachments_unavailable: false,
             }],
             has_more: Some(false),
             category: Some("history_completeness_unknown".into()),

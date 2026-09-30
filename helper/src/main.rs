@@ -4,6 +4,7 @@ mod acp_relay_tests;
 mod activity;
 mod agents;
 mod agents_service;
+mod attachments;
 mod auth;
 mod catalog;
 mod compatibility;
@@ -16,6 +17,7 @@ mod ipc;
 mod join;
 mod ledger;
 mod live;
+mod media;
 mod protocol;
 mod query;
 #[cfg(test)]

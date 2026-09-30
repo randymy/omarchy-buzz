@@ -90,6 +90,8 @@ mod tests {
             edited: false,
             truncated: false,
             unavailable: false,
+            attachments: vec![],
+            attachments_unavailable: false,
         }
     }
     #[test]

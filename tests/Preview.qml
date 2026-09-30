@@ -439,6 +439,117 @@ ShellRoot {
         if (protocolService.selectedRecipients.length !== 1 || protocolService.selectedRecipients[0] !== recipientA.key || protocolService.canSend)
           throw new Error("Room draft lost intent or used an unvalidated returning roster")
         protocolService.acceptFrame(recipientFrame(roster, 4))
+        // Attachments: exact shapes against the configured relay, only with the capability.
+        function attachmentFrame(kind, rows, extra) {
+          var value = JSON.parse(historyFrame(kind, 1, roomA.id, rows))
+          value.capabilities.push("attachments")
+          value.status.relay = "wss://relay.example/"
+          value.status.identity = "f".repeat(64)
+          value.status.download = {state:"idle",eventId:null,hash:null,path:null,received:0,size:null,category:null}
+          value.status.thumbnails = []
+          value.status.pendingAttachments = []
+          value.status.upload = {state:"idle",scope:null,name:null,category:null}
+          for (var key in (extra || {})) value.status[key] = extra[key]
+          return JSON.stringify(value)
+        }
+        var pdf = {name:"report.pdf",mime:"application/pdf",size:12345,url:"https://relay.example/media/" + "1".repeat(64) + ".pdf",
+          hash:"1".repeat(64),dim:null,kind:"file"}
+        var png = {name:"shot.png",mime:"image/png",size:2048,url:"https://relay.example/media/" + "2".repeat(64) + ".png",
+          hash:"2".repeat(64),dim:"640x480",kind:"image"}
+        var attachedRow = Object.assign({}, historyRow, {attachments:[pdf, png], attachmentsUnavailable:false})
+        protocolService.beginSession()
+        if (!protocolService.acceptFrame(attachmentFrame("hello", [attachedRow]))
+            || !protocolService.attachmentsSupported || protocolService.messages[0].attachments.length !== 2
+            || protocolService.messages[0].attachments[1].dim !== "640x480" || protocolService.formatSize(12345) !== "12.3 KB")
+          throw new Error("Valid attachments rejected")
+        var badAttachments = [
+          [Object.assign({}, pdf, {url:"https://other.example/media/" + pdf.hash + ".pdf"})],
+          [Object.assign({}, pdf, {url:"http://relay.example/media/" + pdf.hash + ".pdf"})],
+          [Object.assign({}, pdf, {hash:"3".repeat(64)})],
+          [Object.assign({}, pdf, {kind:"image"})],
+          [Object.assign({}, png, {kind:"file"})],
+          [Object.assign({}, pdf, {mime:"image/svg+xml", kind:"image"})],
+          [Object.assign({}, pdf, {name:"../etc/passwd"})],
+          [Object.assign({}, pdf, {name:".hidden"})],
+          [Object.assign({}, pdf, {name:"a\nb"})],
+          [Object.assign({}, pdf, {size:0})],
+          [Object.assign({}, pdf, {size:1073741825})],
+          [Object.assign({}, png, {dim:"16385x1"})],
+          [Object.assign({}, pdf, {extra:true})],
+          [pdf, pdf],
+          [pdf, png, Object.assign({}, pdf, {hash:"4".repeat(64), url:"https://relay.example/media/" + "4".repeat(64) + ".pdf"}),
+            Object.assign({}, pdf, {hash:"5".repeat(64), url:"https://relay.example/media/" + "5".repeat(64) + ".pdf"}),
+            Object.assign({}, pdf, {hash:"6".repeat(64), url:"https://relay.example/media/" + "6".repeat(64) + ".pdf"})]
+        ]
+        for (var b = 0; b < badAttachments.length; b++) {
+          protocolService.beginSession()
+          if (protocolService.acceptFrame(attachmentFrame("hello", [Object.assign({}, historyRow, {attachments:badAttachments[b], attachmentsUnavailable:false})])))
+            throw new Error("Malformed attachment accepted: case " + b)
+        }
+        var badRows = [
+          Object.assign({}, historyRow, {attachments:[pdf], attachmentsUnavailable:true}),
+          Object.assign({}, historyRow, {attachments:[pdf], unavailable:true, attachmentsUnavailable:false}),
+          Object.assign({}, historyRow, {attachments:[]}),
+          Object.assign({}, historyRow, {attachmentsUnavailable:false}),
+          historyRow
+        ]
+        for (var r = 0; r < badRows.length; r++) {
+          protocolService.beginSession()
+          if (protocolService.acceptFrame(attachmentFrame("hello", [badRows[r]]))) throw new Error("Malformed attachment row accepted: case " + r)
+        }
+        protocolService.beginSession()
+        if (protocolService.acceptFrame(historyFrame("hello", 1, roomA.id, [attachedRow])))
+          throw new Error("Attachments accepted without the capability")
+        // More than 48 attachments across the held rows break the frame budget.
+        var many = []
+        for (var m = 0; m < 13; m++) {
+          var four = [0, 1, 2, 3].map(function(i) {
+            var h = (m * 4 + i).toString(16).padStart(2, "0").repeat(32)
+            return Object.assign({}, pdf, {hash:h, url:"https://relay.example/media/" + h + ".pdf"})
+          })
+          many.push(Object.assign({}, historyRow, {id:(m + 16).toString(16).repeat(32).slice(0, 64), attachments:four, attachmentsUnavailable:false}))
+        }
+        protocolService.beginSession()
+        if (protocolService.acceptFrame(attachmentFrame("hello", many))) throw new Error("More than 48 attachments accepted")
+        var goodPending = {scope:roomA.id, name:"notes.pdf", mime:"application/pdf", size:3210, url:"https://relay.example/media/" + "7".repeat(64) + ".pdf", hash:"7".repeat(64), dim:null}
+        var transferCases = [
+          [{download:{state:"done",eventId:"a".repeat(64),hash:pdf.hash,path:"/home/u/Downloads/report.pdf",received:12345,size:12345,category:null},
+            thumbnails:[{hash:png.hash,path:"/home/u/.local/state/omarchy-buzz/thumbs/" + png.hash + ".png"}],
+            pendingAttachments:[goodPending, Object.assign({}, goodPending, {scope:roomA.id + ":" + "a".repeat(64)})],
+            upload:{state:"uploading",scope:roomA.id,name:"notes.pdf",category:null}}, true],
+          [{download:{state:"failed",eventId:"a".repeat(64),hash:pdf.hash,path:null,received:0,size:12345,category:"attachment_mismatch"},
+            upload:{state:"failed",scope:null,name:null,category:"attachment_type_refused"}}, true],
+          [{download:{state:"done",eventId:"a".repeat(64),hash:pdf.hash,path:"relative/report.pdf",received:12345,size:12345,category:null}}, false],
+          [{download:{state:"done",eventId:"a".repeat(64),hash:pdf.hash,path:"/home/u/../x",received:12345,size:12345,category:null}}, false],
+          [{download:{state:"downloading",eventId:"a".repeat(64),hash:pdf.hash,path:null,received:12346,size:12345,category:null}}, false],
+          [{download:{state:"failed",eventId:"a".repeat(64),hash:pdf.hash,path:null,received:0,size:12345,category:"secret"}}, false],
+          [{download:{state:"idle",eventId:null,hash:null,path:null,received:0,size:null,category:null,extra:1}}, false],
+          [{thumbnails:[{hash:png.hash,path:"/tmp/" + pdf.hash + ".png"}]}, false],
+          [{thumbnails:[{hash:png.hash,path:"/tmp/" + png.hash + ".svg"}]}, false],
+          [{thumbnails:Array(65).fill(0).map(function(_, i) { var h = i.toString(16).padStart(2, "0").repeat(32); return {hash:h, path:"/t/" + h + ".png"} })}, false],
+          [{pendingAttachments:[Object.assign({}, goodPending, {scope:"room"})]}, false],
+          [{pendingAttachments:[goodPending, goodPending]}, false],
+          [{pendingAttachments:[Object.assign({}, goodPending, {url:"https://other.example/media/" + goodPending.hash + ".pdf"})]}, false],
+          [{upload:{state:"uploading",scope:null,name:"notes.pdf",category:null}}, false],
+          [{upload:{state:"idle",scope:roomA.id,name:null,category:null}}, false]
+        ]
+        for (var t = 0; t < transferCases.length; t++) {
+          protocolService.beginSession()
+          if (protocolService.acceptFrame(attachmentFrame("hello", [attachedRow], transferCases[t][0])) !== transferCases[t][1])
+            throw new Error("Transfer view validation wrong: case " + t)
+        }
+        protocolService.beginSession()
+        protocolService.acceptFrame(attachmentFrame("hello", [attachedRow], transferCases[1][0]))
+        if (protocolService.downloadedPath("a".repeat(64), pdf.hash) !== ""
+            || protocolService.downloadLabelFor("a".repeat(64), pdf.hash) !== "The file did not match what the message describes, so it was not kept.")
+          throw new Error("Failed download label wrong")
+        protocolService.beginSession()
+        protocolService.acceptFrame(attachmentFrame("hello", [attachedRow], transferCases[0][0]))
+        if (protocolService.pendingFor("").length !== 1 || protocolService.pendingFor("a".repeat(64)).length !== 1
+            || protocolService.thumbnailUrl(png.hash) !== "file:///home/u/.local/state/omarchy-buzz/thumbs/" + png.hash + ".png"
+            || protocolService.downloadedPath("a".repeat(64), pdf.hash) !== "/home/u/Downloads/report.pdf"
+            || protocolService.uploadLabelFor("") !== "Uploading notes.pdf…" || protocolService.uploadLabelFor("a".repeat(64)) !== "")
+          throw new Error("Transfer views not projected per draft")
         if (Quickshell.env("BUZZ_PREVIEW_SEND")) {
           protocolService.newDraft()
           protocolService.updateDraft("A synthetic draft. No helper is running in this screenshot.")

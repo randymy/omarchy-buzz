@@ -157,6 +157,10 @@ Column {
         id: body
         objectName: "buzzMessageBody"
         width: parent.width
+        // An attachment-only message has no text line of its own.
+        visible: !(root.ready && !root.sample && root.row.text === "" && !root.row.unavailable && !root.row.edited
+          && !root.row.truncated && Array.isArray(root.row.attachments) && root.row.attachments.length > 0)
+        height: visible ? implicitHeight : 0
         text: !root.ready ? "" : root.sample ? root.row.text : (root.row.unavailable ? "Content unavailable" : root.row.text)
           + (root.row.edited ? " (edited)" : "") + (root.row.truncated ? " [truncated]" : "")
         textFormat: TextEdit.PlainText
@@ -174,6 +178,135 @@ Column {
           copy()
           deselect()
         }
+      }
+      // Attachments: verified by the helper before anything is saved or shown.
+      Repeater {
+        model: root.ready && !root.sample && !root.row.unavailable && Array.isArray(root.row.attachments) ? root.row.attachments : []
+        delegate: Rectangle {
+          id: card
+          required property var modelData
+          readonly property string target: root.row.id + ":" + modelData.hash
+          readonly property string thumb: root.service.thumbnailUrl(modelData.hash)
+          readonly property string saved: root.service.downloadedPath(root.row.id, modelData.hash)
+          readonly property string note: root.service.downloadLabelFor(root.row.id, modelData.hash)
+          objectName: "buzzAttachment"
+          width: Math.min(parent ? parent.width : 0, Style.space(420))
+          height: cardColumn.implicitHeight + Style.space(12)
+          radius: Style.cornerRadius
+          color: Util.alpha(Color.foreground, 0.04)
+          border.color: Util.alpha(Color.foreground, 0.16)
+          Component.onCompleted: root.service.wantThumbnail(root.row.id, modelData)
+          Column {
+            id: cardColumn
+            x: Style.space(6)
+            y: Style.space(6)
+            width: card.width - Style.space(12)
+            spacing: Style.space(4)
+            // Shown only once the helper reports a verified image file.
+            Image {
+              objectName: "buzzAttachmentThumb"
+              visible: card.thumb !== "" && status === Image.Ready
+              width: Math.min(cardColumn.width, implicitWidth)
+              height: visible ? Math.min(Style.space(180), implicitHeight * (width / Math.max(1, implicitWidth))) : 0
+              source: card.thumb
+              sourceSize.height: Style.space(360)
+              fillMode: Image.PreserveAspectFit
+              asynchronous: true
+              cache: false
+              smooth: true
+              MouseArea {
+                anchors.fill: parent
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.service.downloadAttachment(root.row.id, card.modelData.hash)
+              }
+            }
+            RowLayout {
+              width: cardColumn.width
+              spacing: Style.space(6)
+              Text {
+                text: card.modelData.kind === "image" ? "🖼" : card.modelData.kind === "video" ? "🎞" : "📄"
+                textFormat: Text.PlainText
+                color: Color.foreground
+                font.family: Style.font.family
+                font.pixelSize: Style.font.body
+              }
+              Text {
+                objectName: "buzzAttachmentName"
+                Layout.fillWidth: true
+                text: card.modelData.name
+                textFormat: Text.PlainText
+                elide: Text.ElideMiddle
+                color: Color.foreground
+                font.family: Style.font.family
+                font.pixelSize: Style.font.caption
+                Controls.ToolTip.visible: nameHover.containsMouse
+                Controls.ToolTip.text: card.modelData.name + " · " + card.modelData.mime
+                MouseArea {
+                  id: nameHover
+                  anchors.fill: parent
+                  hoverEnabled: true
+                  acceptedButtons: Qt.NoButton
+                }
+              }
+              Text {
+                objectName: "buzzAttachmentSize"
+                text: root.service.formatSize(card.modelData.size)
+                textFormat: Text.PlainText
+                color: Color.foreground
+                opacity: 0.6
+                font.family: Style.font.family
+                font.pixelSize: Style.font.caption
+              }
+              Ui.Button {
+                objectName: "buzzAttachmentDownload"
+                text: "Download"
+                tooltipText: "Save to Downloads after checking it matches the message"
+                fontSize: Style.font.caption
+                horizontalPadding: Style.space(6)
+                verticalPadding: Style.space(2)
+                focusable: true
+                // Busy is refused by the service, not by disabling the control under the pointer.
+                enabled: root.service.attachmentsAvailable
+                opacity: root.service.downloadBusy ? 0.5 : 1
+                onClicked: root.service.downloadAttachment(root.row.id, card.modelData.hash)
+              }
+              Ui.Button {
+                objectName: "buzzAttachmentOpen"
+                visible: card.saved !== ""
+                text: "Open"
+                tooltipText: card.saved
+                fontSize: Style.font.caption
+                horizontalPadding: Style.space(6)
+                verticalPadding: Style.space(2)
+                focusable: true
+                onClicked: root.service.openDownload(card.saved)
+              }
+            }
+            Text {
+              objectName: "buzzAttachmentStatus"
+              visible: card.note !== ""
+              width: cardColumn.width
+              text: card.note
+              textFormat: Text.PlainText
+              wrapMode: Text.Wrap
+              color: Color.foreground
+              opacity: 0.7
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+            }
+          }
+        }
+      }
+      Text {
+        objectName: "buzzAttachmentUnavailable"
+        visible: root.ready && !root.sample && root.row.attachmentsUnavailable === true
+        text: "attachment unavailable"
+        textFormat: Text.PlainText
+        color: Color.foreground
+        opacity: 0.5
+        font.family: Style.font.family
+        font.pixelSize: Style.font.caption
+        font.italic: true
       }
       Row {
         objectName: "buzzMessageReactions"

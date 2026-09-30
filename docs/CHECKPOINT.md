@@ -2275,3 +2275,98 @@ Upstream references are to the pinned Buzz `781d3951`.
   `url` host behind a proxy (a different host is refused as malformed), and
   opening the `buzz://` link in Buzz Desktop. A panel older than this one
   refuses a helper announcing 17 capabilities: update both together.
+
+## File attachments: show, download and upload — September 30
+
+Branch `attachments` (not merged or installed; no real relay contacted).
+Upstream references are to the pinned Buzz `781d3951`; the research map is
+[ATTACHMENTS_MAP.md](ATTACHMENTS_MAP.md).
+
+- Rows (`history`, older pages, thread replies) carry `attachments` (always
+  present, at most four, from the event supplying the content, so an edit's
+  tags replace the original's) and `attachmentsUnavailable`. Each is
+  `{name, mime, size, url, hash, dim, kind}` parsed strictly from `imeta`
+  (`crates/buzz-relay/src/handlers/imeta.rs:10-200`): relay keys only, `url, m,
+  x, size` required, `url` exactly `<relay http origin>/media/<hash>.<ext>` with
+  the hash equal to `x`, size 1 B–1 GiB, `dim` ≤ 16384², the relay's filename
+  rule; `kind` `image` only for JPEG/PNG/GIF/WebP. A malformed tag makes that
+  row's list empty and unavailable, never the page. Desktop's redundant last
+  markdown lines (`![image](url)`, `![video](url)`, `[label](url)`,
+  `imetaMediaMarkdown.ts:282-312`) are removed from the shown text.
+- Frame budget: four attachments on each of 300 rows would not fit the 1 MiB
+  status frame (the baseline worst case was already ≈1.0 MB). At most 48
+  attachments are projected across held channel rows and 48 across thread
+  replies, newest rows first; later ones read `attachmentsUnavailable`. The
+  largest-frame test now measures 996 642 bytes (thread replies in that test no
+  longer carry the reaction/summary fields `auth` never gives them).
+- Capability `attachments` (18th). Requests `download_attachment {eventId,
+  hash}`, `thumbnail_attachment {eventId, hash}`, `open_download {path}`,
+  `upload_attachment {roomId, rootId?, path}` (the draft scope needs the room
+  and thread, both composers being visible), `remove_pending_attachment {hash}`.
+  Status `download {state, eventId, hash, path, received, size, category}`,
+  `thumbnails [{hash, path}]` (≤ 64), `pendingAttachments [{scope, name, mime,
+  size, url, hash, dim}]` (scope `<room>` or `<room>:<root>`, ≤ 4 per scope,
+  ≤ 16), `upload {state, scope, name, category}` (added for progress captions).
+  Categories `attachment_unknown`, `attachment_forbidden`, `attachment_mismatch`,
+  `attachment_too_large`, `attachment_invalid`, `attachment_type_refused`,
+  `attachment_storage_unavailable` (local disk; added), `relay_unavailable`,
+  `setup_busy`. One download, one upload, one preview at a time (preview queue
+  16); all need an authenticated session and end with the connection. A relay or
+  identity change clears every attachment view.
+- Tokens (`helper/src/media.rs`): kind 24242, content `Get buzz-media` /
+  `Upload buzz-media`, tags `t`, `x`, `expiration` (now + 600 for get, + 300 or
+  + 3600 for video uploads, Desktop's values:
+  `desktop/src-tauri/src/commands/media.rs:300,311-339,362-381,420-424`),
+  `server` = `host[:port]` (`extract_server_authority`, `media.rs:50-57`),
+  `Authorization: Nostr <base64url, no padding>` (`media.rs:330-333,430-433`;
+  the relay also accepts standard base64, `api/media.rs:1093`). Desktop's get
+  token is server-scoped only; ours adds `x` (the relay accepts `x` or
+  `server`, `crates/buzz-media/src/auth.rs:207-239`). Download: `GET` the URL,
+  200 only; 401/403 `attachment_forbidden`; any other status or redirect
+  `relay_unavailable`. Upload: `PUT <origin>/upload` with `X-SHA-256`,
+  `Content-Type` (advisory, by extension), `Content-Length`, the file streamed
+  (`api/media.rs:248-343`); 401/403 forbidden, 413 too large, 415/422 type
+  refused (`crates/buzz-media/src/error.rs:112-167`); the `BlobDescriptor` must
+  have known keys only, the same `sha256` and `size`, a media URL on the origin
+  with that hash, and for images the declared type (`types.rs:1-29`). No
+  `/media/upload` fallback.
+- Where files land: partial downloads `$XDG_STATE_HOME/omarchy-buzz/downloads/
+  <uuid>.part` (0700 directory, 0600 files, removed on any failure); verified
+  saves `~/Downloads/<name>` (hard link, or copy across file systems; 0600);
+  previews `$XDG_STATE_HOME/omarchy-buzz/thumbs/<hash>.<ext>`.
+- `send_message` adds the draft's pending attachments as `imeta` tags in
+  Desktop's order `url, m, x, size, dim, filename` (`buildImetaTags`,
+  `imetaMediaMarkdown.ts:89-107`; passed to `buzz_sdk::build_message`'s
+  `media_tags`, `builders.rs:208-213,240-263`) and appends Desktop's markdown
+  line per attachment (`buildOutgoingMessage`, `:326-341`). The text may be
+  empty when attachments are pending. The relay's exact-ID acceptance removes
+  exactly those attachments from the draft; rejection or unknown keeps them.
+- Panel: cards under the text (`buzzAttachment`: icon, name, `12.3 KB`,
+  **Download**, **Open** with the saved path as tooltip after a verified save,
+  progress and refusal captions), the verified preview at most `Style.space(180)`
+  high (click downloads), `attachment unavailable` for malformed metadata; the
+  composer's 📎 next to `@` reveals a path field and **Attach**, lists pending
+  files with ×, and Send includes them. Service validates every new field
+  exactly (URL against the configured relay's origin, names, scopes, paths).
+  Attach/Download stay enabled while busy (the service refuses): an `Ui.Button`
+  disabled under the pointer keeps its tooltip over the next control.
+- Evidence (synthetic): Rust `attachments_tests` (valid, missing keys, off-relay
+  URLs, hash mismatch, sizes/dims/types/keys, fifth ignored, names, markdown
+  stripping, reducer rows, frame budget), `media_tests` (token shape, saved
+  download with unique name and 0600, mismatch/403/401/cut-off/short/redirect/
+  404 leave nothing, oversized length, save-name refusals, preview cache and
+  LRU, upload candidate checks, descriptor strictness, exact upload request and
+  status mapping, replaced file refused), sending (exact `imeta` tags and
+  content lines, blank text only with attachments, acceptance releases exactly
+  the draft's), IPC gating, largest frame; `scripts/preview --attachments`;
+  extended `Preview.qml` validation; every preview mode, `--bridge` and
+  `tests/helper_smoke.py` pass.
+- Not verified: any transfer against a real relay (token acceptance, NIP-43
+  membership on media routes, the descriptor URL host behind a proxy — a
+  different host is refused), relay acceptance of our `imeta` tags and of images
+  carrying metadata (Desktop re-encodes images to strip it; the helper does not,
+  so such an image may be refused as `attachment_type_refused`), `xdg-open`
+  from the systemd user service (it needs `WAYLAND_DISPLAY` etc. in that
+  environment), the observer wiring end to end (covered by unit, IPC and
+  fixture tests only), and the panel in the live shell. A panel older than this
+  one refuses a helper announcing 18 capabilities: update both together.

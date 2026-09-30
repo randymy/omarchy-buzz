@@ -37,6 +37,8 @@ fn selected_root(status: &mut Status, room: &str, root: &str) {
             edited: false,
             truncated: false,
             unavailable: false,
+            attachments: vec![],
+            attachments_unavailable: false,
         }],
         has_more: Some(false),
         category: None,
@@ -479,18 +481,20 @@ fn in_flight_replay_and_other_request_preserve_original_receipt() {
 fn distinct_requests_same_second_sign_distinct_events() {
     let (_sender, mut intent, keys, _status, path) = fixture();
     let stamp = nostr::Timestamp::from(1700000000);
-    let first = build_event(&intent, &keys, &[], Some(stamp)).unwrap();
+    let first = build_event(&intent, &keys, &[], &[], Some(stamp)).unwrap();
     first.verify().unwrap();
     assert!(first
         .tags
         .iter()
         .any(|t| t.as_slice() == ["omarchy-buzz-request", intent.request_id.as_str()]));
     assert_eq!(
-        build_event(&intent, &keys, &[], Some(stamp)).unwrap().id,
+        build_event(&intent, &keys, &[], &[], Some(stamp))
+            .unwrap()
+            .id,
         first.id
     );
     intent.request_id = uuid::Uuid::new_v4().to_string();
-    let second = build_event(&intent, &keys, &[], Some(stamp)).unwrap();
+    let second = build_event(&intent, &keys, &[], &[], Some(stamp)).unwrap();
     second.verify().unwrap();
     assert_eq!(first.created_at, second.created_at);
     assert_ne!(first.id, second.id);
@@ -575,5 +579,133 @@ fn stream_messages_tag_only_explicit_mentions() {
     let (_, event) = sender.prepare(intent, "ws://127.0.0.1/", &keys, &status, true, true);
     assert!(!event.unwrap().tags.iter().any(|t| t.as_slice()[0] == "p"));
     drop(sender);
+    std::fs::remove_dir_all(path).unwrap();
+}
+fn pending(scope: &str, n: u8, mime: &str, name: &str, dim: Option<&str>) -> PendingAttachment {
+    let hash = format!("{n:02x}").repeat(32);
+    let ext = if mime == "image/png" { "png" } else { "pdf" };
+    PendingAttachment {
+        scope: scope.into(),
+        name: name.into(),
+        mime: mime.into(),
+        size: 1000 + u64::from(n),
+        url: format!("https://relay.example/media/{hash}.{ext}"),
+        hash,
+        dim: dim.map(str::to_owned),
+    }
+}
+#[test]
+fn pending_attachments_travel_as_imeta_tags_and_markdown_lines() {
+    let (mut sender, intent, keys, mut status, path) = fixture();
+    let image = pending(&intent.room, 1, "image/png", "shot.png", Some("640x480"));
+    let file = pending(&intent.room, 2, "application/pdf", "Q3 [final].pdf", None);
+    // Another draft's attachment stays out of this message.
+    let other = pending(
+        &format!("{}:{}", intent.room, "a".repeat(64)),
+        3,
+        "image/png",
+        "x.png",
+        None,
+    );
+    status.pending_attachments = vec![image.clone(), other.clone(), file.clone()];
+    let (delivery, event) = sender.prepare(
+        intent.clone(),
+        "wss://relay.example/",
+        &keys,
+        &status,
+        true,
+        true,
+    );
+    assert_eq!(delivery.state, "sending");
+    let event = event.unwrap();
+    assert_eq!(
+        event.content,
+        format!(
+            "synthetic message\n![image]({})\n[Q3 \\[final\\].pdf]({})",
+            image.url, file.url
+        )
+    );
+    let imeta: Vec<Vec<String>> = event
+        .tags
+        .iter()
+        .filter(|t| t.as_slice()[0] == "imeta")
+        .map(|t| t.as_slice().to_vec())
+        .collect();
+    assert_eq!(
+        imeta,
+        vec![
+            vec![
+                "imeta".to_string(),
+                format!("url {}", image.url),
+                "m image/png".into(),
+                format!("x {}", image.hash),
+                "size 1001".into(),
+                "dim 640x480".into(),
+                "filename shot.png".into(),
+            ],
+            vec![
+                "imeta".to_string(),
+                format!("url {}", file.url),
+                "m application/pdf".into(),
+                format!("x {}", file.hash),
+                "size 1002".into(),
+                "filename Q3 [final].pdf".into(),
+            ],
+        ]
+    );
+    // The panel's own parser reads the message back as sent, without the lines.
+    let (list, broken, text) = crate::attachments::project(&event, "https://relay.example");
+    assert!(!broken);
+    assert_eq!(text, "synthetic message");
+    assert_eq!(
+        list.iter().map(|a| a.hash.as_str()).collect::<Vec<_>>(),
+        [image.hash.as_str(), file.hash.as_str()]
+    );
+    // Accepted: exactly this draft's attachments are released.
+    let id = event.id.to_hex();
+    assert_eq!(sender.acknowledge(&id, true).unwrap().state, "acknowledged");
+    assert_eq!(
+        sender.take_sent_media(),
+        Some((
+            intent.room.clone(),
+            vec![image.hash.clone(), file.hash.clone()]
+        ))
+    );
+    assert_eq!(sender.take_sent_media(), None);
+    std::fs::remove_dir_all(path).unwrap();
+}
+#[test]
+fn a_blank_text_is_sent_only_with_attachments() {
+    let (mut sender, mut intent, keys, mut status, path) = fixture();
+    intent.text = " ".into();
+    let (delivery, event) = sender.prepare(
+        intent.clone(),
+        "wss://relay.example/",
+        &keys,
+        &status,
+        true,
+        true,
+    );
+    assert_eq!(delivery.category.as_deref(), Some("send_invalid"));
+    assert!(event.is_none());
+    intent.text = String::new();
+    status.pending_attachments = vec![pending(&intent.room, 1, "image/png", "a.png", None)];
+    let (delivery, event) = sender.prepare(
+        intent.clone(),
+        "wss://relay.example/",
+        &keys,
+        &status,
+        true,
+        true,
+    );
+    assert_eq!(delivery.state, "sending");
+    let event = event.unwrap();
+    assert_eq!(
+        event.content,
+        format!("\n![image]({})", status.pending_attachments[0].url)
+    );
+    // A rejected event keeps its attachments in the draft.
+    sender.acknowledge(&event.id.to_hex(), false);
+    assert_eq!(sender.take_sent_media(), None);
     std::fs::remove_dir_all(path).unwrap();
 }

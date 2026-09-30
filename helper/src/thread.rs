@@ -35,6 +35,8 @@ pub struct Row {
     pub depth: u8,
     /// The root for depth 1, else an earlier displayed row.
     pub parent: String,
+    pub attachments: Vec<crate::attachments::Attachment>,
+    pub attachments_unavailable: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -253,6 +255,7 @@ impl Pages {
     fn project(
         &self,
         relay: PublicKey,
+        origin: &str,
         room: Uuid,
         root: EventId,
         capped: bool,
@@ -350,10 +353,12 @@ impl Pages {
             depths.insert(id.clone(), depth);
             let unavailable = uncertain.contains(&id);
             let edit = latest.get(&id);
-            let (body, truncated) = if unavailable {
-                (String::new(), false)
+            let (attachments, attachments_unavailable, (body, truncated)) = if unavailable {
+                (Vec::new(), false, (String::new(), false))
             } else {
-                text(edit.map_or(original.content.as_str(), |e| e.content.as_str()))
+                let (list, broken, content) =
+                    crate::attachments::project(edit.copied().unwrap_or(original), origin);
+                (list, broken, text(&content))
             };
             rows.push(Row {
                 author_pubkey: author(original, relay)?.to_hex(),
@@ -365,6 +370,8 @@ impl Pages {
                 depth,
                 parent: parent.clone(),
                 id,
+                attachments,
+                attachments_unavailable,
             });
         }
         Ok(Thread {
@@ -411,6 +418,7 @@ pub async fn fetch(
     if root.to_hex() != root_hex {
         return Err("thread_invalid_root");
     }
+    let origin = crate::attachments::origin(relay_url).map_err(|_| "thread_invalid_shape")?;
     let mut pages = Pages::default();
     let mut after = None;
     for _ in 0..PAGES {
@@ -418,10 +426,10 @@ pub async fn fetch(
         let events = page(relay_url, keys, &request).await?;
         match pages.add(room, root, after, events, Timestamp::now().as_secs())? {
             Some(next) => after = Some(next),
-            None => return pages.project(signer, room, root, false),
+            None => return pages.project(signer, &origin, room, root, false),
         }
     }
-    pages.project(signer, room, root, true)
+    pages.project(signer, &origin, room, root, true)
 }
 
 #[cfg(test)]
