@@ -2149,3 +2149,37 @@ network) and swapped in; the agent started without `--channels` and answered
 the owner's direct message with no mention. Follow-up: install the launcher
 scripts with the helper package, make `--check` report `stale` when a bundle's
 launcher differs from the installed scripts, and offer a refresh from the panel.
+
+## Stale harness bundles: detection and refresh — September 30 evening
+
+Branch `bundle-refresh` (not installed). Follow-up to the entry above: a bundle
+assembled before a launcher change kept running the old `room-agent` while
+`--check` said `ready`.
+
+- `agent-bundle <harness> --check [--scripts DIR]` also compares every
+  `launcher/` file with the same-named script (default the installed
+  `~/.local/share/omarchy-buzz/scripts`, else the checkout's `scripts/`) and
+  prints `stale` (exit 3, `launcher_outdated`) on any difference or a file
+  missing on either side; a `launcher/` file that differs from `bundle.json` is
+  also `stale`, anything else still `missing`. Assembly records the source
+  script hashes in `bundle.json` (`scriptSources`).
+- `agent-bundle <harness> --refresh-launcher` replaces only `launcher/`
+  (`room-agent`, `room-sandbox`, `agent-login`, `agent-bundle`): staged inside
+  the bundle, swapped in with `renameat2(RENAME_EXCHANGE)`, then `bundle.json`
+  replaced with one rename. It refuses a missing bundle, any mismatch outside
+  `launcher/`, and a linked, foreign-owned or group/other-writable script
+  source or scripts directory.
+- Service: `harnesses[].bundle` is `ready|stale|missing`, read with the
+  **installed** `agent-bundle` (no longer the bundle's own copy, which cannot
+  know the comparison); `refresh_bundle {harness}` runs the refresh and
+  re-reads readiness; `start_agent` refuses a stale bundle with `bundle_stale`.
+- Panel: the agent editor shows `Harness bundle needs a refresh` with a
+  `Refresh bundle` control and holds Start (tooltip gives the reason); the
+  harness chooser labels it `· needs refresh`.
+
+Not verified: a refresh of a real installed bundle, the service reading
+`stale` from real scripts, and the panel against the real service. The service
+now needs `agent-bundle` in `~/.local/share/omarchy-buzz/scripts/` (the
+installer change is the maintainer's); until it is there every bundle reads
+`missing`. `bin/room-agent-entry` and the `bin/` wrapper copies are not
+compared or refreshed; a change to them still needs a reassembled bundle.
