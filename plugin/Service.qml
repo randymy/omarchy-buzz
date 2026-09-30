@@ -175,6 +175,12 @@ Item {
   property var threadRows: []
   property var threadHasMore: null
   property string pendingThreadRequestId: ""
+  // The helper blanks its views while it re-checks joined rooms (about every 30 seconds).
+  // Within one authenticated scope the displayed snapshots stay until the helper's
+  // views are re-established in order: catalog, history, recipients, open thread.
+  property string resyncStage: ""
+  // A submission made during that check is written once the helper can validate it.
+  property string heldSubmission: ""
   property int threadRetryBudget: 0
   property string threadRetryRoom: ""
   property string threadRetryRoot: ""
@@ -344,12 +350,21 @@ Item {
     if (!bridge.running) return false
     var request = prepareSubmission()
     if (!request) return false
+    if (resyncStage !== "") { heldSubmission = JSON.stringify(request); return true }
     bridge.write(JSON.stringify(request) + "\n")
     deliveryTimeout.restart()
     return true
   }
+  function dropHeldSubmission() {
+    if (heldSubmission === "") return false
+    // Nothing was written, so this outcome is a known failure with the draft retained.
+    heldSubmission = ""
+    if (deliveryState === "sending") { deliveryState = "failed"; deliveryCategory = "send_unavailable" }
+    return true
+  }
   function losePendingDelivery() {
     deliveryTimeout.stop()
+    if (dropHeldSubmission()) return
     if (deliveryState === "sending") { deliveryState = "unknown"; deliveryCategory = "delivery_unknown" }
   }
   function validatedDelivery(delivery) {
@@ -411,7 +426,27 @@ Item {
     deliveryCategory = ""
     return true
   }
+  function endResync(settled) {
+    resyncTimeout.stop()
+    resyncStage = ""
+    if (heldSubmission === "") return
+    if (settled === true && bridge.running && deliveryState === "sending" && generation === submissionGeneration
+        && instanceId === submissionInstance) {
+      bridge.write(heldSubmission + "\n")
+      heldSubmission = ""
+      deliveryTimeout.restart()
+    } else dropHeldSubmission()
+  }
+  function advanceResync(stage) {
+    if (stage === "thread" && (threadRootId === "" || threadState !== "snapshot")) stage = ""
+    if (stage === "") { endResync(true); return }
+    resyncStage = stage
+    if (stage === "history") refreshHistory()
+    else if (stage === "recipients") refreshRecipients()
+    else if (stage === "thread") { pendingThreadRequestId = ""; refreshThread() }
+  }
   function clearHistory() {
+    endResync()
     clearThread()
     activityObservation = ActivityObserver.fresh()
     pendingHistoryRequestId = ""
@@ -487,14 +522,22 @@ Item {
     recipientsCategory = ""
     recipientsPartial = false
   }
+  function recipientsRetained() {
+    return recipientsState === "snapshot" && recipientsRoomId === selectedRoomId && selectedRoomId !== ""
+  }
   function refreshRecipients() {
-    clearRecipients()
-    if (sampleMode || !recipientsSupported || connection !== "authenticated" || !selectedRoom) return
+    var available = !sampleMode && recipientsSupported && connection === "authenticated" && selectedRoom
+    // Refreshing the roster already on screen keeps its names and mentions visible.
+    if (available && recipientsRetained()) {
+      recipientsRetry.stop()
+      pendingRecipientsRequestId = ""
+    } else clearRecipients()
+    if (!available) return
     recipientsRetryBudget = 2
     recipientsRetryRoom = selectedRoomId
     recipientsRetryInstance = instanceId
     recipientsRetryGeneration = generation
-    recipientsState = "loading"
+    if (recipientsState !== "snapshot") recipientsState = "loading"
     send("fetch_recipients", selectedRoomId)
   }
   function validatedRecipients(value) {
@@ -658,8 +701,12 @@ Item {
         deliveryCategory = frame.category === "request_busy" ? "send_busy" : frame.category
       }
       if (frame.id === pendingHistoryRequestId) {
-        clearHistory()
-        historyCategory = "request_busy"
+        // A busy refresh of a displayed snapshot leaves it for the next automatic update.
+        if (historyState === "snapshot") pendingHistoryRequestId = ""
+        else {
+          clearHistory()
+          historyCategory = "request_busy"
+        }
       }
       if (frame.id === pendingThreadRequestId) {
         pendingThreadRequestId = ""
@@ -673,8 +720,11 @@ Item {
         }
       }
       if (frame.id === pendingRecipientsRequestId) {
-        clearRecipients()
-        recipientsCategory = "recipients_unavailable"
+        if (recipientsRetained()) pendingRecipientsRequestId = ""
+        else {
+          clearRecipients()
+          recipientsCategory = "recipients_unavailable"
+        }
         if (frame.category === "request_busy" && recipientsRetryBudget > 0) {
           recipientsRetryBudget--
           recipientsRetry.restart()
@@ -745,12 +795,22 @@ Item {
     draftScopeKey = incomingScope
     if (state.connection !== "authenticated") losePendingDelivery()
     var previousCatalogState = catalogState
+    var resyncingCatalog = resyncStage === "catalog"
     if (state.connection !== "authenticated") catalog = {state: "unavailable", rooms: [], category: ""}
     if (frame.generation !== generation || state.connection !== "authenticated") clearCatalog()
     var selectedBeforeCatalog = selectedRoomId
-    if (!sameProjection(catalogRooms, catalog.rooms)) catalogRooms = catalog.rooms
-    catalogState = catalog.state
-    catalogCategory = catalog.category
+    var quietCatalog = catalog.state === "loading" && frame.instanceId === instanceId && connection === "authenticated"
+      && (resyncStage !== "" || (["partial", "ready"].indexOf(catalogState) !== -1 && selectedRoom !== null && historyState === "snapshot"))
+    if (quietCatalog) {
+      if (resyncStage === "") {
+        resyncStage = "catalog"
+        resyncTimeout.restart()
+      }
+    } else {
+      if (!sameProjection(catalogRooms, catalog.rooms)) catalogRooms = catalog.rooms
+      catalogState = catalog.state
+      catalogCategory = catalog.category
+    }
     if (["partial", "ready"].indexOf(catalogState) !== -1
         && !catalogRooms.some(function(room) { return room.id === root.selectedRoomId })) {
       clearHistory()
@@ -790,21 +850,30 @@ Item {
       if (thread.state !== "loading") {
         threadRetry.stop()
         pendingThreadRequestId = ""
+        if (resyncStage === "thread") endResync(true)
       }
-    } else if (thread && thread.rootId === null && threadState !== "loading") clearThread()
+    } else if (thread && thread.rootId === null && threadState !== "loading"
+        && (resyncStage === "" || (resyncStage === "thread" && thread.category === "thread_access_denied"))) {
+      var resyncing = resyncStage !== ""
+      clearThread()
+      if (resyncing) endResync(true)
+    }
     if (state.connection !== "authenticated" || !supportsRecipients || ["loading", "unavailable"].indexOf(catalogState) !== -1) clearRecipients()
     else if (recipients && recipients.roomId === selectedRoomId && selectedRoomId !== "") {
-      recipientsRoomId = recipients.roomId
-      if (!sameProjection(recipientEntries, recipients.entries)) recipientEntries = recipients.entries
-      if (!sameProjection(agentProfiles, agents)) agentProfiles = agents
-      recipientsState = recipients.state
-      recipientsCategory = recipients.category
-      recipientsPartial = recipients.partial
+      // Loading frames for a same-room refresh carry an empty roster.
+      if (!(recipients.state === "loading" && recipientsRetained())) {
+        recipientsRoomId = recipients.roomId
+        if (!sameProjection(recipientEntries, recipients.entries)) recipientEntries = recipients.entries
+        if (!sameProjection(agentProfiles, agents)) agentProfiles = agents
+        recipientsState = recipients.state
+        recipientsCategory = recipients.category
+        recipientsPartial = recipients.partial
+      }
     }
     roomActivitySupported = supportsActivity
     if (!supportsActivity || state.connection !== "authenticated" || typeof state.identity !== "string" || catalogState === "unavailable") {
       roomActivity = RoomActivity.fresh()
-    } else if (catalogState !== "loading") {
+    } else if (catalogState !== "loading" && !quietCatalog) {
       var activityUpdate = RoomActivity.update(roomActivity,
         incomingScope + "|" + frame.instanceId + "|" + frame.generation, state.activity,
         panelOpen && historyState === "snapshot" ? selectedRoomId : "")
@@ -823,12 +892,19 @@ Item {
     handshake.stop()
     if (frame.type === "hello" && bridge.running) send("subscribe")
     // One fetch per first population/catalog refresh completion, never per status echo.
+    var catalogSettled = previousCatalogState === "loading" || (resyncingCatalog && !quietCatalog)
     if (supportsHistory && connection === "authenticated" && selectedRoom
-        && (selectedBeforeCatalog === "" || previousCatalogState === "loading")
+        && (selectedBeforeCatalog === "" || catalogSettled)
         && historyState !== "snapshot") refreshHistory()
     if (supportsRecipients && connection === "authenticated" && selectedRoom
-        && (selectedBeforeCatalog === "" || previousCatalogState === "loading")
+        && (selectedBeforeCatalog === "" || catalogSettled)
         && recipientsState !== "snapshot") refreshRecipients()
+    if (resyncStage !== "" && (!selectedRoom || historyState !== "snapshot")) endResync()
+    else if (resyncStage === "catalog" && !quietCatalog) advanceResync(supportsHistory ? "history" : "")
+    else if (resyncStage === "history" && history && history.state === "snapshot" && history.roomId === selectedRoomId)
+      advanceResync(supportsRecipients ? "recipients" : "thread")
+    else if (resyncStage === "recipients" && recipients && recipients.state !== "loading" && recipients.roomId === selectedRoomId)
+      advanceResync("thread")
     return true
   }
   function send(kind, roomId, rootId) {
@@ -880,8 +956,28 @@ Item {
   Timer {
     interval: 8000
     repeat: true
-    running: root.panelOpen && root.threadState === "snapshot" && !root.pendingThreadRequestId && root.canOpenThread(root.threadRootId)
+    running: root.panelOpen && root.threadState === "snapshot" && !root.pendingThreadRequestId && root.resyncStage === "" && root.canOpenThread(root.threadRootId)
     onTriggered: root.refreshThread()
+  }
+  Timer {
+    id: resyncTimeout
+    interval: 20000
+    onTriggered: {
+      // The helper never re-established its views: stop presenting them as current.
+      var stage = root.resyncStage
+      root.endResync(false)
+      if (stage === "catalog" || stage === "history") {
+        root.clearHistory()
+        root.clearRecipients()
+        root.refreshHistory()
+        root.refreshRecipients()
+      } else if (stage === "thread") {
+        root.threadRows = []
+        root.threadState = "unavailable"
+        root.threadCategory = "thread_timeout"
+        root.pendingThreadRequestId = ""
+      }
+    }
   }
   Timer {
     id: recipientsRetry
@@ -891,7 +987,7 @@ Item {
           || root.selectedRoomId !== root.recipientsRetryRoom
           || root.instanceId !== root.recipientsRetryInstance
           || root.generation !== root.recipientsRetryGeneration) return
-      root.recipientsState = "loading"
+      if (!root.recipientsRetained()) root.recipientsState = "loading"
       root.send("fetch_recipients", root.selectedRoomId)
     }
   }

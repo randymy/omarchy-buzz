@@ -181,9 +181,11 @@ ShellRoot {
         var loadingCatalog = JSON.parse(historyFrame("status", 1, roomB.id, [historyRow]))
         loadingCatalog.status.catalog = {state:"loading",rooms:[],category:null}
         loadingCatalog.status.history = {state:"unavailable",roomId:null,rows:[],hasMore:null,category:null}
+        // The periodic joined-room check keeps the same-scope conversation on screen.
         if (!protocolService.acceptFrame(JSON.stringify(loadingCatalog))
-            || protocolService.selectedRoomId !== roomB.id || protocolService.messages.length !== 0)
-          throw new Error("Catalog refresh lost selection or retained history")
+            || protocolService.selectedRoomId !== roomB.id || protocolService.messages.length !== 1
+            || protocolService.rooms.length !== 2)
+          throw new Error("Catalog refresh lost selection or blanked the conversation")
         if (!protocolService.acceptFrame(historyFrame("status", 1, roomB.id, [historyRow]))
             || protocolService.selectedRoomId !== roomB.id) throw new Error("Catalog refresh failed to restore selection")
         var unavailableRow = Object.assign({}, historyRow, {unavailable:true,text:"MUST NOT DISPLAY"})
@@ -205,8 +207,14 @@ ShellRoot {
         protocolService.pendingHistoryRequestId = "ui-1"
         if (!protocolService.acceptFrame(JSON.stringify({version:1,type:"error",category:"request_busy",id:"ui-1",instanceId:"catalog-fixture"}))
             || protocolService.sessionFailed || protocolService.connection !== "authenticated"
-            || protocolService.messages.length !== 0 || protocolService.historyLabel.indexOf("busy") === -1)
-          throw new Error("Queue rejection killed connection or retained stale history")
+            || protocolService.messages.length !== 1 || protocolService.pendingHistoryRequestId !== "")
+          throw new Error("Queue rejection killed connection or blanked the displayed snapshot")
+        protocolService.selectRoom(roomB.id)
+        protocolService.pendingHistoryRequestId = "ui-2"
+        if (!protocolService.acceptFrame(JSON.stringify({version:1,type:"error",category:"request_busy",id:"ui-2",instanceId:"catalog-fixture"}))
+            || protocolService.sessionFailed || protocolService.messages.length !== 0
+            || protocolService.historyLabel.indexOf("busy") === -1)
+          throw new Error("Queue rejection of a first load was not reported")
         function deliveryFrame(delivery, gen) {
           var value = JSON.parse(historyFrame("status", gen || 1, roomA.id, [historyRow]))
           value.capabilities.push("message_send")
@@ -320,10 +328,11 @@ ShellRoot {
         var catalogLoading = JSON.parse(recipientFrame(roster, 4))
         catalogLoading.status.catalog = {state:"loading",rooms:[],category:null}
         protocolService.acceptFrame(JSON.stringify(catalogLoading))
+        // The roster stays on screen; submissions are held until the helper revalidates it.
         if (protocolService.selectedRecipients.length !== 1 || protocolService.selectedRecipients[0] !== recipientB.key
-            || protocolService.recipientEntries.length || protocolService.canSend
+            || protocolService.recipientEntries.length !== roster.entries.length || protocolService.resyncStage !== "catalog"
             || protocolService.draftText !== "Keep across roster refresh")
-          throw new Error("Catalog refresh discarded intent or allowed unvalidated mentions")
+          throw new Error("Catalog refresh discarded intent or hid the roster")
         protocolService.acceptFrame(recipientFrame(roster, 4))
         if (!protocolService.canSend || protocolService.selectedRecipients[0] !== recipientB.key)
           throw new Error("Validated refreshed roster did not restore preserved intent")

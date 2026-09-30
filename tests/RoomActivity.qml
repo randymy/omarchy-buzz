@@ -62,8 +62,9 @@ ShellRoot {
         accept("status", [entry(roomA, 7), entry(roomB, 4)])
         counts(2, 0, 2)
         service.panelOpen = false
+        // The periodic joined-room check does not blank the displayed counts.
         accept("status", [], {loading:true})
-        counts(0, 0, 0)
+        counts(2, 0, 2)
         if (service.roomActivity.rooms[roomB].seen !== 2) throw new Error("Loading discarded observed state")
         accept("status", [entry(roomA, 7), entry(roomB, 4)])
         counts(2, 0, 2)

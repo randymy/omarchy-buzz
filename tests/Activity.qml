@@ -76,11 +76,12 @@ ShellRoot {
         accept("status", [row("1", other), row("2", other)])
         idsAre(["1".repeat(64), "2".repeat(64)])
 
+        // The periodic joined-room check keeps the same-scope conversation and its baseline.
         accept("status", [], {catalog:"loading"})
-        if (service.activityObservation.scope !== "" || service.historyRows.length)
-          throw new Error("Catalog loading retained observed history")
+        if (service.activityObservation.scope === "" || service.historyRows.length !== 2)
+          throw new Error("Joined-room check discarded the displayed conversation")
         accept("status", [row("2", other), row("3", other)])
-        idsAre(["2".repeat(64), "3".repeat(64)])
+        idsAre(["1".repeat(64), "2".repeat(64), "3".repeat(64)])
 
         accept("status", [], {connection:"connecting", catalog:"unavailable"})
         if (service.activityObservation.scope !== "" || service.historyRows.length)
