@@ -2217,3 +2217,18 @@ now needs `agent-bundle` in `~/.local/share/omarchy-buzz/scripts/` (the
 installer change is the maintainer's); until it is there every bundle reads
 `missing`. `bin/room-agent-entry` and the `bin/` wrapper copies are not
 compared or refreshed; a change to them still needs a reassembled bundle.
+
+## 0.0.16 installed; the `auth_rejected` episodes were clock drift — September 30 evening
+
+Both `auth_rejected` disconnections today (morning, and again after the owner's
+afternoon absence) had the same cause: the VM's system clock stops while the VM
+is suspended and `systemd-timesyncd` does not step a large offset, so NIP-42
+AUTH events were signed 73 minutes in the past and the relay refused them. The
+RTC was correct. `pkexec systemctl restart systemd-timesyncd` stepped the clock
+and the helper authenticated at once. 0.0.16 (helper SHA256
+`305d45fbbc6b6bffbf6bab649661aa3ad1626034f82fcbaa332c22fa19783449`, ARM64 run
+36754066288) is installed; the launcher scripts are now in
+`~/.local/share/omarchy-buzz/scripts/`, both bundles reported `stale` and were
+refreshed in place with `agent-bundle --refresh-launcher`. Follow-up: the helper
+should detect a clock offset (compare the relay's HTTP `Date` header or NIP-11
+against local time) and report `clock_skew` instead of `auth_rejected`.

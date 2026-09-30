@@ -115,9 +115,11 @@ with a Settings view (avatar, brightness, alerts, window, shortcut note,
 About), stale harness-bundle detection with in-place refresh, and the launcher
 scripts shipped in the helper package. Its ARM64 build
 (https://github.com/randymy/omarchy-buzz/actions/runs/36754066288) had not
-finished at the stop. **Installed: 0.0.15** (helper SHA256
-`13533201810076b552de65d13b295644a5b51d4e9704879cd1571af5227c6ef5`, plugin at
-`9dfbecd`). The bundles under `~/.local/share/omarchy-buzz/agent-*` were
+finished at the stop; it has since passed and **0.0.16 is installed** (helper
+SHA256 `305d45fbbc6b6bffbf6bab649661aa3ad1626034f82fcbaa332c22fa19783449`,
+rollback backup `~/.local/share/omarchy-buzz/backups/20260930T191355.465204Z`).
+If the helper shows `auth_rejected` after the VM was suspended, check the clock
+first (see the checkpoint entry on clock drift). The bundles under `~/.local/share/omarchy-buzz/agent-*` were
 reassembled by hand on September 30 afternoon from the 0.0.15 scripts; after
 installing 0.0.16 the service compares them with
 `~/.local/share/omarchy-buzz/scripts/` and may report `stale` for files that
