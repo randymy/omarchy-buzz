@@ -108,41 +108,38 @@ Both refresh fixes are installed and have synthetic rendered test coverage.
 There is no subsequent user confirmation of the improved experience yet.
 Do not claim full live desktop acceptance solely from helper/socket tests.
 
-## In flight at the September 30 afternoon stop (read before continuing)
+## In flight at the September 30 evening stop (read before continuing)
 
-`main` carries release 0.0.14 (`404db2f`): panel setup for relay and
-identity, automatic retry after a rejected re-authentication, `@name`
-resolution on send, message copy, identicon avatars. **0.0.14 is installed**
-(helper SHA256 `e387a6aa28be8b3e8ee01a3a77b9164e511480d6d5bde58d8a63456c13013aff`,
-ARM64 run 36742880923, read-only relay check passed, rollback backup
-`~/.local/share/omarchy-buzz/backups/20260930T162237.934414Z`). After a helper
-upgrade the shell sometimes needs a second `omarchy restart shell` before the
-new panel code loads ("Incompatible helper" until then). Both sockets are
-enabled; the agent manager answered over `agents-bridge` with both harnesses
-`ready` (codex signed in, claude-code signed out, no agents yet), and the panel
-shows the Agents section. Live reply counts were seen on the real room.
+`main` carries release 0.0.16 (`9717ba0`): account menu at the bottom-left
+with a Settings view (avatar, brightness, alerts, window, shortcut note,
+About), stale harness-bundle detection with in-place refresh, and the launcher
+scripts shipped in the helper package. Its ARM64 build
+(https://github.com/randymy/omarchy-buzz/actions/runs/36754066288) had not
+finished at the stop. **Installed: 0.0.15** (helper SHA256
+`13533201810076b552de65d13b295644a5b51d4e9704879cd1571af5227c6ef5`, plugin at
+`9dfbecd`). The bundles under `~/.local/share/omarchy-buzz/agent-*` were
+reassembled by hand on September 30 afternoon from the 0.0.15 scripts; after
+installing 0.0.16 the service compares them with
+`~/.local/share/omarchy-buzz/scripts/` and may report `stale` for files that
+changed since (`room-agent` etc.) — use the panel's `Refresh bundle` (or
+`scripts/agent-bundle <harness> --refresh-launcher`).
 
-Already prepared on this machine, outside git:
+Verified live today: agent `vClaude` (Claude Code) answers owner mentions in a
+room and, with `Answers direct messages` on, answers the owner's DM with no
+mention. Copy, live updates, reply counts and the yellow ANSI portrait avatar
+are in daily use.
 
-- Harness bundles assembled and verified with `scripts/agent-bundle … --check`
-  → `ready`: `~/.local/share/omarchy-buzz/agent-codex` (608 MB, from the stock
-  bundle) and `~/.local/share/omarchy-buzz/agent-claude-code` (490 MB, locked
-  `npm ci` from the public registry, pinned `claude` CLI copied in).
-- Sign-in status: Codex `signed-in` (existing profile), Claude Code `signed-out`
-  (profile `~/.local/state/omarchy-buzz-agent-preview/claude-code` not yet used).
+Branch in progress: `invite-people` (worktree `~/Projects/omarchy-buzz-invites`):
+Settings → "Invite people" (mint via `POST /api/invites`, Desktop and web
+links, a newcomer blurb). It may hold a WIP commit; check its tests before
+merging.
 
-Resume steps, in order:
-
-1. Done (see above).
-2. Done: Claude Code signed in from the panel.
-3. Done: agent `vClaude` created, enrolled, started and answering (see the
-   checkpoint entry "First agent created from the panel" and its follow-ups:
-   auto-retry after `auth_rejected`, `@name` resolution on send, faster
-   sign-in status refresh).
-4. ASCII avatars are merged on `main` (not yet installed at this line's writing);
-   then onboarding without a terminal (identity generation in the plugin,
-   joining a community from the panel, an opt-in Super+B offer in the setup
-   view). Teams, sharing and import stay on hold. Git history is not rewritten.
+Resume order: install 0.0.16 (artifact verify → read-only relay check →
+`helper-install` → plugin update → shell restart twice if "Incompatible
+helper") → merge `invite-people` when green and release 0.0.17 → file
+attachments (view/download media tags, upload from the composer) → model
+availability check for Claude Code agents → presence/"Update your status".
+Teams, sharing and import stay on hold. Git history is never rewritten.
 
 ## Next three priorities
 
