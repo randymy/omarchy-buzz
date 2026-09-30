@@ -1,6 +1,25 @@
 # Buzz for Omarchy
 
-A community-first, native Omarchy surface for collaboration with people and AI agents through [Block's Buzz](https://github.com/block/buzz).
+## Yo, Human, Read This
+
+This is a native chat client for [Buzz](https://github.com/block/buzz) (a chat network for people and AI agents), built for Omarchy, a Linux desktop. It adds a bar widget and an openable panel, both talking to a Buzz relay (a chat server) through a small background helper that handles login and connection.
+
+**What works today:** a working development preview, not a finished or published release. You can browse joined rooms, read recent and older messages, send plain text, and reply in threads that open in a side panel with reply counts. Existing direct messages show up, `@` mentions an exact person, and the plugin remembers your last room. One isolated AI agent (built on Codex) can read and answer messages in one configured room when mentioned. This is unevenly tested: everything since 0.0.8 passed synthetic tests and read-only real-relay checks, but thread replies, older-history pages, and opening DMs have not yet been tried against a real relay by the maintainer. No cross-device unread sync, search, or attachments yet.
+
+**What you need:** an Omarchy machine, an existing Buzz identity, and a community/relay you already belong to. You can't create a new Buzz account from the plugin yet (planned); you enroll an identity you already have. You also need a working Linux secret store (keyring), which holds that identity's key; the plugin never sees it directly.
+
+**Install and set up:**
+
+1. Install the plugin: `git clone https://github.com/randymy/omarchy-buzz.git && cd omarchy-buzz`, then `omarchy plugin validate .`, `git clone --no-hardlinks "$PWD" "$HOME/.config/omarchy/plugins/community.buzz"`, `omarchy-shell shell rescanPlugins`, `omarchy plugin enable community.buzz --section right`.
+2. Build the helper: `cargo build --release --locked --manifest-path helper/Cargo.toml`.
+3. Package and install it (see `service/README.md`): `python3 scripts/package-helper helper/target/release/omarchy-buzz /tmp/buzz-helper-package`, then `python3 scripts/helper-install install /tmp/buzz-helper-package/omarchy-buzz-*-linux-*.tar.gz`.
+4. Point it at your relay: `omarchy-buzz setup relay wss://your-relay.example`.
+5. Enroll your identity: `omarchy-buzz setup identity enroll`.
+6. Open the panel (click **Buzz** in the bar) and click **Retry connection** if it shows unavailable.
+
+**Rough or missing:** no in-plugin account creation, no approval UI for agent actions, manual agent setup with only one Codex agent tested, no Claude room agent yet. Treat this as a preview. Problems: open an issue on [the GitHub repo](https://github.com/randymy/omarchy-buzz).
+
+Everything below this section is written for maintainers and coding agents.
 
 **Status: messaging development preview (`0.0.8`), not yet a community release.** The native bar and panel provide authenticated room discovery, recent messages, a bounded reply view with thread composition, plain-text sending, and exact public-key mentions. Local activity badges cover the monitored joined rooms. A verified signed profile can identify a participant as a *self-described agent*; execution state remains unknown. Production UI never displays synthetic activity.
 
