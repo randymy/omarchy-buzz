@@ -1,23 +1,20 @@
 # Buzz for Omarchy
 
-## Yo, Human, Read This
+## Yo, Human! Read Me
 
-This is a native chat client for [Buzz](https://github.com/block/buzz) (a chat network for people and AI agents), built for Omarchy, a Linux desktop. It adds a bar widget and an openable panel, both talking to a Buzz relay (a chat server) through a small background helper that handles login and connection.
+This is Buzz chat for Omarchy: a bar widget and a panel that let you read and
+send messages in your Buzz rooms, follow threads in a side panel, direct-message
+people, and run an AI agent that answers in a room — all native, no browser.
+It is a development preview: it works day to day, but rough edges remain and
+new-account setup still happens outside the plugin.
 
-**What works today:** a working development preview, not a finished or published release. You can browse joined rooms, read recent and older messages, send plain text, and reply in threads that open in a side panel with reply counts. Existing direct messages show up, `@` mentions an exact person, and the plugin remembers your last room. One isolated AI agent (built on Codex) can read and answer messages in one configured room when mentioned. This is unevenly tested: everything since 0.0.8 passed synthetic tests and read-only real-relay checks, but thread replies, older-history pages, and opening DMs have not yet been tried against a real relay by the maintainer. No cross-device unread sync, search, or attachments yet.
-
-**What you need:** an Omarchy machine, an existing Buzz identity, and a community/relay you already belong to. You can't create a new Buzz account from the plugin yet (planned); you enroll an identity you already have. You also need a working Linux secret store (keyring), which holds that identity's key; the plugin never sees it directly.
-
-**Install and set up:**
-
-1. Install the plugin: `git clone https://github.com/randymy/omarchy-buzz.git && cd omarchy-buzz`, then `omarchy plugin validate .`, `git clone --no-hardlinks "$PWD" "$HOME/.config/omarchy/plugins/community.buzz"`, `omarchy-shell shell rescanPlugins`, `omarchy plugin enable community.buzz --section right`.
-2. Build the helper: `cargo build --release --locked --manifest-path helper/Cargo.toml`.
-3. Package and install it (see `service/README.md`): `python3 scripts/package-helper helper/target/release/omarchy-buzz /tmp/buzz-helper-package`, then `python3 scripts/helper-install install /tmp/buzz-helper-package/omarchy-buzz-*-linux-*.tar.gz`.
-4. Point it at your relay: `omarchy-buzz setup relay wss://your-relay.example`.
-5. Enroll your identity: `omarchy-buzz setup identity enroll`.
-6. Open the panel (click **Buzz** in the bar) and click **Retry connection** if it shows unavailable.
-
-**Rough or missing:** no in-plugin account creation, no approval UI for agent actions, manual agent setup with only one Codex agent tested, no Claude room agent yet, and no keyboard shortcut unless you run `scripts/desktop-shortcut install` yourself (it adds Super+B after checking for conflicts). Treat this as a preview. Problems: open an issue on [the GitHub repo](https://github.com/randymy/omarchy-buzz).
+The easiest way to install it is to ask the coding agent on your Omarchy
+machine (Claude Code or Codex) to install this repository, giving it the URL.
+It runs `omarchy plugin add https://github.com/randymy/omarchy-buzz.git --enable`,
+builds the small background helper, installs it with `scripts/helper-install`,
+and points it at your Buzz relay. If you prefer to do it by hand, the steps are
+in [service/README.md](service/README.md) and the sections below. Either way you
+need an existing Buzz identity and a community you already belong to.
 
 Everything below this section is written for maintainers and coding agents.
 
