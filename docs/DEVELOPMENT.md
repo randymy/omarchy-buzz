@@ -279,10 +279,12 @@ rendered QML check against synthetic frames or a stdio fixture:
 `--catalog-refresh`, `--catalog-refresh-send`, `--new-dm`, `--older-history`,
 `--last-room`, `--mentions`, `--author-names`, `--identicon` (identicons and
 pasted avatar art), `--ansi-art` (ANSI art avatars, the profile card and
-"Set my avatar" from a synthetic `.ans` fixture; set `BUZZ_ANSI_CAPTURE` to an
+the Settings avatar loader from a synthetic `.ans` fixture; set `BUZZ_ANSI_CAPTURE` to an
 `.ans` path and `BUZZ_ANSI_CAPTURE_DIR` to a directory to also save
 `ansi-thumb.png`, `ansi-card-bright.png` (brightness 1.5) and `ansi-card.png`
 (colors as stored) rendered with that art), `--activity`, `--room-activity`,
 `--notification-preference`, `--agents` (the Agents section against a fake agent
-service), `--presentation` (needs Wayland) and `--bridge` (needs
+service), `--settings` (the account control, its menu and the settings view;
+set `BUZZ_SETTINGS_CAPTURE_DIR` to also save `account-menu.png` and
+`settings-view.png`), `--presentation` (needs Wayland) and `--bridge` (needs
 `BUZZ_TEST_HELPER` set to a built helper).

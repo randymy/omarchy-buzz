@@ -1,6 +1,6 @@
 // ANSI art avatars: parser, thumbnail and stored form; the colored message
-// avatar, profile card and "Set my avatar" against synthetic frames and a
-// synthetic fixture file. No helper, relay, keys or network.
+// avatar, profile card and the Settings avatar section against synthetic
+// frames and a synthetic fixture file. No helper, relay, keys or network.
 import QtQuick
 import QtTest
 import Quickshell
@@ -87,8 +87,21 @@ ShellRoot {
     })
     return avatars
   }
+  // The first of my grouped rows shows the avatar. Its message's own flag, not
+  // visibility: the room view is hidden while Settings is open.
   function myLeadAvatar() {
-    return messageAvatars().filter(function(avatar) { return avatar.key === test.me && avatar.visible })[0]
+    return messageAvatars().filter(function(avatar) {
+      var message = avatar.parent
+      while (message && typeof message.lead !== "boolean") message = message.parent
+      return avatar.key === test.me && message.lead
+    })[0]
+  }
+  // Settings opens from the account menu, as a person would open it.
+  function openSettings() {
+    var account = one("buzzAccount")
+    input.mouseClick(account, account.width / 2, account.height / 2)
+    one("buzzAccountSettings").clicked()
+    check(view.settingsOpen && !view.accountMenuOpen, "Settings did not open from the account menu")
   }
 
   function parserCases() {
@@ -235,8 +248,8 @@ ShellRoot {
           var avatars = test.messageAvatars()
           check(avatars.filter(function(avatar) { return avatar.usesArt }).length === 0, "Art shown before any was set")
           check(findNamed(view, "buzzMyAvatarPath", []).filter(function(item) { return item.visible }).length === 0,
-            "Avatar path field shown before Set my avatar")
-          test.one("buzzSetMyAvatar").clicked()
+            "Avatar path field shown outside Settings")
+          test.openSettings()
           myLoader = test.one("buzzMyAvatarPath").parent
           test.loaderCases(myLoader)
           test.one("buzzMyAvatarPath").text = test.fixturePath
@@ -255,7 +268,7 @@ ShellRoot {
           check(service.agents.avatarBrightnessForKey(test.me) === 1.5, "New colored art did not start at brightness 1.5")
           check(test.freshOwnArt() === test.fixtureArt, "Own avatar not restored by a fresh service")
           var mine = test.myLeadAvatar()
-          check(mine && mine.usesColor && mine.thumbnail.rows === 6 && mine.thumbnail.cols === 12 && mine.clickable,
+          check(mine && mine.usesColor && mine.thumbnail.rows === 6 && mine.thumbnail.cols === 12,
             "My message avatar is not the colored thumbnail")
           test.messageAvatars().forEach(function(avatar) {
             if (avatar.key === test.other) check(!avatar.usesArt, "Another author got my avatar")
@@ -277,6 +290,8 @@ ShellRoot {
           var restored = fresh.agents.avatarBrightnessForKey(test.me)
           fresh.destroy()
           check(restored === 1.75, "Brightness not restored by a fresh service: " + restored)
+          test.one("buzzSettingsBack").clicked()
+          check(!view.settingsOpen && test.myLeadAvatar().visible && test.myLeadAvatar().clickable, "Back to rooms did not show my clickable avatar")
           test.stage = 3
         } else if (test.stage === 3) {
           // A click on the avatar opens the card; Escape closes it.
@@ -336,12 +351,14 @@ ShellRoot {
             check(test.freshOwnArt() === "", "Damaged brightness entry " + index + " was trusted")
           })
           // Clear removes it here and on restore.
+          test.openSettings()
           test.one("buzzMyAvatarPathClear").clicked()
+          test.one("buzzSettingsBack").clicked()
           check(service.agents.avatarArtForKey(test.me) === "" && !test.myLeadAvatar().usesArt, "Clear kept the avatar")
           check(JSON.stringify(JSON.parse(test.readStore()).avatars) === "{}" && test.freshOwnArt() === "", "Clear not saved")
           test.messageAvatars()
           if (test.capturePath === "") {
-            console.log("PASS: ANSI art parses truecolor, 256 and basic colors and resets, drops cursor sequences, controls and SAUCE, clips at 60 x 120 and 256 KiB; keeps backgrounds; thumbnails sample block centres deterministically; brightness auto-levels, is monotonic, clamped, stepped from the sidebar, saved with the art and restored; my avatar loads from a file into the local store, shows colored in the same slot width, restores, clears and fails closed on unsafe paths, oversized or missing files and damaged state; the profile card opens on click and closes on Escape or outside click")
+            console.log("PASS: ANSI art parses truecolor, 256 and basic colors and resets, drops cursor sequences, controls and SAUCE, clips at 60 x 120 and 256 KiB; keeps backgrounds; thumbnails sample block centres deterministically; brightness auto-levels, is monotonic, clamped, stepped from Settings, saved with the art and restored; my avatar loads from a file into the local store, shows colored in the same slot width, restores, clears and fails closed on unsafe paths, oversized or missing files and damaged state; the profile card opens on click and closes on Escape or outside click")
             Qt.quit()
             return
           }

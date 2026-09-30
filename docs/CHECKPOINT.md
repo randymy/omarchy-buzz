@@ -2149,3 +2149,37 @@ network) and swapped in; the agent started without `--channels` and answered
 the owner's direct message with no mention. Follow-up: install the launcher
 scripts with the helper package, make `--check` report `stale` when a bundle's
 launcher differs from the installed scripts, and offer a refresh from the panel.
+
+## Account menu and settings view — September 30
+
+- Account control (`buzzAccount`) pinned to the bottom of the sidebar, as in
+  Buzz Desktop: my avatar (identicon, or my local ANSI art), my roster name
+  when a verified roster lists me (else `Me`; `Not connected` when not
+  online), key prefix in the tooltip, and a dot: green authenticated, amber
+  connecting, red disconnected/unavailable/locked, grey unconfigured. Shown
+  whenever the service exists, including before a helper session, so Settings
+  stays reachable when the helper is missing.
+- Account menu (`buzzAccountMenu`), a bordered popover above the control:
+  name with an `Online`/`Connecting`/`Offline`/`Not set up` pill, the relay
+  host as **Community** (not interactive; switching communities is not
+  available yet), **Send feedback** (opens the fixed
+  `https://github.com/randymy/omarchy-buzz/issues/new` only on click) and
+  **Settings · Ctrl+,**. Escape, an outside click or a choice closes it.
+- Settings view (`buzzSettingsView`) replaces the room view like the agent
+  editor; **‹ Back to rooms** returns with drafts and selection unchanged.
+  Sections: Avatar (the loader, Clear and Brightness − / +, moved out of the
+  sidebar; same object names), Notifications (**Alerts**, same
+  `notificationsEnabled` preference), Window (**Overlay**/**Window**, shown only
+  with the host switch), Shortcut (a note: QML cannot see Hyprland binds, so it
+  names `scripts/desktop-shortcut install` instead of claiming a state), About
+  (plugin version from the host-provided manifest, relay host, public key with
+  **Copy public key**). The helper reports no version, so none is shown. The
+  header keeps only the title, status and **Close · Esc**.
+- Evidence (synthetic): new `scripts/preview --settings` (dot per state, menu
+  open/Escape/outside click/keyboard, feedback URL recorded not opened,
+  Settings and Back, Alerts both ways, presentation requests, 64-hex clipboard
+  copy, Ctrl+,); `--ansi-art` now opens Settings from the account menu;
+  `--presentation` switches from Settings on Wayland; every other mode and
+  `--bridge` pass unchanged.
+- Not verified: the menu and settings in the live shell; the `Qt.openUrlExternally`
+  hand-off to a real browser.

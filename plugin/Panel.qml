@@ -11,6 +11,8 @@ Item {
   property var service: null
   property bool opened: false
   property bool windowMode: false
+  // The shared view, for synthetic presentation checks.
+  readonly property alias content: content
   onOpenedChanged: if (service) service.panelOpen = opened
   Component.onDestruction: if (service) service.panelOpen = false
 
@@ -76,6 +78,7 @@ Item {
     parent: root.windowMode ? normalWindow.contentItem : overlayWindow.contentItem
     anchors.fill: parent
     service: root.service
+    manifest: root.manifest
     presentationSwitchEnabled: true
     windowMode: root.windowMode
     onPresentationRequested: root.switchPresentation()

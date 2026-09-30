@@ -1,7 +1,8 @@
 # Optional native shortcut
 
 Buzz supports two presentations of the same view. Open it from the bar or
-Super+B, then choose **Window** for a normal resizable, tilable desktop window.
+Super+B, then choose **Window** in Settings (account menu, bottom left) for a
+normal resizable, tilable desktop window.
 Choose **Overlay** to return to the quick panel. The same content instance and
 helper service preserve the selected room, thread and in-memory draft while
 switching. This is one view in either mode, not two independent chat clients.

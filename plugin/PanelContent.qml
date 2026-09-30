@@ -244,6 +244,27 @@ FocusScope {
       font.pixelSize: Style.font.caption
     }
   }
+  // Settings view: a section caption and a wrapped note.
+  component SettingsCaption: Text {
+    Layout.fillWidth: true
+    Layout.topMargin: Style.space(6)
+    textFormat: Text.PlainText
+    elide: Text.ElideRight
+    color: Color.foreground
+    opacity: 0.6
+    font.family: Style.font.family
+    font.pixelSize: Style.font.caption
+    font.bold: true
+  }
+  component SettingsNote: Text {
+    Layout.fillWidth: true
+    textFormat: Text.PlainText
+    wrapMode: Text.WordWrap
+    color: Color.foreground
+    opacity: 0.7
+    font.family: Style.font.family
+    font.pixelSize: Style.font.caption
+  }
   property bool presentationSwitchEnabled: false
   property bool windowMode: false
   property alias recipientPickerExpanded: roomComposer.pickerExpanded
@@ -261,6 +282,7 @@ FocusScope {
   onAgentsVisibleChanged: if (!agentsVisible) closeAgentEditor()
   function openAgentEditor(id) {
     if (!agentsVisible || (id !== "" && !agentService.agent(id))) return false
+    settingsOpen = false
     agentEditorId = id
     agentEditorOpen = true
     agentEditor.load()
@@ -269,6 +291,69 @@ FocusScope {
   function closeAgentEditor() {
     agentEditorOpen = false
     agentEditorId = ""
+  }
+  // The account control (bottom of the sidebar), its menu and the settings
+  // view. Settings replaces the room view like the agent editor; the room, its
+  // drafts and any open thread come back unchanged.
+  property var manifest: null
+  property bool settingsOpen: false
+  property bool accountMenuOpen: false
+  // Fixed issue-tracker URL, opened only when Send feedback is chosen. Tests
+  // may set feedbackOpener to record the call instead of opening a browser.
+  readonly property string feedbackUrl: "https://github.com/randymy/omarchy-buzz/issues/new"
+  property var feedbackOpener: null
+  // sample, online, connecting, unset or offline.
+  readonly property string accountState: !service ? "offline" : service.sampleMode ? "sample"
+    : service.connection === "authenticated" && !service.sessionFailed ? "online"
+    : service.connection === "connecting" ? "connecting"
+    : service.connection === "unconfigured" ? "unset" : "offline"
+  readonly property string accountStateLabel: ({sample: "Sample data", online: "Online", connecting: "Connecting",
+    unset: "Not set up", offline: "Offline"})[accountState]
+  readonly property color accountStateColor: ({online: "#3fb950", connecting: "#d29922", offline: Color.urgent})[accountState] || Color.muted
+  readonly property bool myKeyKnown: !!service && /^[a-f0-9]{64}$/.test(service.identity)
+  // My roster name when a verified roster lists me, else "Me".
+  readonly property string myName: {
+    if (!myKeyKnown || service.recipientsState !== "snapshot") return "Me"
+    var entry = service.recipientEntries.find(function(item) { return item.key === root.service.identity })
+    return entry && entry.name.trim() ? entry.name.trim() : "Me"
+  }
+  readonly property string accountName: accountState === "online" || accountState === "sample" ? myName : "Not connected"
+  readonly property string communityHost: service && service.relay ? service.relay.replace(/^wss?:\/\//, "").replace(/\/$/, "") : ""
+  readonly property string pluginVersion: {
+    var source = manifest || (service ? service.manifest : null)
+    var value = source ? source.version : ""
+    return typeof value === "string" && /^[0-9A-Za-z.+-]{1,32}$/.test(value) ? value : ""
+  }
+  function openSettings() {
+    closeAccountMenu()
+    closeAgentEditor()
+    settingsOpen = true
+    Qt.callLater(function() { settingsBack.forceActiveFocus() })
+    return true
+  }
+  function closeSettings() {
+    if (!settingsOpen) return
+    settingsOpen = false
+    accountControl.forceActiveFocus()
+  }
+  function openAccountMenu() {
+    if (!service) return false
+    var origin = accountControl.mapToItem(root, 0, 0)
+    accountMenu.anchorX = origin.x
+    accountMenu.anchorY = origin.y
+    accountMenuOpen = true
+    accountMenu.forceActiveFocus()
+    return true
+  }
+  function closeAccountMenu() {
+    if (!accountMenuOpen) return
+    accountMenuOpen = false
+    accountControl.forceActiveFocus()
+  }
+  function sendFeedback() {
+    closeAccountMenu()
+    if (typeof feedbackOpener === "function") feedbackOpener(feedbackUrl)
+    else Qt.openUrlExternally(feedbackUrl)
   }
   // Sidebar rows use a smaller avatar so each stays close to one button high.
   readonly property int sidebarAvatarSize: Math.max(6, Math.round(Style.font.caption * 0.8))
@@ -288,7 +373,7 @@ FocusScope {
     var others = room.participants.filter(function(key) { return key !== root.service.identity })
     return others.length ? others[0] : ""
   }
-  readonly property bool threadOpen: !agentEditorShown && !!service && service.threadRootId !== "" && service.threadRoot !== null
+  readonly property bool threadOpen: !agentEditorShown && !settingsOpen && !!service && service.threadRootId !== "" && service.threadRoot !== null
   // An open thread sits beside the room. Narrow windows give up the room list
   // first, then the room itself, so the thread always has a readable column.
   readonly property bool showRooms: !threadOpen || width >= Style.space(1100)
@@ -420,7 +505,11 @@ FocusScope {
   }
   signal closeRequested()
   signal presentationRequested()
-  Keys.onEscapePressed: avatarCard.opened ? avatarCard.close() : closeRequested()
+  Keys.onEscapePressed: accountMenuOpen ? closeAccountMenu() : avatarCard.opened ? avatarCard.close() : closeRequested()
+  // Ctrl+, opens Settings, as Buzz Desktop's ⌘, does.
+  Keys.onPressed: function(event) {
+    if (event.key === Qt.Key_Comma && (event.modifiers & Qt.ControlModifier)) { event.accepted = true; openSettings() }
+  }
 
   Rectangle {
     anchors.fill: parent
@@ -458,19 +547,7 @@ FocusScope {
         font.pixelSize: Style.font.caption
       }
       Ui.Button {
-        visible: root.presentationSwitchEnabled
-        text: root.windowMode ? "Overlay" : "Window"
-        fontSize: Style.font.caption
-        focusable: true
-        onClicked: root.presentationRequested()
-      }
-      Ui.Button {
-        text: root.service && root.service.notificationsEnabled ? "Alerts: on" : "Alerts: off"
-        fontSize: Style.font.caption
-        focusable: true
-        onClicked: if (root.service) root.service.notificationsEnabled = !root.service.notificationsEnabled
-      }
-      Ui.Button {
+        objectName: "buzzClose"
         text: "Close · Esc"
         fontSize: Style.font.caption
         focusable: true
@@ -535,58 +612,6 @@ FocusScope {
           opacity: 0.6
           font.family: Style.font.family
           font.pixelSize: Style.font.caption
-        }
-        // My avatar: art from a local .ans or .txt file. Local only until profile
-        // avatars are published to the relay; others still see the identicon.
-        ColumnLayout {
-          objectName: "buzzMyAvatar"
-          visible: root.myAvatarAvailable
-          Layout.fillWidth: true
-          spacing: Style.space(2)
-          RowLayout {
-            Layout.fillWidth: true
-            spacing: Style.space(4)
-            BuzzAvatar {
-              objectName: "buzzMyAvatarPreview"
-              key: root.myAvatarAvailable ? root.service.identity : ""
-              name: "You"
-              art: root.myAvatarArt
-              brightness: root.myAvatarBrightness
-              pixelSize: root.sidebarAvatarSize
-            }
-            Ui.Button {
-              objectName: "buzzSetMyAvatar"
-              Layout.fillWidth: true
-              text: myAvatarLoader.visible ? "Hide my avatar" : "Set my avatar"
-              tooltipText: "Use a .ans or .txt file as your avatar on this machine"
-              fontSize: Style.font.caption
-              leftAlign: true
-              focusable: true
-              onClicked: myAvatarLoader.visible = !myAvatarLoader.visible
-            }
-          }
-          AvatarFileLoader {
-            id: myAvatarLoader
-            visible: false
-            Layout.fillWidth: true
-            fieldName: "buzzMyAvatarPath"
-            showClear: true
-            canClear: root.myAvatarArt !== ""
-            // A newly loaded file starts at the default brightness (auto-levels, 1.5).
-            onArtLoaded: function(art) {
-              if (!root.myAvatarAvailable || !root.agentService.setOwnAvatarArt(root.service.identity, art, AnsiArt.DEFAULT_BRIGHTNESS))
-                fail("The avatar could not be kept.")
-            }
-            onClearRequested: if (root.myAvatarAvailable) root.agentService.setOwnAvatarArt(root.service.identity, "")
-          }
-          // Applied as it is changed, so the thumbnail beside it is the preview.
-          AvatarBrightness {
-            visible: myAvatarLoader.visible && root.myAvatarBrightness > 0
-            Layout.fillWidth: true
-            fieldName: "buzzMyAvatarBrightness"
-            value: root.myAvatarBrightness > 0 ? root.myAvatarBrightness : AnsiArt.DEFAULT_BRIGHTNESS
-            onChosen: function(value) { root.agentService.setOwnAvatarArt(root.service.identity, root.myAvatarArt, value) }
-          }
         }
         Controls.ScrollView {
           Layout.fillWidth: true
@@ -845,6 +870,73 @@ FocusScope {
             }
           }
         }
+        // My account, pinned below everything else: avatar, name and connection
+        // state. A click (or Enter) opens the account menu above it.
+        Rectangle {
+          id: accountControl
+          objectName: "buzzAccount"
+          visible: !!root.service
+          Layout.fillWidth: true
+          implicitHeight: accountRow.implicitHeight + Style.space(8)
+          radius: Style.cornerRadius
+          color: accountArea.pressed ? Util.alpha(Color.foreground, 0.14)
+            : activeFocus || accountArea.containsMouse || root.accountMenuOpen ? Util.alpha(Color.foreground, 0.08) : "transparent"
+          border.color: activeFocus ? Util.alpha(Color.accent, 0.8) : "transparent"
+          border.width: Math.max(1, Style.space(1))
+          activeFocusOnTab: true
+          readonly property string stateName: root.accountState
+          readonly property color dotColor: root.accountStateColor
+          function activate() { if (root.accountMenuOpen) root.closeAccountMenu(); else root.openAccountMenu() }
+          Keys.onReturnPressed: activate()
+          Keys.onEnterPressed: activate()
+          Keys.onSpacePressed: activate()
+          RowLayout {
+            id: accountRow
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            anchors.leftMargin: Style.space(4)
+            anchors.rightMargin: Style.space(4)
+            spacing: Style.space(6)
+            BuzzAvatar {
+              objectName: "buzzAccountAvatar"
+              key: root.myKeyKnown ? root.service.identity : ""
+              name: root.myName
+              art: root.myAvatarArt
+              brightness: root.myAvatarBrightness
+              pixelSize: root.sidebarAvatarSize
+            }
+            Text {
+              objectName: "buzzAccountName"
+              Layout.fillWidth: true
+              text: root.accountName
+              textFormat: Text.PlainText
+              elide: Text.ElideRight
+              color: Color.foreground
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+            }
+            Rectangle {
+              objectName: "buzzAccountDot"
+              implicitWidth: Style.space(8)
+              implicitHeight: Style.space(8)
+              radius: width / 2
+              color: accountControl.dotColor
+            }
+          }
+          MouseArea {
+            id: accountArea
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: { accountControl.forceActiveFocus(); accountControl.activate() }
+          }
+          readonly property string tooltipText: root.accountName + " · " + root.accountStateLabel
+            + (root.myKeyKnown ? " · " + root.service.identity.slice(0, 8) + "…" : "")
+          Controls.ToolTip.visible: accountArea.containsMouse && !root.accountMenuOpen
+          Controls.ToolTip.delay: 400
+          Controls.ToolTip.text: tooltipText
+        }
       }
 
       Rectangle {
@@ -869,7 +961,181 @@ FocusScope {
       }
 
       ColumnLayout {
-        visible: root.showTimeline && !root.agentEditorShown
+        id: settingsView
+        objectName: "buzzSettingsView"
+        visible: root.settingsOpen
+        Layout.fillWidth: true
+        Layout.fillHeight: true
+        Layout.preferredWidth: Style.space(400)
+        spacing: Style.space(8)
+        RowLayout {
+          Layout.fillWidth: true
+          spacing: Style.space(8)
+          Ui.Button {
+            id: settingsBack
+            objectName: "buzzSettingsBack"
+            text: "‹ Back to rooms"
+            tooltipText: "Return to the room view"
+            fontSize: Style.font.caption
+            horizontalPadding: Style.space(6)
+            verticalPadding: Style.space(2)
+            focusable: true
+            onClicked: root.closeSettings()
+          }
+          Text {
+            Layout.fillWidth: true
+            text: "Settings"
+            textFormat: Text.PlainText
+            elide: Text.ElideRight
+            color: Color.foreground
+            font.family: Style.font.family
+            font.pixelSize: Style.font.body * 1.15
+            font.bold: true
+          }
+        }
+        Controls.ScrollView {
+          Layout.fillWidth: true
+          Layout.fillHeight: true
+          contentWidth: availableWidth
+          clip: true
+          ColumnLayout {
+            width: parent.width
+            spacing: Style.space(4)
+
+            // My avatar: art from a local .ans or .txt file. Local only until profile
+            // avatars are published to the relay; others still see the identicon.
+            SettingsCaption { text: "Avatar" }
+            ColumnLayout {
+              objectName: "buzzMyAvatar"
+              visible: root.myAvatarAvailable
+              Layout.fillWidth: true
+              spacing: Style.space(4)
+              RowLayout {
+                Layout.fillWidth: true
+                spacing: Style.space(8)
+                BuzzAvatar {
+                  objectName: "buzzMyAvatarPreview"
+                  key: root.myAvatarAvailable ? root.service.identity : ""
+                  name: "You"
+                  art: root.myAvatarArt
+                  brightness: root.myAvatarBrightness
+                  pixelSize: Style.font.body
+                }
+                SettingsNote {
+                  text: "Use a .ans or .txt file as your avatar on this machine. It is kept locally, not published; others still see your identicon."
+                }
+              }
+              AvatarFileLoader {
+                id: myAvatarLoader
+                Layout.fillWidth: true
+                fieldName: "buzzMyAvatarPath"
+                showClear: true
+                canClear: root.myAvatarArt !== ""
+                // A newly loaded file starts at the default brightness (auto-levels, 1.5).
+                onArtLoaded: function(art) {
+                  if (!root.myAvatarAvailable || !root.agentService.setOwnAvatarArt(root.service.identity, art, AnsiArt.DEFAULT_BRIGHTNESS))
+                    fail("The avatar could not be kept.")
+                }
+                onClearRequested: if (root.myAvatarAvailable) root.agentService.setOwnAvatarArt(root.service.identity, "")
+              }
+              // Applied as it is changed, so the thumbnail beside it is the preview.
+              AvatarBrightness {
+                visible: root.myAvatarBrightness > 0
+                Layout.fillWidth: true
+                fieldName: "buzzMyAvatarBrightness"
+                value: root.myAvatarBrightness > 0 ? root.myAvatarBrightness : AnsiArt.DEFAULT_BRIGHTNESS
+                onChosen: function(value) { root.agentService.setOwnAvatarArt(root.service.identity, root.myAvatarArt, value) }
+              }
+            }
+            SettingsNote {
+              visible: !root.myAvatarAvailable
+              text: root.service && root.service.sampleMode ? "Not available with sample data."
+                : "Available once this device has a Buzz identity and the agent service is reachable."
+            }
+
+            SettingsCaption { text: "Notifications" }
+            RowLayout {
+              Layout.fillWidth: true
+              spacing: Style.space(8)
+              Ui.Button {
+                objectName: "buzzSettingsAlerts"
+                text: root.service && root.service.notificationsEnabled ? "Alerts: on" : "Alerts: off"
+                tooltipText: "Turn generic desktop notifications for new activity on or off"
+                fontSize: Style.font.caption
+                focusable: true
+                selected: !!root.service && root.service.notificationsEnabled
+                enabled: !!root.service
+                onClicked: if (root.service) root.service.notificationsEnabled = !root.service.notificationsEnabled
+              }
+              SettingsNote {
+                text: "Generic alerts for new activity outside the visible conversation, without message text or room names. Off by default; best-effort."
+              }
+            }
+
+            SettingsCaption { text: "Window" }
+            RowLayout {
+              objectName: "buzzSettingsPresentation"
+              visible: root.presentationSwitchEnabled
+              Layout.fillWidth: true
+              spacing: Style.space(4)
+              Ui.Button {
+                objectName: "buzzSettingsOverlay"
+                text: "Overlay"
+                tooltipText: "Show Buzz as an overlay above other windows"
+                fontSize: Style.font.caption
+                focusable: true
+                selected: !root.windowMode
+                onClicked: if (root.windowMode) root.presentationRequested()
+              }
+              Ui.Button {
+                objectName: "buzzSettingsWindow"
+                text: "Window"
+                tooltipText: "Keep Buzz open as a normal resizable window"
+                fontSize: Style.font.caption
+                focusable: true
+                selected: root.windowMode
+                onClicked: if (!root.windowMode) root.presentationRequested()
+              }
+              Item { Layout.fillWidth: true }
+            }
+            SettingsNote {
+              visible: !root.presentationSwitchEnabled
+              text: "This view's presentation is fixed by its host."
+            }
+
+            SettingsCaption { text: "Shortcut" }
+            SettingsNote {
+              objectName: "buzzSettingsShortcut"
+              text: "Super+B opens Buzz once the shortcut block is installed with scripts/desktop-shortcut install. This panel does not read your Hyprland configuration, so it cannot tell whether it is installed."
+            }
+
+            SettingsCaption { text: "About" }
+            SettingsNote {
+              objectName: "buzzSettingsVersion"
+              visible: root.pluginVersion !== ""
+              text: "Buzz for Omarchy " + root.pluginVersion
+            }
+            SettingsNote {
+              objectName: "buzzSettingsRelay"
+              text: root.communityHost !== "" ? "Relay " + root.communityHost : "No relay configured"
+              wrapMode: Text.NoWrap
+              elide: Text.ElideMiddle
+            }
+            PublicKeyRow {
+              objectName: "buzzSettingsKey"
+              visible: root.myKeyKnown
+              service: root.service
+            }
+            SettingsNote {
+              visible: !root.myKeyKnown
+              text: "No identity on this device yet."
+            }
+          }
+        }
+      }
+
+      ColumnLayout {
+        visible: root.showTimeline && !root.agentEditorShown && !root.settingsOpen
         Layout.fillWidth: true
         Layout.fillHeight: true
         Layout.preferredWidth: Style.space(400)
@@ -1308,6 +1574,168 @@ FocusScope {
           showDelivery: root.threadOpen && root.service.deliveryState !== "idle"
             && root.service.submissionDraftKey === root.service.selectedRoomId + ":" + root.service.threadRootId
           onEscaped: root.closeThread()
+        }
+      }
+    }
+  }
+
+  // Account menu: a compact popover above the account control. A click outside
+  // it, Escape or choosing an item closes it.
+  FocusScope {
+    id: accountMenu
+    objectName: "buzzAccountMenuLayer"
+    anchors.fill: parent
+    visible: root.accountMenuOpen
+    z: 15
+    property real anchorX: 0
+    property real anchorY: 0
+    Keys.onEscapePressed: function(event) { event.accepted = true; root.closeAccountMenu() }
+    MouseArea {
+      objectName: "buzzAccountMenuOutside"
+      anchors.fill: parent
+      acceptedButtons: Qt.AllButtons
+      onClicked: root.closeAccountMenu()
+      onWheel: function(wheel) { wheel.accepted = true }
+    }
+    Rectangle {
+      id: accountMenuCard
+      objectName: "buzzAccountMenu"
+      width: Math.min(root.width - Style.space(16), Math.max(Style.space(230), accountControl.width))
+      height: accountMenuColumn.implicitHeight + Style.space(16)
+      x: Math.max(Style.space(8), Math.min(accountMenu.anchorX, root.width - width - Style.space(8)))
+      y: Math.max(Style.space(8), accountMenu.anchorY - height - Style.space(4))
+      color: Color.popups.background
+      border.color: Color.popups.border
+      border.width: Math.max(1, Style.space(1))
+      radius: Style.cornerRadius
+      MouseArea { anchors.fill: parent; acceptedButtons: Qt.AllButtons }
+      ColumnLayout {
+        id: accountMenuColumn
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: parent.top
+        anchors.margins: Style.space(8)
+        spacing: Style.space(4)
+        RowLayout {
+          Layout.fillWidth: true
+          spacing: Style.space(8)
+          BuzzAvatar {
+            key: root.myKeyKnown ? root.service.identity : ""
+            name: root.myName
+            art: root.myAvatarArt
+            brightness: root.myAvatarBrightness
+            pixelSize: Style.font.caption
+          }
+          ColumnLayout {
+            Layout.fillWidth: true
+            spacing: Style.space(2)
+            Text {
+              objectName: "buzzAccountMenuName"
+              Layout.fillWidth: true
+              text: root.accountName
+              textFormat: Text.PlainText
+              elide: Text.ElideRight
+              color: Color.foreground
+              font.family: Style.font.family
+              font.pixelSize: Style.font.body
+              font.bold: true
+            }
+            Rectangle {
+              objectName: "buzzAccountStatePill"
+              readonly property string text: root.accountStateLabel
+              implicitWidth: pillText.implicitWidth + Style.space(12)
+              implicitHeight: pillText.implicitHeight + Style.space(4)
+              radius: height / 2
+              color: Util.alpha(root.accountStateColor, 0.18)
+              border.color: root.accountStateColor
+              border.width: Math.max(1, Style.space(1))
+              Text {
+                id: pillText
+                anchors.centerIn: parent
+                text: root.accountStateLabel
+                textFormat: Text.PlainText
+                color: Color.foreground
+                font.family: Style.font.family
+                font.pixelSize: Style.font.caption
+              }
+            }
+          }
+        }
+        Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: Util.alpha(Color.foreground, 0.14) }
+        // One community per helper for now; the row names it without switching.
+        Item {
+          objectName: "buzzAccountCommunity"
+          Layout.fillWidth: true
+          implicitHeight: communityRow.implicitHeight
+          readonly property string tooltipText: "Switching communities is not available yet"
+          Controls.ToolTip.visible: communityHover.containsMouse
+          Controls.ToolTip.delay: 400
+          Controls.ToolTip.text: tooltipText
+          MouseArea { id: communityHover; anchors.fill: parent; hoverEnabled: true; acceptedButtons: Qt.NoButton }
+          RowLayout {
+            id: communityRow
+            anchors.fill: parent
+            spacing: Style.space(6)
+            Text {
+              text: "⬢"
+              textFormat: Text.PlainText
+              color: Color.accent
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+            }
+            ColumnLayout {
+              Layout.fillWidth: true
+              spacing: 0
+              Text {
+                Layout.fillWidth: true
+                text: "Community"
+                textFormat: Text.PlainText
+                color: Color.foreground
+                opacity: 0.6
+                font.family: Style.font.family
+                font.pixelSize: Style.font.caption
+              }
+              Text {
+                objectName: "buzzAccountCommunityHost"
+                Layout.fillWidth: true
+                text: root.communityHost !== "" ? root.communityHost : root.service && root.service.sampleMode ? root.service.viewModel.community : "No relay"
+                textFormat: Text.PlainText
+                elide: Text.ElideMiddle
+                color: Color.foreground
+                font.family: Style.font.family
+                font.pixelSize: Style.font.caption
+              }
+            }
+            Text {
+              text: "›"
+              textFormat: Text.PlainText
+              color: Color.foreground
+              opacity: 0.4
+              font.family: Style.font.family
+              font.pixelSize: Style.font.body
+            }
+          }
+        }
+        Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: Util.alpha(Color.foreground, 0.14) }
+        Ui.Button {
+          objectName: "buzzAccountFeedback"
+          Layout.fillWidth: true
+          text: "Send feedback"
+          tooltipText: "Open a new issue for Buzz for Omarchy in your browser"
+          fontSize: Style.font.caption
+          leftAlign: true
+          focusable: true
+          onClicked: root.sendFeedback()
+        }
+        Ui.Button {
+          objectName: "buzzAccountSettings"
+          Layout.fillWidth: true
+          text: "Settings · Ctrl+,"
+          tooltipText: "Avatar, notifications, window and about"
+          fontSize: Style.font.caption
+          leftAlign: true
+          focusable: true
+          onClicked: root.openSettings()
         }
       }
     }
