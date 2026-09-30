@@ -4,6 +4,7 @@ import Quickshell
 import Quickshell.Io
 import "plugin" as Buzz
 import "plugin/Identicon.js" as Identicon
+import "plugin/AnsiArt.js" as AnsiArt
 
 ShellRoot {
   id: test
@@ -33,7 +34,7 @@ ShellRoot {
     Buzz.PanelContent { id: offlineView; anchors.fill: parent; service: offline }
   }
   FileView { id: record; path: Quickshell.env("BUZZ_SEND_RECORD"); blockLoading: true }
-  FileView { id: avatarsFile; path: Quickshell.env("XDG_STATE_HOME") + "/omarchy-buzz/avatars.json"; blockLoading: true; printErrors: false }
+  FileView { id: avatarsFile; path: Quickshell.env("XDG_STATE_HOME") + "/omarchy-buzz/avatars.json"; blockLoading: true; blockWrites: true; printErrors: false }
   readonly property string pastedArt: "+----------+\n|  fixture |\n+----------+\n4\n5\n6"
   // A fresh service object reads the avatar file on creation; nothing connects.
   function freshArt(id) {
@@ -70,6 +71,26 @@ ShellRoot {
         || JSON.stringify(stored.avatars) !== JSON.stringify({"33333333-3333-4333-8333-333333333333": pastedArt}))
       throw new Error("Avatar file holds unexpected data: " + avatarsFile.text())
     if (freshArt(agentId) !== pastedArt) throw new Error("Art not restored by a fresh service object")
+    // Colored art from a file (reading the file is covered by --ansi-art): previewed,
+    // saved locally, shown colored in the header and list; Clear returns to typed art.
+    one(view, "buzzAgentAvatarLoad").clicked()
+    var loader = one(view, "buzzAgentAvatarPath").parent
+    var colored = AnsiArt.sanitize("\x1b[38;2;200;40;40m@@\n\x1b[38;5;33m##")
+    loader.artLoaded(colored)
+    if (editor.draftArt !== colored || shown(view, "buzzAgentAvatarArt").length || !editor.artPreview.usesColor
+        || !one(view, "buzzAgentSave").enabled)
+      throw new Error("Loaded colored art not previewed as a draft")
+    one(view, "buzzAgentSave").clicked()
+    if (service.agents.avatarArtFor(agentId) !== colored || !header[0].usesColor || !rowAvatar[0].usesColor
+        || header[0].implicitWidth !== editor.artPreview.implicitWidth || freshArt(agentId) !== colored)
+      throw new Error("Colored agent art not saved, shown or restored")
+    one(view, "buzzAgentAvatarPathClear").clicked()
+    if (editor.draftArt !== "" || one(view, "buzzAgentAvatarArt").text !== "") throw new Error("Clear did not return to typed art")
+    one(view, "buzzAgentAvatarArt").text = pastedArt
+    one(view, "buzzAgentSave").clicked()
+    one(view, "buzzAgentAvatarLoad").clicked()
+    if (service.agents.avatarArtFor(agentId) !== pastedArt || shown(view, "buzzAgentAvatarPath").length)
+      throw new Error("Typed art not restored after colored art")
     // Damaged or out-of-contract files fail closed.
     var damaged = ["{broken", JSON.stringify({version: 2, avatars: {}}),
       JSON.stringify({version: 1, avatars: {"33333333-3333-4333-8333-333333333333": "bell\u0007"}}),
@@ -309,7 +330,7 @@ ShellRoot {
               || !test.shown(view, "buzzHistoryScroll").length || agents.requestState !== "unknown")
             throw new Error("Malformed status did not end the agent session")
           test.validationCases()
-          console.log("PASS: Agents section lists the service's agents, edits, creates, starts and shows refusals; one request at a time; malformed frames end the session; no agent_manager hides the section; pasted avatar art is clipped, previewed, kept locally and restored, damaged avatar files fail closed")
+          console.log("PASS: Agents section lists the service's agents, edits, creates, starts and shows refusals; one request at a time; malformed frames end the session; no agent_manager hides the section; pasted avatar art is clipped, previewed, kept locally and restored, colored art from a file is previewed, saved and cleared, damaged avatar files fail closed")
           Qt.quit()
         }
       } catch (error) { console.error(error.message); Qt.exit(1) }

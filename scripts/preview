@@ -64,6 +64,15 @@ elif [[ ${1:-} == --mentions ]]; then
   cp "$project_root/tests/Mentions.qml" "$preview_dir/shell.qml"
 elif [[ ${1:-} == --identicon ]]; then
   cp "$project_root/tests/Identicon.qml" "$preview_dir/shell.qml"
+elif [[ ${1:-} == --ansi-art ]]; then
+  # Synthetic art only. BUZZ_ANSI_CAPTURE (an .ans path) and BUZZ_ANSI_CAPTURE_DIR
+  # optionally render that art as my avatar to PNG files after the checks pass.
+  cp "$project_root/tests/AnsiArt.qml" "$preview_dir/shell.qml"
+  mkdir -m 700 "$preview_dir/files"
+  cp "$project_root/tests/fixtures/avatar.ans" "$preview_dir/files/avatar.ans"
+  head -c 70000 /dev/zero | tr '\0' x > "$preview_dir/files/large.ans"
+  export BUZZ_ANSI_FIXTURE="$preview_dir/files/avatar.ans"
+  export BUZZ_ANSI_LARGE="$preview_dir/files/large.ans"
 elif [[ ${1:-} == --author-names ]]; then
   cp "$project_root/tests/AuthorNames.qml" "$preview_dir/shell.qml"
 elif [[ ${1:-} == --presentation ]]; then
