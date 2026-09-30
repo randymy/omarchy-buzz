@@ -1628,3 +1628,42 @@ message was sent and no helper, relay or agent change was made.
 This is a UI-side accommodation. The helper should stop tearing down its views
 for a background room check; until then sends and thread reads are unavailable
 in the helper for the ~2 seconds of each check.
+
+## Thread panel and denser layout — September 29 night
+
+The operator confirmed the reference behavior: threads open to the right in
+both Buzz Desktop and Slack, which keeps the room followable. They also asked
+to keep this plugin's density rather than Slack's spacing, and to make refresh
+actions small controls instead of rows.
+
+`4b14cda` replaces the inline reply accordion with a right-hand thread panel
+(root, reply count, replies, its own composer). At 1100 units and wider the
+room list, room and thread show together; below that an open thread hides the
+room list; below 640 the thread replaces the room with a back control. The
+presentation is split into `BuzzMessage.qml`, `BuzzComposer.qml` and
+`BuzzScroll.qml`.
+
+The service still has one active destination. `composeScope`, `updateDraftFor`,
+`canSendFor` and `submitFor` select it from whichever composer is used, so the
+delivery ledger, scope fences and uncertain-send lock are unchanged. Closing a
+thread from the panel returns the destination to the room; an involuntary loss
+of the root still leaves the reply destination in place and unsendable.
+
+Also changed: Enter sends and Shift+Enter adds a line; the conversation opens
+at and follows the newest message unless the reader scrolled up; short times
+with day dividers and grouped headers; `↻` header icons for refresh; status
+rows reduced to one header line, captions and tooltips. The recipient picker
+moved behind the composer's `@` control.
+
+All twelve preview modes pass with no scene warnings. `--thread-replies` now
+checks the panel position, follow-newest and reader-position rules, and the
+close control. Installed at `4b14cda` with a shell restart; the real window
+was captured rendering the new layout in an empty room. Opening a thread and
+sending a reply against the real relay were not exercised by the maintainer:
+no production message was sent and the operator's window was not driven.
+
+Still helper-bound: reply counts on room messages (every message offers
+`Thread ›` because the helper does not project thread summaries), more than
+eight replies, older history, live updates, and direct messages. DMs remain
+excluded by DESIGN.md; the catalog admits only `stream` rooms. The selected
+room is not remembered across shell restarts.

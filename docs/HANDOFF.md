@@ -30,7 +30,7 @@ conflict explicitly rather than assuming an old milestone is current.
 | Component | State at handoff |
 | --- | --- |
 | Repository | `https://github.com/randymy/omarchy-buzz`, branch `main`; local `~/Projects/omarchy-buzz` |
-| Latest implementation commit | `d0e52994f30538eb0626fa11aaa4eaba25fef8d1` — conversation kept during the periodic room check; local only, not pushed at handoff; documentation commits may follow |
+| Latest implementation commit | `4b14cda` — right-hand thread panel and denser layout, on top of `d0e5299` (periodic room check); local only, not pushed; documentation commits may follow |
 | Installed UI | `~/.config/omarchy/plugins/community.buzz`, verified at the same implementation commit |
 | Plugin/helper version | `0.0.8`; this preview version covers multiple development commits, so verify commits and hashes too |
 | Helper binary | `~/.local/bin/omarchy-buzz`; SHA256 `f6b8f6d6c870828152b26110984456a4023f6e53530719a1cf31cabedf30eda7` |
@@ -49,8 +49,10 @@ Artifact downloads expire; the local verified helper artifact is under
 
 - Native bar integration, normal Buzz window and optional overlay; hosted or
   custom relay configuration. The operator currently uses a Mac mini relay.
-- Joined-room snapshots, recent messages, sending, thread reading/replying,
-  room-scoped display names, exact-key mention completion and optional alerts.
+- Joined-room snapshots, recent messages, sending, thread reading/replying in a
+  right-hand thread panel with its own composer, room-scoped display names,
+  exact-key mention completion and optional alerts. People on Buzz Desktop and
+  this plugin share the same rooms on one relay; direct messages are not built.
 - Type `@codex`, then choose the actual roster suggestion with Tab/Enter/click.
   Text resembling a mention alone is not proof of an attached routing key.
 - The dedicated **Codex (isolated)** agent uses the existing separate ChatGPT
