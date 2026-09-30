@@ -252,7 +252,7 @@ Item {
   property string threadRetryInstance: ""
   property int threadRetryGeneration: 0
   readonly property string threadLabel: threadState === "loading" ? "Loading replies" : threadState === "snapshot"
-    ? (threadRows.length ? "Replies" : "No replies in this snapshot") + (threadHasMore ? " · older replies available" : "")
+    ? (threadRows.length ? "Replies" : "No replies in this snapshot") + (threadHasMore ? " · more replies exist" : "")
     : threadCategory === "thread_access_denied" ? "Replies unavailable for this room" : "Replies unavailable · try Refresh replies"
   readonly property var messages: sample ? sample.messages.filter(function(message) { return message.roomId === root.selectedRoomId }) : historyRows
   readonly property string historyLabel: historyState === "loading" ? "Loading recent snapshot" : historyState === "snapshot"
@@ -564,15 +564,32 @@ Item {
   }
   function sameProjection(before, after) { return JSON.stringify(before) === JSON.stringify(after) }
   function closeThread() { clearThread(); if (threadSupported) send("close_thread") }
+  // Up to 200 replies, oldest first. Each names its parent: the root at depth 1,
+  // otherwise an earlier reply one level up. Anything else rejects the frame.
   function validatedThread(value) {
-    var categories = ["thread_unavailable", "thread_timeout", "thread_invalid", "thread_access_denied", "thread_completeness_unknown"]
-    if (!value || !Array.isArray(value.rows) || value.rows.length > 8 || (value.category !== null && categories.indexOf(value.category) === -1)
+    var failures = ["thread_unavailable", "thread_timeout", "thread_invalid", "thread_access_denied"]
+    var snapshots = ["thread_completeness_unknown", "thread_more_unshown", "thread_replies_hidden"]
+    if (!value || !Array.isArray(value.rows) || value.rows.length > 200
+        || (value.category !== null && failures.concat(snapshots).indexOf(value.category) === -1)
         || (value.rootId !== null && (typeof value.rootId !== "string" || !/^[a-f0-9]{64}$/.test(value.rootId)))
         || ((value.roomId === null) !== (value.rootId === null))
         || (value.state !== "unavailable" && value.rootId === null)) return null
-    var checked = validatedHistory({state:value.state, roomId:value.roomId, rows:value.rows, hasMore:value.hasMore,
-      category:value.category === null ? null : value.category.replace(/^thread_/, "history_")})
+    // "More exist" is a helper heuristic; its category and hasMore must agree.
+    if (value.state === "snapshot" && (snapshots.indexOf(value.category) === -1
+        || value.category === "thread_more_unshown" && value.hasMore !== true
+        || value.category === "thread_completeness_unknown" && value.hasMore !== false)) return null
+    var checked = validatedHistory({state:value.state, roomId:value.roomId, rows:value.rows, hasMore:value.hasMore, category:null}, 200)
     if (!checked || checked.rows.some(function(row) { return row.id === value.rootId })) return null
+    var depths = ({})
+    for (var i = 0; i < checked.rows.length; i++) {
+      var depth = value.rows[i].depth
+      var parent = value.rows[i].parent
+      if (!Number.isInteger(depth) || depth < 1 || depth > 64 || typeof parent !== "string" || !/^[a-f0-9]{64}$/.test(parent)
+          || (parent === value.rootId ? depth !== 1 : !depths.hasOwnProperty(parent) || depths[parent] + 1 !== depth)) return null
+      depths[checked.rows[i].id] = depth
+      checked.rows[i].depth = depth
+      checked.rows[i].parent = parent
+    }
     checked.rootId = value.rootId
     checked.category = value.category || ""
     return checked
@@ -591,9 +608,10 @@ Item {
   readonly property var threadRoot: threadRootId ? historyRows.find(function(row) { return row.id === root.threadRootId }) || null : null
   readonly property string threadCountLabel: threadState === "loading" ? "Loading replies" : threadState !== "snapshot"
     ? (threadCategory === "thread_access_denied" ? "Replies unavailable for this room" : "Replies unavailable")
-    : threadRows.length === 0 ? "No replies yet"
-    : threadHasMore ? "Latest " + threadRows.length + " replies · older not shown"
-    : threadRows.length + (threadRows.length === 1 ? " reply" : " replies")
+    : (threadRows.length === 0 ? (threadCategory === "thread_replies_hidden" ? "No visible replies" : "No replies yet")
+      : threadHasMore ? "First " + threadRows.length + " replies · more exist"
+      : threadRows.length + (threadRows.length === 1 ? " reply" : " replies"))
+      + (threadCategory === "thread_replies_hidden" ? " · some hidden" : "")
   function clearRecipients() {
     recipientsRetry.stop()
     pendingRecipientsRequestId = ""
@@ -724,11 +742,11 @@ Item {
     if (["unavailable", "loading"].indexOf(catalog.state) !== -1 && clean.length !== 0) return null
     return {state: catalog.state, rooms: clean, category: catalog.category || ""}
   }
-  function validatedHistory(history) {
+  function validatedHistory(history, limit) {
     var uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/
     if (!history || ["unavailable", "loading", "snapshot"].indexOf(history.state) === -1
         || (history.roomId !== null && (typeof history.roomId !== "string" || !uuid.test(history.roomId)))
-        || !Array.isArray(history.rows) || history.rows.length > 20
+        || !Array.isArray(history.rows) || history.rows.length > (limit || 20)
         || (history.hasMore !== null && typeof history.hasMore !== "boolean")
         || (history.category !== null && ["history_unavailable", "history_timeout", "history_invalid", "history_access_denied", "history_completeness_unknown"].indexOf(history.category) === -1)) return null
     if (history.state === "snapshot" && (history.roomId === null || typeof history.hasMore !== "boolean")) return null
@@ -796,7 +814,7 @@ Item {
   function boundedString(value, limit) { return typeof value === "string" && value.length <= limit }
   function acceptFrame(line) {
     if (sessionFailed) return false
-    if (!boundedString(line, 98304)) { fail("invalid_response"); return false }
+    if (!boundedString(line, 1048576)) { fail("invalid_response"); return false }
     var frame
     try { frame = JSON.parse(line) } catch (_) { fail("invalid_response"); return false }
     if (frame && frame.version === 1 && frame.type === "error" && ["request_busy", "send_busy", "send_scope_changed", "send_request_reused", "send_invalid", "send_unavailable", "send_access_denied", "send_ledger_unavailable", "delivery_unknown"].indexOf(frame.category) !== -1) {

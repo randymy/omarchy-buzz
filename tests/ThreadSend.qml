@@ -15,6 +15,8 @@ ShellRoot {
         var otherRoom = "22222222-2222-4222-8222-222222222222"
         var rootId = "1".repeat(64)
         function row(id) { return {id:id,author:"a".repeat(64),time:100,text:"Synthetic",edited:false,truncated:false,unavailable:false} }
+        // Nested replies are read-only structure; replies are still sent to the root.
+        function reply(digit, depth, parent) { var value=row(digit.repeat(64)); value.time=101; value.depth=depth; value.parent=parent; return value }
         function frame() {
           return {version:1,type:service.instanceId === "" ? "hello" : "status",instanceId:"thread-send",generation:1,
             capabilities:["connection_status","room_catalog","room_history","thread_replies","message_send","thread_send"],
@@ -22,7 +24,8 @@ ShellRoot {
               catalog:{state:"ready",category:null,rooms:[{id:room,name:"Fixture",description:"",kind:"stream",participants:[],hidden:false},{id:otherRoom,name:"Other",description:"",kind:"stream",participants:[],hidden:false}]},
               history:{state:"snapshot",roomId:room,rows:[row(rootId)],hasMore:false,category:"history_completeness_unknown"},
               delivery:{state:"idle",requestId:null,roomId:null,eventId:null,category:null},
-              thread:{state:"snapshot",roomId:room,rootId:rootId,rows:[],hasMore:false,category:"thread_completeness_unknown"}}}
+              thread:{state:"snapshot",roomId:room,rootId:rootId,rows:[reply("2", 1, rootId), reply("3", 2, "2".repeat(64))],
+                hasMore:false,category:"thread_completeness_unknown"}}}
         }
         function accept(f) { if (!service.acceptFrame(JSON.stringify(f))) throw new Error("Valid frame rejected") }
         function named(item, name) {
@@ -36,6 +39,7 @@ ShellRoot {
         service.beginSession(); accept(frame())
         service.updateDraft("Room draft")
         service.openThread(rootId); accept(frame())
+        check(service.threadRows.length === 2 && service.threadRows[1].depth === 2, "Nested thread fixture rejected")
         check(service.composeReply(rootId), "Reply target rejected")
         check(service.draftText === "" && replyComposer(view).text === "" && composer(view).text === "Room draft", "Room text leaked into reply")
         service.updateDraft("Thread draft")

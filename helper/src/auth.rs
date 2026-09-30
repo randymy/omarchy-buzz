@@ -514,7 +514,8 @@ async fn observe_inner(
                     publish_status(tx,|s|s.thread=Thread{state:"loading".into(),..Thread::unavailable(Some(room.clone()),Some(root.clone()),None)});
                     let ticket=thread_ticket;let generation=tx.borrow().generation;let relay=relay.to_owned();let keys=keys.clone();let pin=relay_pin.unwrap();let id=parsed.unwrap();
                     thread_jobs.spawn(async move {
-                        let result=match timeout(Duration::from_secs(15),crate::thread::fetch(&relay,&keys,pin,id,&root)).await {Ok(r)=>r,Err(_)=>Err("thread_timeout")};
+                        // Up to four sequential pages (each query is capped at 10 s); abort semantics are unchanged.
+                        let result=match timeout(Duration::from_secs(20),crate::thread::fetch(&relay,&keys,pin,id,&root)).await {Ok(r)=>r,Err(_)=>Err("thread_timeout")};
                         (ticket,generation,room,root,result)
                     });
                 },
@@ -674,10 +675,10 @@ async fn observe_inner(
                             continue;
                         }
                         publish_status(tx,|s|s.thread=match result {
-                            Ok(thread) if thread.room==room && thread.root==root && thread.rows.len()<=8=>Thread {
+                            Ok(thread) if thread.room==room && thread.root==root && thread.rows.len()<=crate::thread::ROWS=>Thread {
                                 state:"snapshot".into(),room_id:Some(room.clone()),root_id:Some(root.clone()),
                                 has_more:Some(thread.has_more),category:Some(thread.category.into()),
-                                rows:thread.rows.into_iter().map(|r|crate::protocol::HistoryRow{ reactions: r.reactions,thread: None,id:r.id,author:r.author_pubkey,time:r.timestamp,text:r.text,edited:r.edited,truncated:r.truncated,unavailable:r.unavailable}).collect(),
+                                rows:thread.rows.into_iter().map(|r|crate::protocol::ThreadRow{depth:r.depth,parent:r.parent,row:crate::protocol::HistoryRow{ reactions:None,thread:None,id:r.id,author:r.author_pubkey,time:r.timestamp,text:r.text,edited:r.edited,truncated:r.truncated,unavailable:r.unavailable}}).collect(),
                             },
                             Ok(_)=>Thread::unavailable(Some(room.clone()),Some(root.clone()),Some("thread_invalid")),
                             Err(error)=> {

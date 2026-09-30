@@ -30,6 +30,9 @@ FocusScope {
   ListModel { id: replyModel; dynamicRoles: true }
   function syncRows(model, rows, before) {
     rows = rows || []
+    // Thread replies name a validated parent: the root or an earlier reply.
+    var authors = ({})
+    if (before && before.id) authors[before.id] = before.author
     for (var i = 0; i < rows.length; i++) {
       var key = rows[i].id || ("sample-" + i)
       var found = -1
@@ -39,10 +42,14 @@ FocusScope {
       var previous = i > 0 ? rows[i - 1] : before
       var timed = typeof rows[i].time === "number" && (!previous || typeof previous.time === "number")
       var dayBreak = timed && (!previous || service.dayKey(previous.time) !== service.dayKey(rows[i].time))
-      // Consecutive messages from one author within five minutes share a header.
+      // Consecutive messages from one author within five minutes share a header;
+      // in a thread only while they answer the same parent.
       var grouped = timed && !!previous && previous !== before && !dayBreak && previous.author === rows[i].author
-        && rows[i].time >= previous.time && rows[i].time - previous.time < 300
-      var serialized = JSON.stringify(Object.assign({}, rows[i], {dayBreak: dayBreak, grouped: grouped}))
+        && previous.parent === rows[i].parent && rows[i].time >= previous.time && rows[i].time - previous.time < 300
+      var layout = {dayBreak: dayBreak, grouped: grouped}
+      if (typeof rows[i].parent === "string") layout.parentAuthor = authors[rows[i].parent] || ""
+      if (rows[i].id) authors[rows[i].id] = rows[i].author
+      var serialized = JSON.stringify(Object.assign({}, rows[i], layout))
       if (found === -1) model.insert(i, {eventKey: key, payload: serialized})
       else {
         if (found !== i) model.move(found, i, 1)

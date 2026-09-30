@@ -1,6 +1,7 @@
 // Synthetic status frames only; no relay or identity access.
 import QtQuick
 import Quickshell
+import qs.Commons
 import "plugin" as Buzz
 
 ShellRoot {
@@ -68,7 +69,7 @@ ShellRoot {
         var quiet = toggles.filter(function(item) { return test.summaryIds.indexOf(item.messageId) === -1 })
         if (!quiet.length || !quiet.every(function(item) { return item.text === "Reply ›" }))
           throw new Error("Rows without a summary did not offer a plain reply")
-        console.log("PASS: thread opens beside the room with its replies; snapshots keep delegates and the open thread; the view follows the newest message only for a reader at the end; relay reply counts label their rows")
+        console.log("PASS: thread opens beside the room with nested, indented replies; up to 200 replies with a validated reply tree; snapshots keep delegates and the open thread; the view follows the newest message only for a reader at the end; relay reply counts label their rows")
         Qt.quit()
       } catch (error) { console.error(error); Qt.exit(1) }
     }
@@ -83,7 +84,7 @@ ShellRoot {
           throw new Error("Incoming message moved a reader who had scrolled up")
         if (test.findNamed(view, "buzzThreadToggle", []).indexOf(test.retainedToggle) === -1)
           throw new Error("Incoming message rebuilt existing delegates")
-        if (service.threadRootId !== test.openedRoot || service.threadState !== "snapshot" || test.shown("buzzThreadReply").length !== 1)
+        if (service.threadRootId !== test.openedRoot || service.threadState !== "snapshot" || test.shown("buzzThreadReply").length !== 2)
           throw new Error("Incoming message interrupted the open thread")
         test.findNamed(view, "buzzCloseThread", [])[0].clicked()
         if (service.threadRootId !== "") throw new Error("Close did not close the thread")
@@ -130,7 +131,9 @@ ShellRoot {
           throw new Error("Thread toggle did not open the selected root")
         test.crowdedFrame.status.thread = {state:"snapshot", roomId:test.crowdedFrame.status.history.roomId,
           rootId:test.openedRoot, rows:[{id:"f".repeat(64),author:"a".repeat(64),time:101,
-            text:"Visible synthetic reply",edited:false,truncated:false,unavailable:false}],
+            text:"Visible synthetic reply",edited:false,truncated:false,unavailable:false,depth:1,parent:test.openedRoot},
+            {id:"e".repeat(64),author:"c".repeat(64),time:102,
+            text:"Nested synthetic reply",edited:false,truncated:false,unavailable:false,depth:2,parent:"f".repeat(64)}],
           hasMore:false,category:"thread_completeness_unknown"}
         test.crowdedFrame.type="status"
         if (!service.acceptFrame(JSON.stringify(test.crowdedFrame))) throw new Error("Reply snapshot rejected")
@@ -145,9 +148,15 @@ ShellRoot {
       try {
         var scroll = test.findNamed(view, "buzzHistoryScroll", [])[0]
         var panel = test.shown("buzzThreadPanel")[0]
-        if (!panel || test.shown("buzzThreadRoot").length !== 1 || test.shown("buzzThreadReply").length !== 1
-            || service.threadRows.length !== 1 || service.threadCountLabel !== "1 reply")
-          throw new Error("Open thread did not show its root and reply")
+        var replies = test.shown("buzzThreadReply")
+        if (!panel || test.shown("buzzThreadRoot").length !== 1 || replies.length !== 2
+            || service.threadRows.length !== 2 || service.threadCountLabel !== "2 replies")
+          throw new Error("Open thread did not show its root and replies")
+        var captions = test.shown("buzzThreadReplyCaption")
+        if (replies[0].leftPadding !== 0 || replies[1].leftPadding !== Style.space(14)
+            || captions.length !== 1 || captions[0].text !== "↳ replying to " + "a".repeat(12) + "…"
+            || test.findNamed(replies[1], "buzzThreadReplyCaption", []).indexOf(captions[0]) === -1)
+          throw new Error("Nested reply was not indented under a caption naming its parent's author")
         if (!scroll.visible || scroll.width <= 0 || panel.mapToItem(view, 0, 0).x <= scroll.mapToItem(view, 0, 0).x)
           throw new Error("Thread did not open to the right of a visible room")
         if (test.shown("buzzThreadToggle").length !== 15) throw new Error("Opening a thread changed the room's messages")
@@ -171,6 +180,8 @@ ShellRoot {
         var rootId = "1".repeat(64)
         var replyId = "2".repeat(64)
         function row(id) { return {id:id,author:"a".repeat(64),time:100,text:"Synthetic reply",edited:false,truncated:false,unavailable:false} }
+        function reply(id, depth, parent) { var value=row(id); value.depth=depth; value.parent=parent; return value }
+        function serialId(n) { return ("c" + ("00" + n.toString(16)).slice(-3)).repeat(16) }
         function frame() {
           return {version:1,type:service.instanceId === "" ? "hello" : "status",instanceId:"thread-fixture",generation:1,
             capabilities:["connection_status","room_catalog","room_history","thread_replies"],
@@ -181,7 +192,7 @@ ShellRoot {
         }
         function accept(value) { if (!service.acceptFrame(JSON.stringify(value))) throw new Error("Valid thread frame rejected") }
         function snapshot(value, id) {
-          value.status.thread={state:"snapshot",roomId:room,rootId:id,rows:[row(replyId)],hasMore:false,category:"thread_completeness_unknown"}
+          value.status.thread={state:"snapshot",roomId:room,rootId:id,rows:[reply(replyId, 1, id)],hasMore:false,category:"thread_completeness_unknown"}
           return value
         }
         service.beginSession()
@@ -244,6 +255,42 @@ ShellRoot {
         service.beginSession(); accept(frame()); service.openThread(rootId)
         bad=snapshot(frame(),rootId); bad.status.thread.rows[0].author="invalid"
         if (service.acceptFrame(JSON.stringify(bad)) || !service.sessionFailed) throw new Error("Malformed reply accepted")
+        // Up to 200 replies are accepted; each must chain to the root through earlier rows.
+        service.beginSession(); accept(frame()); service.openThread(rootId)
+        var full=snapshot(frame(),rootId)
+        full.status.thread.rows=[]
+        for (var n=0;n<200;n++) full.status.thread.rows.push(n % 2 ? reply(serialId(n), 2, serialId(n - 1)) : reply(serialId(n), 1, rootId))
+        full.status.thread.hasMore=true; full.status.thread.category="thread_more_unshown"
+        accept(full)
+        if (service.threadRows.length !== 200 || service.threadRows[199].depth !== 2 || service.threadRows[199].parent !== serialId(198)
+            || service.threadCountLabel !== "First 200 replies · more exist")
+          throw new Error("Full 200-reply thread not shown as capped")
+        var over=JSON.parse(JSON.stringify(full)); over.status.thread.rows.push(reply(serialId(200), 1, rootId))
+        if (service.acceptFrame(JSON.stringify(over)) || !service.sessionFailed) throw new Error("201 replies accepted")
+        var cases=[
+          function(t) { t.rows[1].parent="d".repeat(64) },
+          function(t) { t.rows[1].parent=serialId(2) },
+          function(t) { t.rows[1].depth=3 },
+          function(t) { t.rows[0].depth=2 },
+          function(t) { t.rows[0].depth=65 },
+          function(t) { delete t.rows[0].parent },
+          function(t) { t.rows[0].parent="D".repeat(64) },
+          function(t) { t.hasMore=false },
+          function(t) { t.category="thread_bogus" }]
+        for (var c=0;c<cases.length;c++) {
+          service.beginSession(); accept(frame()); service.openThread(rootId)
+          var broken=snapshot(frame(),rootId)
+          broken.status.thread.rows=[reply(serialId(0), 1, rootId), reply(serialId(1), 2, serialId(0)), reply(serialId(2), 1, rootId)]
+          broken.status.thread.hasMore=true; broken.status.thread.category="thread_more_unshown"
+          accept(JSON.parse(JSON.stringify(broken)))
+          service.beginSession(); accept(frame()); service.openThread(rootId)
+          cases[c](broken.status.thread)
+          if (service.acceptFrame(JSON.stringify(broken)) || !service.sessionFailed) throw new Error("Invalid reply tree accepted: case " + c)
+        }
+        service.beginSession(); accept(frame()); service.openThread(rootId)
+        var hidden=snapshot(frame(),rootId); hidden.status.thread.category="thread_replies_hidden"
+        accept(hidden)
+        if (service.threadCountLabel !== "1 reply · some hidden") throw new Error("Hidden replies not disclosed")
         service.beginSession()
         var reactionFrame=frame()
         reactionFrame.status.history.rows[0].reactions={seen:1,working:2}

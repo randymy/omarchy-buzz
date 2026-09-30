@@ -101,6 +101,7 @@ async fn sdk_reaction_without_h_is_valid_aux_but_wrong_scope_or_signature_fails(
         QueryRequest::ThreadReplies {
             room,
             root: root.id,
+            after: None,
         },
     ] {
         let (origin, server_task) = server(response(
@@ -398,6 +399,7 @@ fn only_room_history_requests_and_admits_thread_summaries() {
     let thread = QueryRequest::ThreadReplies {
         room,
         root: root.id,
+        after: None,
     };
     let body = |request: &QueryRequest| {
         serde_json::from_slice::<serde_json::Value>(&request.body(&keys).unwrap()).unwrap()
