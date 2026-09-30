@@ -7,6 +7,7 @@ mod auth;
 mod catalog;
 mod compatibility;
 mod config;
+mod dm_open;
 mod enrollment;
 mod history;
 mod ipc;

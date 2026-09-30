@@ -1721,3 +1721,27 @@ is a heuristic in this mode: there is no signed bounds event. The IPC response
 bound rose from 96 KiB to 512 KiB (worst case measured at ~428 KiB). Replies
 are still sent to the root. Details: [THREAD_REPLY_READINESS.md](THREAD_REPLY_READINESS.md).
 Evidence is synthetic only: helper unit tests and the offscreen preview modes.
+
+## Starting a direct message, synthetic only — September 29
+
+Branch `new-dm`, phase (b) of [DM_MAP.md](DM_MAP.md). New `open_dm` request
+(1-8 distinct canonical keys, request UUID, generation and instance) and
+`dm_open` capability. The helper signs kind 41010 as pinned `build_dm_open`
+does and publishes it on the authenticated socket outside the send ledger
+(why that is safe: [SENDING.md](SENDING.md)). `status.dmOpen` reports `idle`,
+`sending`, `acknowledged` (with the relay's `channel_id` and `created`),
+`rejected` or `unknown`; one open at a time. Allowed people are the verified
+roster of the room on screen or participants of a DM already in the catalog,
+never the viewer. Desktop searches the whole community directory; the helper
+has no verified directory, so this is the smallest safe rule. An acknowledged
+open re-checks joined rooms at once; the panel selects the DM once it is
+listed. The panel's `+ New message` control under Direct messages opens a
+picker of the current room's members (up to 8) with a Start action and one
+status caption; it is hidden without the capability.
+Verified with locked helper tests (loopback relay fixture: event shape and
+signature, roster restriction, busy, OK acknowledged/rejected, timeout,
+immediate re-check) and every `scripts/preview` mode, including the new
+`--new-dm`. No live relay verification: no DM was opened on a real relay and
+nothing was installed. Not verified: whether the relay's discovery events for a
+new DM are visible to the immediate re-check (they are emitted best-effort after
+commit); a slower emission is picked up by the regular 30-second check.

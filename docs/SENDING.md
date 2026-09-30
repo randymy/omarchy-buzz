@@ -153,3 +153,26 @@ Synchronous bounded fsync avoids cancellation between reservation and publicatio
 but a stalled filesystem can delay the helper actor. The shell remains separate.
 An acknowledgement whose outcome write fails remains acknowledged in that running
 helper’s memory; after restart, only durable evidence is available.
+
+## Opening a direct message (outside the ledger)
+
+`open_dm` publishes one other event kind: the kind 41010 DM open, signed
+exactly as pinned `build_dm_open` does (`builders.rs:1869-1884`: empty content,
+one `p` tag per other participant, no `d`, no local correlation tag). It does
+not use the send ledger. That is safe because the command carries no message
+text and the pinned relay resolves the DM by its participant set
+(`command_executor.rs:297-429`, `store/dm.rs:103-181`): a repeat returns the
+same channel, or clears the caller's hide, and never creates a second DM or a
+second message. The same participant set may therefore be opened again with a
+new request after an unknown outcome. The helper still treats it like a send
+at the boundary: a request UUID and scope generation, only verified keys (the
+selected room's roster snapshot or an existing DM's participants, never the
+viewer), one pending open (`dm_open_busy` otherwise), no re-signing of a
+reported request ID, exact event-ID `OK` matching, and `unknown` after 15
+seconds, disconnect or re-authentication. A positive `OK` is parsed only as
+`response:{"channel_id","created"}` (bare JSON also accepted, as Desktop's
+`parse_command_response` does) with a canonical UUID and boolean; anything else
+accepted, such as the relay's `duplicate:` answer, is `acknowledged` with no
+channel and `dm_open_response_unknown`. Relay text is never forwarded. An
+acknowledged open triggers the joined-room check at once; the panel selects
+the channel only after that check lists it.

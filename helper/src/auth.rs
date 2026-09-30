@@ -105,6 +105,7 @@ fn apply_loaded_config(
                     s.identity = c.identity.clone();
                     s.generation = s.generation.saturating_add(1);
                     s.delivery = crate::protocol::Delivery::default();
+                    s.dm_open = crate::protocol::DmOpen::default();
                     s.connection = "unconfigured".into();
                     s.category = None;
                     s.catalog = crate::protocol::Catalog::unavailable(None);
@@ -195,6 +196,9 @@ fn offline_command(command: Command, tx: &watch::Sender<Status>) -> bool {
         Command::Retry => return true,
         Command::SendChecked(_, reply) => {
             let _ = reply.send(Some("send_unavailable"));
+        }
+        Command::OpenDm(_, reply) => {
+            let _ = reply.send(Some("dm_open_unavailable"));
         }
         Command::Send(intent) => publish_status(tx, |s| {
             s.delivery = crate::protocol::Delivery {
@@ -380,12 +384,26 @@ async fn observe_sending(
     policy: FreshnessPolicy,
     sender: &mut crate::sending::Sender,
 ) -> ConnectionExit {
+    // A DM open cannot outlive its connection: its answer would arrive on this socket.
+    let mut opener = crate::dm_open::Opener::default();
     let result = observe_inner(
-        conn, keys, relay, relay_pin, tx, retry, backoff, policy, sender,
+        conn,
+        keys,
+        relay,
+        relay_pin,
+        tx,
+        retry,
+        backoff,
+        policy,
+        sender,
+        &mut opener,
     )
     .await;
     if let Some(delivery) = sender.unknown() {
         publish_status(tx, |s| s.delivery = delivery);
+    }
+    if let Some(view) = opener.unknown() {
+        publish_status(tx, |s| s.dm_open = view);
     }
     result
 }
@@ -399,6 +417,7 @@ async fn observe_inner(
     backoff: &mut Backoff,
     policy: FreshnessPolicy,
     sender: &mut crate::sending::Sender,
+    opener: &mut crate::dm_open::Opener,
 ) -> ConnectionExit {
     let mut pending: Option<String> = None;
     let mut due = tokio::time::Instant::now();
@@ -435,6 +454,9 @@ async fn observe_inner(
             },
             _=tokio::time::sleep_until(sender.deadline()), if sender.is_pending()=> {
                 if let Some(delivery)=sender.unknown() {publish_status(tx, |s|s.delivery=delivery);}
+            },
+            _=tokio::time::sleep_until(opener.deadline()), if opener.is_pending()=> {
+                if let Some(view)=opener.unknown() {publish_status(tx, |s|s.dm_open=view);}
             },
             command=retry.recv()=>match command {
                 Some(Command::Retry)=> {backoff.reset(); update(tx,"connecting",None); return ConnectionExit::Retry;},
@@ -477,6 +499,29 @@ async fn observe_inner(
                             Ok(Err(e))=>return ConnectionExit::Failure(category(&e)),
                             Err(_)=>return ConnectionExit::Failure("relay_timeout"),
                         }
+                    }
+                },
+                Some(Command::OpenDm(intent,reply))=> {
+                    if reply.is_closed() {continue;}
+                    let prepared={let status=tx.borrow();opener.prepare(&intent,keys,&status,fresh,relay_pin.is_some())};
+                    let (view,event)=match prepared {
+                        // An identical replay keeps the pending receipt.
+                        Ok(None)=>{let _=reply.send(None);continue;},
+                        Ok(Some(prepared))=>prepared,
+                        Err(category)=>{let _=reply.send(Some(category));continue;},
+                    };
+                    if reply.send(None).is_err() {
+                        // Nothing was written: the caller left before publication.
+                        opener.abandon();
+                        continue;
+                    }
+                    publish_status(tx, |s|s.dm_open=view);
+                    let frame=serde_json::json!(["EVENT",event]);
+                    // A dropped/timed-out write may already have reached the relay.
+                    match timeout(policy.response,conn.send_raw(&frame)).await {
+                        Ok(Ok(()))=>{},
+                        Ok(Err(e))=>return ConnectionExit::Failure(category(&e)),
+                        Err(_)=>return ConnectionExit::Failure("relay_timeout"),
                     }
                 },
                 Some(Command::FetchRecipients(room))=> {
@@ -817,6 +862,7 @@ async fn observe_inner(
                 Ok(RelayMessage::Auth { challenge })=> {
                     if challenge.len()>1024 { return ConnectionExit::Failure("relay_protocol_error"); }
                     if let Some(delivery)=sender.unknown() {publish_status(tx, |s|s.delivery=delivery);}
+                    if let Some(view)=opener.unknown() {publish_status(tx, |s|s.dm_open=view);}
                     recipient_jobs.abort_all();recipient_jobs=tokio::task::JoinSet::new();recipient_ticket=recipient_ticket.wrapping_add(1);
                     fresh=false;
                     jobs.abort_all();
@@ -831,7 +877,15 @@ async fn observe_inner(
                         Err(_)=>return ConnectionExit::Failure("relay_timeout"),
                     }
                 },
-                Ok(RelayMessage::Ok(ok))=> {if let Some(delivery)=sender.acknowledge(&ok.event_id,ok.accepted) {publish_status(tx, |s|s.delivery=delivery);}},
+                Ok(RelayMessage::Ok(ok))=> {
+                    if let Some(delivery)=sender.acknowledge(&ok.event_id,ok.accepted) {publish_status(tx, |s|s.delivery=delivery);}
+                    else if let Some(view)=opener.acknowledge(&ok.event_id,ok.accepted,&ok.message) {
+                        // Re-check joined rooms now so the opened DM is listed; a check
+                        // already in flight may predate it, so it is replaced.
+                        if view.state=="acknowledged" && fresh {jobs.abort_all();catalog_due=tokio::time::Instant::now();}
+                        publish_status(tx, |s|s.dm_open=view);
+                    }
+                },
                 Ok(_)|Err(WsClientError::Timeout)=>{},
                 Err(e)=>return ConnectionExit::Failure(category(&e)),
             }

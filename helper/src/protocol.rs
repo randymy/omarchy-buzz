@@ -20,6 +20,11 @@ pub struct Request {
     pub generation: Option<u64>,
     #[serde(rename = "instanceId")]
     pub instance_id: Option<String>,
+    /// `open_dm` only: the other participants' keys, never the viewer's.
+    pub participants: Option<Vec<String>>,
+}
+fn canonical_key(value: &str) -> bool {
+    nostr::PublicKey::from_hex(value).is_ok_and(|key| key.to_hex() == value)
 }
 pub fn request(bytes: &[u8]) -> Result<Request, &'static str> {
     if bytes.len() > LIMIT {
@@ -51,6 +56,7 @@ pub fn request(bytes: &[u8]) -> Result<Request, &'static str> {
             | "close_thread"
             | "fetch_recipients"
             | "send_message"
+            | "open_dm"
     ) {
         return Err("unsupported_request");
     }
@@ -78,25 +84,11 @@ pub fn request(bytes: &[u8]) -> Result<Request, &'static str> {
     } else if root_present {
         return Err("invalid_request");
     }
-    if r.kind == "send_message" {
+    // Publishing requests carry a correlation UUID and the scope they were made in.
+    if matches!(r.kind.as_str(), "send_message" | "open_dm") {
         let id = uuid::Uuid::parse_str(&r.id).map_err(|_| "invalid_request")?;
         if id.to_string() != r.id {
             return Err("invalid_request");
-        }
-        let text = r.text.as_deref().ok_or("invalid_request")?;
-        if text.trim().is_empty() || text.len() > 4096 || text.contains('\0') {
-            return Err("invalid_request");
-        }
-        let mentions = r.mentions.as_ref().ok_or("invalid_request")?;
-        if mentions.len() > 20 {
-            return Err("invalid_request");
-        }
-        let mut seen = std::collections::BTreeSet::new();
-        for value in mentions {
-            let key = nostr::PublicKey::from_hex(value).map_err(|_| "invalid_request")?;
-            if key.to_hex() != *value || !seen.insert(value) {
-                return Err("invalid_request");
-            }
         }
         if !r.generation.is_some_and(|g| (1..=2147483647).contains(&g)) {
             return Err("invalid_request");
@@ -110,11 +102,40 @@ pub fn request(bytes: &[u8]) -> Result<Request, &'static str> {
         {
             return Err("invalid_request");
         }
-    } else if r.text.is_some()
-        || r.mentions.is_some()
-        || r.generation.is_some()
-        || r.instance_id.is_some()
-    {
+    } else if r.generation.is_some() || r.instance_id.is_some() {
+        return Err("invalid_request");
+    }
+    if r.kind == "send_message" {
+        let text = r.text.as_deref().ok_or("invalid_request")?;
+        if text.trim().is_empty() || text.len() > 4096 || text.contains('\0') {
+            return Err("invalid_request");
+        }
+        let mentions = r.mentions.as_ref().ok_or("invalid_request")?;
+        if mentions.len() > 20 {
+            return Err("invalid_request");
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for value in mentions {
+            if !canonical_key(value) || !seen.insert(value) {
+                return Err("invalid_request");
+            }
+        }
+    } else if r.text.is_some() || r.mentions.is_some() {
+        return Err("invalid_request");
+    }
+    if r.kind == "open_dm" {
+        // Pinned `build_dm_open` and relay `handle_dm_open`: 1-8 other participants.
+        let participants = r.participants.as_ref().ok_or("invalid_request")?;
+        if participants.is_empty() || participants.len() > 8 {
+            return Err("invalid_request");
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for value in participants {
+            if !canonical_key(value) || !seen.insert(value) {
+                return Err("invalid_request");
+            }
+        }
+    } else if r.participants.is_some() {
         return Err("invalid_request");
     }
     Ok(r)
@@ -128,6 +149,13 @@ pub struct SendIntent {
     pub mentions: Vec<String>,
     pub generation: u64,
 }
+/// A request to open (or reopen) the DM with exactly these other participants.
+#[derive(Clone)]
+pub struct DmOpenIntent {
+    pub request_id: String,
+    pub participants: Vec<String>,
+    pub generation: u64,
+}
 pub enum Command {
     Retry,
     FetchRecent(String),
@@ -139,6 +167,10 @@ pub enum Command {
     Send(SendIntent),
     SendChecked(
         SendIntent,
+        tokio::sync::oneshot::Sender<Option<&'static str>>,
+    ),
+    OpenDm(
+        DmOpenIntent,
         tokio::sync::oneshot::Sender<Option<&'static str>>,
     ),
 }
@@ -158,6 +190,31 @@ impl Default for Delivery {
             room_id: None,
             event_id: None,
             state: "idle".into(),
+            category: None,
+        }
+    }
+}
+/// Outcome of the one `open_dm` a helper tracks. `channel_id` and `created`
+/// come only from the relay's positive `OK` for the exact event.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DmOpen {
+    /// `idle`, `sending`, `acknowledged`, `rejected` or `unknown`.
+    pub state: String,
+    pub request_id: Option<String>,
+    pub channel_id: Option<String>,
+    pub created: Option<bool>,
+    /// `dm_open_rejected`, `dm_open_unknown`, or `dm_open_response_unknown`
+    /// (accepted, but the answer named no channel).
+    pub category: Option<String>,
+}
+impl Default for DmOpen {
+    fn default() -> Self {
+        Self {
+            state: "idle".into(),
+            request_id: None,
+            channel_id: None,
+            created: None,
             category: None,
         }
     }
@@ -314,6 +371,7 @@ pub struct Status {
     pub history: History,
     pub thread: Thread,
     pub delivery: Delivery,
+    pub dm_open: DmOpen,
     pub recipients: RecipientsView,
     pub activity: Vec<crate::activity::Summary>,
 }
@@ -329,13 +387,14 @@ impl Status {
             history: History::unavailable(None, None),
             thread: Thread::unavailable(None, None, None),
             delivery: Delivery::default(),
+            dm_open: DmOpen::default(),
             recipients: RecipientsView::unavailable(None, None),
             activity: Vec::new(),
         }
     }
 }
 pub fn envelope(kind: &str, id: Option<&str>, instance: &str, s: &Status) -> serde_json::Value {
-    serde_json::json!({"version":1,"type":kind,"id":id,"instanceId":instance,"generation":s.generation,"capabilities":["connection_status","room_catalog","room_history","message_send","thread_send","room_recipients","history_auto_refresh","room_activity","agent_profiles","thread_replies","thread_summaries"],"backendRevision":crate::compatibility::BUZZ_REVISION,"status":s})
+    serde_json::json!({"version":1,"type":kind,"id":id,"instanceId":instance,"generation":s.generation,"capabilities":["connection_status","room_catalog","room_history","message_send","thread_send","room_recipients","history_auto_refresh","room_activity","agent_profiles","thread_replies","thread_summaries","dm_open"],"backendRevision":crate::compatibility::BUZZ_REVISION,"status":s})
 }
 pub async fn read_line<R: tokio::io::AsyncBufRead + Unpin>(
     r: &mut R,
@@ -438,11 +497,14 @@ mod state_tests {
                 "room_activity",
                 "agent_profiles",
                 "thread_replies",
-                "thread_summaries"
+                "thread_summaries",
+                "dm_open"
             ])
         );
         assert_eq!(v["status"]["catalog"]["state"], "unavailable");
         assert_eq!(v["status"]["catalog"]["rooms"], serde_json::json!([]));
+        assert_eq!(v["status"]["dmOpen"]["state"], "idle");
+        assert!(v["status"]["dmOpen"]["channelId"].is_null());
         assert!(v.get("privateKey").is_none());
     }
     #[test]
@@ -563,6 +625,72 @@ mod state_tests {
         assert!(request(&serde_json::to_vec(&read).unwrap()).is_err());
     }
     #[test]
+    fn open_dm_contract_requires_scoped_bounded_distinct_keys() {
+        let key = |c: char| {
+            nostr::Keys::parse(&c.to_string().repeat(64))
+                .unwrap()
+                .public_key()
+                .to_hex()
+        };
+        let valid = serde_json::json!({
+            "version":1,"id":"00000000-0000-4000-8000-000000000001","type":"open_dm",
+            "participants":[key('1')],"instanceId":"test-instance","generation":1
+        });
+        assert!(request(&serde_json::to_vec(&valid).unwrap()).is_ok());
+        let mut eight = valid.clone();
+        eight["participants"] = serde_json::json!("12345678".chars().map(key).collect::<Vec<_>>());
+        assert!(request(&serde_json::to_vec(&eight).unwrap()).is_ok());
+        for field in ["participants", "instanceId", "generation"] {
+            let mut invalid = valid.clone();
+            invalid.as_object_mut().unwrap().remove(field);
+            assert!(
+                request(&serde_json::to_vec(&invalid).unwrap()).is_err(),
+                "missing {field}"
+            );
+        }
+        for (field, value) in [
+            ("id", serde_json::json!("ui-1")),
+            ("participants", serde_json::json!([])),
+            (
+                "participants",
+                serde_json::json!("123456789".chars().map(key).collect::<Vec<_>>()),
+            ),
+            ("participants", serde_json::json!([key('1'), key('1')])),
+            ("participants", serde_json::json!([key('1').to_uppercase()])),
+            ("participants", serde_json::json!(["npub1invalid"])),
+            ("participants", serde_json::json!([&key('1')[..63]])),
+            (
+                "roomId",
+                serde_json::json!("00000000-0000-4000-8000-000000000002"),
+            ),
+            ("rootId", serde_json::json!("a".repeat(64))),
+            ("text", serde_json::json!("hello")),
+            ("mentions", serde_json::json!([])),
+            ("kind", serde_json::json!(41010)),
+            ("generation", serde_json::json!(0)),
+        ] {
+            let mut invalid = valid.clone();
+            invalid[field] = value;
+            assert!(
+                request(&serde_json::to_vec(&invalid).unwrap()).is_err(),
+                "invalid {field}"
+            );
+        }
+        // Participants are refused on every other request.
+        let mut send = serde_json::json!({
+            "version":1,"id":"00000000-0000-4000-8000-000000000001","type":"send_message",
+            "roomId":"00000000-0000-4000-8000-000000000002", "text":"hello", "mentions":[],
+            "instanceId":"test-instance", "generation":1
+        });
+        send["participants"] = serde_json::json!([key('1')]);
+        assert!(request(&serde_json::to_vec(&send).unwrap()).is_err());
+        assert!(request(
+            &serde_json::to_vec(&serde_json::json!({"version":1,"id":"a","type":"subscribe","participants":[key('1')]}))
+                .unwrap()
+        )
+        .is_err());
+    }
+    #[test]
     fn maximum_projected_snapshot_fits_ipc_frame() {
         let mut status = Status::new(&crate::config::Config::default());
         status.relay = Some("x".repeat(2048));
@@ -636,6 +764,13 @@ mod state_tests {
             event_id: Some("a".repeat(64)),
             state: "acknowledged".into(),
             category: None,
+        };
+        status.dm_open = DmOpen {
+            state: "acknowledged".into(),
+            request_id: Some("00000000-0000-4000-8000-000000000003".into()),
+            channel_id: Some("00000000-0000-4000-8000-000000000004".into()),
+            created: Some(true),
+            category: Some("dm_open_response_unknown".into()),
         };
         let encoded = serde_json::to_vec(&envelope(
             "status",
