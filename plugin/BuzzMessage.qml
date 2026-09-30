@@ -147,16 +147,28 @@ Column {
           }
         }
       }
-      Text {
+      // Read-only so the text can be selected and copied like any other text.
+      TextEdit {
+        id: body
+        objectName: "buzzMessageBody"
         width: parent.width
         text: !root.ready ? "" : root.sample ? root.row.text : (root.row.unavailable ? "Content unavailable" : root.row.text)
           + (root.row.edited ? " (edited)" : "") + (root.row.truncated ? " [truncated]" : "")
-        textFormat: Text.PlainText
-        wrapMode: Text.Wrap
+        textFormat: TextEdit.PlainText
+        wrapMode: TextEdit.Wrap
+        readOnly: true
+        selectByMouse: true
+        selectionColor: Util.alpha(Color.accent, 0.35)
+        selectedTextColor: Color.foreground
         color: Color.foreground
         opacity: root.row.unavailable ? 0.6 : 1
         font.family: Style.font.family
         font.pixelSize: Style.font.body
+        function copyAll() {
+          selectAll()
+          copy()
+          deselect()
+        }
       }
       Row {
         objectName: "buzzMessageReactions"
@@ -195,6 +207,19 @@ Column {
           }
         }
       }
+    }
+    Ui.Button {
+      objectName: "buzzCopyMessage"
+      Layout.alignment: Qt.AlignTop
+      visible: root.ready && !root.row.unavailable && root.row.text !== ""
+      text: "Copy"
+      tooltipText: "Copy this message's text"
+      fontSize: Style.font.caption
+      horizontalPadding: Style.space(6)
+      verticalPadding: Style.space(2)
+      foreground: Util.alpha(Color.foreground, 0.6)
+      focusable: true
+      onClicked: body.copyAll()
     }
     Ui.Button {
       objectName: root.threadLink ? "buzzThreadToggle" : ""
