@@ -1,0 +1,11 @@
+[Unit]
+Description=Buzz for Omarchy agent manager socket
+
+[Socket]
+ListenStream=%t/omarchy-buzz/agents.sock
+SocketMode=0600
+DirectoryMode=0700
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target
