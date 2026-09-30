@@ -66,28 +66,52 @@ def validate(profile, workspace, bundle):
         raise Refused("bubblewrap_unavailable")
 
 
-def instructions_file(path, profile, workspace, bundle):
-    """Validate the service-written persona instructions file (0600, private parent)."""
+def service_file(path, profile, workspace, bundle, prefix, limit):
+    """Read a small service-written file: absolute, link-free, a regular 0600
+    user-owned file of at most `limit` bytes in a private (0700) directory, and
+    not inside the profile, workspace or bundle. Refusals are `<prefix>_*` or
+    the `private_directory` categories. Returns the bytes read through one
+    O_NOFOLLOW descriptor, so the checked file is the file read."""
     if not path.is_absolute() or ".." in path.parts:
-        raise Refused("absolute_instructions_file_required")
+        raise Refused("absolute_%s_file_required" % prefix)
     for part in (path, *path.parents):
         if part.is_symlink():
-            raise Refused("linked_instructions_path")
+            raise Refused("linked_%s_path" % prefix)
     if any(path == other or path.is_relative_to(other)
            for other in (profile, workspace, bundle)):
-        raise Refused("instructions_path_overlap")
+        raise Refused("%s_path_overlap" % prefix)
     private_directory(path.parent)
     try:
-        info = path.stat()
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
     except OSError as exc:
-        raise Refused("instructions_file_missing") from exc
-    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
-        raise Refused("instructions_file_permissions_unsafe")
-    if info.st_size > INSTRUCTIONS_LIMIT:
-        raise Refused("instructions_file_too_large")
+        raise Refused("%s_file_missing" % prefix) from exc
     try:
-        path.read_bytes().decode("utf-8")
-    except (OSError, UnicodeDecodeError) as exc:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+            raise Refused("%s_file_permissions_unsafe" % prefix)
+        if info.st_size > limit:
+            raise Refused("%s_file_too_large" % prefix)
+        data = b""
+        while len(data) <= limit:
+            chunk = os.read(fd, limit + 1 - len(data))
+            if not chunk:
+                break
+            data += chunk
+    except OSError as exc:
+        raise Refused("%s_file_invalid" % prefix) from exc
+    finally:
+        os.close(fd)
+    if len(data) > limit:
+        raise Refused("%s_file_too_large" % prefix)
+    return data
+
+
+def instructions_file(path, profile, workspace, bundle):
+    """Validate the service-written persona instructions file (0600, private parent)."""
+    data = service_file(path, profile, workspace, bundle, "instructions", INSTRUCTIONS_LIMIT)
+    try:
+        data.decode("utf-8")
+    except UnicodeDecodeError as exc:
         raise Refused("instructions_file_invalid") from exc
     return path
 

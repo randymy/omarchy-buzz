@@ -16,9 +16,14 @@ fn example_paths() -> Paths {
         home,
     }
 }
+// NIP-OA specification vector (conditions `kind=1&created_at<1713957000`):
+// the owner's attestation for AGENT.
+const AUTH_TAG: &str = r#"["auth","79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798","kind=1&created_at<1713957000","8b7df2575caf0a108374f8471722b233c53f9ff827a8b0f91861966c3b9dd5cb2e189eae9f49d72187674c2f5bd244145e10ff86c9f257ffe65a1ee5f108b369"]"#;
+
 fn enrolled() -> Persona {
     let mut p = persona(ID, "/home/example/work/scout");
     p.identity = Some(AGENT.into());
+    p.auth_tag = Some(AUTH_TAG.into());
     p.rooms = vec![ROOM_A.into(), ROOM_B.into()];
     p.model = "gpt-5.1-codex".into();
     p
@@ -58,6 +63,8 @@ fn exec_start_is_the_contract_argv() {
             AGENT,
             "--respond-to",
             "owner-only",
+            "--auth-tag",
+            &format!("/home/example/.local/state/omarchy-buzz/agents/{ID}/auth-tag.json"),
             "--instructions",
             &format!("/home/example/.local/state/omarchy-buzz/agents/{ID}/instructions.md"),
             "--model",
@@ -78,7 +85,15 @@ fn exec_start_is_the_contract_argv() {
         argv[4],
         "/home/example/.local/state/omarchy-buzz-agent-preview/claude-code"
     );
-    assert_eq!(&argv[argv.len() - 2..], ["--respond-to", "mentions"]);
+    assert_eq!(
+        &argv[argv.len() - 4..],
+        [
+            "--respond-to",
+            "mentions",
+            "--auth-tag",
+            &format!("/home/example/.local/state/omarchy-buzz/agents/{ID}/auth-tag.json")
+        ]
+    );
     assert!(
         !argv.contains(&"--instructions".to_string()) && !argv.contains(&"--model".to_string())
     );
@@ -91,6 +106,17 @@ fn refuses_unrenderable_scopes() {
     let mut unenrolled = p.clone();
     unenrolled.identity = None;
     assert!(exec_argv(&paths, &unenrolled, RELAY, OWNER).is_err());
+    let mut unattested = p.clone();
+    unattested.auth_tag = None;
+    assert!(
+        exec_argv(&paths, &unattested, RELAY, OWNER).is_err(),
+        "an enrolled agent always carries its attestation"
+    );
+    let other_owner = "f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9";
+    assert!(
+        exec_argv(&paths, &p, RELAY, other_owner).is_err(),
+        "the attestation must be the current owner's"
+    );
     assert!(
         exec_argv(&paths, &p, RELAY, AGENT).is_err(),
         "owner equals agent"

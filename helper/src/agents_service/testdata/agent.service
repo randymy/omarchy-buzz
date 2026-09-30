@@ -5,7 +5,7 @@ Description=Buzz for Omarchy agent 3f2b8c1e-5d4a-4b6e-9c7d-0a1b2c3d4e5f
 
 [Service]
 Type=simple
-ExecStart="/home/example/.local/share/omarchy-buzz/agent-codex/launcher/room-agent" "--harness" "codex" "--profile" "/home/example/.local/state/omarchy-buzz-agent-preview/codex" "--workspace" "/home/example/work/scout" "--bundle" "/home/example/.local/share/omarchy-buzz/agent-codex" "--relay" "wss://relay.example/" "--room" "00000000-0000-4000-8000-0000000000b1" "--room" "00000000-0000-4000-8000-0000000000b2" "--owner" "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798" "--identity" "c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5" "--respond-to" "owner-only" "--instructions" "/home/example/.local/state/omarchy-buzz/agents/3f2b8c1e-5d4a-4b6e-9c7d-0a1b2c3d4e5f/instructions.md" "--model" "gpt-5.1-codex"
+ExecStart="/home/example/.local/share/omarchy-buzz/agent-codex/launcher/room-agent" "--harness" "codex" "--profile" "/home/example/.local/state/omarchy-buzz-agent-preview/codex" "--workspace" "/home/example/work/scout" "--bundle" "/home/example/.local/share/omarchy-buzz/agent-codex" "--relay" "wss://relay.example/" "--room" "00000000-0000-4000-8000-0000000000b1" "--room" "00000000-0000-4000-8000-0000000000b2" "--owner" "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798" "--identity" "c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5" "--respond-to" "owner-only" "--auth-tag" "/home/example/.local/state/omarchy-buzz/agents/3f2b8c1e-5d4a-4b6e-9c7d-0a1b2c3d4e5f/auth-tag.json" "--instructions" "/home/example/.local/state/omarchy-buzz/agents/3f2b8c1e-5d4a-4b6e-9c7d-0a1b2c3d4e5f/instructions.md" "--model" "gpt-5.1-codex"
 Restart=no
 KillMode=control-group
 TimeoutStopSec=10

@@ -118,10 +118,15 @@ argv array, no shell):
   --profile ~/.local/state/omarchy-buzz-agent-preview/<harness> --workspace <ws>
   --bundle ~/.local/share/omarchy-buzz/agent-<harness> --relay <ws(s)://origin>
   --room <uuid> [--room <uuid> … up to 8] --owner <hex> --identity <hex>
-  --respond-to <owner-only|mentions> [--instructions <file>] [--model <name>]
+  --respond-to <owner-only|mentions> --auth-tag <file> [--instructions <file>]
+  [--model <name>]
 ```
 
 `mentions` is passed literally (the launcher maps it to upstream `anyone`).
+`--auth-tag` (added September 30 with the integration fixes) is always present
+for an enrolled agent: `<agent dir>/auth-tag.json`, 0600 in the same private
+directory, holding the owner's NIP-OA attestation for `--identity`; the service
+refuses to render the unit when that attestation is not the current owner's.
 `--instructions` is omitted when the instructions are empty; the file is 0600,
 at most 16 KiB, inside the service's private 0700 per-agent directory (not
 under the profile, workspace or bundle). `--model` only when set. Status is
@@ -261,12 +266,9 @@ limited to 108 bytes).
 - No real systemd, Secret Service, relay or script was used. Real
   `systemctl --user` behaviour of generated units, keyring access from the
   service unit and the `account` attribute lookup are unverified.
-- The launcher does not yet receive the attestation: it is written to
-  `<agent dir>/auth-tag.json` next to the instructions file, but `ExecStart`
-  has no argument for it. A relay that admits agents only through their owner
-  (NIP-OA in AUTH, `BUZZ_AUTH_TAG` in `buzz-acp`) needs the bundle launcher to
-  pass it (for example an `--auth-tag <file>` argument); that is a contract
-  change to agree on.
+- `ExecStart` passes `--auth-tag <agent dir>/auth-tag.json`; the launcher
+  hands it to `buzz-acp` as `BUZZ_AUTH_TAG` (see Bundles and sign-in). A real
+  `buzz-acp` run with it is unverified.
 - `sign_in` starts `agent-login` in the service's cgroup: the script must
   detach the terminal into its own scope, or it ends when the service exits or
   stops. Whether the service's environment carries the display variables is
@@ -295,7 +297,7 @@ lowercase UUIDs, no duplicates):
   --workspace <workspace> --bundle ~/.local/share/omarchy-buzz/agent-<harness>
   --relay <ws(s)://origin> --room <uuid> [--room <uuid> …]
   --owner <hex> --identity <hex> --respond-to owner-only|mentions
-  --instructions <file> [--model <name>]
+  [--auth-tag <file>] [--instructions <file>] [--model <name>]
 ```
 
 `--harness` and `--model` are additions to the Units list above. Defaults
@@ -306,7 +308,7 @@ is read: `separate_agent_and_owner_required`, `room_count_invalid`,
 `duplicate_room`, `canonical_room_required`, `model_invalid` (not
 `[A-Za-z0-9._:-]{1,64}`; an empty value means the harness default),
 `bundle_harness_mismatch`, the existing `room-sandbox` path categories, and
-`instructions_*` / `provider_settings_review_required` below.
+`instructions_*`, `auth_tag_*` / `provider_settings_review_required` below.
 
 Inside the sandbox `buzz-acp` runs with `--agent-command codex-acp` or
 `claude-agent-acp` (both names are upstream standard adapters,
@@ -323,6 +325,26 @@ handoff are unchanged.
   is the file form of the `system_prompt` argument Desktop sets through
   `BUZZ_ACP_SYSTEM_PROMPT` (`desktop/src-tauri/src/managed_agents/runtime.rs`);
   it keeps the text out of process arguments.
+- **Owner attestation.** `--auth-tag <file>` passes the same file checks as
+  the instructions (categories `absolute_auth_tag_file_required`,
+  `linked_auth_tag_path`, `auth_tag_path_overlap`, `auth_tag_file_missing`,
+  `auth_tag_file_permissions_unsafe`, `auth_tag_file_too_large`, and the
+  `private_directory` ones for its directory) with a 4 KiB limit; the file is
+  opened once with `O_NOFOLLOW` and checked through that descriptor. Its
+  content must be the NIP-OA tag `["auth","<owner hex>","<conditions>","<sig
+  hex>"]`: exactly four strings, 64 and 128 lowercase hex characters,
+  conditions empty or `&`-joined `kind=`/`created_at<`/`created_at>` clauses in
+  canonical decimal (`buzz-sdk` `nip_oa.rs` `parse_auth_tag_fields` and
+  `validate_conditions`), otherwise `auth_tag_file_invalid`; the owner must be
+  `--owner` (`auth_tag_owner_mismatch`). The launcher does not verify the
+  signature (`buzz-acp` does, and the service did when it wrote the file). The
+  tag is re-encoded as compact JSON, exactly as `compute_auth_tag` emits it, and
+  reaches `buzz-acp` as `BUZZ_AUTH_TAG` only through the memfd options on fd 3
+  (`--setenv BUZZ_AUTH_TAG <json>` after `--setenv BUZZ_PRIVATE_KEY <key>`),
+  never as a process argument or a mount. `buzz-acp` reads that variable to
+  resolve its owner (`crates/buzz-acp/src/lib.rs` `resolve_agent_owner`), to
+  put the tag in its relay AUTH (`HarnessRelay::connect`) and for its REST
+  client (`run_task.rs`), and forwards it to its MCP tools.
 - **Model.** Codex: `buzz-acp --model <name>` (the argument behind Desktop's
   `BUZZ_ACP_MODEL`). Claude Code: `ANTHROPIC_MODEL=<name>` in the sandbox
   environment and no `--model`, following Desktop's single startup model

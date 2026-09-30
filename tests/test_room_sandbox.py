@@ -296,5 +296,133 @@ print(text.strip(), writable)"""
                 module.build_command(profile, workspace, bundle, ["/usr/bin/true"], harness="goose")
 
 
+# A structurally valid synthetic attestation (the launcher does not verify the
+# signature; buzz-acp and the service do).
+SIGNATURE = "c" * 128
+TAG = ["auth", OWNER, "", SIGNATURE]
+TAG_JSON = '["auth","%s","","%s"]' % (OWNER, SIGNATURE)
+
+
+def write_tag(root, value, name="auth-tag.json"):
+    path = root / "private" / name
+    path.write_text(value if isinstance(value, str) else json.dumps(value, indent=1))
+    path.chmod(0o600)
+    return path
+
+
+class RoomAgentAuthTag(unittest.TestCase):
+    def test_auth_tag_file_is_validated(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            profile, workspace, bundle, _ = make_tree(root)
+            tag = write_tag(root, TAG)
+            check = lambda path: room_agent.auth_tag_value(agent_args(root, "--auth-tag", str(path)))
+            # Re-encoded canonically, as buzz-sdk compute_auth_tag emits it.
+            self.assertEqual(check(tag), TAG_JSON.encode())
+            conditioned = write_tag(root, ["auth", OWNER, "kind=1&created_at<1713957000", SIGNATURE], "c.json")
+            self.assertEqual(json.loads(check(conditioned))[2], "kind=1&created_at<1713957000")
+            self.assertIsNone(room_agent.auth_tag_value(agent_args(root)))
+            for inside in (workspace / "t", profile / "provider/t", bundle / "t"):
+                inside.write_text(TAG_JSON); inside.chmod(0o600)
+                with self.assertRaisesRegex(module.Refused, "auth_tag_path_overlap"):
+                    check(inside)
+            tag.chmod(0o640)
+            with self.assertRaisesRegex(module.Refused, "auth_tag_file_permissions_unsafe"):
+                check(tag)
+            tag.chmod(0o600)
+            (root / "private").chmod(0o750)
+            with self.assertRaisesRegex(module.Refused, "private_directory_permissions_unsafe"):
+                check(tag)
+            (root / "private").chmod(0o700)
+            link = root / "private/link"
+            link.symlink_to(tag)
+            with self.assertRaisesRegex(module.Refused, "linked_auth_tag_path"):
+                check(link)
+            with self.assertRaisesRegex(module.Refused, "absolute_auth_tag_file_required"):
+                check(Path("relative/auth-tag.json"))
+            with self.assertRaisesRegex(module.Refused, "auth_tag_file_missing"):
+                check(root / "private/absent")
+            directory = root / "private/dir"
+            directory.mkdir(mode=0o700)
+            with self.assertRaisesRegex(module.Refused, "auth_tag_file_permissions_unsafe"):
+                check(directory)
+            big = write_tag(root, " " * (4 * 1024 - len(TAG_JSON)) + TAG_JSON, "big.json")
+            self.assertEqual(check(big), TAG_JSON.encode())
+            big.write_text(" " * (4 * 1024 + 1 - len(TAG_JSON)) + TAG_JSON)
+            with self.assertRaisesRegex(module.Refused, "auth_tag_file_too_large"):
+                check(big)
+            invalid = [
+                "not json", "\xff", '{"auth": 1}', "[]", json.dumps(TAG[:3]), json.dumps(TAG + [""]),
+                json.dumps(["AUTH", *TAG[1:]]), json.dumps(["auth", OWNER.upper(), "", SIGNATURE]),
+                json.dumps(["auth", OWNER[:-1], "", SIGNATURE]), json.dumps(["auth", OWNER, "", SIGNATURE[:-2]]),
+                json.dumps(["auth", OWNER, "", "g" * 128]), json.dumps(["auth", OWNER, 1, SIGNATURE]),
+                json.dumps(["auth", OWNER, "kind=01", SIGNATURE]), json.dumps(["auth", OWNER, "kind=65536", SIGNATURE]),
+                json.dumps(["auth", OWNER, "kind=1&", SIGNATURE]), json.dumps(["auth", OWNER, "color=red", SIGNATURE]),
+                json.dumps(["auth", OWNER, "kind=1 ", SIGNATURE]),
+            ]
+            for index, text in enumerate(invalid):
+                path = root / "private" / ("invalid-%d.json" % index)
+                path.write_bytes(text.encode("utf-8", "surrogateescape") if text != "\xff" else b"\xff")
+                path.chmod(0o600)
+                with self.assertRaisesRegex(module.Refused, "auth_tag_file_invalid", msg=text):
+                    check(path)
+            other = write_tag(root, ["auth", "d" * 64, "", SIGNATURE], "other.json")
+            with self.assertRaisesRegex(module.Refused, "auth_tag_owner_mismatch"):
+                check(other)
+
+    def test_refusals_happen_before_the_secret_service_lookup(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            make_tree(root)
+            other = write_tag(root, ["auth", "d" * 64, "", SIGNATURE], "other.json")
+            base = ["--profile", str(root / "profile"), "--workspace", str(root / "work"),
+                    "--bundle", str(root / "bundle"), "--relay", "wss://relay.example",
+                    "--room", ROOM, "--owner", OWNER, "--identity", IDENTITY]
+            for path, category in ((other, "auth_tag_owner_mismatch"),
+                                   (root / "private/absent", "auth_tag_file_missing")):
+                # No session bus: even a missed check could not reach Secret Service.
+                result = subprocess.run([sys.executable, str(AGENT), *base, "--auth-tag", str(path)],
+                                        capture_output=True, text=True, timeout=10,
+                                        env={"PATH": "/usr/bin", "HOME": str(root),
+                                             "DBUS_SESSION_BUS_ADDRESS": "unix:path=/nonexistent"})
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn(category, result.stderr)
+                self.assertNotIn(SIGNATURE, result.stderr)
+
+    def test_memfd_options_golden(self):
+        key = b"1" * 64
+        self.assertEqual(room_agent.identity_options(key, None),
+                         b"--setenv\0BUZZ_PRIVATE_KEY\0" + key + b"\0")
+        self.assertEqual(room_agent.identity_options(key, TAG_JSON.encode()),
+                         b"--setenv\0BUZZ_PRIVATE_KEY\0" + key + b"\0"
+                         b"--setenv\0BUZZ_AUTH_TAG\0" + TAG_JSON.encode() + b"\0")
+
+    def test_auth_tag_reaches_the_sandbox_only_through_the_memfd(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            make_tree(root)
+            tag = write_tag(root, TAG)
+            args = agent_args(root, "--auth-tag", str(tag))
+            argv = room_agent.launch_argv(args)
+            value = room_agent.auth_tag_value(args)
+            # Neither the file nor its contents are in the process arguments or mounts.
+            self.assertFalse(any(str(tag) in word or SIGNATURE in word for word in argv))
+            self.assertEqual(argv[argv.index("--args") + 1], "3")
+            probe = ("import json, os; print(json.dumps([os.environ.get('BUZZ_AUTH_TAG'), "
+                     "os.environ.get('BUZZ_PRIVATE_KEY'), os.path.exists('/run/agent')]))")
+            command = argv[:argv.index("--") + 1] + ["/usr/bin/python3", "-c", probe]
+            command[command.index("--args") + 1] = "{fd}"
+            fd = os.memfd_create("synthetic-options", 0)
+            try:
+                os.write(fd, room_agent.identity_options(b"2" * 64, value))
+                os.lseek(fd, 0, 0)
+                command[command.index("{fd}")] = str(fd)
+                result = subprocess.run(command, pass_fds=(fd,), capture_output=True, text=True, timeout=15)
+            finally:
+                os.close(fd)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout), [TAG_JSON, "2" * 64, False])
+
+
 if __name__ == "__main__":
     unittest.main()
