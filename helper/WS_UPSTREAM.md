@@ -37,7 +37,14 @@ five-second response deadline. It claims authentication freshness only after the
 matching acknowledgment. Unrelated activity cannot extend this deadline. This
 is neither presence nor process health. Network failures retry five times with
 1/2/4/8/16-second delays; authentication, storage and protocol failures require
-explicit Retry. Successful matched probes reset the network failure budget.
+explicit Retry, with one exception: when the relay rejects a mid-session
+re-authentication of a connection that had authenticated (observed transiently
+on September 30), the helper reconnects on the same five-attempt budget and
+shows `connecting` with category `auth_rejected` meanwhile. Rejections of those
+reconnects stay in the same budget; once it is spent the state is
+`disconnected`/`auth_rejected` until Retry. A rejected first authentication after
+start or Retry (a wrong or revoked identity) still stops at once. Successful
+matched probes reset the failure budget and end the automatic retries.
 
 ## Prepared contribution, 2026-09-28
 
