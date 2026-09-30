@@ -1812,3 +1812,29 @@ backoff, room change and Retry, the 30 s primed cadence, thread refetch on `e` t
 the periodic thread refresh), `tests/helper_smoke.py`, and every `scripts/preview`
 mode including the new `--live-updates`. Not verified: live delivery timing and
 `CLOSED` reasons of a real relay, and behaviour under a real burst.
+
+## Agent manager service — September 30, 2026
+
+Branch `agentsvc`; not merged, installed or run against systemd, Secret Service
+or a relay. `omarchy-buzz agents-daemon`/`agents-bridge` implement the service
+side of [AGENTS_SERVICE.md](AGENTS_SERVICE.md) with the IPC shapes refined with
+the panel and bundle work that day: a persona store at
+`$XDG_STATE_HOME/omarchy-buzz/agents/personas.json` (0600, atomic, strictly
+validated, at most 16), workspace refusals modeled on `room-sandbox`, rooms
+checked against the helper's own verified catalog over `control.sock`, per-agent
+units rendered from `service/agent.service.in` with a quoted argv `ExecStart`
+and driven by fixed `systemctl --user` argv arrays, and enrollment that stores
+the new agent key only in Secret Service, signs the owner's NIP-OA attestation
+with the pinned SDK and publishes kind 30175, a secret-free kind 30177, kind
+9000 `role=bot` per room and the agent's attested kind 0, each counted only
+after the relay's `OK`. The service and socket unit files are source only.
+
+Evidence is synthetic only: locked helper tests (store and workspace rules,
+request and frame shapes, golden unit file, fake unit control, enrollment
+against a loopback relay with OK/rejection/closed/timeout/refused-AUTH, sign-in
+refusals, socket protocol) and `tests/agents_smoke.py` in fake-control mode.
+Not verified: real unit control, keyring access and `secret-tool` lookup of the
+stored key, relay acceptance of the published events, harness scripts. Open:
+the launcher has no argument for the attestation (written to
+`<agent dir>/auth-tag.json`), `agent-login` must detach from the service's
+cgroup, and dropped rooms and deleted agents are not removed from the relay.

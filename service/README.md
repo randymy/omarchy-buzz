@@ -73,3 +73,14 @@ ordinary uninstall: it records request/event bindings used to prevent duplicate
 publication. Its lock is released when the helper exits. Ledger failure disables
 sending while read-only connectivity remains available. No message bodies or
 private keys are stored there.
+
+## Agent manager units (not yet installed)
+
+`omarchy-buzz-agents.service` and `omarchy-buzz-agents.socket` supervise
+`omarchy-buzz agents-daemon` on `%t/omarchy-buzz/agents.sock`, and
+`agent.service.in` is the reviewed template from which that daemon writes one
+`omarchy-buzz-agent-<id>.service` per agent (see
+[docs/AGENTS_SERVICE.md](../docs/AGENTS_SERVICE.md)). They are reviewed source
+only: `scripts/helper-install` does not install, enable or remove them, and no
+agent unit has been generated on this machine. Installing them is a separate,
+human-reviewed step listed in that document.
