@@ -38,6 +38,27 @@ pub struct Request {
     /// `mint_invite` only: hours until the invite expires (1-720).
     #[serde(rename = "expiresInHours")]
     pub expires_in_hours: Option<u32>,
+    /// `download_attachment`/`thumbnail_attachment` only: the row carrying it.
+    #[serde(rename = "eventId")]
+    pub event_id: Option<String>,
+    /// Attachment requests: the attachment's SHA-256 (lowercase hex).
+    pub hash: Option<String>,
+    /// `upload_attachment`: the file the user typed; `open_download`: a path
+    /// the helper reported. Both are checked again by the helper.
+    pub path: Option<String>,
+}
+fn is_hash(value: &str) -> bool {
+    crate::attachments::is_hash(value)
+}
+/// An absolute path without `..`, `.` or empty components, controls or NUL.
+pub fn plain_absolute_path(value: &str) -> bool {
+    value.len() <= 4096
+        && value.starts_with('/')
+        && value.len() > 1
+        && !value.chars().any(char::is_control)
+        && value[1..]
+            .split('/')
+            .all(|part| !part.is_empty() && part != "." && part != "..")
 }
 fn canonical_key(value: &str) -> bool {
     nostr::PublicKey::from_hex(value).is_ok_and(|key| key.to_hex() == value)
@@ -82,6 +103,11 @@ pub fn request(bytes: &[u8]) -> Result<Request, &'static str> {
             | "join_room"
             | "leave_room"
             | "mint_invite"
+            | "download_attachment"
+            | "thumbnail_attachment"
+            | "open_download"
+            | "upload_attachment"
+            | "remove_pending_attachment"
     ) {
         return Err("unsupported_request");
     }
@@ -94,6 +120,7 @@ pub fn request(bytes: &[u8]) -> Result<Request, &'static str> {
             | "send_message"
             | "join_room"
             | "leave_room"
+            | "upload_attachment"
     ) {
         let room = r.room_id.as_deref().ok_or("invalid_request")?;
         let parsed = uuid::Uuid::parse_str(room).map_err(|_| "invalid_request")?;
@@ -103,7 +130,9 @@ pub fn request(bytes: &[u8]) -> Result<Request, &'static str> {
     } else if room_present {
         return Err("invalid_request");
     }
-    if r.kind == "fetch_thread" || (r.kind == "send_message" && root_present) {
+    if r.kind == "fetch_thread"
+        || (matches!(r.kind.as_str(), "send_message" | "upload_attachment") && root_present)
+    {
         let root = r.root_id.as_deref().ok_or("invalid_request")?;
         if root.len() != 64
             || !root
@@ -137,8 +166,9 @@ pub fn request(bytes: &[u8]) -> Result<Request, &'static str> {
         return Err("invalid_request");
     }
     if r.kind == "send_message" {
+        // May be empty when the draft carries attachments; the sender checks.
         let text = r.text.as_deref().ok_or("invalid_request")?;
-        if text.trim().is_empty() || text.len() > 4096 || text.contains('\0') {
+        if text.len() > 4096 || text.contains('\0') {
             return Err("invalid_request");
         }
         let mentions = r.mentions.as_ref().ok_or("invalid_request")?;
@@ -210,6 +240,33 @@ pub fn request(bytes: &[u8]) -> Result<Request, &'static str> {
     } else if r.max_uses.is_some() || r.expires_in_hours.is_some() {
         return Err("invalid_request");
     }
+    if matches!(
+        r.kind.as_str(),
+        "download_attachment" | "thumbnail_attachment"
+    ) {
+        if !r.event_id.as_deref().is_some_and(is_hash) {
+            return Err("invalid_request");
+        }
+    } else if raw.get("eventId").is_some() {
+        return Err("invalid_request");
+    }
+    if matches!(
+        r.kind.as_str(),
+        "download_attachment" | "thumbnail_attachment" | "remove_pending_attachment"
+    ) {
+        if !r.hash.as_deref().is_some_and(is_hash) {
+            return Err("invalid_request");
+        }
+    } else if raw.get("hash").is_some() {
+        return Err("invalid_request");
+    }
+    if matches!(r.kind.as_str(), "upload_attachment" | "open_download") {
+        if !r.path.as_deref().is_some_and(plain_absolute_path) {
+            return Err("invalid_request");
+        }
+    } else if raw.get("path").is_some() {
+        return Err("invalid_request");
+    }
     // Room actions and mints are correlated like other publishing requests.
     if matches!(r.kind.as_str(), "join_room" | "leave_room" | "mint_invite") {
         let id = uuid::Uuid::parse_str(&r.id).map_err(|_| "invalid_request")?;
@@ -279,6 +336,29 @@ pub enum Command {
     /// `invite_mint`: mint an invite (max uses, hours). Honoured only while
     /// authenticated.
     MintInvite(u32, u32, tokio::sync::oneshot::Sender<Option<&'static str>>),
+    /// `attachments`: download a held row's attachment (event id, hash).
+    DownloadAttachment(
+        String,
+        String,
+        tokio::sync::oneshot::Sender<Option<&'static str>>,
+    ),
+    /// Verify and cache a held row's image for an inline preview.
+    ThumbnailAttachment(
+        String,
+        String,
+        tokio::sync::oneshot::Sender<Option<&'static str>>,
+    ),
+    /// `xdg-open` a file this helper saved.
+    OpenDownload(String, tokio::sync::oneshot::Sender<Option<&'static str>>),
+    /// Upload a file for the draft in (room, thread root).
+    UploadAttachment(
+        String,
+        Option<String>,
+        String,
+        tokio::sync::oneshot::Sender<Option<&'static str>>,
+    ),
+    /// Drop a pending attachment (hash) from every draft.
+    RemovePendingAttachment(String, tokio::sync::oneshot::Sender<Option<&'static str>>),
 }
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -454,6 +534,77 @@ impl Default for Invites {
         }
     }
 }
+/// The one download the helper tracks (`attachments`).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Download {
+    /// `idle`, `downloading`, `done` or `failed`.
+    pub state: String,
+    pub event_id: Option<String>,
+    pub hash: Option<String>,
+    /// Present only in `done`: the saved file under the Downloads directory.
+    pub path: Option<String>,
+    /// Bytes received and verified so far.
+    pub received: u64,
+    /// The declared size.
+    pub size: Option<u64>,
+    /// Present only in `failed`: `attachment_unknown`, `attachment_forbidden`,
+    /// `attachment_mismatch`, `attachment_too_large`, `relay_unavailable`.
+    pub category: Option<String>,
+}
+impl Default for Download {
+    fn default() -> Self {
+        Self {
+            state: "idle".into(),
+            event_id: None,
+            hash: None,
+            path: None,
+            received: 0,
+            size: None,
+            category: None,
+        }
+    }
+}
+/// A verified image cached for an inline preview.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Thumbnail {
+    pub hash: String,
+    pub path: String,
+}
+/// An uploaded file waiting to be sent with the draft of `scope`
+/// (`<roomId>` or `<roomId>:<rootId>`).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct PendingAttachment {
+    pub scope: String,
+    pub name: String,
+    pub mime: String,
+    pub size: u64,
+    pub url: String,
+    pub hash: String,
+    pub dim: Option<String>,
+}
+/// The one upload the helper tracks.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Upload {
+    /// `idle`, `uploading`, `done` or `failed`.
+    pub state: String,
+    pub scope: Option<String>,
+    pub name: Option<String>,
+    /// Present only in `failed`: `attachment_invalid`,
+    /// `attachment_type_refused`, `attachment_too_large`,
+    /// `attachment_forbidden`, `relay_unavailable`.
+    pub category: Option<String>,
+}
+impl Default for Upload {
+    fn default() -> Self {
+        Self {
+            state: "idle".into(),
+            scope: None,
+            name: None,
+            category: None,
+        }
+    }
+}
 #[derive(Clone, Serialize)]
 pub struct Recipient {
     pub key: String,
@@ -494,6 +645,10 @@ pub struct HistoryRow {
     pub edited: bool,
     pub truncated: bool,
     pub unavailable: bool,
+    /// Always present: at most `attachments::MAX`.
+    pub attachments: Vec<crate::attachments::Attachment>,
+    #[serde(rename = "attachmentsUnavailable")]
+    pub attachments_unavailable: bool,
 }
 /// A thread reply: a history row plus its place in the reply tree. Kept apart
 /// from `HistoryRow` so channel history frames are unchanged.
@@ -629,6 +784,12 @@ pub struct Status {
     pub open_rooms: OpenRooms,
     pub room_action: RoomAction,
     pub invites: Invites,
+    pub download: Download,
+    /// At most `media::THUMBNAILS`, most recent last.
+    pub thumbnails: Vec<Thumbnail>,
+    /// At most `media::PENDING` per scope and `media::PENDING_TOTAL` in all.
+    pub pending_attachments: Vec<PendingAttachment>,
+    pub upload: Upload,
 }
 impl Status {
     pub fn new(c: &crate::config::Config) -> Self {
@@ -649,11 +810,15 @@ impl Status {
             open_rooms: OpenRooms::unavailable(None),
             room_action: RoomAction::default(),
             invites: Invites::default(),
+            download: Download::default(),
+            thumbnails: Vec::new(),
+            pending_attachments: Vec::new(),
+            upload: Upload::default(),
         }
     }
 }
 pub fn envelope(kind: &str, id: Option<&str>, instance: &str, s: &Status) -> serde_json::Value {
-    serde_json::json!({"version":1,"type":kind,"id":id,"instanceId":instance,"generation":s.generation,"capabilities":["connection_status","room_catalog","room_history","message_send","thread_send","room_recipients","history_auto_refresh","room_activity","agent_profiles","thread_replies","thread_summaries","dm_open","older_history","live_updates","setup_assist","community_join","invite_mint"],"backendRevision":crate::compatibility::BUZZ_REVISION,"status":s})
+    serde_json::json!({"version":1,"type":kind,"id":id,"instanceId":instance,"generation":s.generation,"capabilities":["connection_status","room_catalog","room_history","message_send","thread_send","room_recipients","history_auto_refresh","room_activity","agent_profiles","thread_replies","thread_summaries","dm_open","older_history","live_updates","setup_assist","community_join","invite_mint","attachments"],"backendRevision":crate::compatibility::BUZZ_REVISION,"status":s})
 }
 pub async fn read_line<R: tokio::io::AsyncBufRead + Unpin>(
     r: &mut R,
@@ -739,6 +904,89 @@ mod tests {
             assert!(request(bad.to_string().as_bytes()).is_err(), "{bad}");
         }
     }
+    #[test]
+    fn attachment_requests_carry_only_their_own_fields() {
+        let parse = |v: &serde_json::Value| request(&serde_json::to_vec(v).unwrap());
+        let (event, hash) = ("a".repeat(64), "b".repeat(64));
+        let room = "00000000-0000-4000-8000-000000000001";
+        let download = serde_json::json!({"version":1,"id":"ui-1","type":"download_attachment","eventId":event,"hash":hash});
+        let parsed = parse(&download).unwrap();
+        assert_eq!(
+            (parsed.event_id.as_deref(), parsed.hash.as_deref()),
+            (Some(event.as_str()), Some(hash.as_str()))
+        );
+        let mut thumb = download.clone();
+        thumb["type"] = serde_json::json!("thumbnail_attachment");
+        assert!(parse(&thumb).is_ok());
+        let open = serde_json::json!({"version":1,"id":"ui-2","type":"open_download","path":"/home/u/Downloads/a.pdf"});
+        assert_eq!(
+            parse(&open).unwrap().path.as_deref(),
+            Some("/home/u/Downloads/a.pdf")
+        );
+        let upload = serde_json::json!({"version":1,"id":"ui-3","type":"upload_attachment","roomId":room,"path":"/home/u/a b.png"});
+        assert!(parse(&upload).unwrap().root_id.is_none());
+        let mut thread_upload = upload.clone();
+        thread_upload["rootId"] = serde_json::json!(event);
+        assert_eq!(
+            parse(&thread_upload).unwrap().root_id.as_deref(),
+            Some(event.as_str())
+        );
+        let remove = serde_json::json!({"version":1,"id":"ui-4","type":"remove_pending_attachment","hash":hash});
+        assert!(parse(&remove).is_ok());
+        for (base, field, value) in [
+            (&download, "hash", serde_json::json!("B".repeat(64))),
+            (&download, "hash", serde_json::json!("b".repeat(63))),
+            (&download, "eventId", serde_json::json!("../x")),
+            (&download, "path", serde_json::json!("/tmp/x")),
+            (
+                &download,
+                "url",
+                serde_json::json!("https://relay.example/media/x"),
+            ),
+            (&download, "roomId", serde_json::json!(room)),
+            (&thumb, "eventId", serde_json::Value::Null),
+            (&open, "path", serde_json::json!("relative/a.pdf")),
+            (&open, "path", serde_json::json!("/home/u/../etc/passwd")),
+            (&open, "path", serde_json::json!("/home/u/./a")),
+            (&open, "path", serde_json::json!("/home//u")),
+            (&open, "path", serde_json::json!("/home/u/a\nb")),
+            (&open, "path", serde_json::json!("/")),
+            (
+                &open,
+                "path",
+                serde_json::json!(format!("/{}", "a".repeat(4096))),
+            ),
+            (&open, "hash", serde_json::json!(hash)),
+            (&upload, "roomId", serde_json::json!("../room")),
+            (&upload, "rootId", serde_json::json!("A".repeat(64))),
+            (&upload, "hash", serde_json::json!(hash)),
+            (&upload, "text", serde_json::json!("x")),
+            (&remove, "path", serde_json::json!("/tmp/x")),
+            (&remove, "eventId", serde_json::json!(event)),
+        ] {
+            let mut bad = base.clone();
+            bad[field] = value;
+            assert!(parse(&bad).is_err(), "{bad}");
+        }
+        for (base, field) in [
+            (&download, "eventId"),
+            (&download, "hash"),
+            (&open, "path"),
+            (&upload, "path"),
+            (&upload, "roomId"),
+            (&remove, "hash"),
+        ] {
+            let mut missing = base.clone();
+            missing.as_object_mut().unwrap().remove(field);
+            assert!(parse(&missing).is_err(), "{missing}");
+        }
+        // Other requests never carry attachment fields.
+        for field in ["eventId", "hash", "path"] {
+            let mut bad = serde_json::json!({"version":1,"id":"a","type":"subscribe"});
+            bad[field] = serde_json::json!("x");
+            assert!(parse(&bad).is_err(), "{field}");
+        }
+    }
     #[tokio::test]
     async fn oversized_frame() {
         let data = vec![b'a'; LIMIT + 1];
@@ -784,7 +1032,8 @@ mod state_tests {
                 "live_updates",
                 "setup_assist",
                 "community_join",
-                "invite_mint"
+                "invite_mint",
+                "attachments"
             ])
         );
         assert_eq!(v["status"]["catalog"]["state"], "unavailable");
@@ -923,8 +1172,8 @@ mod state_tests {
         }
         for (field, value) in [
             ("id", serde_json::json!("ui-1")),
-            ("text", serde_json::json!(" ")),
             ("text", serde_json::json!("é".repeat(2049))),
+            ("text", serde_json::json!("a\u{0}b")),
             ("generation", serde_json::json!(0)),
             ("instanceId", serde_json::json!("../instance")),
             ("mentions", serde_json::json!(["@codex"])),
@@ -936,6 +1185,11 @@ mod state_tests {
                 "invalid {field}"
             );
         }
+        // A blank text is shaped correctly; the sender refuses it unless the
+        // draft carries attachments.
+        let mut blank = valid.clone();
+        blank["text"] = serde_json::json!(" ");
+        assert!(request(&serde_json::to_vec(&blank).unwrap()).is_ok());
         let mut signing = valid.clone();
         signing["kind"] = serde_json::json!(9);
         assert!(request(&serde_json::to_vec(&signing).unwrap()).is_err());
@@ -1132,6 +1386,19 @@ mod state_tests {
             assert!(parse(&missing).is_err(), "{missing}");
         }
     }
+    /// The largest attachment a row can carry once JSON-encoded: quotes
+    /// double on encoding, controls and separators are replaced.
+    fn worst_attachment() -> crate::attachments::Attachment {
+        crate::attachments::Attachment {
+            name: "\"".repeat(crate::attachments::NAME_CHARS),
+            mime: "a".repeat(crate::attachments::MIME_BYTES),
+            size: crate::attachments::MAX_SIZE,
+            url: "u".repeat(crate::attachments::URL_BYTES),
+            hash: "f".repeat(64),
+            dim: Some("16384x16384".into()),
+            kind: "image",
+        }
+    }
     fn set_relay_frame() -> serde_json::Value {
         serde_json::json!({"version":1,"id":"ui-5","type":"set_relay","url":"wss://relay.example"})
     }
@@ -1162,6 +1429,8 @@ mod state_tests {
                 edited: true,
                 truncated: true,
                 unavailable: false,
+                attachments: vec![worst_attachment(); crate::attachments::MAX],
+                attachments_unavailable: true,
             })
             .collect();
         status.history.has_more = Some(true);
@@ -1180,13 +1449,37 @@ mod state_tests {
                 participants: vec!["c".repeat(64); 10],
             });
         }
+        crate::attachments::bound(
+            status.history.rows.iter_mut(),
+            crate::attachments::FRAME_HISTORY,
+        );
+        // Replies carry no reactions or summary (`auth` projects them as None).
         status.thread.rows = (0..crate::thread::ROWS)
             .map(|_| ThreadRow {
-                row: status.history.rows[0].clone(),
+                row: HistoryRow {
+                    reactions: None,
+                    thread: None,
+                    attachments: vec![worst_attachment(); crate::attachments::MAX],
+                    ..status.history.rows[0].clone()
+                },
                 depth: 64,
                 parent: "e".repeat(64),
             })
             .collect();
+        crate::attachments::bound(
+            status.thread.rows.iter_mut().map(|r| &mut r.row),
+            crate::attachments::FRAME_THREAD,
+        );
+        assert_eq!(
+            status
+                .history
+                .rows
+                .iter()
+                .chain(status.thread.rows.iter().map(|r| &r.row))
+                .map(|r| r.attachments.len())
+                .sum::<usize>(),
+            crate::attachments::FRAME_HISTORY + crate::attachments::FRAME_THREAD
+        );
         status.thread.has_more = Some(true);
         status.thread.category = Some("thread_replies_hidden".into());
         status.recipients.entries = (0..20)
@@ -1254,6 +1547,41 @@ mod state_tests {
             request_id: Some("00000000-0000-4000-8000-000000000005".into()),
             room_id: Some("00000000-0000-4000-8000-000000000006".into()),
             category: Some("leave_rejected".into()),
+        };
+        status.download = Download {
+            state: "downloading".into(),
+            event_id: Some("a".repeat(64)),
+            hash: Some("b".repeat(64)),
+            path: Some("/".repeat(4096)),
+            received: u64::MAX,
+            size: Some(u64::MAX),
+            category: Some("attachment_storage_unavailable".into()),
+        };
+        status.thumbnails = (0..crate::media::THUMBNAILS)
+            .map(|_| Thumbnail {
+                hash: "c".repeat(64),
+                path: "\\".repeat(crate::media::THUMB_PATH_BYTES),
+            })
+            .collect();
+        status.pending_attachments = (0..crate::media::PENDING_TOTAL)
+            .map(|_| {
+                let a = worst_attachment();
+                PendingAttachment {
+                    scope: format!("{}:{}", "0".repeat(36), "a".repeat(64)),
+                    name: a.name,
+                    mime: a.mime,
+                    size: a.size,
+                    url: a.url,
+                    hash: a.hash,
+                    dim: a.dim,
+                }
+            })
+            .collect();
+        status.upload = Upload {
+            state: "failed".into(),
+            scope: Some(format!("{}:{}", "0".repeat(36), "a".repeat(64))),
+            name: Some("\"".repeat(crate::attachments::NAME_CHARS)),
+            category: Some("attachment_type_refused".into()),
         };
         let encoded = serde_json::to_vec(&envelope(
             "status",

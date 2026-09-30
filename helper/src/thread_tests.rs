@@ -56,11 +56,23 @@ fn read(relay: &Keys, root: &Event, pages: Vec<Vec<Event>>) -> Result<Thread, &'
     for (n, page) in pages.into_iter().enumerate() {
         let full = accumulated.add(room(), root.id, after, page, 1000)?;
         if full.is_none() || n + 1 == PAGES {
-            return accumulated.project(relay.public_key(), room(), root.id, full.is_some());
+            return accumulated.project(
+                relay.public_key(),
+                crate::history::TEST_ORIGIN,
+                room(),
+                root.id,
+                full.is_some(),
+            );
         }
         after = full;
     }
-    accumulated.project(relay.public_key(), room(), root.id, false)
+    accumulated.project(
+        relay.public_key(),
+        crate::history::TEST_ORIGIN,
+        room(),
+        root.id,
+        false,
+    )
 }
 fn one_page(relay: &Keys, root: &Event, page: Vec<Event>) -> Result<Thread, &'static str> {
     read(relay, root, vec![page])

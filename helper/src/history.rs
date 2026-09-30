@@ -38,6 +38,10 @@ pub struct Row {
     pub unavailable: bool,
     pub reactions: Option<Reactions>,
     pub thread: Option<ThreadSummary>,
+    /// At most `attachments::MAX`, from the event supplying the content.
+    pub attachments: Vec<crate::attachments::Attachment>,
+    /// The content's `imeta` tags were malformed: none are shown.
+    pub attachments_unavailable: bool,
 }
 /// Bounded projection of a relay-signed NIP-CW `kind:39005` thread summary.
 /// Metadata about a row, never a row, a cursor input or a content claim.
@@ -202,6 +206,7 @@ fn text(value: &str) -> (String, bool) {
 /// Reject an over-budget page as a whole; never silently cut the auxiliary set.
 /// The trusted relay's admission policy is not substituted for direct edit/delete
 /// proof. Unknown owner/moderator authority suppresses affected content instead.
+#[cfg(test)]
 pub fn reduce(
     room: Uuid,
     relay: PublicKey,
@@ -210,11 +215,26 @@ pub fn reduce(
 ) -> Result<History, &'static str> {
     reduce_page(room, relay, events, now, None)
 }
-/// `request` is the cursor this page was asked for (`None` for the head). The
-/// bounds must echo it, and every row must lie strictly past it.
+/// Media origin used by reducer tests (`attachments::origin` of `wss://relay.example`).
+#[cfg(test)]
+pub const TEST_ORIGIN: &str = "https://relay.example";
+#[cfg(test)]
 pub fn reduce_page(
     room: Uuid,
     relay: PublicKey,
+    events: &[Event],
+    now: u64,
+    request: Option<&Cursor>,
+) -> Result<History, &'static str> {
+    reduce_at(room, relay, TEST_ORIGIN, events, now, request)
+}
+/// `request` is the cursor this page was asked for (`None` for the head). The
+/// bounds must echo it, and every row must lie strictly past it. `origin` is
+/// the configured relay's media origin (`attachments::origin`).
+pub fn reduce_at(
+    room: Uuid,
+    relay: PublicKey,
+    origin: &str,
     events: &[Event],
     now: u64,
     request: Option<&Cursor>,
@@ -440,10 +460,12 @@ pub fn reduce_page(
         }
         let unavailable = uncertain.contains(&id);
         let edit = latest.get(&id);
-        let (body, truncated) = if unavailable {
-            (String::new(), false)
+        let (attachments, attachments_unavailable, (body, truncated)) = if unavailable {
+            (Vec::new(), false, (String::new(), false))
         } else {
-            text(edit.map_or(original.content.as_str(), |e| e.content.as_str()))
+            let (list, broken, content) =
+                crate::attachments::project(edit.copied().unwrap_or(original), origin);
+            (list, broken, text(&content))
         };
         let reactions = if unavailable {
             None
@@ -467,6 +489,8 @@ pub fn reduce_page(
             edited: edit.is_some(),
             truncated,
             unavailable,
+            attachments,
+            attachments_unavailable,
         });
     }
     rows.sort_by(oldest_first);
@@ -501,6 +525,8 @@ fn apply_deletions(rows: &mut Vec<Row>, deletions: &[(String, PublicKey)]) {
             row.text.clear();
             row.truncated = false;
             row.reactions = None;
+            row.attachments.clear();
+            row.attachments_unavailable = false;
         }
     }
 }
@@ -654,6 +680,25 @@ impl Held {
         let head = self.head.as_ref()?;
         let more = self.trimmed || self.next().is_some();
         let unheld = more && self.continuation().is_none();
+        let mut rows: Vec<crate::protocol::HistoryRow> = self
+            .older
+            .iter()
+            .chain(&head.rows)
+            .map(|r| crate::protocol::HistoryRow {
+                reactions: r.reactions.clone(),
+                thread: r.thread.clone(),
+                id: r.id.clone(),
+                author: r.author_pubkey.clone(),
+                time: r.timestamp,
+                text: r.text.clone(),
+                edited: r.edited,
+                truncated: r.truncated,
+                unavailable: r.unavailable,
+                attachments: r.attachments.clone(),
+                attachments_unavailable: r.attachments_unavailable,
+            })
+            .collect();
+        crate::attachments::bound(rows.iter_mut(), crate::attachments::FRAME_HISTORY);
         Some(crate::protocol::History {
             state: "snapshot".into(),
             room_id: Some(head.room.clone()),
@@ -669,22 +714,7 @@ impl Held {
             next_cursor: self.continuation().cloned(),
             older_state: self.older_state.into(),
             live: false,
-            rows: self
-                .older
-                .iter()
-                .chain(&head.rows)
-                .map(|r| crate::protocol::HistoryRow {
-                    reactions: r.reactions.clone(),
-                    thread: r.thread.clone(),
-                    id: r.id.clone(),
-                    author: r.author_pubkey.clone(),
-                    time: r.timestamp,
-                    text: r.text.clone(),
-                    edited: r.edited,
-                    truncated: r.truncated,
-                    unavailable: r.unavailable,
-                })
-                .collect(),
+            rows,
         })
     }
 }
@@ -705,7 +735,15 @@ pub async fn fetch(
         },
     )
     .await?;
-    reduce(room, trusted_signer, &events, Timestamp::now().as_secs())
+    let origin = crate::attachments::origin(relay).map_err(|_| "history_invalid_shape")?;
+    reduce_at(
+        room,
+        trusted_signer,
+        &origin,
+        &events,
+        Timestamp::now().as_secs(),
+        None,
+    )
 }
 /// One older page continuing from `cursor`, verified exactly like the head
 /// plus its request binding. Reads only, so a busy query slot is retried.
@@ -735,9 +773,11 @@ pub async fn fetch_older(
             other => break other?,
         }
     };
-    reduce_page(
+    let origin = crate::attachments::origin(relay).map_err(|_| "history_invalid_shape")?;
+    reduce_at(
         room,
         trusted_signer,
+        &origin,
         &events,
         Timestamp::now().as_secs(),
         Some(cursor),

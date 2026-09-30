@@ -330,6 +330,8 @@ async fn real_relay_messaging_conformance() {
                     edited: row.edited,
                     truncated: row.truncated,
                     unavailable: row.unavailable,
+                    attachments: vec![],
+                    attachments_unavailable: false,
                 })
                 .collect(),
             has_more: Some(current_history.has_more),
