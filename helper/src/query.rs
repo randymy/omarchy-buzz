@@ -47,7 +47,7 @@ impl QueryRequest {
                 serde_json::json!({"kinds":[39000],"#d":rooms.iter().map(Uuid::to_string).collect::<Vec<_>>(),"limit":rooms.len()})
             }
             Self::RoomHistory { room, limit } if (1..=20).contains(limit) => {
-                serde_json::json!({"kinds":[9,40002],"#h":[room.to_string()],"limit":limit,"top_level":true,"include_aux":true,"include_summaries":false})
+                serde_json::json!({"kinds":[9,40002],"#h":[room.to_string()],"limit":limit,"top_level":true,"include_aux":true,"include_summaries":true})
             }
             Self::ThreadReplies { room, root } => {
                 serde_json::json!({"thread_window":true,"#h":[room.to_string()],"#e":[root.to_hex()],"kinds":[9],"depth_limit":1,"limit":8,"include_aux":true})
@@ -85,7 +85,7 @@ impl QueryRequest {
                     .tags
                     .iter()
                     .any(|t| t.as_slice().first().map(String::as_str) == Some("h"));
-                matches!(kind, 9 | 40002 | 40003 | 5 | 9005 | 7 | 39006)
+                matches!(kind, 9 | 40002 | 40003 | 5 | 9005 | 7 | 39005 | 39006)
                     && (matches!(kind, 5 | 9005)
                         || kind == 7 && !has_h
                         || event.tags.iter().any(|t| {

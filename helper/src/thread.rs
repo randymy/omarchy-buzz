@@ -357,6 +357,7 @@ pub fn reduce(
         };
         rows.push(crate::history::Row {
             reactions: None,
+            thread: None,
             id,
             author_pubkey: author(original, relay)?.to_hex(),
             timestamp: original.created_at.as_secs(),

@@ -170,12 +170,19 @@ Column {
       property string messageId: root.row.id || ""
       Layout.alignment: Qt.AlignTop
       visible: root.threadLink && root.ready && root.service.canOpenThread(root.row.id)
-      text: "Thread ›"
-      tooltipText: root.threadSelected ? "Close this thread" : "Open replies beside the room"
+      // Counts come only from a relay summary. Without the helper capability
+      // nothing is known about replies, so the neutral label stays.
+      readonly property var summary: root.row && root.row.thread ? root.row.thread : null
+      readonly property int replies: summary ? summary.replies : 0
+      text: replies > 0 ? replies + (replies === 1 ? " reply ›" : " replies ›")
+        : root.ready && root.service.threadSummariesSupported ? "Reply ›" : "Thread ›"
+      tooltipText: root.threadSelected ? "Close this thread"
+        : replies > 0 && summary.lastReplyAt !== null ? "Last reply " + root.service.formatTimestamp(summary.lastReplyAt)
+        : "Open replies beside the room"
       fontSize: Style.font.caption
       horizontalPadding: Style.space(6)
       verticalPadding: Style.space(2)
-      foreground: root.threadSelected ? Color.foreground : Util.alpha(Color.foreground, 0.6)
+      foreground: root.threadSelected || replies > 0 ? Color.foreground : Util.alpha(Color.foreground, 0.6)
       selected: root.threadSelected
       focusable: true
       onClicked: root.threadRequested()

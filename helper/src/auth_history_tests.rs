@@ -122,7 +122,7 @@ async fn scenario(in_flight: bool, automatic: bool, automatic_failure: bool) {
                     assert!(head.starts_with("post /query "));assert!(head.contains("authorization: nostr "));let body=body.unwrap();
                     if index==1 {assert_eq!(body[0]["kinds"],json!([39002]));}
                     else if index==2 {assert_eq!(body[0]["kinds"],json!([39000]));}
-                    else {assert_eq!(body,json!([{"kinds":[9,40002],"#h":[expected_room],"limit":20,"top_level":true,"include_aux":true,"include_summaries":false}]));}
+                    else {assert_eq!(body,json!([{"kinds":[9,40002],"#h":[expected_room],"limit":20,"top_level":true,"include_aux":true,"include_summaries":true}]));}
                 }
                 if index==4 {held_send.take().unwrap().send(()).unwrap();timeout(Duration::from_secs(8),release_wait.take().unwrap()).await.unwrap().unwrap();}
                 // Aborted stale reads may close before this response is written.

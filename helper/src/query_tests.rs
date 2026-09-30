@@ -385,3 +385,36 @@ fn agent_profile_request_is_exact_author_and_bounded() {
     .body(&viewer)
     .is_err());
 }
+
+#[test]
+fn only_room_history_requests_and_admits_thread_summaries() {
+    let keys = Keys::generate();
+    let relay = Keys::generate();
+    let room = Uuid::new_v4();
+    let root = EventBuilder::new(Kind::Custom(9), "root")
+        .sign_with_keys(&keys)
+        .unwrap();
+    let history = QueryRequest::RoomHistory { room, limit: 20 };
+    let thread = QueryRequest::ThreadReplies {
+        room,
+        root: root.id,
+    };
+    let body = |request: &QueryRequest| {
+        serde_json::from_slice::<serde_json::Value>(&request.body(&keys).unwrap()).unwrap()
+    };
+    assert_eq!(body(&history)[0]["include_summaries"], true);
+    assert!(body(&thread)[0].get("include_summaries").is_none());
+    let summary = |h: &str| {
+        EventBuilder::new(Kind::Custom(39005), "{}")
+            .tags([
+                Tag::event(root.id),
+                Tag::parse(["d", &root.id.to_hex()]).unwrap(),
+                Tag::parse(["h", h]).unwrap(),
+            ])
+            .sign_with_keys(&relay)
+            .unwrap()
+    };
+    assert!(history.matches(&summary(&room.to_string()), &keys));
+    assert!(!history.matches(&summary(&Uuid::new_v4().to_string()), &keys));
+    assert!(!thread.matches(&summary(&room.to_string()), &keys));
+}

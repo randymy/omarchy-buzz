@@ -26,6 +26,7 @@ fn selected_root(status: &mut Status, room: &str, root: &str) {
         room_id: Some(room.into()),
         rows: vec![crate::protocol::HistoryRow {
             reactions: None,
+            thread: None,
             id: root.into(),
             author: "synthetic".into(),
             time: 1,

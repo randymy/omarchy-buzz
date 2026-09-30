@@ -1681,3 +1681,16 @@ room used to vanish the moment a check started (as part of the blank); it now
 stays listed until the check completes, at most the 15-second discovery timeout.
 A failed or timed-out check still clears every dependent view. The panel's own
 retention logic is unchanged.
+
+## Reply counts on room messages — September 29 night
+
+Room history now requests NIP-CW `kind:39005` thread summaries. The helper
+accepts one only when it is signed by the pinned relay identity, has exactly one
+`e`, `d` and `h` tag (`e` = `d`, this room) and typed content, and names a row on
+the same page; anything else rejects the whole page, as unmatched edits and
+reactions already do. The newest summary per row is projected as a bounded reply
+count (direct replies, matching the depth-1 thread panel), last reply time and
+up to ten participants, behind the new `thread_summaries` capability. Room
+messages then read `N replies ›` or `Reply ›`; an older helper keeps `Thread ›`.
+Verified only with synthetic Rust fixtures and all preview modes; no live relay
+response was fetched and the installed helper and plugin were not updated.
