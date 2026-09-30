@@ -11,6 +11,8 @@ namespace, `omarchy-buzz.identity.v1`, scoped by canonical relay origin and
 public identity. Configuration stores only that origin and public key. Hidden
 terminal enrollment accepts an existing identity; it does not inspect Buzz
 Desktop's secret blob, generate an identity, or fall back to a plaintext file.
+The panel's explicit `create_identity` request is the only path that generates
+one (see *Panel setup assist* below).
 Enrollment also requires successful bounded relay discovery and refuses a key
 whose public identity equals the relay signer, before writing to the secret store.
 This guard is not proof that any other supplied key is unexposed or human-owned.
@@ -68,6 +70,45 @@ produce unknown delivery, with no automatic retry. Even an acknowledgement does
 not certify exactly-once processing or agent execution. Relay reason strings
 never cross the UI boundary. QML drafts remain in memory and are cleared on an
 identity/community change; same-user access and crash-memory risks still apply.
+
+## Panel setup assist (`setup_assist`)
+
+Two requests let the panel do first-run setup without a terminal:
+`set_relay {url}` and `create_identity {}`. They add no authority over a
+working session:
+
+- Both are refused (`setup_not_allowed`, or `setup_busy` while connecting or
+  while a Secret Service unlock is pending) unless the helper is
+  `unconfigured`, `disconnected` or `unavailable`. The connection actor refuses
+  them again if one races an authentication, so a connected identity is never
+  replaced by accident.
+- `set_relay` applies exactly the `omarchy-buzz setup relay` checks (`wss://`,
+  or `ws://` only for loopback; no userinfo, path, query or fragment; at most
+  2048 bytes) and saves the configuration the same way: a different relay
+  clears the identity reference. It never deletes a stored secret.
+- `create_identity` refuses when an identity is already configured
+  (`identity_exists`) or no relay is set. It generates a key with the pinned
+  `nostr` crate, requires bounded NIP-11 discovery to succeed and the key to
+  differ from the relay signer (the same `check_then_store` guard as terminal
+  enrollment) before writing anything, then stores the secret in
+  `omarchy-buzz.identity.v1` under `relay|public key` and saves only the public
+  key to the configuration. If the configuration cannot be saved, the fresh
+  secret is removed again.
+- The secret exists only inside the helper process (zeroized after use). No
+  request carries a key; no status frame, error, log line or QML property holds
+  one. The reply is the next status frame, whose `identity` is the public key.
+  Errors are fixed categories (`setup_invalid_relay`, `identity_exists`,
+  `identity_unavailable`, `relay_unavailable`, `setup_busy`,
+  `setup_not_allowed`, `config_unavailable`); discovery and keyring details are
+  not forwarded. A setup answer lost after 60 seconds is reported as
+  `setup_busy`; the status frame shows whether the change was saved.
+- Both go through the same one-slot command queue as other requests. QML copies
+  only the validated 64-hex public key to the clipboard, on an explicit click.
+
+A same-UID process could already run `omarchy-buzz setup relay`; these requests
+do not widen that. They do let such a process switch an offline helper to
+another relay. A new identity belongs to no community; joining still requires
+an invitation or an open room and is not part of this surface.
 
 ## Release gates
 

@@ -1980,3 +1980,40 @@ Two things went wrong on the way and are now follow-ups:
   match exactly one roster name to that key, as Desktop does.
 - Also: `harnesses[].signedIn` refreshes only every 60 s; re-check every
   5 s for two minutes after a `sign_in` request completes.
+
+## Onboarding step one: relay and identity from the panel — September 30
+
+Branch `onboarding-identity`. A new user can now set the relay and create a
+Buzz identity from the setup panel, without a terminal. Joining a community
+or room is the next, separate step and is not built.
+
+- Helper: `set_relay {url}` and `create_identity {}` on `control.sock`,
+  capability `setup_assist`. Accepted only while `unconfigured`,
+  `disconnected` or `unavailable`; refused while authenticated
+  (`setup_not_allowed`) or connecting/unlocking (`setup_busy`). `set_relay`
+  uses `config::canonical_relay` and `config::with_relay` (shared with
+  `setup relay`). `create_identity` generates a key, runs
+  `enrollment::check_then_store` against `catalog::relay_signer`, stores the
+  secret through `enrollment::store_in` (Secret Service
+  `omarchy-buzz.identity.v1`, account `relay|identity`) and saves the public
+  key; the connection actor then publishes the new configuration and
+  reconnects. Fixed error categories as listed in `docs/SECURITY.md`.
+- Panel: relay field with **Use this relay**; with a saved relay and no
+  identity, an "I already have a Buzz identity" note (terminal enrollment)
+  and **Create a new identity on this device**; the public key short with the
+  full key on hover and **Copy public key**; a notice that a new identity
+  belongs to no community yet. Helpers without `setup_assist` keep the
+  terminal instructions.
+- Evidence (synthetic only): helper unit tests for request shapes, relay
+  persistence, identity refusal/creation through a fake secret store,
+  relay-signer refusal and discovery failures against loopback NIP-11
+  fixtures, refusal while authenticated, and an IPC test asserting the
+  secret never appears in any frame; `tests/helper_smoke.py` (bad relay
+  refused, relay saved, creation fails at discovery on a closed port);
+  `scripts/preview` (setup controls only with the capability) and
+  `scripts/preview --onboarding`.
+- Not verified: a real Secret Service write from the panel, a real relay's
+  NIP-11 response, and whether a real relay admits a new identity that has no
+  membership (it may report `auth_rejected` until invited). With
+  `identity_missing` (identity configured, secret absent) the panel shows only
+  the enrollment note; `create_identity` would answer `identity_exists`.
