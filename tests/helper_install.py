@@ -96,6 +96,37 @@ class HelperInstall(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "partial installation"):
             installer.inspect_existing(paths)
 
+    def test_upgrade_accepts_its_own_recorded_copy_but_not_an_edit(self):
+        paths = self.paths()
+        installer.install(self.home, self.archive, self.sidecar)
+        record = json.loads((self.home / installer.RECORD).read_text())
+        self.assertEqual(set(record), set(installer.REVIEWED))
+        # The checkout's script moves on after this install: the installed
+        # copy no longer matches it but is the one this installer recorded.
+        older = b"#!/usr/bin/python3\n# an earlier release of this script\n"
+        paths["scripts/room-agent"].write_bytes(older)
+        record["scripts/room-agent"] = hashlib.sha256(older).hexdigest()
+        (self.home / installer.RECORD).write_text(json.dumps(record))
+        self.calls.clear()
+        installer.install(self.home, self.archive, self.sidecar)
+        self.assertEqual(paths["scripts/room-agent"].read_bytes(), (ROOT / "scripts/room-agent").read_bytes())
+        self.assertEqual(json.loads((self.home / installer.RECORD).read_text())["scripts/room-agent"],
+                         hashlib.sha256((ROOT / "scripts/room-agent").read_bytes()).hexdigest())
+        backups = sorted((self.home / ".local/share/omarchy-buzz/backups").iterdir())
+        self.assertEqual((backups[-1] / "scripts/room-agent").read_bytes(), older)
+        self.assertTrue((backups[-1] / "installed.json").is_file())
+        # An edit nobody recorded is still refused, and a damaged record is ignored.
+        paths["scripts/room-agent"].write_bytes(b"edited by hand\n")
+        with self.assertRaisesRegex(ValueError, "modified or unrecognized"):
+            installer.install(self.home, self.archive, self.sidecar)
+        (self.home / installer.RECORD).write_text("{not json")
+        self.assertEqual(installer.read_record(self.home), {})
+        with self.assertRaisesRegex(ValueError, "modified or unrecognized"):
+            installer.install(self.home, self.archive, self.sidecar)
+        paths["scripts/room-agent"].write_bytes((ROOT / "scripts/room-agent").read_bytes())
+        installer.uninstall(self.home)
+        self.assertFalse((self.home / installer.RECORD).exists())
+
     def test_checksum_and_unexpected_unit_rejected_before_systemd(self):
         data = json.loads(self.sidecar.read_text())
         data["artifacts"][0]["sha256"] = "0" * 64

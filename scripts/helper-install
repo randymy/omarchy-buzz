@@ -37,6 +37,10 @@ CORE = ("bin/omarchy-buzz", "service/omarchy-buzz.service", "service/omarchy-buz
 REVIEWED = tuple(name for name in FILES if name != "bin/omarchy-buzz")
 SOCKETS = ("omarchy-buzz.socket", "omarchy-buzz-agents.socket")
 SERVICES = ("omarchy-buzz.service", "omarchy-buzz-agents.service")
+# Hashes of the reviewed files as this installer last put them, so an upgrade
+# recognizes its own earlier copies once the checkout's have moved on.
+RECORD = ".local/share/omarchy-buzz/installed.json"
+MAX_RECORD = 64 * 1024
 MAX_ARCHIVE = 32 * 1024 * 1024
 MAX_BINARY = 24 * 1024 * 1024
 
@@ -64,6 +68,32 @@ def destinations(home):
     if not home.is_absolute() or home.is_symlink() or not home.is_dir():
         raise ValueError("HOME must be an ordinary absolute directory")
     return {name: home / relative for name, (relative, _) in FILES.items()}
+
+
+def digest(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def read_record(home):
+    """The recorded hashes, or {} when the record is absent or not usable."""
+    path = home / RECORD
+    if not regular(path) or path.stat().st_size > MAX_RECORD:
+        return {}
+    try:
+        record = json.loads(path.read_bytes())
+    except (ValueError, UnicodeDecodeError):
+        return {}
+    if not isinstance(record, dict):
+        return {}
+    return {name: value for name, value in record.items()
+            if name in REVIEWED and isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value)}
+
+
+def write_record(home, content):
+    path = home / RECORD
+    safe_directory(path.parent)
+    record = {name: digest(content[name]) for name in REVIEWED}
+    put(path, json.dumps(record, indent=2, sort_keys=True).encode() + b"\n", 0o600)
 
 
 def systemctl(*args, check=True):
@@ -174,7 +204,10 @@ def probe_binary(data, expected):
         raise ValueError("packaged helper version differs from package metadata")
 
 
-def inspect_existing(paths, create=True):
+def inspect_existing(paths, create=True, record=None):
+    """An installed reviewed file must match the checkout's copy or the
+    hash this installer recorded when it last put that file."""
+    record = record or {}
     present = {}
     for name, path in paths.items():
         safe_directory(path.parent, create=create)
@@ -188,7 +221,10 @@ def inspect_existing(paths, create=True):
         raise ValueError("partial installation; review installed files manually")
     if all(core):
         for name in REVIEWED:
-            if present[name] and paths[name].read_bytes() != (ROOT / name).read_bytes():
+            if not present[name]:
+                continue
+            data = paths[name].read_bytes()
+            if data != (ROOT / name).read_bytes() and digest(data) != record.get(name):
                 raise ValueError(f"modified or unrecognized unit: {paths[name]}")
         if paths["bin/omarchy-buzz"].stat().st_size > MAX_BINARY:
             raise ValueError("installed binary is too large")
@@ -211,8 +247,8 @@ def backup(paths, home):
     safe_directory(base)
     target = base / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
     target.mkdir(mode=0o700)
-    for name, path in paths.items():
-        if not path.exists():
+    for name, path in list(paths.items()) + [("installed.json", home / RECORD)]:
+        if not regular(path):
             continue
         copy = target / name
         safe_directory(copy.parent)
@@ -234,19 +270,20 @@ def put(path, data, mode):
             os.unlink(staged)
 
 
-def restore(paths, saved):
-    for name, path in paths.items():
+def restore(paths, saved, home):
+    for name, path in list(paths.items()) + [("installed.json", home / RECORD)]:
+        mode = FILES[name][1] if name in FILES else 0o600
         if saved is None or not (saved / name).exists():
             path.unlink(missing_ok=True)
         else:
-            put(path, (saved / name).read_bytes(), FILES[name][1])
+            put(path, (saved / name).read_bytes(), mode)
     systemctl("daemon-reload")
 
 
 def install(home, archive, sidecar, dry_run=False):
     content, metadata = read_package(archive, sidecar)
     paths = destinations(home)
-    existing = inspect_existing(paths, create=False)
+    existing = inspect_existing(paths, create=False, record=read_record(home))
     if dry_run:
         print(("Upgrade" if existing else "Install") + " preview:")
         for path in paths.values():
@@ -269,6 +306,7 @@ def install(home, archive, sidecar, dry_run=False):
                 systemctl("stop", "omarchy-buzz-agents.socket", "omarchy-buzz-agents.service")
         for name, path in paths.items():
             put(path, content[name], FILES[name][1])
+        write_record(home, content)
         systemctl("daemon-reload")
         for socket in SOCKETS:
             systemctl("enable", "--now", socket)
@@ -279,7 +317,7 @@ def install(home, archive, sidecar, dry_run=False):
                 systemctl("disable", "--now", socket, check=False)
         elif not agents_installed:
             systemctl("disable", "--now", "omarchy-buzz-agents.socket", check=False)
-        restore(paths, saved)
+        restore(paths, saved, home)
         for socket in SOCKETS:
             if not existing or (socket == "omarchy-buzz-agents.socket" and not agents_installed):
                 continue
@@ -295,7 +333,7 @@ def install(home, archive, sidecar, dry_run=False):
 
 def uninstall(home, dry_run=False):
     paths = destinations(home)
-    if not inspect_existing(paths, create=not dry_run):
+    if not inspect_existing(paths, create=not dry_run, record=read_record(home)):
         raise ValueError("helper is not installed")
     if dry_run:
         print("Uninstall preview:")
@@ -314,9 +352,10 @@ def uninstall(home, dry_run=False):
             systemctl("stop", socket.replace(".socket", ".service"))
         for path in paths.values():
             path.unlink(missing_ok=True)
+        (home / RECORD).unlink(missing_ok=True)
         systemctl("daemon-reload")
     except Exception:
-        restore(paths, saved)
+        restore(paths, saved, home)
         for socket in installed:
             if was_enabled[socket]:
                 systemctl("enable", socket)
