@@ -685,6 +685,92 @@ Item {
     selectRoom(target)
   }
 
+  // Inviting people (`invite_mint`, Settings → Invite people). The relay lets
+  // only its owner or admins mint; the helper signs the request and publishes
+  // the code, and the panel turns it into the two links Buzz Desktop accepts
+  // and a message for newcomers. The code reaches only the clipboard, on Copy.
+  readonly property string omarchyBuzzUrl: "https://github.com/randymy/omarchy-buzz"
+  property bool inviteMintSupported: false
+  property var invites: ({state: "idle", code: null, expiresAt: null, maxUses: null, role: null, category: null})
+  property string mintState: "idle"
+  property string mintCategory: ""
+  property string mintRequestId: ""
+  property string mintInstance: ""
+  property string inviteCopied: ""
+  readonly property bool inviteMintAvailable: inviteMintSupported && !sampleMode && !sessionFailed && instanceId !== "" && connection === "authenticated"
+  readonly property bool canMintInvite: inviteMintAvailable && bridge.running && mintState !== "sending" && invites.state !== "minting"
+  readonly property var mintMessages: ({
+    invite_forbidden: "Only the relay's owner or admins can create invites.",
+    invite_rejected: "The relay refused to create this invite. Try again.",
+    invite_rate_limited: "Too many attempts. Wait a minute, then try again.",
+    relay_unavailable: "Could not reach the relay. Check the connection and try again.",
+    setup_busy: "The helper is busy. Try again in a moment."
+  })
+  readonly property string mintLabel: {
+    if (mintState === "failed") return mintMessages[mintCategory] || "No invite was created. Try again."
+    if (mintState === "sending" || invites.state === "minting") return "Creating invite…"
+    if (invites.state === "failed") return mintMessages[invites.category] || "No invite was created. Try again."
+    return ""
+  }
+  // `wss://host[:port]` without the trailing slash, as Buzz's invite page links it.
+  readonly property string inviteRelay: /^wss?:\/\/[^\/\s@?#]+\/?$/.test(relay) ? relay.replace(/\/$/, "") : ""
+  readonly property string inviteHost: inviteRelay.replace(/^wss?:\/\//, "")
+  readonly property bool inviteShown: invites.state === "minted" && inviteRelay !== "" && inviteMintAvailable
+  readonly property string inviteAppLink: inviteShown
+    ? "buzz://join?relay=" + encodeURIComponent(inviteRelay) + "&code=" + encodeURIComponent(invites.code) : ""
+  readonly property string inviteWebLink: inviteShown
+    ? (inviteRelay.indexOf("wss://") === 0 ? "https://" : "http://") + inviteHost + "/invite/" + invites.code : ""
+  readonly property string inviteBlurb: inviteShown
+    ? "Join me on Buzz at " + inviteHost + ": chat for people and their AI agents. On Omarchy, ask your coding agent to install "
+      + omarchyBuzzUrl + ", then open the Buzz panel, choose the relay " + inviteRelay
+      + ", create an identity and paste the invite below. Anywhere else, use Buzz Desktop and paste the same invite.\n\n" + inviteWebLink
+    : ""
+  readonly property string inviteDetails: inviteShown
+    ? (invites.maxUses === 1 ? "One use" : invites.maxUses + " uses") + " · expires "
+      + Qt.formatDateTime(new Date(invites.expiresAt * 1000), "d MMM yyyy, hh:mm") + " · joins as " + invites.role : ""
+  function mintInvite(maxUses, hours) {
+    if (!canMintInvite || [1, 5, 25].indexOf(maxUses) === -1 || [24, 168, 720].indexOf(hours) === -1) return false
+    mintRequestId = correlationUuid()
+    mintInstance = instanceId
+    mintState = "sending"
+    mintCategory = ""
+    inviteCopied = ""
+    bridge.write(JSON.stringify({version: 1, id: mintRequestId, type: "mint_invite", maxUses: maxUses, expiresInHours: hours}) + "\n")
+    mintTimeout.restart()
+    return true
+  }
+  function copyInvite(kind) {
+    var text = ({app: inviteAppLink, web: inviteWebLink, blurb: inviteBlurb})[kind]
+    if (!text) return false
+    Quickshell.clipboardText = text
+    inviteCopied = kind
+    return true
+  }
+  function loseMint() {
+    mintTimeout.stop()
+    if (mintState === "sending") { mintState = "idle"; mintCategory = "" }
+    mintRequestId = ""
+  }
+  function clearInvites() {
+    invites = {state: "idle", code: null, expiresAt: null, maxUses: null, role: null, category: null}
+    inviteCopied = ""
+  }
+  function validatedInvites(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)
+        || Object.keys(value).sort().join(",") !== "category,code,expiresAt,maxUses,role,state"
+        || ["idle", "minting", "minted", "failed"].indexOf(value.state) === -1) return null
+    if (value.state === "minted") {
+      if (typeof value.code !== "string" || !/^v2\.[A-Za-z0-9_-]{43}$/.test(value.code)
+          || !Number.isInteger(value.expiresAt) || value.expiresAt < 1 || value.expiresAt > 4102444800
+          || !Number.isInteger(value.maxUses) || value.maxUses < 1 || value.maxUses > 100
+          || value.role !== "member" || value.category !== null) return null
+      return {state: "minted", code: value.code, expiresAt: value.expiresAt, maxUses: value.maxUses, role: "member", category: null}
+    }
+    if (value.code !== null || value.expiresAt !== null || value.maxUses !== null || value.role !== null) return null
+    if (value.state === "failed" ? Object.keys(mintMessages).indexOf(value.category) === -1 : value.category !== null) return null
+    return {state: value.state, code: null, expiresAt: null, maxUses: null, role: null, category: value.category}
+  }
+
   function chooseSetupProvider(provider) {
     // Presentation only: choosing a provider never writes config or sends IPC.
     if (provider === "hosted" || provider === "custom") setupProvider = provider
@@ -1174,10 +1260,10 @@ Item {
     if (!sampleMode) selectedRoomId = ""
   }
   function validCapabilities(capabilities) {
-    return Array.isArray(capabilities) && capabilities.length >= 1 && capabilities.length <= 16
+    return Array.isArray(capabilities) && capabilities.length >= 1 && capabilities.length <= 17
       && capabilities.indexOf("connection_status") !== -1
       && capabilities.every(function(cap, index) {
-        return ["connection_status", "room_catalog", "room_history", "message_send", "room_recipients", "history_auto_refresh", "room_activity", "agent_profiles", "thread_replies", "thread_send", "thread_summaries", "dm_open", "older_history", "live_updates", "setup_assist", "community_join"].indexOf(cap) !== -1 && capabilities.indexOf(cap) === index
+        return ["connection_status", "room_catalog", "room_history", "message_send", "room_recipients", "history_auto_refresh", "room_activity", "agent_profiles", "thread_replies", "thread_send", "thread_summaries", "dm_open", "older_history", "live_updates", "setup_assist", "community_join", "invite_mint"].indexOf(cap) !== -1 && capabilities.indexOf(cap) === index
       })
   }
   // Streams carry no participants and are never hidden. A DM lists 2-9 distinct
@@ -1269,6 +1355,9 @@ Item {
     loseRoomAction()
     communityJoinSupported = false
     clearJoin()
+    loseMint()
+    inviteMintSupported = false
+    clearInvites()
     losePendingDelivery()
     loseDmOpen()
     dmOpenSupported = false
@@ -1294,6 +1383,9 @@ Item {
     loseRoomAction()
     communityJoinSupported = false
     clearJoin()
+    loseMint()
+    inviteMintSupported = false
+    clearInvites()
     losePendingDelivery()
     loseDmOpen()
     dmOpenSupported = false
@@ -1328,11 +1420,20 @@ Item {
     if (frame && frame.version === 1 && frame.type === "error" && ["request_busy", "send_busy", "send_scope_changed", "send_request_reused", "send_invalid", "send_unavailable", "send_access_denied", "send_ledger_unavailable", "delivery_unknown",
         "dm_open_busy", "dm_open_scope_changed", "dm_open_request_reused", "dm_open_invalid", "dm_open_unavailable", "dm_open_access_denied", "dm_open_unknown",
         "setup_invalid_relay", "identity_exists", "identity_unavailable", "relay_unavailable", "setup_busy", "setup_not_allowed", "config_unavailable",
-        "invite_invalid", "invite_relay_mismatch", "invite_rejected", "invite_rate_limited", "policy_required", "room_not_open", "join_rejected", "leave_rejected"].indexOf(frame.category) !== -1) {
+        "invite_invalid", "invite_relay_mismatch", "invite_rejected", "invite_rate_limited", "policy_required", "room_not_open", "join_rejected", "leave_rejected",
+        "invite_forbidden"].indexOf(frame.category) !== -1) {
       if (instanceId === "" || frame.instanceId !== instanceId) return false
       if (!boundedString(frame.id, 128) || !/^ui-[0-9]+$/.test(frame.id) && !uuidValue(frame.id)) { fail("invalid_response"); return false }
       if (frame.id === setupRequestId && setupState === "sending") {
         refuseSetup(frame.category === "request_busy" ? "setup_busy" : frame.category)
+        return true
+      }
+      if (frame.id === mintRequestId && mintState === "sending") {
+        // A refusal or a failed mint; the status view carries the same category.
+        mintTimeout.stop()
+        mintState = "failed"
+        mintCategory = frame.category === "request_busy" ? "setup_busy" : frame.category
+        mintRequestId = ""
         return true
       }
       if (frame.id === inviteRequestId && inviteState === "sending") {
@@ -1454,6 +1555,9 @@ Item {
     var open = supportsJoin ? validatedOpenRooms(state.openRooms, catalog) : null
     var action = supportsJoin ? validatedRoomAction(state.roomAction) : null
     if (supportsJoin && (!join || !open || !action)) { fail("invalid_response"); return false }
+    var supportsMint = frame.capabilities.indexOf("invite_mint") !== -1
+    var minted = supportsMint ? validatedInvites(state.invites) : null
+    if (supportsMint && !minted) { fail("invalid_response"); return false }
     var supportsActivity = frame.capabilities.indexOf("room_activity") !== -1
     if (supportsActivity && (!Array.isArray(state.activity) || state.activity.length > 20 || state.activity.some(function(a, i) {
       return !RoomActivity.valid(a) || !uuidValue(a.roomId) || !catalog.rooms.some(function(r) { return r.id === a.roomId })
@@ -1607,6 +1711,17 @@ Item {
         roomActionLocal = "idle"
       }
       if (action.requestId === roomActionRequestId && ["rejected", "unknown"].indexOf(action.state) !== -1) joinTarget = ""
+    }
+    inviteMintSupported = supportsMint
+    if (!supportsMint) { loseMint(); clearInvites() }
+    else {
+      if (minted.code !== invites.code) inviteCopied = ""
+      if (!sameProjection(invites, minted)) invites = minted
+      if (frame.type === "status" && mintState === "sending" && frame.id === mintRequestId && frame.instanceId === mintInstance) {
+        mintTimeout.stop()
+        mintState = "idle"
+        mintRequestId = ""
+      }
     }
     applyDelivery(delivery)
     applyDmOpen(dmOpen)
@@ -1779,6 +1894,12 @@ Item {
     onTriggered: { if (root.inviteState === "sending") { root.inviteState = "failed"; root.inviteCategory = "setup_busy" }; root.inviteRequestId = "" }
   }
   Timer {
+    id: mintTimeout
+    // Beyond the helper's own 60-second bound for one HTTP request.
+    interval: 70000
+    onTriggered: { if (root.mintState === "sending") { root.mintState = "failed"; root.mintCategory = "setup_busy" }; root.mintRequestId = "" }
+  }
+  Timer {
     id: roomActionTimeout
     // The helper answers at once; the relay's OK arrives in the status view.
     interval: 30000
@@ -1810,6 +1931,9 @@ Item {
       root.loseRoomAction()
       root.communityJoinSupported = false
       root.clearJoin()
+      root.loseMint()
+      root.inviteMintSupported = false
+      root.clearInvites()
       root.losePendingDelivery()
       root.loseDmOpen()
       root.dmOpenSupported = false
