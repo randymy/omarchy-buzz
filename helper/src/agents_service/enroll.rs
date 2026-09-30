@@ -12,6 +12,10 @@
 //! - kind 9000 add-member per room, owner-signed, `h`, `p`, `role=bot`
 //!   (`buzz_sdk::build_add_member`, as `buzz-cli` and Desktop's
 //!   `attachManagedAgentToChannel` add agents).
+//! - kind 9001 remove-member per room the agent left, owner-signed, `h`, `p`
+//!   (`buzz_sdk::build_remove_member`, next to `build_add_member`; the relay's
+//!   `side_effects.rs` 9001 check lets a channel owner/admin, or a member who
+//!   owns the agent through its NIP-OA admission, remove it).
 //! - kind 0 agent profile, agent-signed with the `auth` tag
 //!   (Desktop `relay.rs:504-536`), on a connection whose AUTH carries it.
 //!
@@ -126,6 +130,18 @@ pub fn add_member_event(
     sign(builder, owner, at)
 }
 
+pub fn remove_member_event(
+    room: &str,
+    agent: &PublicKey,
+    owner: &Keys,
+    at: Timestamp,
+) -> Result<Event, &'static str> {
+    let room = uuid::Uuid::parse_str(room).map_err(|_| "enroll_failed")?;
+    let builder =
+        buzz_sdk::build_remove_member(room, &agent.to_hex()).map_err(|_| "enroll_failed")?;
+    sign(builder, owner, at)
+}
+
 pub fn profile_event(
     persona: &Persona,
     agent: &Keys,
@@ -180,12 +196,61 @@ pub async fn publish(conn: &mut NostrWsConnection, event: &Event) -> Result<(), 
     }
 }
 
+/// Publishes one kind 9001 per room on an owner-authenticated connection,
+/// recording each only after the relay's `OK`; stops at the first failure.
+async fn remove_members(
+    conn: &mut NostrWsConnection,
+    rooms: &[String],
+    agent: &PublicKey,
+    owner: &Keys,
+    at: Timestamp,
+    report: &mut Report,
+) -> Result<(), &'static str> {
+    for room in rooms {
+        publish(conn, &remove_member_event(room, agent, owner, at)?).await?;
+        report.removed_rooms.push(room.clone());
+    }
+    Ok(())
+}
+
+/// Removes the agent from `rooms` (the owner's kind 9001 per room), as
+/// `delete_agent` does. Nothing else is published.
+pub async fn leave_rooms(
+    relay: &str,
+    owner: &Keys,
+    agent: &PublicKey,
+    rooms: &[String],
+    at: Timestamp,
+) -> Report {
+    let mut report = Report::default();
+    if rooms.is_empty() {
+        return report;
+    }
+    if owner.public_key() == *agent {
+        report.error = Some("enroll_failed");
+        return report;
+    }
+    let mut conn = match crate::auth::connect_identity(relay, owner).await {
+        Ok(conn) => conn,
+        Err(category) => {
+            report.error = Some(connect_category(category));
+            return report;
+        }
+    };
+    let result = remove_members(&mut conn, rooms, agent, owner, at, &mut report).await;
+    let _ = timeout(Duration::from_secs(2), conn.disconnect()).await;
+    report.error = result.err();
+    report
+}
+
 /// What reached the relay, reported even when a later step failed.
 #[derive(Debug, Default, PartialEq)]
 pub struct Report {
     /// Rooms whose add-member command was acknowledged (in addition to
     /// those already acknowledged before).
     pub member_rooms: Vec<String>,
+    /// Rooms whose remove-member command was acknowledged.
+    pub removed_rooms: Vec<String>,
     /// `created_at` used for the replaceable records, once both were accepted.
     pub published_at: Option<u64>,
     pub error: Option<&'static str>,
@@ -245,7 +310,14 @@ async fn publish_steps(
             publish(&mut conn, &add_member_event(room, &agent_key, owner, at)?).await?;
             report.member_rooms.push(room.clone());
         }
-        Ok::<(), &'static str>(())
+        // Rooms still acknowledged as memberships but no longer configured.
+        let dropped: Vec<String> = persona
+            .member_rooms
+            .iter()
+            .filter(|room| !persona.rooms.contains(room))
+            .cloned()
+            .collect();
+        remove_members(&mut conn, &dropped, &agent_key, owner, at, report).await
     }
     .await;
     let _ = timeout(Duration::from_secs(2), conn.disconnect()).await;

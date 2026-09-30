@@ -19,6 +19,8 @@ const DESCRIPTION_CHARS: usize = 256;
 pub const INSTRUCTIONS_BYTES: usize = 16 * 1024;
 const MODEL_CHARS: usize = 64;
 const MAX_ROOMS: usize = 8;
+/// Acknowledged memberships, including dropped rooms still to be left.
+pub const MAX_MEMBER_ROOMS: usize = 64;
 const PATH_BYTES: usize = 1024;
 // 16 agents with 16 KiB instructions each, plus JSON escaping of the permitted
 // whitespace, stay well below this bound.
@@ -124,7 +126,9 @@ pub struct Persona {
     pub auth_tag: Option<String>,
     /// True only after the relay's `OK` for every enrollment publication.
     pub published: bool,
-    /// Rooms whose add-member command the relay acknowledged.
+    /// Rooms whose add-member command the relay acknowledged and whose
+    /// remove-member command it has not. Entries no longer in `rooms` are
+    /// dropped rooms still to be left (kind 9001) on the next publication.
     pub member_rooms: Vec<String>,
     /// `created_at` of the last kind 30175/30177 publication (monotonic).
     pub published_at: u64,
@@ -221,7 +225,15 @@ impl Persona {
                         .is_ok_and(|key| buzz_sdk::nip_oa::verify_auth_tag(tag, &key).is_ok())
                 })
             })
-            && self.member_rooms.iter().all(|r| self.rooms.contains(r))
+            && self.member_rooms.len() <= MAX_MEMBER_ROOMS
+            && self.member_rooms.iter().all(|r| canonical_uuid(r))
+            && self
+                .member_rooms
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                == self.member_rooms.len()
+            && (self.identity.is_some() || self.member_rooms.is_empty())
             && self.last_error.as_deref().is_none_or(|c| {
                 c.len() <= 32 && c.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')
             })

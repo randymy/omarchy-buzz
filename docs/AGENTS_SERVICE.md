@@ -89,8 +89,10 @@ The target agent is `agentId` because `id` is the request UUID:
 
 `update_agent` stops a running agent first only when `harness`, `workspace`,
 `rooms` or `respondTo` change; other edits republish and take effect on next
-start. `delete_agent` stops, disables, removes the unit, keeps the identity in
-Secret Service unless `forget: true`. `enroll_agent` generates the identity,
+start. A room dropped from an enrolled agent is left on the relay (the owner's
+kind 9001 remove-member) during that republication. `delete_agent` removes an
+enrolled agent from all its rooms, then stops, disables, removes the unit,
+keeps the identity in Secret Service unless `forget: true`. `enroll_agent` generates the identity,
 signs the NIP-OA attestation with the owner key, publishes kind 30175 persona
 and kind 30177 managed-agent records, and adds the agent to each room as the
 owner does in Desktop. `sign_in` opens a terminal running the vendor CLI login
@@ -118,10 +120,15 @@ argv array, no shell):
   --profile ~/.local/state/omarchy-buzz-agent-preview/<harness> --workspace <ws>
   --bundle ~/.local/share/omarchy-buzz/agent-<harness> --relay <ws(s)://origin>
   --room <uuid> [--room <uuid> … up to 8] --owner <hex> --identity <hex>
-  --respond-to <owner-only|mentions> [--instructions <file>] [--model <name>]
+  --respond-to <owner-only|mentions> --auth-tag <file> [--instructions <file>]
+  [--model <name>]
 ```
 
 `mentions` is passed literally (the launcher maps it to upstream `anyone`).
+`--auth-tag` (added September 30 with the integration fixes) is always present
+for an enrolled agent: `<agent dir>/auth-tag.json`, 0600 in the same private
+directory, holding the owner's NIP-OA attestation for `--identity`; the service
+refuses to render the unit when that attestation is not the current owner's.
 `--instructions` is omitted when the instructions are empty; the file is 0600,
 at most 16 KiB, inside the service's private 0700 per-agent directory (not
 under the profile, workspace or bundle). `--model` only when set. Status is
@@ -194,21 +201,45 @@ publishes, each counted only after the relay's `OK` for its id (15 s bound):
 3. kind 9000 per room not yet acknowledged, `["h",room],["p",agent],["role","bot"]`
    (`buzz_sdk::build_add_member`, as `buzz-cli` and Desktop's
    `attachManagedAgentToChannel`), so repeated enrollment does not re-add rooms;
+4. kind 9001 per room whose membership was acknowledged but which is no longer
+   in `rooms`, `["h",room],["p",agent]`, empty content (`buzz_sdk::build_remove_member`,
+   next to `build_add_member` in `crates/buzz-sdk/src/builders.rs`; no role
+   tag). The relay (`crates/buzz-relay/src/handlers/side_effects.rs`, 9001
+   branch and `handle_remove_user`) lets a channel owner or admin remove any
+   member, and a plain member remove an agent it owns (`is_agent_owner`, set
+   when the agent authenticated with the owner's attestation);
 then, on a connection authenticated as the agent with the attestation in its
 AUTH event (`auth::connect_attested`), kind 0 `{"about","display_name"}` with the
-`auth` tag, as Desktop's `build_profile_event`. 30175/30177 use a monotonic
-`created_at` (`max(now, previous + 1)`). `published` is true only after all of
-these; a rejection is `enroll_failed`, a missing answer, closed socket or
-unreachable relay `relay_unavailable`; relay text is never reported. A retry
-reuses the stored identity; if the owner identity changed, the attestation is
-reissued and rooms are added again.
+`auth` tag, as Desktop's `build_profile_event`.
+`member_rooms` (service-private) holds rooms whose add was acknowledged and
+whose removal was not, so a dropped room stays there until its 9001 is
+acknowledged and is retried on the next publication (any republishing edit or
+`enroll_agent`); taking such a room back before that neither adds nor removes
+it, and an acknowledged room is never added again. At most 64 entries.
+30175/30177 (and that publication's 9000/9001) use a monotonic `created_at`
+(`max(now, previous + 1)`). `published` is true only after all of these; a
+rejection is `enroll_failed`, a missing answer, closed socket or unreachable
+relay `relay_unavailable`; relay text is never reported. A retry reuses the
+stored identity; if the owner identity changed, the attestation is reissued
+and rooms are added again (memberships recorded under the previous owner are
+forgotten, not left).
 
 **Harness scripts** (through a spawner trait, argv only, 15 s bound):
 `<bundle>/launcher/agent-bundle --check <harness>` (exit 0 and `ready` → ready,
 else `missing`), `~/.local/share/omarchy-buzz/scripts/agent-login --status
 <harness>` (`signed-in`/`signed-out`, anything else → `null`) and
 `~/.local/share/omarchy-buzz/scripts/agent-login <harness>` for `sign_in`
-(started detached, never read). A script must be an unlinked regular file owned
+(started without waiting, never read). `sign_in` gives the script a cleared
+environment holding only `PATH`, `HOME`, `XDG_RUNTIME_DIR`, `WAYLAND_DISPLAY`,
+`DISPLAY`, `DBUS_SESSION_BUS_ADDRESS`, `HYPRLAND_INSTANCE_SIGNATURE` and
+`XDG_*` from the service's own environment. The socket-activated unit gets
+those from the user manager, which the session fills through `systemctl --user
+import-environment` / `dbus-update-activation-environment --systemd` (uwsm
+does this on Omarchy); `omarchy-buzz-agents.service` names the ones it needs
+with `PassEnvironment=` (`XDG_RUNTIME_DIR`, `DBUS_SESSION_BUS_ADDRESS`,
+`WAYLAND_DISPLAY`, `DISPLAY`, `HYPRLAND_INSTANCE_SIGNATURE`,
+`XDG_CURRENT_DESKTOP`, `XDG_SESSION_TYPE`, `XDG_DATA_DIRS`,
+`XDG_CONFIG_DIRS`; `PATH` and `HOME` are always set for user units). A script must be an unlinked regular file owned
 by the user, executable and not group/other-writable; otherwise `missing`/`null`
 and `sign_in` answers `harness_missing`. `start_agent` rechecks both and refuses
 with `harness_missing`/`not_signed_in`.
@@ -217,8 +248,15 @@ with `harness_missing`/`not_signed_in`.
 writes the instructions and attestation files, renders and writes the unit
 (0600), runs `daemon-reload`, `enable` when `startAtLogin`, then `start`.
 `set_start_at_login` on an enrolled agent installs the unit and enables or
-disables it; otherwise it only records the choice. `delete_agent` keeps the
-default workspace and does not publish deletions or remove relay membership.
+disables it; otherwise it only records the choice. `delete_agent` first
+removes an enrolled agent from every room in `member_rooms` (kind 9001 per
+room on one owner-authenticated connection, each counted only after its `OK`,
+same categories as enrollment); if that fails, the acknowledged removals are
+recorded, `lastError` is set and nothing else changes, so the delete can be
+retried. Memberships attested by a previous owner identity are skipped (the
+current owner has no authority over them). Only then does it stop and remove
+the unit and files. It keeps the default workspace and does not publish
+deletions of the 30175/30177 records.
 Internal failures without a contract category (for example a store write
 failure) are reported as `agent_invalid`. Unit states are refreshed on
 `subscribe`, after unit operations and every 15 s while a client is connected;
@@ -261,22 +299,21 @@ limited to 108 bytes).
 - No real systemd, Secret Service, relay or script was used. Real
   `systemctl --user` behaviour of generated units, keyring access from the
   service unit and the `account` attribute lookup are unverified.
-- The launcher does not yet receive the attestation: it is written to
-  `<agent dir>/auth-tag.json` next to the instructions file, but `ExecStart`
-  has no argument for it. A relay that admits agents only through their owner
-  (NIP-OA in AUTH, `BUZZ_AUTH_TAG` in `buzz-acp`) needs the bundle launcher to
-  pass it (for example an `--auth-tag <file>` argument); that is a contract
-  change to agree on.
-- `sign_in` starts `agent-login` in the service's cgroup: the script must
-  detach the terminal into its own scope, or it ends when the service exits or
-  stops. Whether the service's environment carries the display variables is
-  unverified.
-- The relay's acceptance of kind 30175/30177/9000 over WebSocket with these
+- `ExecStart` passes `--auth-tag <agent dir>/auth-tag.json`; the launcher
+  hands it to `buzz-acp` as `BUZZ_AUTH_TAG` (see Bundles and sign-in). A real
+  `buzz-acp` run with it is unverified.
+- `agent-login` detaches the terminal into its own transient user scope
+  (see Sign-in and status), so it outlives the service. A real
+  `systemd-run --user --scope` launch from the socket-activated service, and
+  whether the user manager's environment carries the display variables on a
+  given login, are unverified.
+- The relay's acceptance of kind 30175/30177/9000/9001 over WebSocket with these
   exact contents, the owner's permission to add members to each room, and the
   kind-0 publication through an owner attestation were checked against the
   pinned source only, not a live relay.
-- Room removal (kind 9001) when rooms are dropped, and deletion of relay
-  records on `delete_agent`, are not implemented.
+- Deletion of the 30175/30177 relay records on `delete_agent` is not
+  implemented. A delete needs the relay and the owner key whenever the agent
+  still has memberships.
 
 ## Bundles and sign-in
 
@@ -295,7 +332,7 @@ lowercase UUIDs, no duplicates):
   --workspace <workspace> --bundle ~/.local/share/omarchy-buzz/agent-<harness>
   --relay <ws(s)://origin> --room <uuid> [--room <uuid> …]
   --owner <hex> --identity <hex> --respond-to owner-only|mentions
-  --instructions <file> [--model <name>]
+  [--auth-tag <file>] [--instructions <file>] [--model <name>]
 ```
 
 `--harness` and `--model` are additions to the Units list above. Defaults
@@ -306,7 +343,7 @@ is read: `separate_agent_and_owner_required`, `room_count_invalid`,
 `duplicate_room`, `canonical_room_required`, `model_invalid` (not
 `[A-Za-z0-9._:-]{1,64}`; an empty value means the harness default),
 `bundle_harness_mismatch`, the existing `room-sandbox` path categories, and
-`instructions_*` / `provider_settings_review_required` below.
+`instructions_*`, `auth_tag_*` / `provider_settings_review_required` below.
 
 Inside the sandbox `buzz-acp` runs with `--agent-command codex-acp` or
 `claude-agent-acp` (both names are upstream standard adapters,
@@ -323,6 +360,26 @@ handoff are unchanged.
   is the file form of the `system_prompt` argument Desktop sets through
   `BUZZ_ACP_SYSTEM_PROMPT` (`desktop/src-tauri/src/managed_agents/runtime.rs`);
   it keeps the text out of process arguments.
+- **Owner attestation.** `--auth-tag <file>` passes the same file checks as
+  the instructions (categories `absolute_auth_tag_file_required`,
+  `linked_auth_tag_path`, `auth_tag_path_overlap`, `auth_tag_file_missing`,
+  `auth_tag_file_permissions_unsafe`, `auth_tag_file_too_large`, and the
+  `private_directory` ones for its directory) with a 4 KiB limit; the file is
+  opened once with `O_NOFOLLOW` and checked through that descriptor. Its
+  content must be the NIP-OA tag `["auth","<owner hex>","<conditions>","<sig
+  hex>"]`: exactly four strings, 64 and 128 lowercase hex characters,
+  conditions empty or `&`-joined `kind=`/`created_at<`/`created_at>` clauses in
+  canonical decimal (`buzz-sdk` `nip_oa.rs` `parse_auth_tag_fields` and
+  `validate_conditions`), otherwise `auth_tag_file_invalid`; the owner must be
+  `--owner` (`auth_tag_owner_mismatch`). The launcher does not verify the
+  signature (`buzz-acp` does, and the service did when it wrote the file). The
+  tag is re-encoded as compact JSON, exactly as `compute_auth_tag` emits it, and
+  reaches `buzz-acp` as `BUZZ_AUTH_TAG` only through the memfd options on fd 3
+  (`--setenv BUZZ_AUTH_TAG <json>` after `--setenv BUZZ_PRIVATE_KEY <key>`),
+  never as a process argument or a mount. `buzz-acp` reads that variable to
+  resolve its owner (`crates/buzz-acp/src/lib.rs` `resolve_agent_owner`), to
+  put the tag in its relay AUTH (`HarnessRelay::connect`) and for its REST
+  client (`run_task.rs`), and forwards it to its MCP tools.
 - **Model.** Codex: `buzz-acp --model <name>` (the argument behind Desktop's
   `BUZZ_ACP_MODEL`). Claude Code: `ANTHROPIC_MODEL=<name>` in the sandbox
   environment and no `--model`, following Desktop's single startup model
@@ -410,7 +467,14 @@ requires the bundle's native CLI (`harness_missing`), creates the profile
 directories (`profile_unsafe` if they are links or not 0700), and opens a
 terminal: `omarchy-launch-floating-terminal-with-presentation` from `PATH` or
 `~/.local/share/omarchy/bin`, else `xdg-terminal-exec` (`terminal_unavailable`
-otherwise). It prints `launched` and does not wait. The terminal runs
+otherwise). The terminal argv is run as `systemd-run --user --scope --collect
+--quiet -- <terminal argv>` when `systemd-run` is on `PATH` (its own transient
+user scope, outside the agent service's cgroup, so it survives the service's
+idle exit or stop), else as `setsid -f <terminal argv>`. The Omarchy wrapper
+itself execs `setsid uwsm-app -- xdg-terminal-exec …`, which reaches an app
+scope only through uwsm's app daemon, and `xdg-terminal-exec` alone never
+leaves the caller's cgroup, so the scope is always added. `--dry-run` prints
+the final argv. It prints `launched` and does not wait. The terminal runs
 `agent-login --in-terminal`, which requires a TTY and execs, outside any
 sandbox, `codex -c forced_login_method="chatgpt" login` or `claude --settings
 <subscription-settings.json> auth login --claudeai`, with `HOME`, `XDG_*_HOME`

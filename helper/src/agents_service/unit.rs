@@ -34,7 +34,16 @@ pub fn exec_argv(
     owner: &str,
 ) -> Result<Vec<String>, &'static str> {
     let identity = persona.identity.as_deref().ok_or("unit_failed")?;
+    // The attestation must be this owner's for this agent: the launcher
+    // refuses a tag that does not name `--owner`.
+    let attested = persona.auth_tag.as_deref().is_some_and(|tag| {
+        nostr::PublicKey::from_hex(identity)
+            .ok()
+            .and_then(|agent| buzz_sdk::nip_oa::verify_auth_tag(tag, &agent).ok())
+            .is_some_and(|key| key.to_hex() == owner)
+    });
     if !persona.valid()
+        || !attested
         || !store::canonical_key(owner)
         || owner == identity
         || crate::config::canonical_relay(relay).as_deref() != Ok(relay)
@@ -64,6 +73,10 @@ pub fn exec_argv(
         identity.into(),
         "--respond-to".into(),
         persona.respond_to.clone(),
+        // The owner's NIP-OA attestation, which the launcher hands to
+        // `buzz-acp` as `BUZZ_AUTH_TAG` through its memfd options.
+        "--auth-tag".into(),
+        text(&paths.auth_tag_file(&persona.id))?,
     ]);
     if !persona.instructions.is_empty() {
         argv.extend([

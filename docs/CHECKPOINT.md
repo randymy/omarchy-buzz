@@ -1919,3 +1919,16 @@ stored key, relay acceptance of the published events, harness scripts. Open:
 the launcher has no argument for the attestation (written to
 `<agent dir>/auth-tag.json`), `agent-login` must detach from the service's
 cgroup, and dropped rooms and deleted agents are not removed from the relay.
+
+## Agent manager integration fixes — September 30, 2026
+
+Branch `agent-integration` (from `5f33d47`); not installed or run against systemd,
+Secret Service, a relay or a vendor CLI. `room-agent --auth-tag` checks the
+owner attestation like `--instructions` and hands it to `buzz-acp` as
+`BUZZ_AUTH_TAG` through the memfd options; `ExecStart` always passes it for an
+enrolled agent. `agent-login` detaches the terminal with `systemd-run --user
+--scope` (else `setsid -f`) and gets only session variables from the service.
+Dropped rooms are left with the owner's kind 9001 and `delete_agent` leaves all
+rooms first. Evidence is synthetic (helper tests, smoke, Python tests with a
+real bubblewrap memfd run, every preview mode). Not verified: `buzz-acp` with
+the tag, a real detached login, relay acceptance of 9001.

@@ -9,6 +9,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
@@ -369,6 +370,57 @@ class AgentLogin(unittest.TestCase):
             profile.chmod(0o755)
             result = run("agent-login", *args, env=env)
             self.assertEqual(json.loads(result.stderr), {"error": "profile_unsafe"})
+
+    def test_terminal_is_detached_into_its_own_scope(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            bundle = self.fake_bundle(root, "codex")
+            tools = root / "tools"
+            tools.mkdir()
+            home = root / "home"
+            home.mkdir()
+            profile = root / "state/codex"
+            env = {"HOME": str(home), "PATH": str(tools)}
+            args = ("codex", "--dry-run", "--bundle", str(bundle), "--profile", str(profile))
+            for name in ("xdg-terminal-exec", "setsid", "systemd-run"):
+                (tools / name).write_text("#!/bin/sh\nexit 97\n")
+                (tools / name).chmod(0o755)
+            inner = ["/usr/bin/python3", str(SCRIPTS.resolve() / "agent-login"), "--in-terminal", "codex",
+                     "--bundle", str(bundle), "--profile", str(profile)]
+            terminal = [str(tools / "xdg-terminal-exec"), "--title=Buzz agent sign-in", "-e", *inner]
+            result = run("agent-login", *args, env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout),
+                             [str(tools / "systemd-run"), "--user", "--scope", "--collect", "--quiet", "--",
+                              *terminal])
+            (tools / "systemd-run").unlink()
+            self.assertEqual(json.loads(run("agent-login", *args, env=env).stdout),
+                             [str(tools / "setsid"), "-f", *terminal])
+            floating = tools / login_tool.FLOATING
+            floating.write_text("#!/bin/sh\n")
+            floating.chmod(0o755)
+            self.assertEqual(json.loads(run("agent-login", *args, env=env).stdout),
+                             [str(tools / "setsid"), "-f", str(floating), shlex.join(inner)])
+            # A real launch runs the detach argv and does not wait for the terminal.
+            recorder = tools / "systemd-run"
+            record = root / "argv.json"
+            recorder.write_text("#!/usr/bin/python3\nimport json, sys\nopen(%r, 'w').write(json.dumps(sys.argv[1:]))\n"
+                                % str(record))
+            recorder.chmod(0o755)
+            launch = [a for a in args if a != "--dry-run"]
+            result = run("agent-login", *launch, env=env)
+            self.assertEqual((result.returncode, result.stdout), (0, "launched\n"), result.stderr)
+            for _ in range(200):
+                if record.exists() and record.read_text():
+                    break
+                time.sleep(0.05)
+            self.assertEqual(json.loads(record.read_text()),
+                             ["--user", "--scope", "--collect", "--quiet", "--", str(floating), shlex.join(inner)])
+            # Refusal on an unknown harness is unchanged and launches nothing.
+            record.unlink()
+            result = run("agent-login", "goose", env=env)
+            self.assertEqual((result.returncode, json.loads(result.stderr)), (2, {"error": "harness_unknown"}))
+            self.assertFalse(record.exists())
 
 
 if __name__ == "__main__":
