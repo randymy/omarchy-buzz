@@ -30,11 +30,11 @@ conflict explicitly rather than assuming an old milestone is current.
 | Component | State at handoff |
 | --- | --- |
 | Repository | `https://github.com/randymy/omarchy-buzz`, branch `main`; local `~/Projects/omarchy-buzz` |
-| Latest implementation commit | `01ba573` — release 0.0.10 (reply counts, quiet helper room check, existing direct messages, Desktop-mode nested threads up to 200 replies, last-room memory); pushed to `origin/main` |
+| Latest implementation commit | `bb989e5` — release 0.0.11 (adds older room history on request and starting a direct message, on top of 0.0.10's reply counts, quiet helper room check, existing direct messages, Desktop-mode nested threads up to 200 replies and last-room memory); pushed to `origin/main` |
 | Installed UI | `~/.config/omarchy/plugins/community.buzz`, verified at the same implementation commit |
-| Plugin/helper version | `0.0.10` (installed September 29, 2026, late evening); `0.0.9` was installed briefly the same evening |
-| Helper binary | `~/.local/bin/omarchy-buzz`; SHA256 `3527f4868fc7cb9b06a49d3c2b6f0d2ad1a0064043ddd2b92e172c88a8fe1fc5` |
-| Helper build | [ARM64 run 36661719034](https://github.com/randymy/omarchy-buzz/actions/runs/36661719034), source `01ba573de4f43ee9944e8a238e92f066eed0e29b`; the 0.0.10 binary was first run read-only in a private runtime directory against the real relay (authenticated, 4 stream rooms, no rejection) before installation; rollback backup `~/.local/share/omarchy-buzz/backups/20260930T025630.824489Z` |
+| Plugin/helper version | `0.0.11` (installed September 29, 2026, 22:31 CDT); `0.0.9` and `0.0.10` were installed briefly the same evening |
+| Helper binary | `~/.local/bin/omarchy-buzz`; SHA256 `1e401197eaf79bcf357be87bbd015513a28b223622fadcfed22d7c553b80e741` |
+| Helper build | [ARM64 run 36664349836](https://github.com/randymy/omarchy-buzz/actions/runs/36664349836), source `bb989e5425996aebe2a5270c3d581a365e790ec5`; each new binary is first run read-only in a private short-path runtime directory against the real relay (`scratchpad/check010.py` pattern: authenticated, 4 stream rooms, no rejection) before installation; rollback backup `~/.local/share/omarchy-buzz/backups/20260930T033106.323752Z` |
 | Buzz dependency | Official upstream `781d39510cf23cfe224e8f521ae06a23377e06de`; do not silently advance the pin |
 | Agent runtime | Stock Buzz ACP, Codex ACP `2.0.0`, native Codex `0.158.0`; [stock build 36639519388](https://github.com/randymy/omarchy-buzz/actions/runs/36639519388) |
 | Host | ARM64 Omarchy VM; installed Omarchy package reported `4.0.3-1`; see DESIGN for source/package distinction |
@@ -58,10 +58,15 @@ tests use 1-second timeouts and flake when the load average exceeds ~5.
 
 - Native bar integration, normal Buzz window and optional overlay; hosted or
   custom relay configuration. The operator currently uses a Mac mini relay.
-- Joined-room snapshots, recent messages, sending, thread reading/replying in a
-  right-hand thread panel with its own composer, room-scoped display names,
-  exact-key mention completion and optional alerts. People on Buzz Desktop and
-  this plugin share the same rooms on one relay; direct messages are not built.
+- Joined-room snapshots, recent messages plus older pages on request (100 held),
+  sending, threads in a right-hand panel with their own composer (oldest-first,
+  nested, up to 200 replies, Desktop's mode), relay reply counts on room
+  messages, existing direct messages named by participant, starting a direct
+  message with a verified member, room-scoped display names, exact-key mention
+  completion, last-room memory and optional alerts. Everything since 0.0.8 is
+  verified with synthetic fixtures and read-only relay checks only: no thread
+  reply, older page, DM or new-DM open has been exercised against the real relay
+  by the maintainer.
 - Type `@codex`, then choose the actual roster suggestion with Tab/Enter/click.
   Text resembling a mention alone is not proof of an attached routing key.
 - The dedicated **Codex (isolated)** agent uses the existing separate ChatGPT
