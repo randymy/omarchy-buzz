@@ -97,8 +97,8 @@ relay URL. See [upstream hosted-community guidance](https://block.github.io/buzz
 
 The setup panel opens upstream hosted setup in your browser; automatic
 account/identity handoff is not implemented. It never collects hosted account
-passwords or bearer tokens in QML. With a helper that reports `setup_assist`
-(0.0.14 and later) and is not connected, the panel takes the relay address
+passwords or bearer tokens in QML. With a helper built from this branch or
+later (it reports `setup_assist`) that is not connected, the panel takes the relay address
 (**Use this relay**) and then offers **Create a new identity on this device**:
 the helper generates the key, checks it is not the relay's signing key, keeps
 the secret in its Secret Service namespace and shows only the public key, which
