@@ -10,6 +10,7 @@
 pub mod enroll;
 pub mod harness;
 pub mod keys;
+pub mod models;
 pub mod request;
 pub mod rooms;
 pub mod service;

@@ -4,6 +4,12 @@
 Harnesses: `codex` (default, unchanged) and `claude-code`. Use a systemd user
 unit for resource bounds and whole-cgroup cleanup. This is not a QML command
 interface. Enrollment is a separate owner operation.
+
+`--probe-model <model> --harness <h> --profile <dir> --bundle <dir>` (first) instead
+runs one minimal non-interactive vendor turn with that model in the same
+sandbox view (harness profile, read-only bundle), with a throwaway private
+workspace and without a relay, agent key or `buzz-acp`, then exits with the
+vendor CLI's status (124 after its deadline).
 """
 import argparse
 import importlib.machinery
@@ -13,9 +19,11 @@ import os
 from pathlib import Path
 import re
 import resource
+import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 import uuid
 
 sys.dont_write_bytecode = True
@@ -44,6 +52,18 @@ AUTH_TAG_LIMIT = 4 * 1024
 LOWER_HEX = re.compile('[0-9a-f]+')
 CONDITION = re.compile('(kind=|created_at<|created_at>)(0|[1-9][0-9]*)')
 CONDITION_MAX = {'kind=': 65535, 'created_at<': 4294967295, 'created_at>': 4294967295}
+# Model probe. Per-harness model names, as the agent service checks them
+# (helper/src/agents_service/models.rs); the store's MODEL rule applies too.
+CLAUDE_ALIASES = ('opus', 'sonnet', 'haiku', 'fable')
+HARNESS_MODEL = {'claude-code': re.compile('claude-[a-z0-9-]+'),
+                 'codex': re.compile('gpt-[a-z0-9.-]+|o[0-9][a-z0-9-]*|codex-[a-z0-9.-]+')}
+PROBE_PROMPT = 'Reply with exactly OK'
+# The bundle's vendor CLI wrappers (bin/claude <- room-claude, bin/codex <- room-codex).
+PROBE_CLI = {'claude-code': 'claude', 'codex': 'codex'}
+# Below the agent service's 90 s bound, so the sandbox is stopped and the
+# throwaway workspace removed before the service gives up on this process.
+PROBE_DEADLINE = 80
+PROBE_TIMEOUT_EXIT = 124
 
 
 def parser():
@@ -65,6 +85,95 @@ def parser():
     p.add_argument('--auth-tag', type=Path,
                    help='0600 owner NIP-OA attestation file written by the agent service')
     return p
+
+
+def probe_parser():
+    p = argparse.ArgumentParser(prog='room-agent', description='Probe one model in the agent sandbox.')
+    p.add_argument('--probe-model', required=True, help='the model to try, as the persona stores it')
+    p.add_argument('--harness', choices=sandbox.HARNESSES, required=True)
+    for name in ('profile', 'bundle'):
+        p.add_argument('--' + name, type=Path, required=True)
+    return p
+
+
+def check_probe_model(p, a):
+    """The model must name a model of the harness. Exits via p.error."""
+    model = a.probe_model
+    if not MODEL.fullmatch(model):
+        p.error('model_invalid')
+    alias = a.harness == 'claude-code' and model in CLAUDE_ALIASES
+    if not alias and not HARNESS_MODEL[a.harness].fullmatch(model):
+        p.error('model_not_for_harness')
+
+
+def probe_command(harness, model):
+    """The exact vendor argv of the probe turn (fixed; only the model varies).
+
+    Claude Code (`/opt/agent/bin/claude` adds the forced-subscription flag
+    settings, as for the agent): print mode, one turn, plain text, no tools and
+    no saved session. `--max-turns` is a hidden option of CLI 2.1.280 ("only
+    works with --print"); the others are in `claude --help`. Codex
+    (`/opt/agent/bin/codex` adds `-c forced_login_method=chatgpt`): `codex
+    exec`, read-only sandbox, outside a Git repository, no saved session, no
+    colour (`codex exec --help`, 0.158.0).
+    """
+    if harness == 'claude-code':
+        return ['/opt/agent/bin/' + PROBE_CLI[harness], '-p', PROBE_PROMPT, '--model', model, '--max-turns', '1',
+                '--output-format', 'text', '--tools', '', '--no-session-persistence']
+    return ['/opt/agent/bin/' + PROBE_CLI[harness], 'exec', '--model', model, '--sandbox', 'read-only',
+            '--skip-git-repo-check', '--ephemeral', '--color', 'never', PROBE_PROMPT]
+
+
+def probe_argv(a, workspace):
+    """Validate paths and return the probe's bwrap argv: the agent's view with
+    `workspace` (a fresh private directory) at /workspace, no relay, no fd 3."""
+    sandbox.validate(a.profile, workspace, a.bundle)
+    check_bundle_harness(a.bundle, a.harness)
+    cli = a.bundle / 'bin' / PROBE_CLI[a.harness]
+    if cli.is_symlink() or not cli.is_file():
+        raise sandbox.Refused('bundle_harness_mismatch')
+    if a.harness == 'claude-code':
+        check_claude_settings(a.profile)
+    return sandbox.build_command(a.profile, workspace, a.bundle, probe_command(a.harness, a.probe_model),
+                                 harness=a.harness)
+
+
+def probe_workspace_parent():
+    """The user's runtime directory when it is private, else the system default."""
+    runtime = os.environ.get('XDG_RUNTIME_DIR', '')
+    if runtime.startswith('/'):
+        try:
+            return str(sandbox.private_directory(Path(runtime)))
+        except sandbox.Refused:
+            pass
+    return None
+
+
+def run_probe(argv, deadline=PROBE_DEADLINE):
+    """Run the sandbox with stderr on stdout; stop it at the deadline."""
+    child = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+    try:
+        return child.wait(timeout=deadline)
+    except subprocess.TimeoutExpired:
+        child.kill()
+        child.wait()
+        print('room-agent: probe_timeout', flush=True)
+        return PROBE_TIMEOUT_EXIT
+
+
+def probe_main(argv):
+    p = probe_parser()
+    a = p.parse_args(argv)
+    check_probe_model(p, a)
+    workspace = Path(tempfile.mkdtemp(prefix='omarchy-buzz-probe-', dir=probe_workspace_parent()))
+    try:
+        try:
+            command = probe_argv(a, workspace)
+        except sandbox.Refused as exc:
+            p.error(str(exc))
+        return run_probe(command)
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
 
 
 def check_arguments(p, a):
@@ -205,6 +314,10 @@ def launch_argv(a):
 
 
 def main():
+    # The service always passes it first; a unit's ExecStart never does.
+    if sys.argv[1:2] == ['--probe-model']:
+        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+        sys.exit(probe_main(sys.argv[1:]))
     p = parser()
     a = p.parse_args()
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))

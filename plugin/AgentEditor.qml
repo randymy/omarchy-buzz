@@ -86,7 +86,7 @@ ColumnLayout {
     fields.startAtLogin = draftStartAtLogin
     return fields
   }
-  readonly property string problem: agents ? agents.fieldsProblem(saveFields, creating) : ""
+  readonly property string problem: agents ? agents.fieldsProblem(saveFields, creating, entry) : ""
   readonly property bool serviceChanged: Object.keys(changedFields).length > 0
   readonly property real shownBrightness: AnsiArt.isAnsi(draftArt) ? draftBrightness : 0
   readonly property bool artChanged: !creating && !!entry && (AnsiArt.storedArt(draftArt) !== agents.avatarArtFor(agentId)
@@ -97,6 +97,20 @@ ColumnLayout {
     && (creating || serviceChanged ? agents.canMutate && problem === "" : artChanged)
   readonly property var harnessState: agents ? agents.harness(entry ? entry.harness : draftHarness) : null
   readonly property bool bundleStale: !!harnessState && harnessState.bundle === "stale"
+  // The probe tests the saved model; an unsaved model or harness is saved first.
+  readonly property bool modelUnsaved: changedFields.hasOwnProperty("model") || changedFields.hasOwnProperty("harness")
+  readonly property var probe: agents && entry ? agents.probeFor(agentId) : null
+  readonly property bool canProbe: !!agents && !!entry && !modelUnsaved && agents.canMutate && agents.canProbeModel(agentId)
+  readonly property string probeCaption: {
+    if (!entry) return ""
+    if (probe && probe.model === entry.model && probe.state === "running") return "Testing " + probe.model + "…"
+    if (probe && probe.model === entry.model && probe.detail) return probe.model + ": " + probe.detail
+    if (modelUnsaved) return "Save to test this model."
+    if (entry.model === "") return "Set a model to test it; the harness default is not tested."
+    if (!harnessState || harnessState.bundle !== "ready") return "The harness bundle must be ready to test a model."
+    if (harnessState.signedIn !== true) return "Sign in to " + agents.harnessLabel(harnessState.id) + " to test a model."
+    return ""
+  }
 
   function save() {
     if (!canSave) return false
@@ -354,6 +368,62 @@ ColumnLayout {
         maximumLength: 64
         placeholderText: "Harness default"
         onTextChanged: if (text !== root.draftModel) root.draftModel = text
+      }
+      // The harness CLI's own aliases; a click fills the field.
+      Flow {
+        Layout.fillWidth: true
+        spacing: Style.space(4)
+        visible: chips.count > 0
+        Repeater {
+          id: chips
+          model: root.agents && root.agents.modelAliases.hasOwnProperty(root.draftHarness) ? root.agents.modelAliases[root.draftHarness] : []
+          delegate: Ui.Button {
+            required property string modelData
+            objectName: "buzzAgentModelChip"
+            readonly property string alias: modelData
+            text: modelData
+            tooltipText: "Use the latest " + modelData + " model"
+            fontSize: Style.font.caption
+            focusable: true
+            selected: root.draftModel === modelData
+            onClicked: root.draftModel = modelData
+          }
+        }
+      }
+      Caption {
+        objectName: "buzzAgentModelHint"
+        text: root.draftHarness === "codex" ? "Codex model ids look like gpt-5.5, o3 or codex-…; empty uses the harness default."
+          : "An alias uses the latest model of that tier; a full id looks like claude-opus-4-5."
+        wrapMode: Text.WordWrap
+        elide: Text.ElideNone
+      }
+      RowLayout {
+        visible: !!root.entry
+        spacing: Style.space(6)
+        Ui.Button {
+          objectName: "buzzProbeModel"
+          text: "Test model"
+          tooltipText: "Runs one short prompt with the saved model in this agent's sandbox"
+          fontSize: Style.font.caption
+          focusable: true
+          enabled: root.canProbe
+          opacity: enabled ? 1 : 0.5
+          onClicked: root.agents.probeModel(root.agentId)
+        }
+        Caption {
+          objectName: "buzzProbeModelNote"
+          text: "A real model turn: it may count toward the harness's usage."
+          wrapMode: Text.WordWrap
+          elide: Text.ElideNone
+        }
+      }
+      Caption {
+        objectName: "buzzProbeModelResult"
+        visible: text !== ""
+        opacity: 0.8
+        text: root.probeCaption
+        wrapMode: Text.WordWrap
+        elide: Text.ElideNone
       }
       Caption {
         text: "Rooms · " + root.draftRooms.length + " of up to 8"

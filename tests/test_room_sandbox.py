@@ -449,5 +449,157 @@ class RoomAgentAuthTag(unittest.TestCase):
             self.assertEqual(json.loads(result.stdout), [TAG_JSON, "2" * 64, False])
 
 
+# A synthetic vendor CLI: reports what it was given and where it runs. It never
+# contacts a provider.
+SYNTHETIC_CLI = """#!/bin/sh
+printf 'argv:' ; for word in "$@"; do printf '[%s]' "$word"; done; printf '\\n'
+echo "cwd:$(pwd)"
+echo "workspace:$(ls -A /workspace | tr '\\n' ' ')"
+touch /workspace/scratch
+env | sort | sed 's/^/env:/'
+echo "stderr line" >&2
+echo OK
+"""
+
+
+def probe_tree(root, harness):
+    profile, workspace, bundle, _ = make_tree(root, harness)
+    cli = bundle / "bin" / room_agent.PROBE_CLI[harness]
+    cli.write_text(SYNTHETIC_CLI)
+    cli.chmod(0o755)
+    return profile, workspace, bundle
+
+
+def probe_args(profile, bundle, harness, model):
+    parser = room_agent.probe_parser()
+    args = parser.parse_args(["--probe-model", model, "--harness", harness,
+                              "--profile", str(profile), "--bundle", str(bundle)])
+    room_agent.check_probe_model(parser, args)
+    return args
+
+
+PROBE_GOLDEN = {
+    "claude-code": ["/opt/agent/bin/claude", "-p", "Reply with exactly OK", "--model", "sonnet",
+                    "--max-turns", "1", "--output-format", "text", "--tools", "", "--no-session-persistence"],
+    "codex": ["/opt/agent/bin/codex", "exec", "--model", "gpt-5.5", "--sandbox", "read-only",
+              "--skip-git-repo-check", "--ephemeral", "--color", "never", "Reply with exactly OK"],
+}
+PROBE_MODEL = {"claude-code": "sonnet", "codex": "gpt-5.5"}
+
+
+class RoomAgentProbe(unittest.TestCase):
+    def test_probe_argv_golden_is_the_agent_view_without_relay_or_key(self):
+        for harness in ("claude-code", "codex"):
+            with self.subTest(harness=harness), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                profile, workspace, bundle = probe_tree(root, harness)
+                throwaway = root / "throwaway"
+                throwaway.mkdir(mode=0o700)
+                args = probe_args(profile, bundle, harness, PROBE_MODEL[harness])
+                argv = room_agent.probe_argv(args, throwaway)
+                self.assertEqual(argv[argv.index("--") + 1:], PROBE_GOLDEN[harness])
+                self.assertEqual(argv, module.build_command(profile, throwaway, bundle, PROBE_GOLDEN[harness],
+                                                            harness=harness))
+                # The agent's own launch, for the same harness: identical except the
+                # workspace, the relay, the key descriptor and the command.
+                launch = room_agent.launch_argv(agent_args(root, harness=harness))
+                env = {argv[i + 1]: argv[i + 2] for i, v in enumerate(argv) if v == "--setenv"}
+                launch_env = {launch[i + 1]: launch[i + 2] for i, v in enumerate(launch) if v == "--setenv"}
+                self.assertEqual(env, {k: v for k, v in launch_env.items() if k != "BUZZ_RELAY_URL"})
+                self.assertNotIn("BUZZ_RELAY_URL", env)
+                self.assertNotIn("--args", argv)
+                self.assertNotIn("ANTHROPIC_MODEL", env)
+                self.assertEqual(argv[argv.index(str(throwaway)) - 1:argv.index(str(throwaway)) + 2],
+                                 ["--bind", str(throwaway), "/workspace"])
+                self.assertNotIn(str(workspace), argv)
+                strip = lambda words: [w for w in words[:words.index("--chdir")]
+                                       if w not in (str(throwaway), str(workspace), "3", "--args")]
+                without_env = lambda words: [w for i, w in enumerate(words)
+                                             if "--setenv" not in words[max(0, i - 2):i + 1]]
+                self.assertEqual(without_env(strip(argv)), without_env(strip(launch)))
+                # Same read-only mounts: runtime, bundle and public /etc files.
+                ro = lambda words: [tuple(words[i + 1:i + 3]) for i, v in enumerate(words) if v == "--ro-bind"]
+                self.assertEqual(ro(argv), ro(launch))
+                self.assertIn((str(bundle), "/opt/agent"), ro(argv))
+
+    def test_probe_runs_in_the_sandbox_without_key_or_relay_and_cleans_up(self):
+        for harness in ("claude-code", "codex"):
+            with self.subTest(harness=harness), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                profile, workspace, bundle = probe_tree(root, harness)
+                runtime = root / "runtime"
+                runtime.mkdir(mode=0o700)
+                # No session bus and no secret-tool on PATH: a key lookup could not succeed.
+                result = subprocess.run(
+                    [sys.executable, str(AGENT), "--probe-model", PROBE_MODEL[harness], "--harness", harness,
+                     "--profile", str(profile), "--bundle", str(bundle)],
+                    capture_output=True, text=True, timeout=30,
+                    env={"PATH": "/usr/bin", "HOME": str(root), "XDG_RUNTIME_DIR": str(runtime),
+                         "DBUS_SESSION_BUS_ADDRESS": "unix:path=/nonexistent",
+                         "OPENAI_API_KEY": "synthetic", "ANTHROPIC_API_KEY": "synthetic"})
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                lines = result.stdout.splitlines()
+                expected = "argv:" + "".join("[%s]" % w for w in PROBE_GOLDEN[harness][1:])
+                self.assertIn(expected, lines)
+                self.assertIn("cwd:/workspace", lines)
+                # A fresh, empty workspace, removed afterwards; never the agent's own.
+                self.assertIn("workspace:", lines)
+                self.assertEqual(list(runtime.iterdir()), [])
+                self.assertEqual(list(workspace.iterdir()), [])
+                # Standard error is merged for the service to classify.
+                self.assertIn("stderr line", lines)
+                self.assertEqual(result.stderr, "")
+                env = dict(line[4:].split("=", 1) for line in lines if line.startswith("env:"))
+                for name in ("BUZZ_RELAY_URL", "BUZZ_PRIVATE_KEY", "BUZZ_AUTH_TAG", "ANTHROPIC_MODEL",
+                             "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "DBUS_SESSION_BUS_ADDRESS"):
+                    self.assertNotIn(name, env)
+                self.assertEqual(env["HOME"], "/profile/home")
+                if harness == "claude-code":
+                    self.assertEqual(env["CLAUDE_CONFIG_DIR"], "/profile/provider")
+
+    def test_bad_models_and_extra_arguments_are_refused_before_anything_runs(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            profile, _, bundle = probe_tree(root, "codex")
+            base = ["--profile", str(profile), "--bundle", str(bundle)]
+            cases = [
+                ("model_invalid", ["--probe-model", "gpt 5; rm -rf /", "--harness", "codex"]),
+                ("model_invalid", ["--probe-model", "../../bin/sh", "--harness", "codex"]),
+                ("model_invalid", ["--probe-model", "", "--harness", "codex"]),
+                ("model_not_for_harness", ["--probe-model", "opus", "--harness", "codex"]),
+                ("model_not_for_harness", ["--probe-model", "gpt-5.5", "--harness", "claude-code"]),
+                ("model_not_for_harness", ["--probe-model", "GPT-5", "--harness", "codex"]),
+                ("unrecognized arguments", ["--probe-model", "gpt-5.5", "--harness", "codex",
+                                            "--relay", "wss://relay.example"]),
+                ("unrecognized arguments", ["--probe-model", "gpt-5.5", "--harness", "codex",
+                                            "--identity", IDENTITY]),
+                ("bundle_harness_mismatch", ["--probe-model", "sonnet", "--harness", "claude-code"]),
+            ]
+            for category, extra in cases:
+                result = subprocess.run([sys.executable, str(AGENT), *extra, *base],
+                                        capture_output=True, text=True, timeout=10,
+                                        env={"PATH": "/usr/bin", "HOME": str(root)})
+                self.assertEqual(result.returncode, 2, (category, result.stderr))
+                self.assertIn(category, result.stderr)
+                self.assertEqual(result.stdout, "")
+            # Aliases are Claude Code's only.
+            parser = room_agent.probe_parser()
+            for model in ("opus", "sonnet", "haiku", "fable", "claude-opus-4-5"):
+                room_agent.check_probe_model(parser, parser.parse_args(
+                    ["--probe-model", model, "--harness", "claude-code", *base]))
+
+    def test_probe_deadline_stops_the_sandbox(self):
+        import contextlib
+        import io
+        import time
+        output = io.StringIO()
+        started = time.monotonic()
+        with contextlib.redirect_stdout(output):
+            code = room_agent.run_probe(["/usr/bin/sleep", "30"], deadline=0.5)
+        self.assertEqual(code, room_agent.PROBE_TIMEOUT_EXIT)
+        self.assertLess(time.monotonic() - started, 10)
+        self.assertIn("probe_timeout", output.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

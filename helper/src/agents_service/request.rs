@@ -96,7 +96,7 @@ pub fn parse(bytes: &[u8]) -> Result<Request, Option<String>> {
         "create_agent" => &["fields"],
         "update_agent" => &["agentId", "fields"],
         "delete_agent" => &["agentId", "forget"],
-        "enroll_agent" | "start_agent" | "stop_agent" => &["agentId"],
+        "enroll_agent" | "start_agent" | "stop_agent" | "probe_model" => &["agentId"],
         "set_start_at_login" => &["agentId", "enabled"],
         "sign_in" | "refresh_bundle" => &["harness"],
         _ => return Err(refuse()),
@@ -168,6 +168,7 @@ mod tests {
             serde_json::json!({"type":"set_start_at_login","agentId":AGENT,"enabled":true}),
             serde_json::json!({"type":"sign_in","harness":"codex"}),
             serde_json::json!({"type":"refresh_bundle","harness":"claude-code"}),
+            serde_json::json!({"type":"probe_model","agentId":AGENT}),
         ] {
             let r = parse(&frame(extra.clone())).unwrap_or_else(|_| panic!("{extra}"));
             assert_eq!(r.id, ID);
@@ -216,6 +217,11 @@ mod tests {
             serde_json::json!({"type":"refresh_bundle","harness":"codex","scripts":"/tmp"}),
             serde_json::json!({"type":"refresh_bundle","agentId":AGENT}),
             serde_json::json!({"type":"stop_agent","agentId":AGENT,"forget":null}),
+            // A probe names only the agent: never a model, harness or command.
+            serde_json::json!({"type":"probe_model"}),
+            serde_json::json!({"type":"probe_model","agentId":AGENT,"model":"opus"}),
+            serde_json::json!({"type":"probe_model","agentId":AGENT,"harness":"codex"}),
+            serde_json::json!({"type":"probe_model","agentId":AGENT,"command":"claude -p"}),
         ] {
             assert_eq!(
                 parse(&frame(extra.clone())).unwrap_err(),

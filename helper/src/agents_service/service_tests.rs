@@ -1019,7 +1019,14 @@ async fn status_frames_have_exactly_the_contract_shape_and_fit_the_bound() {
         ]
     );
     assert_eq!(frame["capabilities"], serde_json::json!(["agent_manager"]));
-    assert_eq!(keys(&frame["status"]), ["agents", "harnesses", "pending"]);
+    assert_eq!(
+        keys(&frame["status"]),
+        ["agents", "harnesses", "modelProbe", "pending"]
+    );
+    assert_eq!(
+        frame["status"]["modelProbe"],
+        serde_json::json!({"agentId":null,"state":"idle","model":"","detail":null})
+    );
     assert_eq!(
         keys(&frame["status"]["harnesses"][0]),
         ["bundle", "id", "signedIn"]
@@ -1048,7 +1055,7 @@ async fn status_frames_have_exactly_the_contract_shape_and_fit_the_bound() {
     );
     assert_eq!(
         keys(&frame["status"]["pending"]),
-        ["category", "requestId", "state", "type"]
+        ["category", "detail", "requestId", "state", "type"]
     );
     assert_eq!(
         keys(&error_frame(&id, "1-2", "agent_busy")),
@@ -1165,4 +1172,248 @@ async fn sign_in_fast_window_ends_after_two_minutes() {
         .service
         .harness_inspection_due(at + Duration::from_secs(59)));
     assert!(f.service.harness_inspection_due(at + HARNESS_INSPECTION));
+}
+
+fn detail(f: &Fixture) -> Option<&'static str> {
+    f.service.snapshot().pending.unwrap().detail
+}
+
+#[tokio::test]
+async fn models_must_belong_to_the_harness_when_saved() {
+    let f = fixture(UNREACHABLE);
+    // A Claude alias on Codex, a Codex id on Claude Code, a slash: refused with the detail.
+    for (harness, model) in [
+        ("codex", "opus"),
+        ("claude-code", "gpt-5.5"),
+        ("claude-code", "anthropic/claude"),
+    ] {
+        assert_eq!(
+            f.create(serde_json::json!({"harness":harness,"model":model}))
+                .await,
+            Err("agent_invalid"),
+            "{harness} {model}"
+        );
+        let expected = store::valid_model(model).then_some(models::NOT_FOR_HARNESS);
+        // A model outside the store's character rule fails the field rules first.
+        assert_eq!(detail(&f), expected, "{model}");
+    }
+    assert!(f.service.snapshot().agents.is_empty());
+    // Other refusals carry no detail.
+    assert_eq!(
+        f.create(serde_json::json!({"name":""})).await,
+        Err("agent_invalid")
+    );
+    assert_eq!(detail(&f), None);
+    let claude = f
+        .create(serde_json::json!({"harness":"claude-code","model":"opus"}))
+        .await
+        .unwrap();
+    let codex = f
+        .create(serde_json::json!({"model":"gpt-5.5"}))
+        .await
+        .unwrap();
+    assert_eq!(detail(&f), None);
+    // Switching the harness alone must bring a matching model.
+    for fields in [
+        serde_json::json!({"harness":"codex"}),
+        serde_json::json!({"model":"o3"}),
+        serde_json::json!({"model":"claude opus"}),
+    ] {
+        assert_eq!(
+            f.run(serde_json::json!({"type":"update_agent","agentId":claude,"fields":fields}))
+                .await,
+            Err("agent_invalid"),
+            "{fields}"
+        );
+    }
+    assert_eq!(f.stored(&claude).model, "opus");
+    f.run(serde_json::json!({"type":"update_agent","agentId":claude,
+        "fields":{"harness":"codex","model":"o3"}}))
+        .await
+        .unwrap();
+    assert_eq!(
+        (
+            f.stored(&claude).harness.as_str(),
+            f.stored(&claude).model.as_str()
+        ),
+        ("codex", "o3")
+    );
+    // Empty is the harness default for either harness.
+    f.run(serde_json::json!({"type":"update_agent","agentId":codex,
+        "fields":{"harness":"claude-code","model":""}}))
+        .await
+        .unwrap();
+    // A model saved before the patterns existed stays until it is edited.
+    f.service
+        .store
+        .lock()
+        .unwrap()
+        .get_mut(&codex)
+        .unwrap()
+        .model = "GPT-5".into();
+    f.run(serde_json::json!({"type":"update_agent","agentId":codex,"fields":{"name":"Kept"}}))
+        .await
+        .unwrap();
+    assert_eq!(f.stored(&codex).model, "GPT-5");
+    assert_eq!(
+        f.run(
+            serde_json::json!({"type":"update_agent","agentId":codex,"fields":{"model":"GPT-6"}})
+        )
+        .await,
+        Err("agent_invalid")
+    );
+    assert_eq!(detail(&f), Some(models::NOT_FOR_HARNESS));
+}
+
+fn probe(f: &Fixture) -> ModelProbe {
+    f.service.snapshot().model_probe
+}
+
+#[tokio::test]
+async fn probe_model_is_gated_and_runs_the_launcher_in_probe_mode() {
+    let f = fixture(UNREACHABLE);
+    let id = f
+        .create(serde_json::json!({"harness":"claude-code"}))
+        .await
+        .unwrap();
+    let request = serde_json::json!({"type":"probe_model","agentId":id});
+    // The harness default is not probed: there is no model to check.
+    assert_eq!(f.run(request.clone()).await, Err("agent_invalid"));
+    f.run(serde_json::json!({"type":"update_agent","agentId":id,"fields":{"model":"sonnet"}}))
+        .await
+        .unwrap();
+    // No reviewed scripts: nothing is inspected as ready, nothing runs.
+    assert_eq!(f.run(request.clone()).await, Err("harness_missing"));
+    f.ready("claude-code");
+    bundle_state(&f, "claude-code", "stale", 3);
+    assert_eq!(f.run(request.clone()).await, Err("bundle_stale"));
+    bundle_state(&f, "claude-code", "ready", 0);
+    login_status(&f, "claude-code", "signed-out");
+    assert_eq!(f.run(request.clone()).await, Err("not_signed_in"));
+    assert!(f.spawner.probes.lock().unwrap().is_empty());
+    assert_eq!(probe(&f), ModelProbe::default());
+    assert_eq!(
+        f.run(serde_json::json!({"type":"probe_model","agentId":"00000000-0000-4000-8000-00000000aaaa"}))
+            .await,
+        Err("agent_invalid")
+    );
+
+    login_status(&f, "claude-code", "signed-in");
+    *f.spawner.probe_answer.lock().unwrap() = Some((Some(0), "OK\n".into()));
+    f.run(request.clone()).await.unwrap();
+    assert_eq!(
+        probe(&f),
+        ModelProbe {
+            agent_id: Some(id.clone()),
+            state: "ok",
+            model: "sonnet".into(),
+            detail: Some(models::OK)
+        }
+    );
+    let (argv, env) = f.spawner.probes.lock().unwrap()[0].clone();
+    let data = &f.home.paths.data;
+    let state = &f.home.paths.state;
+    let path = |p: std::path::PathBuf| p.to_str().unwrap().to_string();
+    assert_eq!(
+        argv,
+        [
+            "/usr/bin/systemd-run",
+            "--user",
+            "--scope",
+            "--collect",
+            "--quiet",
+            "-p",
+            "MemoryMax=2G",
+            "-p",
+            "TasksMax=128",
+            "--",
+            &path(data.join("omarchy-buzz/agent-claude-code/launcher/room-agent")),
+            "--probe-model",
+            "sonnet",
+            "--harness",
+            "claude-code",
+            "--profile",
+            &path(state.join("omarchy-buzz-agent-preview/claude-code")),
+            "--bundle",
+            &path(data.join("omarchy-buzz/agent-claude-code")),
+        ]
+    );
+    // No relay, owner, identity, workspace or key reaches the probe.
+    for word in [
+        "--relay",
+        "--identity",
+        "--owner",
+        "--workspace",
+        "--auth-tag",
+    ] {
+        assert!(!argv.iter().any(|a| a == word), "{word}");
+    }
+    assert!(env
+        .iter()
+        .all(|(k, _)| models::PROBE_ENV.contains(&k.to_str().unwrap())));
+
+    // Each synthetic outcome through the spawner fake.
+    for (answer, state, sentence) in [
+        (
+            (Some(1), "There's an issue with the selected model (sonnet). It may not exist or you may not have access to it.".to_string()),
+            "unavailable",
+            models::UNAVAILABLE,
+        ),
+        (
+            (Some(1), "Not logged in · Please run /login".into()),
+            "not_signed_in",
+            models::SIGNED_OUT,
+        ),
+        ((None, String::new()), "failed", models::TIMED_OUT),
+        ((Some(1), "\u{0}\u{7}garbage".into()), "failed", models::FAILED),
+        ((Some(0), "I cannot".into()), "failed", models::UNEXPECTED),
+    ] {
+        *f.spawner.probe_answer.lock().unwrap() = Some(answer);
+        // The request is done: the outcome is the probe state, not a category.
+        f.run(request.clone()).await.unwrap();
+        assert_eq!(
+            (probe(&f).state, probe(&f).detail),
+            (state, Some(sentence))
+        );
+        let status = serde_json::to_string(&f.service.snapshot()).unwrap();
+        assert!(!status.contains("garbage") && !status.contains("/login"));
+    }
+
+    // While it runs: `running`, and no other mutation is accepted.
+    let (release, hold) = std::sync::mpsc::channel();
+    *f.spawner.probe_hold.lock().unwrap() = Some(hold);
+    *f.spawner.probe_answer.lock().unwrap() = Some((Some(0), "OK".into()));
+    let r = f.request(request.clone());
+    let slot = f.service.begin().unwrap();
+    let service = f.service.clone();
+    let task = tokio::spawn(async move { service.execute(&r, slot).await });
+    let until = Instant::now() + Duration::from_secs(10);
+    while probe(&f).state != "running" {
+        assert!(Instant::now() < until, "probe never reported running");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(probe(&f).detail, None);
+    assert!(
+        f.service.begin().is_none(),
+        "a second mutation was admitted"
+    );
+    release.send(()).unwrap();
+    task.await.unwrap().unwrap();
+    assert_eq!(probe(&f).state, "ok");
+
+    // Editing the model forgets the result; so does deleting the agent.
+    f.run(serde_json::json!({"type":"update_agent","agentId":id,"fields":{"model":"haiku"}}))
+        .await
+        .unwrap();
+    assert_eq!(probe(&f), ModelProbe::default());
+    f.run(request.clone()).await.unwrap();
+    assert_eq!(probe(&f).model, "haiku");
+    f.run(serde_json::json!({"type":"update_agent","agentId":id,"fields":{"name":"Renamed"}}))
+        .await
+        .unwrap();
+    assert_eq!(probe(&f).state, "ok", "an unrelated edit keeps the result");
+    f.run(serde_json::json!({"type":"delete_agent","agentId":id}))
+        .await
+        .unwrap();
+    assert_eq!(probe(&f), ModelProbe::default());
 }
