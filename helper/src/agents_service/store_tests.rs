@@ -124,6 +124,22 @@ fn attestation_must_verify_for_the_stored_identity() {
     p.identity = Some(agent.public_key().to_hex());
     p.auth_tag = Some(buzz_sdk::nip_oa::compute_auth_tag(&owner, &agent.public_key(), "").unwrap());
     assert!(p.valid());
+    // Acknowledged memberships may include dropped rooms still to be left,
+    // but stay unique canonical UUIDs and bounded.
+    let enrolled = p.clone();
+    p.member_rooms = vec![ROOM_A.into(), ROOM_B.into()];
+    assert!(p.valid());
+    p.member_rooms = vec![ROOM_B.into(), ROOM_B.into()];
+    assert!(!p.valid());
+    p.member_rooms = vec![ROOM_B.to_uppercase()];
+    assert!(!p.valid());
+    p.member_rooms = (0..=MAX_MEMBER_ROOMS)
+        .map(|n| format!("00000000-0000-4000-8000-{n:012}"))
+        .collect();
+    assert!(!p.valid());
+    p.member_rooms.pop();
+    assert!(p.valid());
+    let mut p = enrolled;
     p.identity = Some(nostr::Keys::generate().public_key().to_hex());
     assert!(!p.valid());
 }

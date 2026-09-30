@@ -171,6 +171,7 @@ async fn rejection_stops_publication_with_a_fixed_category() {
         report,
         Report {
             member_rooms: vec![],
+            removed_rooms: vec![],
             published_at: None,
             error: Some("enroll_failed")
         }
@@ -276,4 +277,149 @@ async fn an_unanswered_event_is_unknown_after_the_ok_deadline() {
         .filter(|s| s.event.kind.as_u16() == 9000)
         .count();
     assert_eq!(adds, 1);
+}
+
+fn removals(seen: &[crate::agents_service::test_support::Seen]) -> Vec<Vec<Vec<String>>> {
+    seen.iter()
+        .filter(|s| s.event.kind.as_u16() == 9001)
+        .map(|s| tags(&s.event))
+        .collect()
+}
+
+#[tokio::test]
+async fn dropped_rooms_are_left_with_exact_remove_member_events() {
+    let _network_fixture = crate::NETWORK_TEST_LOCK.lock().await;
+    let relay = relay(|_| Answer::Accept, false).await;
+    let (owner, agent) = (Keys::generate(), Keys::generate());
+    let mut p = enrolled(&owner, &agent);
+    // ROOM_A stays, ROOM_B was dropped after its membership was acknowledged.
+    p.rooms = vec![ROOM_A.into()];
+    p.member_rooms = vec![ROOM_A.into(), ROOM_B.into()];
+    let report = publish_all(&relay.url, &owner, &agent, &p).await;
+    assert_eq!(report.error, None);
+    assert!(report.member_rooms.is_empty(), "nothing is added again");
+    assert_eq!(report.removed_rooms, vec![ROOM_B.to_string()]);
+    let seen = relay.seen.lock().unwrap().clone();
+    let kinds: Vec<(usize, u16)> = seen
+        .iter()
+        .map(|s| (s.connection, s.event.kind.as_u16()))
+        .collect();
+    assert_eq!(kinds, [(0, 30175), (0, 30177), (0, 9001), (1, 0)]);
+    let remove = &seen[2];
+    assert_eq!(remove.author, owner.public_key());
+    assert_eq!(remove.event.pubkey, owner.public_key());
+    assert_eq!(remove.event.content, "");
+    assert_eq!(
+        tags(&remove.event),
+        [["h", ROOM_B], ["p", agent.public_key().to_hex().as_str()]]
+    );
+    assert!(!remove.auth_tags.iter().any(|t| t[0] == "auth"));
+    assert_eq!(remove.event.created_at, seen[0].event.created_at);
+}
+
+#[tokio::test]
+async fn a_rejected_or_unanswered_removal_is_not_recorded() {
+    let _network_fixture = crate::NETWORK_TEST_LOCK.lock().await;
+    let (owner, agent) = (Keys::generate(), Keys::generate());
+    let mut p = enrolled(&owner, &agent);
+    p.rooms = vec![ROOM_A.into()];
+    p.member_rooms = vec![ROOM_A.into(), ROOM_B.into()];
+    let rejecting = relay(
+        |kind| {
+            if kind == 9001 {
+                Answer::Reject
+            } else {
+                Answer::Accept
+            }
+        },
+        false,
+    )
+    .await;
+    let report = publish_all(&rejecting.url, &owner, &agent, &p).await;
+    assert_eq!(report.error, Some("enroll_failed"));
+    assert!(report.removed_rooms.is_empty());
+    let kinds: Vec<u16> = rejecting
+        .seen
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|s| s.event.kind.as_u16())
+        .collect();
+    assert_eq!(kinds, [30175, 30177, 9001], "the profile waits for a retry");
+
+    let closing = relay(
+        |kind| {
+            if kind == 9001 {
+                Answer::Close
+            } else {
+                Answer::Accept
+            }
+        },
+        false,
+    )
+    .await;
+    let report = publish_all(&closing.url, &owner, &agent, &p).await;
+    assert_eq!(report.error, Some("relay_unavailable"));
+    assert!(report.removed_rooms.is_empty());
+}
+
+#[tokio::test]
+async fn leaving_all_rooms_publishes_only_removals() {
+    let _network_fixture = crate::NETWORK_TEST_LOCK.lock().await;
+    let (owner, agent) = (Keys::generate(), Keys::generate());
+    let agent_hex = agent.public_key().to_hex();
+    let rooms = vec![ROOM_A.to_string(), ROOM_B.to_string()];
+    let at = Timestamp::from(1_800_000_000);
+    let accepting = relay(|_| Answer::Accept, false).await;
+    let report = leave_rooms(&accepting.url, &owner, &agent.public_key(), &rooms, at).await;
+    assert_eq!(
+        report,
+        Report {
+            removed_rooms: rooms.clone(),
+            ..Report::default()
+        }
+    );
+    let seen = accepting.seen.lock().unwrap().clone();
+    assert_eq!(
+        removals(&seen),
+        [
+            [["h", ROOM_A], ["p", agent_hex.as_str()]],
+            [["h", ROOM_B], ["p", agent_hex.as_str()]]
+        ]
+    );
+    assert_eq!(seen.len(), 2, "no other kind is published");
+    for s in &seen {
+        assert_eq!((s.connection, s.author), (0, owner.public_key()));
+        assert_eq!(s.event.created_at, at);
+    }
+    // Nothing to leave: no connection at all.
+    let idle = relay(|_| Answer::Accept, false).await;
+    assert_eq!(
+        leave_rooms(&idle.url, &owner, &agent.public_key(), &[], at).await,
+        Report::default()
+    );
+    assert!(idle.seen.lock().unwrap().is_empty());
+    // A rejection stops at that room.
+    let rejecting = relay(|_| Answer::Reject, false).await;
+    let report = leave_rooms(&rejecting.url, &owner, &agent.public_key(), &rooms, at).await;
+    assert_eq!(report.error, Some("enroll_failed"));
+    assert!(report.removed_rooms.is_empty());
+    assert_eq!(rejecting.seen.lock().unwrap().len(), 1);
+    // Refused AUTH and an unreachable relay.
+    let refused = relay(|_| Answer::Accept, true).await;
+    let report = leave_rooms(&refused.url, &owner, &agent.public_key(), &rooms, at).await;
+    assert_eq!(report.error, Some("enroll_failed"));
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("ws://{}/", listener.local_addr().unwrap());
+    drop(listener);
+    let report = leave_rooms(&url, &owner, &agent.public_key(), &rooms, at).await;
+    assert_eq!(report.error, Some("relay_unavailable"));
+    // An unanswered removal is unknown after the OK deadline, never resent.
+    let silent = relay(|_| Answer::Silent, false).await;
+    let started = Instant::now();
+    let report = leave_rooms(&silent.url, &owner, &agent.public_key(), &rooms, at).await;
+    assert!(started.elapsed() >= OK_TIMEOUT - Duration::from_millis(100));
+    assert_eq!(report.error, Some("relay_unavailable"));
+    assert!(report.removed_rooms.is_empty());
+    assert_eq!(silent.seen.lock().unwrap().len(), 1);
 }

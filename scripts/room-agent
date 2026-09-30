@@ -36,6 +36,14 @@ RESPOND_TO = {'owner-only': 'owner-only', 'mentions': 'anyone'}
 # Claude settings keys that could route around the subscription login.
 CLAUDE_SETTINGS_REFUSED = ('apiKeyHelper', 'env', 'awsAuthRefresh', 'awsCredentialExport',
                            'gcpAuthRefresh', 'modelOverrides')
+# The owner's NIP-OA attestation, `["auth", <owner hex>, <conditions>, <sig hex>]`
+# (crates/buzz-sdk/src/nip_oa.rs, compute_auth_tag/parse_auth_tag). buzz-acp
+# reads it from BUZZ_AUTH_TAG (crates/buzz-acp/src/lib.rs resolve_agent_owner
+# and relay AUTH; run_task.rs REST client) and verifies the signature itself.
+AUTH_TAG_LIMIT = 4 * 1024
+LOWER_HEX = re.compile('[0-9a-f]+')
+CONDITION = re.compile('(kind=|created_at<|created_at>)(0|[1-9][0-9]*)')
+CONDITION_MAX = {'kind=': 65535, 'created_at<': 4294967295, 'created_at>': 4294967295}
 
 
 def parser():
@@ -51,6 +59,8 @@ def parser():
     p.add_argument('--instructions', type=Path,
                    help='0600 persona instructions file written by the agent service')
     p.add_argument('--model', help='harness model ID; empty or absent keeps the harness default')
+    p.add_argument('--auth-tag', type=Path,
+                   help='0600 owner NIP-OA attestation file written by the agent service')
     return p
 
 
@@ -104,6 +114,47 @@ def check_claude_settings(profile):
         raise sandbox.Refused('provider_settings_review_required')
 
 
+def valid_conditions(conditions):
+    """NIP-OA conditions as buzz-sdk's validate_conditions accepts them."""
+    if conditions == '':
+        return True
+    for clause in conditions.split('&'):
+        match = CONDITION.fullmatch(clause)
+        if not match or int(match.group(2)) > CONDITION_MAX[match.group(1)]:
+            return False
+    return True
+
+
+def auth_tag_value(a):
+    """The validated attestation as the canonical JSON buzz-sdk emits, or None.
+
+    The file passes the same checks as --instructions (4 KiB limit) and must
+    name --owner. The value only ever travels through the memfd options.
+    """
+    if a.auth_tag is None:
+        return None
+    data = sandbox.service_file(a.auth_tag, a.profile, a.workspace, a.bundle, 'auth_tag', AUTH_TAG_LIMIT)
+    try:
+        value = json.loads(data.decode('utf-8'))
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise sandbox.Refused('auth_tag_file_invalid') from exc
+    if (not isinstance(value, list) or len(value) != 4 or not all(isinstance(v, str) for v in value) or
+            value[0] != 'auth' or len(value[1]) != 64 or not LOWER_HEX.fullmatch(value[1]) or
+            not valid_conditions(value[2]) or len(value[3]) != 128 or not LOWER_HEX.fullmatch(value[3])):
+        raise sandbox.Refused('auth_tag_file_invalid')
+    if value[1] != a.owner:
+        raise sandbox.Refused('auth_tag_owner_mismatch')
+    return json.dumps(value, separators=(',', ':')).encode('ascii')
+
+
+def identity_options(key, auth_tag):
+    """The bwrap --args options (NUL-separated) written to the memfd on fd 3."""
+    options = b'--setenv\0BUZZ_PRIVATE_KEY\0' + key + b'\0'
+    if auth_tag is not None:
+        options += b'--setenv\0BUZZ_AUTH_TAG\0' + auth_tag + b'\0'
+    return options
+
+
 def agent_command(a):
     """The exact buzz-acp argv run inside the sandbox."""
     command = ['/opt/agent/bin/room-agent-entry', '--agent-command', AGENT_COMMANDS[a.harness],
@@ -121,7 +172,8 @@ def agent_command(a):
 
 
 def launch_argv(a):
-    """Validate paths and return the bwrap argv; fd 3 carries the identity options."""
+    """Validate paths and return the bwrap argv; fd 3 carries the identity options
+    (BUZZ_PRIVATE_KEY and, with --auth-tag, BUZZ_AUTH_TAG)."""
     sandbox.validate(a.profile, a.workspace, a.bundle)
     sandbox.relay_url(a.relay)
     check_bundle_harness(a.bundle, a.harness)
@@ -148,6 +200,7 @@ def main():
     check_arguments(p, a)
     try:
         argv = launch_argv(a)
+        auth_tag = auth_tag_value(a)
     except sandbox.Refused as exc:
         p.error(str(exc))
     result = subprocess.run(['/usr/bin/secret-tool', 'lookup', 'service', 'omarchy-buzz.room-agent.v1',
@@ -156,7 +209,7 @@ def main():
     if result.returncode or not re.fullmatch(rb'[0-9a-f]{64}', key):
         p.error('agent_identity_unavailable')
     fd = os.memfd_create('buzz-agent-identity', 0)
-    os.write(fd, b"--setenv\0BUZZ_PRIVATE_KEY\0" + key + b"\0")
+    os.write(fd, identity_options(key, auth_tag))
     os.lseek(fd, 0, os.SEEK_SET)
     if fd != 3:
         os.dup2(fd, 3); os.close(fd)
