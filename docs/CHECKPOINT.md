@@ -1932,3 +1932,26 @@ Dropped rooms are left with the owner's kind 9001 and `delete_agent` leaves all
 rooms first. Evidence is synthetic (helper tests, smoke, Python tests with a
 real bubblewrap memfd run, every preview mode). Not verified: `buzz-acp` with
 the tag, a real detached login, relay acceptance of 9001.
+
+## ASCII avatars — September 30, 2026
+
+Branch `ascii-avatars` (from `7e780f9`); QML and tests only, not installed. Every
+person and agent gets a deterministic block-character identicon
+(`plugin/Identicon.js`, `plugin/BuzzAvatar.qml`): a mirrored 5×3 glyph folded
+from the public key's own hex digits (a persona id for agents not yet enrolled)
+and a hue from the key, with lightness solved per hue to one relative luminance
+so it reads on light and dark themes. Other values get a fixed neutral glyph in
+the foreground color. Avatars appear on lead message rows and thread roots
+(grouped rows keep the slot so text aligns), in the DM list (first participant
+other than this identity), the Agents list and the agent editor header.
+
+Agents may carry pasted ASCII art (at most 6 lines × 12 columns, control and
+direction characters removed) edited in the agent editor with a live preview.
+It is stored only on this machine in `$XDG_STATE_HOME/omarchy-buzz/avatars.json`
+(atomic, keyed by persona id, damaged or out-of-contract files ignored) and never
+sent to the agent service, whose persona record has no avatar field yet; it moves
+there when the service gains one. No third-party art is bundled.
+
+Evidence is synthetic: `scripts/preview --identicon`, the avatar checks added to
+`--thread-replies` and `--agents`, and every other preview mode. Not verified:
+rendering in the installed shell under real themes and fonts.
