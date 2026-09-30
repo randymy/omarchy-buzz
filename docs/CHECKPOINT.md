@@ -1667,3 +1667,17 @@ Still helper-bound: reply counts on room messages (every message offers
 eight replies, older history, live updates, and direct messages. DMs remain
 excluded by DESIGN.md; the catalog admits only `stream` rooms. The selected
 room is not remembered across shell restarts.
+
+## Helper re-checks joined rooms without blanking — September 29 night
+
+Branch `quiet-room-check`, not installed. The helper's periodic joined-room check
+now keeps the published catalog, history, roster, open thread and activity, and
+their polls, while discovery runs; sends and thread reads stay available. Only
+the first check after authentication publishes `catalog=loading`. On success a
+room that left the joined set is handled like an access denial: its history,
+roster and thread become `*_access_denied`, its jobs stop and a pending send in
+it becomes delivery-unknown; other rooms keep everything. Tradeoff: a removed
+room used to vanish the moment a check started (as part of the blank); it now
+stays listed until the check completes, at most the 15-second discovery timeout.
+A failed or timed-out check still clears every dependent view. The panel's own
+retention logic is unchanged.
