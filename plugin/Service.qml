@@ -490,6 +490,201 @@ Item {
   }
   onIdentityChanged: publicKeyCopied = false
 
+  // Joining a community (`community_join`, onboarding step two). The helper
+  // parses the pasted invite, shows the relay's terms, claims membership and
+  // lists open rooms; the panel only sends the text and the user's choices.
+  property bool communityJoinSupported: false
+  property var joinSetup: ({state: "idle", inviteCode: null, joinPolicy: null, claim: null, category: null})
+  property string inviteState: "idle"
+  property string inviteCategory: ""
+  property string inviteRequestId: ""
+  property string inviteRequestKind: ""
+  property string inviteInstance: ""
+  property string openRoomsState: "unavailable"
+  property var openRooms: []
+  property string openRoomsCategory: ""
+  property var roomAction: ({state: "idle", action: null, requestId: null, roomId: null, category: null})
+  property string roomActionRequestId: ""
+  property string roomActionLocal: "idle"
+  property string roomActionCategory: ""
+  // A room joined here is selected once the helper lists it.
+  property string joinTarget: ""
+  readonly property bool joinAvailable: communityJoinSupported && !sampleMode && !sessionFailed && instanceId !== ""
+    && relay !== "" && identity !== "" && (connection === "authenticated" || connection === "disconnected")
+  readonly property bool openRoomsAvailable: joinAvailable && connection === "authenticated"
+    && ["partial", "ready"].indexOf(catalogState) !== -1
+  readonly property bool inviteBusy: inviteState === "sending" || ["checking", "claiming"].indexOf(joinSetup.state) !== -1
+  readonly property bool canRedeemInvite: joinAvailable && bridge.running && !inviteBusy
+  readonly property bool policyShown: joinSetup.state === "policy" && joinSetup.joinPolicy !== null
+  readonly property bool canAcceptInvite: joinAvailable && bridge.running && !inviteBusy && joinSetup.state === "policy"
+  readonly property bool roomActionBusy: roomActionLocal === "sending" || roomAction.state === "sending"
+  readonly property bool canLeaveRoom: openRoomsAvailable && !roomActionBusy && selectedRoom !== null && selectedRoom.kind === "stream"
+  readonly property var inviteMessages: ({
+    invite_invalid: "That invite was not recognized. Paste the whole link or code.",
+    invite_relay_mismatch: "That invite is for a different relay. Change the relay first if you meant to join it.",
+    invite_rejected: "The relay refused this invite. It may have expired or been used up.",
+    invite_rate_limited: "Too many attempts. Wait a minute, then try again.",
+    policy_required: "The community's terms changed. Redeem the invite again to read them.",
+    relay_unavailable: "Could not reach the relay. Check the connection and try again.",
+    setup_busy: "The helper is busy. Try again in a moment.",
+    setup_not_allowed: "Choose a relay and an identity first."
+  })
+  readonly property string inviteLabel: {
+    if (inviteState === "failed") return inviteMessages[inviteCategory] || "The invite was not redeemed. Try again."
+    if (inviteState === "sending" && inviteRequestKind === "claim" || joinSetup.state === "checking") return "Checking invite…"
+    if (inviteState === "sending" || joinSetup.state === "claiming") return "Joining…"
+    if (joinSetup.state === "policy") return joinSetup.joinPolicy ? "Read the terms below, then accept to join." : ""
+    if (joinSetup.state === "failed") return inviteMessages[joinSetup.category] || "The invite was not redeemed. Try again."
+    if (joinSetup.state === "joined") {
+      var claim = joinSetup.claim
+      return claim.status === "already_member" ? "This identity is already a member of " + claim.host + "."
+        : "Joined " + claim.host + " as " + claim.role + ". Open rooms are listed once connected."
+    }
+    return ""
+  }
+  readonly property string roomActionLabel: {
+    if (roomActionLocal === "failed") return ({room_not_open: "That room is no longer open to join. Refresh the list.",
+      leave_rejected: "Only a joined room can be left here.", relay_unavailable: "Not connected. Try again when connected.",
+      setup_busy: "Another join or leave is in progress."})[roomActionCategory] || "Nothing was sent. Try again."
+    if (roomActionRequestId === "" || roomAction.requestId !== roomActionRequestId) return roomActionLocal === "sending" ? "Sending…" : ""
+    if (roomAction.state === "sending") return roomAction.action === "join" ? "Joining room…" : "Leaving room…"
+    if (roomAction.state === "acknowledged") return roomAction.action === "join" ? "Joined. The room appears once the relay lists it." : "Left the room."
+    if (roomAction.state === "rejected") return roomAction.action === "join" ? "The relay refused to add you to this room."
+      : "The relay refused. If you are this room's only owner, make someone else an owner first."
+    if (roomAction.state === "unknown") return "No answer from the relay. Refresh to see whether it worked."
+    return ""
+  }
+  readonly property string openRoomsLabel: openRoomsState === "loading" ? "Loading open rooms…"
+    : openRoomsState === "snapshot" ? (openRooms.length ? "" : "No open rooms to join right now.")
+    : openRoomsCategory ? "Open rooms could not be loaded. Try again." : ""
+  function inviteCodeValue(value) { return typeof value === "string" && /^[A-Za-z0-9._-]{1,1024}$/.test(value) }
+  function redeemInvite(text) {
+    if (!canRedeemInvite) return false
+    var value = typeof text === "string" ? text.trim() : ""
+    if (!value || value.length > 4096 || value.indexOf("\u0000") !== -1) { inviteState = "failed"; inviteCategory = "invite_invalid"; return false }
+    beginInvite("claim")
+    bridge.write(JSON.stringify({version: 1, id: inviteRequestId, type: "claim_invite", input: value}) + "\n")
+    return true
+  }
+  function acceptInvite() {
+    if (!canAcceptInvite || !inviteCodeValue(joinSetup.inviteCode)) return false
+    beginInvite("accept")
+    bridge.write(JSON.stringify({version: 1, id: inviteRequestId, type: "accept_invite", code: joinSetup.inviteCode,
+      policyVersion: joinSetup.joinPolicy ? joinSetup.joinPolicy.version : null}) + "\n")
+    return true
+  }
+  function beginInvite(kind) {
+    inviteRequestId = correlationUuid()
+    inviteRequestKind = kind
+    inviteInstance = instanceId
+    inviteState = "sending"
+    inviteCategory = ""
+    inviteTimeout.restart()
+  }
+  function loseInvite() {
+    inviteTimeout.stop()
+    if (inviteState === "sending") { inviteState = "idle"; inviteCategory = "" }
+    inviteRequestId = ""
+  }
+  function refreshOpenRooms() {
+    if (!openRoomsAvailable) return false
+    send("open_rooms")
+    return true
+  }
+  function roomActionRequest(kind, roomId) {
+    if (!openRoomsAvailable || !bridge.running || roomActionBusy || !uuidValue(roomId)) return false
+    roomActionRequestId = correlationUuid()
+    roomActionLocal = "sending"
+    roomActionCategory = ""
+    if (kind === "join_room") joinTarget = roomId
+    bridge.write(JSON.stringify({version: 1, id: roomActionRequestId, type: kind, roomId: roomId}) + "\n")
+    roomActionTimeout.restart()
+    return true
+  }
+  function joinRoom(roomId) {
+    if (!openRooms.some(function(room) { return room.id === roomId })) return false
+    return roomActionRequest("join_room", roomId)
+  }
+  function leaveRoom(roomId) {
+    if (!canLeaveRoom || selectedRoomId !== roomId) return false
+    return roomActionRequest("leave_room", roomId)
+  }
+  function loseRoomAction() {
+    roomActionTimeout.stop()
+    if (roomActionLocal === "sending") roomActionLocal = "idle"
+    joinTarget = ""
+  }
+  function validatedJoinSetup(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)
+        || Object.keys(value).sort().join(",") !== "category,claim,inviteCode,joinPolicy,state"
+        || ["idle", "checking", "policy", "claiming", "joined", "failed"].indexOf(value.state) === -1) return null
+    var policy = value.joinPolicy
+    if (value.state === "policy") {
+      if (!inviteCodeValue(value.inviteCode) || value.claim !== null || value.category !== null) return null
+      if (policy !== null && (typeof policy !== "object" || Array.isArray(policy)
+          || Object.keys(policy).sort().join(",") !== "ageRequired,text,truncated,version"
+          || !boundedString(policy.text, 65536) || utf8Size(policy.text) > 65536
+          || /[\u0000-\u0008\u000b-\u001f\u007f]/.test(policy.text)
+          || typeof policy.version !== "string" || policy.version.length < 1 || policy.version.length > 128
+          || /[\u0000-\u001f\u007f]/.test(policy.version)
+          || typeof policy.ageRequired !== "boolean" || typeof policy.truncated !== "boolean")) return null
+      return {state: "policy", inviteCode: value.inviteCode, claim: null, category: null,
+        joinPolicy: policy === null ? null : {text: policy.text, version: policy.version, ageRequired: policy.ageRequired, truncated: policy.truncated}}
+    }
+    if (value.inviteCode !== null || policy !== null) return null
+    var claim = value.claim
+    if (value.state === "joined") {
+      if (value.category !== null || !claim || typeof claim !== "object" || Array.isArray(claim)
+          || Object.keys(claim).sort().join(",") !== "communityId,host,role,status"
+          || ["joined", "already_member"].indexOf(claim.status) === -1 || !uuidValue(claim.communityId)
+          || typeof claim.host !== "string" || !/^[A-Za-z0-9.:\[\]-]{1,255}$/.test(claim.host)
+          || typeof claim.role !== "string" || !/^[a-z_]{1,32}$/.test(claim.role)) return null
+      return {state: "joined", inviteCode: null, joinPolicy: null, category: null,
+        claim: {status: claim.status, communityId: claim.communityId, host: claim.host, role: claim.role}}
+    }
+    if (claim !== null) return null
+    if (value.state === "failed" ? Object.keys(inviteMessages).indexOf(value.category) === -1 : value.category !== null) return null
+    return {state: value.state, inviteCode: null, joinPolicy: null, claim: null, category: value.category}
+  }
+  function validatedOpenRooms(value, catalog) {
+    if (!value || typeof value !== "object" || Array.isArray(value)
+        || Object.keys(value).sort().join(",") !== "category,rooms,state"
+        || ["unavailable", "loading", "snapshot"].indexOf(value.state) === -1
+        || !Array.isArray(value.rooms) || value.rooms.length > 50
+        || (value.category !== null && value.category !== "relay_unavailable")
+        || (value.state !== "snapshot" && value.rooms.length !== 0)) return null
+    var clean = []
+    var ids = ({})
+    for (var i = 0; i < value.rooms.length; i++) {
+      var room = value.rooms[i]
+      if (!room || typeof room !== "object" || Array.isArray(room)
+          || Object.keys(room).sort().join(",") !== "description,id,kind,name"
+          || !uuidValue(room.id) || ids[room.id] || room.kind !== "stream"
+          || !boundedString(room.name, 128) || !room.name.trim() || !boundedString(room.description, 512)
+          || catalog.rooms.some(function(joined) { return joined.id === room.id })) return null
+      ids[room.id] = true
+      clean.push({id: room.id, name: room.name, description: room.description, kind: "stream"})
+    }
+    return {state: value.state, rooms: clean, category: value.category || ""}
+  }
+  function validatedRoomAction(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)
+        || Object.keys(value).sort().join(",") !== "action,category,requestId,roomId,state"
+        || ["idle", "sending", "acknowledged", "rejected", "unknown"].indexOf(value.state) === -1) return null
+    if (value.state === "idle")
+      return value.action === null && value.requestId === null && value.roomId === null && value.category === null ? value : null
+    if (["join", "leave"].indexOf(value.action) === -1 || !uuidValue(value.requestId) || !uuidValue(value.roomId)) return null
+    var expected = ({sending: null, acknowledged: null, rejected: value.action + "_rejected", unknown: "relay_unavailable"})[value.state]
+    if (value.category !== expected) return null
+    return {state: value.state, action: value.action, requestId: value.requestId, roomId: value.roomId, category: value.category}
+  }
+  function selectJoinedRoom() {
+    if (joinTarget === "" || !streamRooms.some(function(room) { return room.id === root.joinTarget })) return
+    var target = joinTarget
+    joinTarget = ""
+    selectRoom(target)
+  }
+
   function chooseSetupProvider(provider) {
     // Presentation only: choosing a provider never writes config or sends IPC.
     if (provider === "hosted" || provider === "custom") setupProvider = provider
@@ -979,10 +1174,10 @@ Item {
     if (!sampleMode) selectedRoomId = ""
   }
   function validCapabilities(capabilities) {
-    return Array.isArray(capabilities) && capabilities.length >= 1 && capabilities.length <= 15
+    return Array.isArray(capabilities) && capabilities.length >= 1 && capabilities.length <= 16
       && capabilities.indexOf("connection_status") !== -1
       && capabilities.every(function(cap, index) {
-        return ["connection_status", "room_catalog", "room_history", "message_send", "room_recipients", "history_auto_refresh", "room_activity", "agent_profiles", "thread_replies", "thread_send", "thread_summaries", "dm_open", "older_history", "live_updates", "setup_assist"].indexOf(cap) !== -1 && capabilities.indexOf(cap) === index
+        return ["connection_status", "room_catalog", "room_history", "message_send", "room_recipients", "history_auto_refresh", "room_activity", "agent_profiles", "thread_replies", "thread_send", "thread_summaries", "dm_open", "older_history", "live_updates", "setup_assist", "community_join"].indexOf(cap) !== -1 && capabilities.indexOf(cap) === index
       })
   }
   // Streams carry no participants and are never hidden. A DM lists 2-9 distinct
@@ -1070,6 +1265,10 @@ Item {
   function beginSession() {
     loseSetup()
     setupAssistSupported = false
+    loseInvite()
+    loseRoomAction()
+    communityJoinSupported = false
+    clearJoin()
     losePendingDelivery()
     loseDmOpen()
     dmOpenSupported = false
@@ -1091,6 +1290,10 @@ Item {
   function fail(reason) {
     loseSetup()
     setupAssistSupported = false
+    loseInvite()
+    loseRoomAction()
+    communityJoinSupported = false
+    clearJoin()
     losePendingDelivery()
     loseDmOpen()
     dmOpenSupported = false
@@ -1109,6 +1312,13 @@ Item {
     category = reason
     bridge.running = false
   }
+  function clearJoin() {
+    joinSetup = {state: "idle", inviteCode: null, joinPolicy: null, claim: null, category: null}
+    openRooms = []
+    openRoomsState = "unavailable"
+    openRoomsCategory = ""
+    roomAction = {state: "idle", action: null, requestId: null, roomId: null, category: null}
+  }
   function boundedString(value, limit) { return typeof value === "string" && value.length <= limit }
   function acceptFrame(line) {
     if (sessionFailed) return false
@@ -1117,11 +1327,28 @@ Item {
     try { frame = JSON.parse(line) } catch (_) { fail("invalid_response"); return false }
     if (frame && frame.version === 1 && frame.type === "error" && ["request_busy", "send_busy", "send_scope_changed", "send_request_reused", "send_invalid", "send_unavailable", "send_access_denied", "send_ledger_unavailable", "delivery_unknown",
         "dm_open_busy", "dm_open_scope_changed", "dm_open_request_reused", "dm_open_invalid", "dm_open_unavailable", "dm_open_access_denied", "dm_open_unknown",
-        "setup_invalid_relay", "identity_exists", "identity_unavailable", "relay_unavailable", "setup_busy", "setup_not_allowed", "config_unavailable"].indexOf(frame.category) !== -1) {
+        "setup_invalid_relay", "identity_exists", "identity_unavailable", "relay_unavailable", "setup_busy", "setup_not_allowed", "config_unavailable",
+        "invite_invalid", "invite_relay_mismatch", "invite_rejected", "invite_rate_limited", "policy_required", "room_not_open", "join_rejected", "leave_rejected"].indexOf(frame.category) !== -1) {
       if (instanceId === "" || frame.instanceId !== instanceId) return false
       if (!boundedString(frame.id, 128) || !/^ui-[0-9]+$/.test(frame.id) && !uuidValue(frame.id)) { fail("invalid_response"); return false }
       if (frame.id === setupRequestId && setupState === "sending") {
         refuseSetup(frame.category === "request_busy" ? "setup_busy" : frame.category)
+        return true
+      }
+      if (frame.id === inviteRequestId && inviteState === "sending") {
+        // A refusal or a failed redemption; the status view carries the same category.
+        inviteTimeout.stop()
+        inviteState = "failed"
+        inviteCategory = frame.category === "request_busy" ? "setup_busy" : frame.category
+        inviteRequestId = ""
+        return true
+      }
+      if (frame.id === roomActionRequestId && roomActionLocal === "sending") {
+        // Refused before anything was signed.
+        roomActionTimeout.stop()
+        roomActionLocal = "failed"
+        roomActionCategory = frame.category === "request_busy" ? "setup_busy" : frame.category
+        joinTarget = ""
         return true
       }
       if (frame.id === dmOpenRequestId && dmOpenState === "sending") {
@@ -1222,6 +1449,11 @@ Item {
     var supportsDmOpen = frame.capabilities.indexOf("dm_open") !== -1
     var dmOpen = supportsDmOpen ? validatedDmOpen(state.dmOpen) : null
     if (supportsDmOpen && !dmOpen) { fail("invalid_response"); return false }
+    var supportsJoin = frame.capabilities.indexOf("community_join") !== -1
+    var join = supportsJoin ? validatedJoinSetup(state.setup) : null
+    var open = supportsJoin ? validatedOpenRooms(state.openRooms, catalog) : null
+    var action = supportsJoin ? validatedRoomAction(state.roomAction) : null
+    if (supportsJoin && (!join || !open || !action)) { fail("invalid_response"); return false }
     var supportsActivity = frame.capabilities.indexOf("room_activity") !== -1
     if (supportsActivity && (!Array.isArray(state.activity) || state.activity.length > 20 || state.activity.some(function(a, i) {
       return !RoomActivity.valid(a) || !uuidValue(a.roomId) || !catalog.rooms.some(function(r) { return r.id === a.roomId })
@@ -1355,6 +1587,27 @@ Item {
       setupRequestId = ""
     }
     if (createdIdentity !== "" && createdIdentity !== identity) createdIdentity = ""
+    communityJoinSupported = supportsJoin
+    if (!supportsJoin) { loseInvite(); loseRoomAction(); clearJoin() }
+    else {
+      if (!sameProjection(joinSetup, join)) joinSetup = join
+      if (!sameProjection(openRooms, open.rooms)) openRooms = open.rooms
+      openRoomsState = open.state
+      openRoomsCategory = open.category
+      if (!sameProjection(roomAction, action)) roomAction = action
+      if (frame.type === "status" && inviteState === "sending" && frame.id === inviteRequestId && frame.instanceId === inviteInstance) {
+        inviteTimeout.stop()
+        inviteState = "idle"
+        inviteRequestId = ""
+        // Nothing to read: the user already chose to redeem, so claim at once.
+        if (inviteRequestKind === "claim" && join.state === "policy" && join.joinPolicy === null) acceptInvite()
+      }
+      if (roomActionLocal === "sending" && action.requestId === roomActionRequestId && action.state !== "idle") {
+        roomActionTimeout.stop()
+        roomActionLocal = "idle"
+      }
+      if (action.requestId === roomActionRequestId && ["rejected", "unknown"].indexOf(action.state) !== -1) joinTarget = ""
+    }
     applyDelivery(delivery)
     applyDmOpen(dmOpen)
     handshake.stop()
@@ -1374,8 +1627,14 @@ Item {
     else if (resyncStage === "recipients" && recipients && recipients.state !== "loading" && recipients.roomId === selectedRoomId)
       advanceResync("thread")
     selectOpenedDm()
+    selectJoinedRoom()
+    // A connected identity with no rooms sees what it can join at once.
+    if (openRoomsAvailable && streamRooms.length === 0 && openRoomsState === "unavailable" && openRoomsCategory === ""
+        && !openRoomsRequested) { openRoomsRequested = true; refreshOpenRooms() }
+    if (connection !== "authenticated") openRoomsRequested = false
     return true
   }
+  property bool openRoomsRequested: false
   function send(kind, roomId, rootId) {
     if (!sessionFailed && bridge.running && instanceId !== "") {
       requestSequence++
@@ -1514,6 +1773,18 @@ Item {
     onTriggered: root.loseDmOpen()
   }
   Timer {
+    id: inviteTimeout
+    // Beyond the helper's own 60-second bound for the three invite requests.
+    interval: 70000
+    onTriggered: { if (root.inviteState === "sending") { root.inviteState = "failed"; root.inviteCategory = "setup_busy" }; root.inviteRequestId = "" }
+  }
+  Timer {
+    id: roomActionTimeout
+    // The helper answers at once; the relay's OK arrives in the status view.
+    interval: 30000
+    onTriggered: root.loseRoomAction()
+  }
+  Timer {
     id: setupTimeout
     // Beyond the helper's own 60-second bound. No answer is not a refusal:
     // the status line shows whether the change was saved.
@@ -1535,6 +1806,10 @@ Item {
     onExited: {
       root.loseSetup()
       root.setupAssistSupported = false
+      root.loseInvite()
+      root.loseRoomAction()
+      root.communityJoinSupported = false
+      root.clearJoin()
       root.losePendingDelivery()
       root.loseDmOpen()
       root.dmOpenSupported = false

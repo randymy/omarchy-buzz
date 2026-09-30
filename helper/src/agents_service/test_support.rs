@@ -76,6 +76,7 @@ pub fn persona(id: &str, workspace: &str) -> Persona {
         workspace: workspace.into(),
         identity: None,
         start_at_login: false,
+        answers_dms: false,
         auth_tag: None,
         published: false,
         member_rooms: Vec::new(),

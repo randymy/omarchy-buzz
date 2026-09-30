@@ -166,6 +166,27 @@ class RoomAgentLauncher(unittest.TestCase):
             self.assertNotIn("ANTHROPIC_MODEL", argv)
             self.assertNotIn("CLAUDE_CONFIG_DIR", argv)
 
+    def test_answers_dms_golden_omits_channels(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            profile, workspace, bundle, _ = make_tree(root)
+            parser = room_agent.parser()
+            args = parser.parse_args(["--profile", str(profile), "--workspace", str(workspace), "--bundle", str(bundle),
+                                      "--relay", "wss://relay.example", "--answers-dms", "--owner", OWNER,
+                                      "--identity", IDENTITY])
+            room_agent.check_arguments(parser, args)
+            expected = ['/opt/agent/bin/room-agent-entry', '--agent-command', 'codex-acp',
+                        '--agent-owner', OWNER, '--subscribe', 'mentions',
+                        '--respond-to', 'owner-only', '--permission-mode', 'default', '--agents', '1',
+                        '--heartbeat-interval', '0', '--max-turn-duration', '180', '--idle-timeout', '60']
+            self.assertEqual(room_agent.agent_command(args), expected)
+            argv = room_agent.launch_argv(args)
+            self.assertEqual(argv[argv.index("--") + 1:], expected)
+            # Rooms given anyway are validated but never become a channel filter.
+            with_rooms = agent_args(root, "--room", ROOM2, "--answers-dms")
+            self.assertEqual(room_agent.agent_command(with_rooms), expected)
+            self.assertNotIn("--channels", room_agent.launch_argv(with_rooms))
+
     def test_claude_code_golden(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -221,6 +242,10 @@ class RoomAgentLauncher(unittest.TestCase):
             rooms = [f"00000000-0000-4000-8000-00000000000{i}" for i in range(9)]
             cases = {
                 "room_count_invalid": sum((["--room", r] for r in rooms), []),
+                # Without --answers-dms a room is required.
+                "room_count_invalid ": [],
+                "room_count_invalid  ": ["--answers-dms", *sum((["--room", r] for r in rooms), [])],
+                "duplicate_room ": ["--answers-dms", "--room", ROOM, "--room", ROOM],
                 "duplicate_room": ["--room", ROOM, "--room", ROOM],
                 "canonical_room_required": ["--room", ROOM.upper()],
                 "model_invalid": ["--room", ROOM, "--model", "gpt 5; rm"],

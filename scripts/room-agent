@@ -52,8 +52,11 @@ def parser():
         p.add_argument('--' + name, type=Path, required=True)
     for name in ('relay', 'owner', 'identity'):
         p.add_argument('--' + name, required=True)
-    p.add_argument('--room', action='append', required=True,
-                   help='canonical channel UUID; repeat for up to 8 rooms')
+    p.add_argument('--room', action='append', default=[],
+                   help='canonical channel UUID; repeat for up to 8 rooms (optional with --answers-dms)')
+    p.add_argument('--answers-dms', action='store_true',
+                   help='no channel filter: listen in every channel the agent is a member of, '
+                        'including direct messages opened with it')
     p.add_argument('--harness', choices=sandbox.HARNESSES, default='codex')
     p.add_argument('--respond-to', choices=tuple(RESPOND_TO), default='owner-only')
     p.add_argument('--instructions', type=Path,
@@ -68,7 +71,9 @@ def check_arguments(p, a):
     """Validate everything that does not need the filesystem. Exits via p.error."""
     if any(not re.fullmatch('[0-9a-f]{64}', x) for x in (a.owner, a.identity)) or a.owner == a.identity:
         p.error('separate_agent_and_owner_required')
-    if not 1 <= len(a.room) <= MAX_ROOMS:
+    # With --answers-dms relay membership defines the scope; rooms given anyway
+    # are still checked but not passed on.
+    if not (0 if a.answers_dms else 1) <= len(a.room) <= MAX_ROOMS:
         p.error('room_count_invalid')
     for room in a.room:
         try:
@@ -157,8 +162,14 @@ def identity_options(key, auth_tag):
 
 def agent_command(a):
     """The exact buzz-acp argv run inside the sandbox."""
+    # Without --channels buzz-acp subscribes to every channel it is a member of
+    # and follows new memberships (crates/buzz-acp/src/config.rs,
+    # resolve_channel_filters and resolve_dynamic_channel_filter), so direct
+    # messages opened with the agent reach it. In a DM it answers only its
+    # owner whatever --respond-to says (lib.rs author_allowed).
+    channels = [] if a.answers_dms else ['--channels', ','.join(a.room)]
     command = ['/opt/agent/bin/room-agent-entry', '--agent-command', AGENT_COMMANDS[a.harness],
-               '--agent-owner', a.owner, '--channels', ','.join(a.room), '--subscribe', 'mentions',
+               '--agent-owner', a.owner, *channels, '--subscribe', 'mentions',
                '--respond-to', RESPOND_TO[a.respond_to], '--permission-mode', 'default', '--agents', '1',
                '--heartbeat-interval', '0', '--max-turn-duration', '180', '--idle-timeout', '60']
     if a.instructions is not None:

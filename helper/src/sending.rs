@@ -176,7 +176,8 @@ impl Sender {
                 None,
             );
         }
-        let event = match build_event(&intent, keys, None) {
+        let recipients = recipients(&intent, keys, status);
+        let event = match build_event(&intent, keys, &recipients, None) {
             Ok(event) => event,
             Err(_) => return (fail("send_invalid"), None),
         };
@@ -250,14 +251,37 @@ impl Sender {
         ))
     }
 }
+/// The keys a message addresses: the explicit mentions, then, in a direct
+/// message, every other participant. Desktop tags a DM's participants even
+/// without an `@mention` (`messageMentionPubkeys.ts`); agent harnesses
+/// subscribed to mentions (`buzz-acp --subscribe mentions`, a `#p` filter) and
+/// notification subscriptions rely on those tags. At most 20 + 8 keys.
+fn recipients(intent: &SendIntent, keys: &Keys, status: &Status) -> Vec<String> {
+    let own = keys.public_key().to_hex();
+    let mut all = intent.mentions.clone();
+    if let Some(room) = status
+        .catalog
+        .rooms
+        .iter()
+        .find(|r| r.id == intent.room && r.kind == "dm")
+    {
+        for key in &room.participants {
+            if *key != own && !all.contains(key) {
+                all.push(key.clone());
+            }
+        }
+    }
+    all
+}
 // Local correlation extension; not a Buzz command, authority or protocol nonce.
 fn build_event(
     intent: &SendIntent,
     keys: &Keys,
+    recipients: &[String],
     created_at: Option<nostr::Timestamp>,
 ) -> Result<Event, &'static str> {
     let room = uuid::Uuid::parse_str(&intent.room).map_err(|_| "send_invalid")?;
-    let mentions: Vec<&str> = intent.mentions.iter().map(String::as_str).collect();
+    let mentions: Vec<&str> = recipients.iter().map(String::as_str).collect();
     let thread = intent
         .root_id
         .as_deref()

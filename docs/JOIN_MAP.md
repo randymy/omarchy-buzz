@@ -68,3 +68,51 @@ Relay key rotation behaviour under the pin; whether the deployed relay exposes
 `/api/invites/*` and rate-limits as documented; NIP-98 `u` binding on claim;
 that a relay marking every channel open cannot trick the panel into joining
 without the user seeing "open, no approval".
+
+## Built on September 30 (branch `join-and-agent-dms`)
+
+Not merged, installed or run against a real relay; every reference above was
+re-read at the pinned revision before use. Corrections to this map: the
+relay's claim answer is snake_case `{status, community_id, host, role}`
+(Desktop maps it to camelCase); `POST /api/invites/accept-policy` is an
+exempt route that reads no NIP-98 header (`{code, policy_version,
+age_confirmed}` → `{receipt}`), so the helper sends none, like Desktop; the
+39000 visibility is carried by exactly one of `["public"]` (visibility open)
+or `["private"]` (`side_effects.rs:1208-1214`; `closed` is on every channel).
+A relay requiring membership refuses NIP-42 for a non-member
+(`handlers/auth.rs:272-297`, "restricted: not a relay member"), while the
+claim route is exempt, so invites are redeemed over HTTP while the helper is
+`disconnected`.
+
+- Helper (`helper/src/join.rs`, capability `community_join`): `claim_invite
+  {input}` parses the three forms exactly as `inviteHelpers.ts:26-77` (plus a
+  code charset `[A-Za-z0-9._-]{1,1024}`), refuses an invite naming another
+  relay (`invite_relay_mismatch`), reads `GET /api/join-policy` and publishes
+  `status.setup = {state:"policy", inviteCode, joinPolicy:{text, version,
+  ageRequired, truncated}|null}`. `accept_invite {code, policyVersion|null}`
+  must name that code and version; it accepts the policy (with
+  `age_confirmed` = the relay's `age_attestation_required`, which the panel
+  states next to **I accept**) and makes the payload-bound NIP-98 claim,
+  then `joined` with the validated claim and a joined-room re-check (or a
+  reconnect when disconnected).
+- `open_rooms`: authenticated `/query` `{"kinds":[39000],"limit":200}`,
+  every event checked against the pinned relay signer with the catalog's
+  shape rules; `status.openRooms` lists at most 50 `public` stream rooms not
+  in the joined catalog. `join_room`/`leave_room {roomId}` publish kind 9021
+  (`buzz_sdk::build_join`) / 9022 (`build_leave`), tracked in
+  `status.roomAction` and resolved only by the exact-ID `OK`. 9021 rather
+  than a 9000 self-add: it is the purpose-built self-join, skips the generic
+  membership gate explicitly (`ingest.rs:2621`), is refused before `OK` for a
+  private channel (`ingest.rs:3000-3018`), carries no role tag that could
+  touch an existing role, and needs no `p` tag. Sole owners are not knowable
+  from the helper's views; the relay's refusal (`channel_authz.rs:67-88`, `side_effects.rs:808-815`,
+  validated before `OK`) becomes `leave_rejected`, explained in the panel.
+- Panel: invite field and **Redeem** in the setup view (also while
+  disconnected) and the sidebar footer (connected without rooms, or through
+  **+ Join rooms**), the terms with **I accept**, **Open rooms** with **Join**
+  and the no-approval note, and **Leave** beside the room's ↻ with a second
+  click to confirm.
+
+Still unverified: a real relay's join-policy, acceptance and claim answers,
+the NIP-98 `u` binding behind a proxy, rate limiting, and 9021/9022 on the
+deployed relay.

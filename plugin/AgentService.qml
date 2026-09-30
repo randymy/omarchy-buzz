@@ -38,7 +38,7 @@ Item {
     "enroll_failed", "unit_failed", "workspace_refused", "relay_unavailable"]
   readonly property var mutatingTypes: ["create_agent", "update_agent", "delete_agent", "enroll_agent", "start_agent",
     "stop_agent", "set_start_at_login", "sign_in"]
-  readonly property var personaFields: ["name", "description", "instructions", "harness", "model", "rooms", "respondTo", "workspace"]
+  readonly property var personaFields: ["name", "description", "instructions", "harness", "model", "rooms", "respondTo", "workspace", "answersDms"]
   readonly property bool serviceWorking: !!pending && pending.state === "working"
   readonly property bool busy: requestState === "working" || serviceWorking
   readonly property bool canMutate: available && !busy && bridge.running && instanceId !== ""
@@ -265,7 +265,8 @@ Item {
       fields.hasOwnProperty("respondTo") && ["owner-only", "mentions"].indexOf(fields.respondTo) === -1 ? "Choose who the agent answers." : "",
       // Empty means the service's default workspace; only a new agent has none yet.
       fields.hasOwnProperty("workspace") ? workspaceProblem(fields.workspace, creating) : "",
-      fields.hasOwnProperty("startAtLogin") && typeof fields.startAtLogin !== "boolean" ? "Invalid start at login." : ""
+      fields.hasOwnProperty("startAtLogin") && typeof fields.startAtLogin !== "boolean" ? "Invalid start at login." : "",
+      fields.hasOwnProperty("answersDms") && typeof fields.answersDms !== "boolean" ? "Invalid direct message choice." : ""
     ]
     return checks.find(function(text) { return text !== "" }) || ""
   }
@@ -292,7 +293,7 @@ Item {
     return result
   }
   function validatedAgent(entry) {
-    if (!exactKeys(entry, "acpCommand,description,enrolled,harness,id,identity,instructions,lastError,model,name,published,respondTo,rooms,startAtLogin,unit,workspace")
+    if (!exactKeys(entry, "acpCommand,answersDms,description,enrolled,harness,id,identity,instructions,lastError,model,name,published,respondTo,rooms,startAtLogin,unit,workspace")
         || !uuidV4(entry.id) || nameProblem(entry.name) || descriptionProblem(entry.description)
         || instructionsProblem(entry.instructions) || harnessIds.indexOf(entry.harness) === -1
         || modelProblem(entry.model) || entry.acpCommand !== "buzz-acp" || !roomsShapeValid(entry.rooms)
@@ -300,12 +301,12 @@ Item {
         || (entry.identity !== null && (typeof entry.identity !== "string" || !/^[a-f0-9]{64}$/.test(entry.identity)))
         || typeof entry.enrolled !== "boolean" || (entry.enrolled && entry.identity === null)
         || ["active", "inactive", "failed", "unknown"].indexOf(entry.unit) === -1
-        || typeof entry.startAtLogin !== "boolean" || typeof entry.published !== "boolean"
+        || typeof entry.startAtLogin !== "boolean" || typeof entry.published !== "boolean" || typeof entry.answersDms !== "boolean"
         || (entry.lastError !== null && errorCategories.indexOf(entry.lastError) === -1)) return null
     return {id: entry.id, name: entry.name, description: entry.description, instructions: entry.instructions,
       harness: entry.harness, model: entry.model, acpCommand: entry.acpCommand, rooms: entry.rooms.slice(),
       respondTo: entry.respondTo, workspace: entry.workspace, identity: entry.identity, enrolled: entry.enrolled,
-      unit: entry.unit, startAtLogin: entry.startAtLogin, published: entry.published, lastError: entry.lastError}
+      unit: entry.unit, startAtLogin: entry.startAtLogin, answersDms: entry.answersDms, published: entry.published, lastError: entry.lastError}
   }
   function validatedAgents(value) {
     if (!Array.isArray(value) || value.length > 16) return null

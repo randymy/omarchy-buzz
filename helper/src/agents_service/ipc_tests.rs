@@ -100,7 +100,7 @@ async fn hello_subscribe_create_and_errors() {
     assert_eq!(status["type"], "status");
 
     let fields = serde_json::json!({"name":"Scout","description":"","instructions":"","harness":"codex",
-        "model":"","rooms":[ROOM_A],"respondTo":"owner-only","workspace":"","startAtLogin":false,"acpCommand":"buzz-acp"});
+        "model":"","rooms":[ROOM_A],"respondTo":"owner-only","workspace":"","startAtLogin":false,"acpCommand":"buzz-acp","answersDms":false});
     s.send(request(
         R2,
         serde_json::json!({"type":"create_agent","fields":fields}),

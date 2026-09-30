@@ -65,6 +65,7 @@ pub struct AgentView {
     pub enrolled: bool,
     pub unit: &'static str,
     pub start_at_login: bool,
+    pub answers_dms: bool,
     pub published: bool,
     pub last_error: Option<String>,
 }
@@ -201,6 +202,7 @@ impl Service {
                     units.get(&p.id).copied().unwrap_or("unknown")
                 },
                 start_at_login: p.start_at_login,
+                answers_dms: p.answers_dms,
                 published: p.published,
                 last_error: p.last_error.clone(),
             })
@@ -418,6 +420,7 @@ impl Service {
             workspace: "/".into(),
             identity: None,
             start_at_login: fields.start_at_login.ok_or("agent_invalid")?,
+            answers_dms: fields.answers_dms.ok_or("agent_invalid")?,
             auth_tag: None,
             published: false,
             member_rooms: Vec::new(),
@@ -463,6 +466,9 @@ impl Service {
         if let Some(v) = fields.respond_to {
             new.respond_to = v;
         }
+        if let Some(v) = fields.answers_dms {
+            new.answers_dms = v;
+        }
         let requested = fields.workspace;
         if requested
             .as_deref()
@@ -484,7 +490,8 @@ impl Service {
         let restart_fields = new.harness != old.harness
             || new.workspace != old.workspace
             || new.rooms != old.rooms
-            || new.respond_to != old.respond_to;
+            || new.respond_to != old.respond_to
+            || new.answers_dms != old.answers_dms;
         if restart_fields && old.identity.is_some() {
             let control = self.deps.control.clone();
             let name = store::unit_name(id);

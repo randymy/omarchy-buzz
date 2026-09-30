@@ -23,7 +23,7 @@ ROOM = "00000000-0000-4000-8000-0000000000b1"
 # Public key of the synthetic secret 1 (NIP-OA test vector); never a real identity.
 OWNER = "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
 AGENT_KEYS = ["id", "name", "description", "instructions", "harness", "model", "acpCommand", "rooms",
-              "respondTo", "workspace", "identity", "enrolled", "unit", "startAtLogin", "published", "lastError"]
+              "respondTo", "workspace", "identity", "enrolled", "unit", "startAtLogin", "answersDms", "published", "lastError"]
 
 
 class Frames:
@@ -144,7 +144,7 @@ def main():
 
                 fields = {"name": "Smoke", "description": "Synthetic.", "instructions": "Say hi.",
                           "harness": "codex", "model": "", "rooms": [ROOM], "respondTo": "owner-only",
-                          "workspace": "", "startAtLogin": False, "acpCommand": "buzz-acp"}
+                          "workspace": "", "startAtLogin": False, "acpCommand": "buzz-acp", "answersDms": False}
                 client.sendall(request(uuid(2), instance, "create_agent", fields=fields))
                 status = check_status(frames.answer(uuid(2)), "status", instance)
                 assert status["pending"] == {"requestId": uuid(2), "type": "create_agent", "state": "done", "category": None}, status

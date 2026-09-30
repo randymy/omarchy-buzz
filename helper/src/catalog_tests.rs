@@ -801,3 +801,221 @@ async fn loopback_discovery_marks_hidden_dms_and_names_them() {
     assert_eq!((dm.kind, dm.name.as_str(), dm.hidden), ("dm", "Otto", true));
     assert_eq!(catalog.rooms.len(), 2);
 }
+
+fn open_meta(author: &Keys, id: &str, name: &str, extra: &[&[&str]]) -> Event {
+    let (d, n) = (["d", id], ["name", name]);
+    let mut rows: Vec<&[&str]> = vec![&d, &n, &["closed"]];
+    rows.extend_from_slice(extra);
+    event(author, 39000, tags(&rows), 100)
+}
+
+#[test]
+fn open_rooms_keep_only_signed_public_unjoined_streams() {
+    let relay = key(1);
+    let joined_id = "22222222-2222-4222-8222-222222222222";
+    let events = vec![
+        open_meta(
+            &relay,
+            ID,
+            "zeta",
+            &[&["public"], &["t", "stream"], &["about", "Z\u{7}"]],
+        ),
+        open_meta(
+            &relay,
+            "33333333-3333-4333-8333-333333333333",
+            "Alpha",
+            &[&["public"], &["t", "stream"]],
+        ),
+        // Joined already, private, a DM, a forum, archived: all left out.
+        open_meta(
+            &relay,
+            joined_id,
+            "joined",
+            &[&["public"], &["t", "stream"]],
+        ),
+        open_meta(
+            &relay,
+            "44444444-4444-4444-8444-444444444444",
+            "secret",
+            &[&["private"], &["t", "stream"]],
+        ),
+        open_meta(
+            &relay,
+            "55555555-5555-4555-8555-555555555555",
+            "DM",
+            &[&["public"], &["hidden"], &["t", "dm"]],
+        ),
+        open_meta(
+            &relay,
+            "66666666-6666-4666-8666-666666666666",
+            "forum",
+            &[&["public"], &["t", "forum"]],
+        ),
+        open_meta(
+            &relay,
+            "77777777-7777-4777-8777-777777777777",
+            "old",
+            &[&["public"], &["t", "stream"], &["archived", "true"]],
+        ),
+    ];
+    let joined: BTreeSet<String> = [joined_id.to_string()].into();
+    let rooms = open_rooms(relay.public_key(), &events, &joined, 1000).unwrap();
+    let names: Vec<&str> = rooms.iter().map(|r| r.name.as_str()).collect();
+    assert_eq!(names, ["Alpha", "zeta"]);
+    assert_eq!(rooms[1].description, "Z ");
+    assert!(rooms.iter().all(|r| r.kind == "stream"));
+    // Fifty at most, by name.
+    let many: Vec<Event> = (0..60u32)
+        .map(|n| {
+            let id = format!("00000000-0000-4000-8000-{n:012}");
+            open_meta(
+                &relay,
+                &id,
+                &format!("room {n:02}"),
+                &[&["public"], &["t", "stream"]],
+            )
+        })
+        .collect();
+    let rooms = open_rooms(relay.public_key(), &many, &BTreeSet::new(), 1000).unwrap();
+    assert_eq!(rooms.len(), OPEN_ROOMS);
+    assert_eq!(rooms[0].name, "room 00");
+}
+
+#[test]
+fn open_rooms_reject_the_whole_page_on_any_unexpected_value() {
+    let relay = key(1);
+    let other = key(2);
+    let good = open_meta(&relay, ID, "Lobby", &[&["public"], &["t", "stream"]]);
+    let two = "3333333c-3333-4333-8333-33333333333d";
+    let cases: Vec<(Vec<Event>, &str)> = vec![
+        // Not the pinned relay signer.
+        (
+            vec![
+                good.clone(),
+                open_meta(&other, two, "x", &[&["public"], &["t", "stream"]]),
+            ],
+            "catalog_untrusted_author",
+        ),
+        // No visibility, both, or a valued visibility tag.
+        (
+            vec![open_meta(&relay, two, "x", &[&["t", "stream"]])],
+            "catalog_invalid_shape",
+        ),
+        (
+            vec![open_meta(
+                &relay,
+                two,
+                "x",
+                &[&["public"], &["private"], &["t", "stream"]],
+            )],
+            "catalog_invalid_shape",
+        ),
+        (
+            vec![open_meta(
+                &relay,
+                two,
+                "x",
+                &[&["public", "yes"], &["t", "stream"]],
+            )],
+            "catalog_invalid_shape",
+        ),
+        (
+            vec![open_meta(
+                &relay,
+                two,
+                "x",
+                &[&["public"], &["public"], &["t", "stream"]],
+            )],
+            "catalog_invalid_shape",
+        ),
+        // Doubled name, bad kind, blank name, non-canonical id, future event.
+        (
+            vec![open_meta(
+                &relay,
+                two,
+                "x",
+                &[&["public"], &["name", "y"], &["t", "stream"]],
+            )],
+            "catalog_invalid_shape",
+        ),
+        (
+            vec![open_meta(
+                &relay,
+                two,
+                "x",
+                &[&["public"], &["t", "str eam"]],
+            )],
+            "catalog_invalid_shape",
+        ),
+        (
+            vec![open_meta(
+                &relay,
+                two,
+                " ",
+                &[&["public"], &["t", "stream"]],
+            )],
+            "catalog_invalid_shape",
+        ),
+        (
+            vec![open_meta(
+                &relay,
+                &two.to_uppercase(),
+                "x",
+                &[&["public"], &["t", "stream"]],
+            )],
+            "catalog_invalid_shape",
+        ),
+        (
+            vec![event(
+                &relay,
+                39000,
+                tags(&[&["d", two], &["name", "x"], &["public"], &["t", "stream"]]),
+                5000,
+            )],
+            "catalog_invalid_shape",
+        ),
+        // Wrong kind, content, and a conflicting second version of one room.
+        (
+            vec![event(&relay, 39002, tags(&[&["d", two]]), 100)],
+            "catalog_invalid_shape",
+        ),
+        (
+            vec![
+                good.clone(),
+                open_meta(&relay, ID, "Lobby 2", &[&["public"], &["t", "stream"]]),
+            ],
+            "catalog_conflicting_snapshot",
+        ),
+    ];
+    for (events, expected) in cases {
+        assert_eq!(
+            open_rooms(relay.public_key(), &events, &BTreeSet::new(), 1000).unwrap_err(),
+            expected
+        );
+    }
+    let content = EventBuilder::new(Kind::Custom(39000), "x")
+        .tags(
+            tags(&[&["d", two], &["name", "x"], &["public"], &["t", "stream"]])
+                .into_iter()
+                .map(|t| Tag::parse(t).unwrap()),
+        )
+        .custom_created_at(Timestamp::from(100))
+        .sign_with_keys(&relay)
+        .unwrap();
+    assert_eq!(
+        open_rooms(relay.public_key(), &[content], &BTreeSet::new(), 1000).unwrap_err(),
+        "catalog_invalid_shape"
+    );
+    // The same event twice is one room.
+    assert_eq!(
+        open_rooms(
+            relay.public_key(),
+            &[good.clone(), good],
+            &BTreeSet::new(),
+            1000
+        )
+        .unwrap()
+        .len(),
+        1
+    );
+}

@@ -14,7 +14,7 @@ ROOM_B = "22222222-2222-4222-8222-222222222222"
 SELF = "a" * 64
 AGENT = "33333333-3333-4333-8333-333333333333"
 CREATED = "55555555-5555-4555-9555-555555555555"
-FIELDS = ["acpCommand", "description", "harness", "instructions", "model", "name", "respondTo",
+FIELDS = ["acpCommand", "answersDms", "description", "harness", "instructions", "model", "name", "respondTo",
           "rooms", "startAtLogin", "workspace"]
 
 
@@ -55,7 +55,7 @@ def agents_service():
     agents = [{"id": AGENT, "name": "Fixture agent", "description": "Synthetic persona", "instructions": "Answer briefly.",
                "harness": "codex", "model": "", "acpCommand": "buzz-acp", "rooms": [ROOM_A], "respondTo": "owner-only",
                "workspace": "/home/fixture/.local/state/omarchy-buzz-room-workspaces/" + AGENT, "identity": "b" * 64,
-               "enrolled": True, "unit": "inactive", "startAtLogin": False, "published": True, "lastError": None}]
+               "enrolled": True, "unit": "inactive", "startAtLogin": False, "answersDms": False, "published": True, "lastError": None}]
     state = {"pending": None}
 
     def save():
@@ -105,7 +105,14 @@ def agents_service():
                            "acpCommand": "buzz-acp", "rooms": fields["rooms"], "respondTo": fields["respondTo"],
                            "workspace": fields["workspace"] or "/home/fixture/.local/state/omarchy-buzz-room-workspaces/" + CREATED,
                            "identity": None, "enrolled": False, "unit": "inactive",
-                           "startAtLogin": fields["startAtLogin"], "published": False, "lastError": None})
+                           "startAtLogin": fields["startAtLogin"], "answersDms": fields["answersDms"],
+                           "published": False, "lastError": None})
+            done(request)
+        elif kind == "update_agent":
+            assert sorted(request) == ["agentId", "fields", "id", "instanceId", "type", "version"] and request["agentId"] == AGENT
+            assert request["fields"] == {"answersDms": True}, request
+            working(request)
+            agents[0]["answersDms"] = True
             done(request)
         elif kind == "start_agent":
             assert sorted(request) == ["agentId", "id", "instanceId", "type", "version"] and request["agentId"] == AGENT

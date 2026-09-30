@@ -19,8 +19,9 @@ pub struct Fields {
     pub workspace: Option<String>,
     pub start_at_login: Option<bool>,
     pub acp_command: Option<String>,
+    pub answers_dms: Option<bool>,
 }
-const FIELD_KEYS: [&str; 10] = [
+const FIELD_KEYS: [&str; 11] = [
     "name",
     "description",
     "instructions",
@@ -31,6 +32,7 @@ const FIELD_KEYS: [&str; 10] = [
     "workspace",
     "startAtLogin",
     "acpCommand",
+    "answersDms",
 ];
 
 #[derive(Debug, Deserialize)]
@@ -148,7 +150,7 @@ mod tests {
     fn full_fields() -> serde_json::Value {
         serde_json::json!({"name":"Scout","description":"","instructions":"Be brief.","harness":"codex",
             "model":"","rooms":["00000000-0000-4000-8000-0000000000b1"],"respondTo":"owner-only",
-            "workspace":"","startAtLogin":false,"acpCommand":"buzz-acp"})
+            "workspace":"","startAtLogin":false,"acpCommand":"buzz-acp","answersDms":false})
     }
 
     #[test]
@@ -157,6 +159,7 @@ mod tests {
             serde_json::json!({"type":"subscribe"}),
             serde_json::json!({"type":"create_agent","fields":full_fields()}),
             serde_json::json!({"type":"update_agent","agentId":AGENT,"fields":{"name":"New"}}),
+            serde_json::json!({"type":"update_agent","agentId":AGENT,"fields":{"answersDms":true}}),
             serde_json::json!({"type":"delete_agent","agentId":AGENT}),
             serde_json::json!({"type":"delete_agent","agentId":AGENT,"forget":true}),
             serde_json::json!({"type":"enroll_agent","agentId":AGENT}),
@@ -185,16 +188,23 @@ mod tests {
         let refused = Some(ID.to_string());
         let mut create_missing = full_fields();
         create_missing.as_object_mut().unwrap().remove("workspace");
+        let mut create_without_dms = full_fields();
+        create_without_dms
+            .as_object_mut()
+            .unwrap()
+            .remove("answersDms");
         for extra in [
             serde_json::json!({"type":"get_snapshot"}),
             serde_json::json!({"type":"subscribe","agentId":AGENT}),
             serde_json::json!({"type":"subscribe","command":"/bin/sh"}),
             serde_json::json!({"type":"create_agent"}),
             serde_json::json!({"type":"create_agent","fields":create_missing}),
+            serde_json::json!({"type":"create_agent","fields":create_without_dms}),
             serde_json::json!({"type":"create_agent","fields":{"name":"x","privateKey":"sentinel"}}),
             serde_json::json!({"type":"update_agent","agentId":AGENT,"fields":{}}),
             serde_json::json!({"type":"update_agent","agentId":AGENT,"fields":{"startAtLogin":true}}),
             serde_json::json!({"type":"update_agent","agentId":AGENT,"fields":{"name":null}}),
+            serde_json::json!({"type":"update_agent","agentId":AGENT,"fields":{"answersDms":"yes"}}),
             serde_json::json!({"type":"update_agent","agentId":"not-a-uuid","fields":{"name":"x"}}),
             serde_json::json!({"type":"enroll_agent"}),
             serde_json::json!({"type":"enroll_agent","agentId":AGENT,"secret":"nsec"}),

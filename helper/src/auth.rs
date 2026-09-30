@@ -70,6 +70,7 @@ fn update(tx: &watch::Sender<Status>, state: &str, category: Option<&str>) {
             s.thread = Thread::unavailable(None, None, None);
             s.activity.clear();
             s.recipients = crate::protocol::RecipientsView::unavailable(None, None);
+            s.open_rooms = crate::protocol::OpenRooms::unavailable(None);
         }
     });
 }
@@ -126,6 +127,9 @@ fn apply_loaded_config(
                     s.thread = Thread::unavailable(None, None, None);
                     s.activity.clear();
                     s.recipients = crate::protocol::RecipientsView::unavailable(None, None);
+                    s.setup = crate::protocol::JoinSetup::default();
+                    s.open_rooms = crate::protocol::OpenRooms::unavailable(None);
+                    s.room_action = crate::protocol::RoomAction::default();
                 }
             });
             Ok(c)
@@ -233,10 +237,15 @@ enum ConnectionExit {
     Shutdown,
     Failure(&'static str),
 }
+/// A command received while not authenticated. `session` is the relay and
+/// loaded identity of a connection that failed (disconnected, possibly
+/// refused because the identity is not a member yet): invites can be redeemed
+/// through HTTP then, and a successful claim reconnects.
 pub(crate) async fn offline_command(
     command: Command,
     tx: &watch::Sender<Status>,
     setup: &crate::setup::Setup,
+    session: Option<(&str, &nostr::Keys)>,
 ) -> bool {
     match command {
         Command::Retry => return true,
@@ -247,6 +256,36 @@ pub(crate) async fn offline_command(
         Command::CreateIdentity(reply) => {
             let result = crate::setup::create_identity(setup).await;
             return setup_done(result.map(|_| ()), reply, tx, setup);
+        }
+        Command::ClaimInvite(input, reply) => {
+            let Some((relay, _)) = session else {
+                let _ = reply.send(Some("setup_not_allowed"));
+                return false;
+            };
+            publish_status(tx, |s| s.setup = crate::join::checking());
+            let result = crate::join::check_invite(relay, &input).await;
+            invite_checked(result, reply, tx);
+        }
+        Command::AcceptInvite(code, version, reply) => {
+            let Some((relay, keys)) = session else {
+                let _ = reply.send(Some("setup_not_allowed"));
+                return false;
+            };
+            let shown = match crate::join::awaiting_invite(&tx.borrow(), &code) {
+                Ok(shown) => shown,
+                Err(category) => {
+                    let _ = reply.send(Some(category));
+                    return false;
+                }
+            };
+            publish_status(tx, |s| s.setup = claiming());
+            let result =
+                crate::join::redeem(relay, keys, &code, shown.as_ref(), version.as_deref()).await;
+            // A new member reconnects at once: its identity may now authenticate.
+            return invite_redeemed(result, reply, tx);
+        }
+        Command::RoomAction(_, _, _, reply) => {
+            let _ = reply.send(Some("relay_unavailable"));
         }
         Command::SendChecked(_, reply) => {
             let _ = reply.send(Some("send_unavailable"));
@@ -267,6 +306,44 @@ pub(crate) async fn offline_command(
     }
     false
 }
+fn claiming() -> crate::protocol::JoinSetup {
+    crate::protocol::JoinSetup {
+        state: "claiming".into(),
+        ..Default::default()
+    }
+}
+/// Publishes the checked invite (awaiting acceptance) or its refusal, then answers.
+fn invite_checked(
+    result: Result<(String, Option<crate::protocol::JoinPolicy>), &'static str>,
+    reply: tokio::sync::oneshot::Sender<Option<&'static str>>,
+    tx: &watch::Sender<Status>,
+) {
+    let category = result.as_ref().err().copied();
+    publish_status(tx, |s| {
+        s.setup = match result {
+            Ok((code, policy)) => crate::join::awaiting(code, policy),
+            Err(category) => crate::join::failed(category),
+        }
+    });
+    let _ = reply.send(category);
+}
+/// Publishes the claim outcome, then answers. True when the relay granted
+/// (or confirmed) membership.
+fn invite_redeemed(
+    result: Result<crate::protocol::ClaimResult, &'static str>,
+    reply: tokio::sync::oneshot::Sender<Option<&'static str>>,
+    tx: &watch::Sender<Status>,
+) -> bool {
+    let category = result.as_ref().err().copied();
+    publish_status(tx, |s| {
+        s.setup = match result {
+            Ok(claim) => crate::join::joined(claim),
+            Err(category) => crate::join::failed(category),
+        }
+    });
+    let _ = reply.send(category);
+    category.is_none()
+}
 /// Publishes a saved setup change before answering, so the status frame that
 /// follows the reply already carries the new relay or public identity. A
 /// saved change then reconnects like `retry_connection`.
@@ -286,9 +363,10 @@ async fn next_retry(
     commands: &mut mpsc::Receiver<Command>,
     tx: &watch::Sender<Status>,
     setup: &crate::setup::Setup,
+    session: Option<(&str, &nostr::Keys)>,
 ) -> bool {
     while let Some(command) = commands.recv().await {
-        if offline_command(command, tx, setup).await {
+        if offline_command(command, tx, setup, session).await {
             return true;
         }
     }
@@ -406,6 +484,7 @@ async fn wait_after_failure(
     retry: &mut mpsc::Receiver<Command>,
     tx: &watch::Sender<Status>,
     setup: &crate::setup::Setup,
+    session: Option<(&str, &nostr::Keys)>,
 ) -> bool {
     let delay = backoff.delay(error);
     // A rejected re-authentication that is being retried is still an attempt to
@@ -429,12 +508,12 @@ async fn wait_after_failure(
             let Some(command) = command else {
                 return false;
             };
-            if offline_command(command, tx, setup).await {
+            if offline_command(command, tx, setup, session).await {
                 backoff.reset();
                 return true;
             }
         }
-    } else if next_retry(retry, tx, setup).await {
+    } else if next_retry(retry, tx, setup, session).await {
         backoff.reset();
         true
     } else {
@@ -481,6 +560,8 @@ async fn observe_sending(
     // A DM open cannot outlive its connection: its answer would arrive on this socket.
     let mut opener = crate::dm_open::Opener::default();
     let mut live = crate::live::Live::default();
+    // A join or leave cannot outlive its connection either: its OK arrives here.
+    let mut actions = crate::join::RoomActions::default();
     let result = observe_inner(
         conn,
         keys,
@@ -493,8 +574,20 @@ async fn observe_sending(
         sender,
         &mut opener,
         &mut live,
+        &mut actions,
     )
     .await;
+    if let Some(view) = actions.unknown() {
+        publish_status(tx, |s| s.room_action = view);
+    }
+    // An invite request still running on this connection was aborted with it.
+    // A claim may have reached the relay; the user can redeem again (claims are
+    // idempotent: `already_member`).
+    publish_status(tx, |s| {
+        if matches!(s.setup.state.as_str(), "checking" | "claiming") {
+            s.setup = crate::join::failed("relay_unavailable");
+        }
+    });
     // Every exit (Retry, shutdown, failure) closes the live subscription first,
     // under a short deadline; a dead socket is dropped by the caller anyway.
     if let Some(close) = live.close() {
@@ -520,8 +613,15 @@ async fn observe_inner(
     sender: &mut crate::sending::Sender,
     opener: &mut crate::dm_open::Opener,
     live: &mut crate::live::Live,
+    actions: &mut crate::join::RoomActions,
 ) -> ConnectionExit {
     let mut pending: Option<String> = None;
+    // At most one invite request (HTTP) and one open-rooms read at a time.
+    let mut invite_jobs = tokio::task::JoinSet::new();
+    let mut open_jobs = tokio::task::JoinSet::new();
+    let mut open_ticket = 0_u64;
+    // Re-read open rooms once the catalog settles after a join or leave.
+    let mut open_after_catalog = false;
     let mut due = tokio::time::Instant::now();
     let mut catalog_due = tokio::time::Instant::now();
     let mut fresh = false;
@@ -619,6 +719,50 @@ async fn observe_inner(
             });
         }};
     }
+    macro_rules! spawn_open_rooms {
+        () => {{
+            open_jobs.abort_all();
+            open_jobs = tokio::task::JoinSet::new();
+            open_ticket = open_ticket.wrapping_add(1);
+            let status = tx.borrow();
+            let ready = fresh
+                && relay_pin.is_some()
+                && matches!(status.catalog.state.as_str(), "partial" | "ready");
+            let joined: std::collections::BTreeSet<String> =
+                status.catalog.rooms.iter().map(|r| r.id.clone()).collect();
+            let generation = status.generation;
+            drop(status);
+            if ready {
+                publish_status(tx, |s| {
+                    s.open_rooms = crate::protocol::OpenRooms {
+                        state: "loading".into(),
+                        ..crate::protocol::OpenRooms::unavailable(None)
+                    }
+                });
+                let ticket = open_ticket;
+                let relay = relay.to_owned();
+                let keys = keys.clone();
+                let pin = relay_pin.unwrap();
+                open_jobs.spawn(async move {
+                    let result = match timeout(
+                        Duration::from_secs(15),
+                        crate::catalog::discover_open(&relay, &keys, pin, joined),
+                    )
+                    .await
+                    {
+                        Ok(r) => r,
+                        Err(_) => Err("query_timeout"),
+                    };
+                    (ticket, generation, result)
+                });
+            } else {
+                publish_status(tx, |s| {
+                    s.open_rooms =
+                        crate::protocol::OpenRooms::unavailable(Some("relay_unavailable"))
+                });
+            }
+        }};
+    }
     loop {
         // Only the selected room of a fresh session may hold the live
         // subscription; every path that drops the selection closes it here.
@@ -644,6 +788,9 @@ async fn observe_inner(
             },
             _=tokio::time::sleep_until(opener.deadline()), if opener.is_pending()=> {
                 if let Some(view)=opener.unknown() {publish_status(tx, |s|s.dm_open=view);}
+            },
+            _=tokio::time::sleep_until(actions.deadline()), if actions.is_pending()=> {
+                if let Some(view)=actions.unknown() {publish_status(tx, |s|s.room_action=view);}
             },
             command=retry.recv()=>match command {
                 Some(Command::Retry)=> {backoff.reset(); update(tx,"connecting",None); return ConnectionExit::Retry;},
@@ -689,6 +836,39 @@ async fn observe_inner(
                             Err(_)=>return ConnectionExit::Failure("relay_timeout"),
                         }
                     }
+                },
+                Some(Command::ClaimInvite(input,reply))=> {
+                    if !invite_jobs.is_empty() {let _=reply.send(Some("setup_busy"));continue;}
+                    publish_status(tx,|s|s.setup=crate::join::checking());
+                    let relay=relay.to_owned();
+                    invite_jobs.spawn(async move {
+                        let result=crate::join::check_invite(&relay,&input).await;
+                        (crate::join::InviteStep::Checked(result),reply)
+                    });
+                },
+                Some(Command::AcceptInvite(code,version,reply))=> {
+                    if !invite_jobs.is_empty() {let _=reply.send(Some("setup_busy"));continue;}
+                    let shown=match crate::join::awaiting_invite(&tx.borrow(),&code) {Ok(shown)=>shown,Err(category)=>{let _=reply.send(Some(category));continue;}};
+                    publish_status(tx,|s|s.setup=claiming());
+                    let relay=relay.to_owned();let keys=keys.clone();
+                    invite_jobs.spawn(async move {
+                        let result=crate::join::redeem(&relay,&keys,&code,shown.as_ref(),version.as_deref()).await;
+                        (crate::join::InviteStep::Redeemed(result),reply)
+                    });
+                },
+                Some(Command::FetchOpenRooms)=> {spawn_open_rooms!();},
+                Some(Command::RoomAction(action,request_id,room,reply))=> {
+                    if reply.is_closed() {continue;}
+                    let prepared={let status=tx.borrow();actions.prepare(action,&request_id,&room,keys,&status,fresh,relay_pin.is_some())};
+                    let (view,event)=match prepared {Ok(p)=>p,Err(category)=>{let _=reply.send(Some(category));continue;}};
+                    if reply.send(None).is_err() {
+                        // Nothing was written: the caller left before publication.
+                        actions.abandon();
+                        continue;
+                    }
+                    publish_status(tx,|s|s.room_action=view);
+                    // A dropped/timed-out write may already have reached the relay.
+                    send_frame!(serde_json::json!(["EVENT",event]));
                 },
                 Some(Command::OpenDm(intent,reply))=> {
                     if reply.is_closed() {continue;}
@@ -835,6 +1015,38 @@ async fn observe_inner(
                     let result=match timeout(Duration::from_secs(20),crate::thread::fetch(&relay,&keys,pin,id,&root)).await {Ok(r)=>r,Err(_)=>Err("thread_timeout")};
                     (ticket,generation,room,root,result)
                 });
+            },
+            result=invite_jobs.join_next(), if !invite_jobs.is_empty()=> {
+                match result {
+                    Some(Ok((crate::join::InviteStep::Checked(checked),reply)))=>invite_checked(checked,reply,tx),
+                    Some(Ok((crate::join::InviteStep::Redeemed(redeemed),reply)))=> {
+                        if invite_redeemed(redeemed,reply,tx) && fresh {
+                            // New or confirmed relay membership: re-check joined rooms
+                            // now, then the open rooms against them.
+                            jobs.abort_all();catalog_due=tokio::time::Instant::now();open_after_catalog=true;
+                        }
+                    },
+                    // A panicked request proves nothing; its reply was dropped (unknown).
+                    _=>publish_status(tx,|s|s.setup=crate::join::failed("relay_unavailable")),
+                }
+            },
+            result=open_jobs.join_next(), if !open_jobs.is_empty()=> {
+                if let Some(Ok((ticket,generation,result)))=result {
+                    let status=tx.borrow();
+                    let current=ticket==open_ticket && generation==status.generation && fresh && relay_pin.is_some()
+                        && matches!(status.catalog.state.as_str(),"partial"|"ready");
+                    let joined:std::collections::BTreeSet<String>=status.catalog.rooms.iter().map(|r|r.id.clone()).collect();
+                    drop(status);
+                    if current {
+                        publish_status(tx,|s|s.open_rooms=match result {
+                            // Rooms joined meanwhile are dropped against the current catalog.
+                            Ok(rooms)=>crate::protocol::OpenRooms {state:"snapshot".into(),rooms:rooms.into_iter().filter(|r|!joined.contains(&r.id)).collect(),category:None},
+                            Err(error)=> {eprintln!("omarchy-buzz: open rooms read failed: {error}");crate::protocol::OpenRooms::unavailable(Some("relay_unavailable"))},
+                        });
+                    }
+                } else if matches!(&result,Some(Err(e)) if !e.is_cancelled()) {
+                    publish_status(tx,|s|s.open_rooms=crate::protocol::OpenRooms::unavailable(Some("relay_unavailable")));
+                }
             },
             result=recipient_jobs.join_next(), if !recipient_jobs.is_empty()=> {
                 if matches!(&result,Some(Err(e)) if !e.is_cancelled()) {
@@ -1104,7 +1316,12 @@ async fn observe_inner(
                             if let Some(room)=lost_recipients {s.recipients=crate::protocol::RecipientsView::unavailable(Some(room),Some("recipients_access_denied"));}
                             if lost_thread {s.thread=Thread::unavailable(None,None,Some("thread_access_denied"));}
                             if let Some(delivery)=revoked_delivery {s.delivery=delivery;}
+                            // An open room that is now joined is no longer offered.
+                            let joined=&s.catalog.rooms;
+                            s.open_rooms.rooms.retain(|r|!joined.iter().any(|j|j.id==r.id));
                         });
+                        let listed=tx.borrow().open_rooms.state!="unavailable";
+                        if open_after_catalog || (listed && !removed.is_empty()) {open_after_catalog=false;spawn_open_rooms!();}
                     },
                     failed @ (Some(Ok(Err(_)))|Some(Err(_))) if fresh && !cancelled=>{
                         let category=match failed {Some(Ok(Err(error)))=>catalog_category(error),_=>"room_catalog_unavailable"};
@@ -1118,7 +1335,9 @@ async fn observe_inner(
                         publish_status(tx, |s|{
                             s.activity.clear();s.catalog=crate::protocol::Catalog::unavailable(Some(category));s.history=History::unavailable(None,None);
                             s.recipients=crate::protocol::RecipientsView::unavailable(None,None);s.thread=Thread::unavailable(None,None,None);
+                            s.open_rooms=crate::protocol::OpenRooms::unavailable(None);
                         });
+                        open_jobs.abort_all();open_jobs=tokio::task::JoinSet::new();open_ticket=open_ticket.wrapping_add(1);
                     },
                     _=>{},
                 }
@@ -1205,6 +1424,8 @@ async fn observe_inner(
                     head_refetch=None;
                     if let Some(delivery)=sender.unknown() {publish_status(tx, |s|s.delivery=delivery);}
                     if let Some(view)=opener.unknown() {publish_status(tx, |s|s.dm_open=view);}
+                    if let Some(view)=actions.unknown() {publish_status(tx, |s|s.room_action=view);}
+                    open_jobs.abort_all();open_jobs=tokio::task::JoinSet::new();open_ticket=open_ticket.wrapping_add(1);
                     recipient_jobs.abort_all();recipient_jobs=tokio::task::JoinSet::new();recipient_ticket=recipient_ticket.wrapping_add(1);
                     fresh=false;
                     jobs.abort_all();
@@ -1227,6 +1448,11 @@ async fn observe_inner(
                 },
                 Ok(RelayMessage::Ok(ok))=> {
                     if let Some(delivery)=sender.acknowledge(&ok.event_id,ok.accepted) {publish_status(tx, |s|s.delivery=delivery);}
+                    else if let Some(view)=actions.acknowledge(&ok.event_id,ok.accepted) {
+                        // Re-check joined rooms now; open rooms follow that result.
+                        if view.state=="acknowledged" && fresh {jobs.abort_all();catalog_due=tokio::time::Instant::now();open_after_catalog=true;}
+                        publish_status(tx, |s|s.room_action=view);
+                    }
                     else if let Some(view)=opener.acknowledge(&ok.event_id,ok.accepted,&ok.message) {
                         // Re-check joined rooms now so the opened DM is listed; a check
                         // already in flight may predate it, so it is replaced.
@@ -1259,14 +1485,14 @@ pub async fn run(
         // Coalesce retry requests already queued for this attempt. Only this
         // sequential task owns key lookups, including any pending prompt.
         while let Ok(command) = retry.try_recv() {
-            if offline_command(command, &tx, &setup).await {
+            if offline_command(command, &tx, &setup, None).await {
                 backoff.reset();
             }
         }
         let c = match apply_loaded_config(&tx, config::load()) {
             Ok(c) => c,
             Err(()) => {
-                if !next_retry(&mut retry, &tx, &setup).await {
+                if !next_retry(&mut retry, &tx, &setup, None).await {
                     return;
                 }
                 backoff.reset();
@@ -1284,7 +1510,7 @@ pub async fn run(
         }
         if c.relay.is_none() || c.identity.is_none() {
             update(&tx, "unconfigured", None);
-            if !next_retry(&mut retry, &tx, &setup).await {
+            if !next_retry(&mut retry, &tx, &setup, None).await {
                 return;
             }
             backoff.reset();
@@ -1306,7 +1532,7 @@ pub async fn run(
         // its single operation to finish, then reload before any relay auth.
         let mut retry_requested = false;
         while let Ok(command) = retry.try_recv() {
-            if offline_command(command, &tx, &setup).await {
+            if offline_command(command, &tx, &setup, None).await {
                 retry_requested = true;
             }
         }
@@ -1326,7 +1552,7 @@ pub async fn run(
                     },
                     Some(e),
                 );
-                if !next_retry(&mut retry, &tx, &setup).await {
+                if !next_retry(&mut retry, &tx, &setup, None).await {
                     return;
                 }
                 backoff.reset();
@@ -1334,7 +1560,7 @@ pub async fn run(
             }
             Err(_) => {
                 update(&tx, "unavailable", Some("identity_unavailable"));
-                if !next_retry(&mut retry, &tx, &setup).await {
+                if !next_retry(&mut retry, &tx, &setup, None).await {
                     return;
                 }
                 backoff.reset();
@@ -1375,7 +1601,9 @@ async fn connect_and_observe(
     update(tx, "connecting", backoff.retrying());
     let mut conn = match connect_identity(relay, keys).await {
         Ok(connection) => connection,
-        Err(error) => return wait_after_failure(error, backoff, retry, tx, setup).await,
+        Err(error) => {
+            return wait_after_failure(error, backoff, retry, tx, setup, Some((relay, keys))).await
+        }
     };
     let exit = observe_sending(
         &mut conn, keys, relay, relay_pin, tx, retry, backoff, policy, sender,
@@ -1391,7 +1619,7 @@ async fn connect_and_observe(
         ConnectionExit::Shutdown => false,
         ConnectionExit::Failure(error) => {
             drop(conn);
-            wait_after_failure(error, backoff, retry, tx, setup).await
+            wait_after_failure(error, backoff, retry, tx, setup, Some((relay, keys))).await
         }
     }
 }
