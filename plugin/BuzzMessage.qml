@@ -16,12 +16,16 @@ Column {
   readonly property bool sample: !!service && service.sampleMode
   readonly property bool lead: !row.grouped
   readonly property bool ready: !!service && !!row && typeof row.author === "string"
+  // Thread replies nest compactly: at most three steps of indentation.
+  readonly property int depth: Number.isInteger(row.depth) ? row.depth : 1
+  readonly property real indent: Math.min(Math.max(depth - 1, 0), 3) * Style.space(14)
   signal threadRequested()
   spacing: Style.space(2)
+  leftPadding: indent
 
   Item {
     visible: root.row.dayBreak === true
-    width: parent.width
+    width: root.width - root.indent
     height: visible ? Style.space(24) : 0
     Rectangle {
       anchors.verticalCenter: parent.verticalCenter
@@ -47,12 +51,24 @@ Column {
     }
   }
   RowLayout {
-    width: parent.width
+    width: root.width - root.indent
     spacing: Style.space(8)
     Column {
       Layout.fillWidth: true
       Layout.alignment: Qt.AlignTop
       spacing: Style.space(2)
+      Text {
+        objectName: "buzzThreadReplyCaption"
+        visible: root.ready && root.lead && root.depth > 1 && typeof root.row.parentAuthor === "string"
+        width: parent.width
+        text: visible ? "↳ replying to " + (root.row.parentAuthor ? root.service.messageAuthorName(root.row.parentAuthor) : "an earlier reply") : ""
+        textFormat: Text.PlainText
+        elide: Text.ElideRight
+        color: Color.foreground
+        opacity: 0.55
+        font.family: Style.font.family
+        font.pixelSize: Style.font.caption
+      }
       Row {
         visible: root.lead
         width: parent.width

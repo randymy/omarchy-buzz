@@ -33,7 +33,10 @@ ShellRoot {
     return {state:"snapshot",roomId:room,rows:rows,hasMore:false,category:"history_completeness_unknown"}
   }
   function thread() {
-    return {state:"snapshot",roomId:room,rootId:rootId,rows:[row("f".repeat(64), "Synthetic reply")],
+    var reply = row("f".repeat(64), "Synthetic reply")
+    reply.depth = 1
+    reply.parent = rootId
+    return {state:"snapshot",roomId:room,rootId:rootId,rows:[reply],
       hasMore:false,category:"thread_completeness_unknown"}
   }
   function recipients() { return {state:"snapshot",roomId:room,entries:[{key:author,name:"Fixture Person"}],partial:false,category:null} }
