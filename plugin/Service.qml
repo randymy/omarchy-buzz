@@ -342,6 +342,11 @@ Item {
   property bool olderHistorySupported: false
   property var historyNextCursor: null
   property string historyOlderState: "idle"
+  // The helper's live subscription for this room is primed. Live events only make the
+  // helper refetch verified pages; the rows shown are still those pages.
+  property bool liveUpdatesSupported: false
+  property bool historyLive: false
+  readonly property int threadRefreshInterval: historyLive ? 30000 : 8000
   property bool olderRequested: false
   property string olderRequestCursor: ""
   property string pendingOlderRequestId: ""
@@ -375,7 +380,7 @@ Item {
     : threadCategory === "thread_access_denied" ? "Replies unavailable for this room" : "Replies unavailable · try Refresh replies"
   readonly property var messages: sample ? sample.messages.filter(function(message) { return message.roomId === root.selectedRoomId }) : historyRows
   readonly property string historyLabel: historyState === "loading" ? "Loading recent snapshot" : historyState === "snapshot"
-    ? (automaticHistorySupported ? "Auto-refreshing snapshot" : "Snapshot") + " · " + historyRows.length + (historyRows.length === 1 ? " message" : " messages") + " shown · completeness unknown"
+    ? (historyLive ? "Live" : automaticHistorySupported ? "Auto-refreshing snapshot" : "Snapshot") + " · " + historyRows.length + (historyRows.length === 1 ? " message" : " messages") + " shown · completeness unknown"
       + (!historyHasMore ? "" : historyCategory === "history_older_unheld" ? " · older messages exist but are not held" : " · older history available")
       + (historyOlderState === "unavailable" && !olderLoading ? " · older messages could not be loaded" : "") : ({request_busy: "Helper busy · refresh again", history_timeout: "History request timed out", history_invalid: "History response could not be validated", history_access_denied: "History unavailable for this room"})[historyCategory] || "History not available yet"
   readonly property string barLabel: sampleMode ? "TEST" : ({unconfigured: "Setup", connecting: "Connecting", authenticated: "Connected", identity_locked: "Locked", disconnected: "Offline", unavailable: "Error"})[connection] || "Error"
@@ -643,6 +648,7 @@ Item {
     historyHasMore = null
     historyNextCursor = null
     historyOlderState = "idle"
+    historyLive = false
     clearOlderRequest()
   }
   function clearOlderRequest() {
@@ -847,10 +853,10 @@ Item {
     if (!sampleMode) selectedRoomId = ""
   }
   function validCapabilities(capabilities) {
-    return Array.isArray(capabilities) && capabilities.length >= 1 && capabilities.length <= 13
+    return Array.isArray(capabilities) && capabilities.length >= 1 && capabilities.length <= 14
       && capabilities.indexOf("connection_status") !== -1
       && capabilities.every(function(cap, index) {
-        return ["connection_status", "room_catalog", "room_history", "message_send", "room_recipients", "history_auto_refresh", "room_activity", "agent_profiles", "thread_replies", "thread_send", "thread_summaries", "dm_open", "older_history"].indexOf(cap) !== -1 && capabilities.indexOf(cap) === index
+        return ["connection_status", "room_catalog", "room_history", "message_send", "room_recipients", "history_auto_refresh", "room_activity", "agent_profiles", "thread_replies", "thread_send", "thread_summaries", "dm_open", "older_history", "live_updates"].indexOf(cap) !== -1 && capabilities.indexOf(cap) === index
       })
   }
   // Streams carry no participants and are never hidden. A DM lists 2-9 distinct
@@ -902,6 +908,9 @@ Item {
         || typeof cursor.id !== "string" || !/^[a-f0-9]{64}$/.test(cursor.id)
         || history.state !== "snapshot" || history.hasMore !== true)) return null
     if (["idle", "loading", "unavailable"].indexOf(olderState) === -1) return null
+    // Absent from helpers without live updates. Only a snapshot can be live.
+    var live = history.live === undefined ? false : history.live
+    if (typeof live !== "boolean" || (live && history.state !== "snapshot")) return null
     if (history.state !== "snapshot" && history.rows.length !== 0) return null
     var clean = []
     var ids = ({})
@@ -930,7 +939,7 @@ Item {
         thread: thread == null ? null : {replies: thread.replies, lastReplyAt: thread.lastReplyAt, participants: thread.participants.slice()}})
     }
     return {state: history.state, roomId: history.roomId, rows: clean, hasMore: history.hasMore, category: history.category || "",
-      nextCursor: cursor === null ? null : {createdAt: cursor.createdAt, id: cursor.id}, olderState: olderState}
+      nextCursor: cursor === null ? null : {createdAt: cursor.createdAt, id: cursor.id}, olderState: olderState, live: live}
   }
   function beginSession() {
     losePendingDelivery()
@@ -1061,7 +1070,7 @@ Item {
     var supportsHistory = frame.capabilities.indexOf("room_history") !== -1
     if (supportsHistory) {
       history = validatedHistory(state.history)
-      if (!history) { fail("invalid_response"); return false }
+      if (!history || (history.live && frame.capabilities.indexOf("live_updates") === -1)) { fail("invalid_response"); return false }
     }
     var supportsThread = frame.capabilities.indexOf("thread_replies") !== -1
     var thread = supportsThread ? validatedThread(state.thread) : null
@@ -1131,9 +1140,10 @@ Item {
         historyHasMore = history.hasMore
         if (!sameProjection(historyNextCursor, history.nextCursor)) historyNextCursor = history.nextCursor
         historyOlderState = history.olderState
+        historyLive = history.live
         // The helper took the request over, or the cursor it answered has moved on.
         if (olderRequested && (history.olderState === "loading" || JSON.stringify(history.nextCursor) !== olderRequestCursor)) clearOlderRequest()
-      }
+      } else historyLive = false // a refresh closes the live subscription; the kept rows are a snapshot again
       if (history.state === "snapshot" && typeof state.identity === "string") {
         var observed = ActivityObserver.observe(activityObservation,
           incomingScope + "|" + frame.instanceId + "|" + frame.generation + "|" + selectedRoomId,
@@ -1192,6 +1202,7 @@ Item {
     automaticHistorySupported = frame.capabilities.indexOf("history_auto_refresh") !== -1
     threadSummariesSupported = supportsHistory && frame.capabilities.indexOf("thread_summaries") !== -1
     olderHistorySupported = supportsHistory && frame.capabilities.indexOf("older_history") !== -1
+    liveUpdatesSupported = supportsHistory && frame.capabilities.indexOf("live_updates") !== -1
     instanceId = frame.instanceId
     generation = frame.generation
     relay = state.relay || ""
@@ -1269,8 +1280,11 @@ Item {
       root.pendingThreadRequestId = ""
     }
   }
+  // While the helper's live subscription is primed it refetches the open thread itself
+  // on live replies and every 30 seconds; this panel refresh slows to match.
   Timer {
-    interval: 8000
+    id: threadRefresh
+    interval: root.threadRefreshInterval
     repeat: true
     running: root.panelOpen && root.threadState === "snapshot" && !root.pendingThreadRequestId && root.resyncStage === "" && root.canOpenThread(root.threadRootId)
     onTriggered: root.refreshThread()
