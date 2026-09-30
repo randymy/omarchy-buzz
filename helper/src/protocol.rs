@@ -292,6 +292,9 @@ pub struct History {
     /// `idle`, `loading` or `unavailable`: the latest older-page request. A
     /// failed older page never clears the rows already shown.
     pub older_state: String,
+    /// True only while the live subscription for this room is primed. Live
+    /// events only trigger refetches; rows always come from verified pages.
+    pub live: bool,
 }
 impl History {
     pub fn unavailable(room: Option<String>, category: Option<&str>) -> Self {
@@ -303,6 +306,7 @@ impl History {
             category: category.map(str::to_owned),
             next_cursor: None,
             older_state: "idle".into(),
+            live: false,
         }
     }
 }

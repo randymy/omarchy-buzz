@@ -100,6 +100,10 @@ async fn scenario(select_background_before_denial: bool) {
             let ws_task = tokio::spawn(async move {
                 while let Some(Ok(Message::Text(text))) = ws.next().await {
                     let frame: Value = serde_json::from_str(&text).unwrap();
+                    // The live subscription is never primed here: polling is under test.
+                    if matches!(frame[0].as_str(), Some("REQ" | "CLOSE")) {
+                        continue;
+                    }
                     assert_eq!(frame[0], "COUNT");
                     ws.send(Message::Text(json!(["COUNT", frame[1], {"count":0}]).to_string().into())).await.unwrap();
                 }

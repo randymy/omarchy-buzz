@@ -103,7 +103,7 @@ async fn integrated(mode: u8) {
             assert!(rx.borrow().recipients.entries.iter().any(|r|r.key==recipient_key && r.name=="Self asserted name"));
         }
         if revoking {
-            history_tx.send_modify(|s|s.history=crate::protocol::History {state:"snapshot".into(),room_id:Some(room.clone()),rows:vec![crate::protocol::HistoryRow { reactions: None,thread: None,id:"1".repeat(64),author:public.to_hex(),time:1,text:"previously authorized history".into(),edited:false,truncated:false,unavailable:false}],has_more:Some(false),category:Some("history_completeness_unknown".into()),next_cursor:None,older_state:"idle".into()});
+            history_tx.send_modify(|s|s.history=crate::protocol::History {state:"snapshot".into(),room_id:Some(room.clone()),rows:vec![crate::protocol::HistoryRow { reactions: None,thread: None,id:"1".repeat(64),author:public.to_hex(),time:1,text:"previously authorized history".into(),edited:false,truncated:false,unavailable:false}],has_more:Some(false),category:Some("history_completeness_unknown".into()),next_cursor:None,older_state:"idle".into(),live:false});
             commands.send(Command::FetchRecipients(room.clone())).await.unwrap();
             while rx.borrow().recipients.category.as_deref()!=Some("recipients_access_denied") {rx.changed().await.unwrap();}
             assert!(rx.borrow().catalog.rooms.iter().all(|r|r.id!=room));assert!(rx.borrow().history.rows.is_empty());assert_eq!(rx.borrow().history.category.as_deref(),Some("history_access_denied"));

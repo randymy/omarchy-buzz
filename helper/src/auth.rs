@@ -27,6 +27,10 @@ pub fn read_keys(c: &config::Config) -> Result<nostr::Keys, &'static str> {
 fn publish_status(tx: &watch::Sender<Status>, change: impl FnOnce(&mut Status)) {
     tx.send_modify(|status| {
         change(status);
+        // `live` describes a shown snapshot; it can never outlive one.
+        if status.history.state != "snapshot" {
+            status.history.live = false;
+        }
         if status.thread.root_id.is_some()
             && (status.history.state != "snapshot"
                 || status.thread.room_id != status.history.room_id
@@ -163,11 +167,18 @@ struct FreshnessPolicy {
     response: Duration,
     // Cadence of the joined-room check after each completed discovery.
     catalog: Duration,
+    // Selected-room head poll without a primed live subscription.
+    head: Duration,
+    // Head poll, and the helper's own open-thread refresh, while the live
+    // subscription is primed. Polling stays the safety net for missed events.
+    live_poll: Duration,
 }
 const FRESHNESS: FreshnessPolicy = FreshnessPolicy {
     interval: Duration::from_secs(20),
     response: Duration::from_secs(5),
     catalog: Duration::from_secs(30),
+    head: Duration::from_secs(5),
+    live_poll: Duration::from_secs(30),
 };
 #[derive(Default)]
 struct Backoff {
@@ -386,6 +397,7 @@ async fn observe_sending(
 ) -> ConnectionExit {
     // A DM open cannot outlive its connection: its answer would arrive on this socket.
     let mut opener = crate::dm_open::Opener::default();
+    let mut live = crate::live::Live::default();
     let result = observe_inner(
         conn,
         keys,
@@ -397,8 +409,14 @@ async fn observe_sending(
         policy,
         sender,
         &mut opener,
+        &mut live,
     )
     .await;
+    // Every exit (Retry, shutdown, failure) closes the live subscription first,
+    // under a short deadline; a dead socket is dropped by the caller anyway.
+    if let Some(close) = live.close() {
+        let _ = timeout(Duration::from_secs(1), conn.send_raw(&close)).await;
+    }
     if let Some(delivery) = sender.unknown() {
         publish_status(tx, |s| s.delivery = delivery);
     }
@@ -418,6 +436,7 @@ async fn observe_inner(
     policy: FreshnessPolicy,
     sender: &mut crate::sending::Sender,
     opener: &mut crate::dm_open::Opener,
+    live: &mut crate::live::Live,
 ) -> ConnectionExit {
     let mut pending: Option<String> = None;
     let mut due = tokio::time::Instant::now();
@@ -450,7 +469,79 @@ async fn observe_inner(
             held = crate::history::Held::default();
         }};
     }
+    // Live triggers (see `live.rs`) only schedule these refetches through the
+    // verified page paths; `last_*` is when the latest read of each started.
+    let mut head_refetch: Option<tokio::time::Instant> = None;
+    let mut thread_refetch: Option<tokio::time::Instant> = None;
+    let mut last_head: Option<tokio::time::Instant> = None;
+    let mut last_thread: Option<tokio::time::Instant> = None;
+    macro_rules! send_frame {
+        ($frame:expr) => {{
+            match timeout(policy.response, conn.send_raw(&$frame)).await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => return ConnectionExit::Failure(category(&e)),
+                Err(_) => return ConnectionExit::Failure("relay_timeout"),
+            }
+        }};
+    }
+    macro_rules! close_live {
+        () => {{
+            thread_refetch = None;
+            if let Some(close) = live.close() {
+                publish_status(tx, |s| s.history.live = false);
+                send_frame!(close);
+            }
+        }};
+    }
+    macro_rules! project {
+        () => {
+            held.project().map(|mut view| {
+                view.live = live.primed_for(view.room_id.as_deref());
+                view
+            })
+        };
+    }
+    macro_rules! head_interval {
+        ($room:expr) => {
+            if live.primed_for(Some(($room).as_str())) {
+                policy.live_poll
+            } else {
+                policy.head
+            }
+        };
+    }
+    macro_rules! spawn_head {
+        ($room:expr) => {{
+            let room: String = $room;
+            history_ticket = history_ticket.wrapping_add(1);
+            head_refetch = None;
+            last_head = Some(tokio::time::Instant::now());
+            let ticket = history_ticket;
+            let generation = tx.borrow().generation;
+            let relay = relay.to_owned();
+            let keys = keys.clone();
+            let pin = relay_pin.unwrap();
+            let id = uuid::Uuid::parse_str(&room).expect("selected canonical room");
+            history_jobs.spawn(async move {
+                let result = match timeout(
+                    Duration::from_secs(15),
+                    crate::history::fetch(&relay, &keys, pin, id),
+                )
+                .await
+                {
+                    Ok(r) => r,
+                    Err(_) => Err("history_timeout"),
+                };
+                (ticket, generation, room, result)
+            });
+        }};
+    }
     loop {
+        // Only the selected room of a fresh session may hold the live
+        // subscription; every path that drops the selection closes it here.
+        if live.room().is_some() && (!fresh || selected_history.as_deref() != live.room()) {
+            close_live!();
+        }
         tokio::select! {
             biased;
             _=tokio::time::sleep_until(due)=> {
@@ -555,6 +646,7 @@ async fn observe_inner(
                     });
                 },
                 Some(Command::CloseThread)=> {
+                    thread_refetch=None;
                     thread_jobs.abort_all();thread_jobs=tokio::task::JoinSet::new();thread_ticket=thread_ticket.wrapping_add(1);
                     publish_status(tx,|s|s.thread=Thread::unavailable(None,None,None));
                 },
@@ -571,6 +663,7 @@ async fn observe_inner(
                     }
                     publish_status(tx,|s|s.thread=Thread{state:"loading".into(),..Thread::unavailable(Some(room.clone()),Some(root.clone()),None)});
                     let ticket=thread_ticket;let generation=tx.borrow().generation;let relay=relay.to_owned();let keys=keys.clone();let pin=relay_pin.unwrap();let id=parsed.unwrap();
+                    last_thread=Some(tokio::time::Instant::now());
                     thread_jobs.spawn(async move {
                         // Up to four sequential pages (each query is capped at 10 s); abort semantics are unchanged.
                         let result=match timeout(Duration::from_secs(20),crate::thread::fetch(&relay,&keys,pin,id,&root)).await {Ok(r)=>r,Err(_)=>Err("thread_timeout")};
@@ -578,6 +671,10 @@ async fn observe_inner(
                     });
                 },
                 Some(Command::FetchRecent(room))=> {
+                    // Re-selecting (the same or another room) re-issues the live
+                    // subscription after the new head page, as on reconnect.
+                    close_live!();
+                    live.select(&room);
                     thread_jobs.abort_all();thread_jobs=tokio::task::JoinSet::new();thread_ticket=thread_ticket.wrapping_add(1);
                     publish_status(tx,|s|s.thread=Thread::unavailable(None,None,None));
                     history_jobs.abort_all(); history_jobs=tokio::task::JoinSet::new();
@@ -590,7 +687,8 @@ async fn observe_inner(
                         continue;
                     }
                     selected_history=Some(room.clone());
-                    history_due=tokio::time::Instant::now()+Duration::from_secs(5);
+                    history_due=tokio::time::Instant::now()+policy.head;
+                    head_refetch=None;last_head=Some(tokio::time::Instant::now());
                     publish_status(tx, |s|s.history=History {state:"loading".into(),..History::unavailable(Some(room.clone()),None)});
                     let ticket=history_ticket; let generation=tx.borrow().generation; let relay=relay.to_owned(); let keys=keys.clone(); let pin=relay_pin.unwrap(); let id=parsed.unwrap();
                     history_jobs.spawn(async move {
@@ -608,7 +706,7 @@ async fn observe_inner(
                     let generation=status.generation;drop(status);
                     let Some(cursor)=held.continuation().cloned().filter(|_|allowed && older_jobs.is_empty()) else {continue;};
                     held.older_state="loading";
-                    if let Some(view)=held.project() {publish_status(tx,|s|s.history=view);}
+                    if let Some(view)=project!() {publish_status(tx,|s|s.history=view);}
                     let ticket=older_ticket;let relay=relay.to_owned();let keys=keys.clone();let pin=relay_pin.unwrap();let id=uuid::Uuid::parse_str(&room).expect("selected canonical room");
                     older_jobs.spawn(async move {
                         let result=match timeout(Duration::from_secs(15),crate::history::fetch_older(&relay,&keys,pin,id,&cursor)).await {Ok(r)=>r,Err(_)=>Err("history_timeout")};
@@ -619,15 +717,39 @@ async fn observe_inner(
             _=tokio::time::sleep_until(history_due), if selected_history.is_some() && fresh && history_jobs.is_empty()=> {
                 let room=selected_history.as_ref().unwrap().clone();
                 let allowed=relay_pin.is_some() && tx.borrow().catalog.state=="partial" && tx.borrow().catalog.rooms.iter().any(|r|r.id==room);
+                history_due=tokio::time::Instant::now()+head_interval!(&room);
+                if allowed {spawn_head!(room);}
+            },
+            // A verified live event for the selected room: refetch its head page.
+            _=tokio::time::sleep_until(head_refetch.unwrap_or(history_due)), if head_refetch.is_some() && selected_history.is_some() && fresh && history_jobs.is_empty()=> {
+                head_refetch=None;
+                let room=selected_history.as_ref().unwrap().clone();
+                let allowed=relay_pin.is_some() && tx.borrow().catalog.state=="partial" && tx.borrow().catalog.rooms.iter().any(|r|r.id==room);
                 if allowed {
-                    history_ticket=history_ticket.wrapping_add(1);
-                    let ticket=history_ticket;let generation=tx.borrow().generation;let relay=relay.to_owned();let keys=keys.clone();let pin=relay_pin.unwrap();let id=uuid::Uuid::parse_str(&room).expect("selected canonical room");
-                    history_jobs.spawn(async move {
-                        let result=match timeout(Duration::from_secs(15),crate::history::fetch(&relay,&keys,pin,id)).await {Ok(r)=>r,Err(_)=>Err("history_timeout")};
-                        (ticket,generation,room,result)
-                    });
+                    history_due=tokio::time::Instant::now()+head_interval!(&room);
+                    spawn_head!(room);
                 }
-                history_due=tokio::time::Instant::now()+Duration::from_secs(5);
+            },
+            // Helper-initiated open-thread refresh: after a live event with an `e`
+            // tag, and every `live_poll` while live. Same scope checks as a
+            // `fetch_thread` request; the shown snapshot stays until the result.
+            _=tokio::time::sleep_until(thread_refetch.unwrap_or(history_due)), if thread_refetch.is_some() && fresh && thread_jobs.is_empty()=> {
+                thread_refetch=None;
+                let scope={
+                    let status=tx.borrow();
+                    match (status.thread.room_id.as_deref(),status.thread.root_id.as_deref()) {
+                        (Some(room),Some(root)) if status.thread.state=="snapshot" && thread_allowed(&status,selected_history.as_deref(),room,root,fresh,relay_pin.is_some())=>Some((room.to_owned(),root.to_owned(),status.generation)),
+                        _=>None,
+                    }
+                };
+                let Some((room,root,generation))=scope else {continue;};
+                let Some(id)=uuid::Uuid::parse_str(&room).ok().filter(|id|id.to_string()==room) else {continue;};
+                thread_ticket=thread_ticket.wrapping_add(1);last_thread=Some(tokio::time::Instant::now());
+                let ticket=thread_ticket;let relay=relay.to_owned();let keys=keys.clone();let pin=relay_pin.unwrap();
+                thread_jobs.spawn(async move {
+                    let result=match timeout(Duration::from_secs(20),crate::thread::fetch(&relay,&keys,pin,id,&root)).await {Ok(r)=>r,Err(_)=>Err("thread_timeout")};
+                    (ticket,generation,room,root,result)
+                });
             },
             result=recipient_jobs.join_next(), if !recipient_jobs.is_empty()=> {
                 if matches!(&result,Some(Err(e)) if !e.is_cancelled()) {
@@ -762,6 +884,9 @@ async fn observe_inner(
                                 Thread::unavailable(Some(room.clone()),Some(root.clone()),Some(thread_category(error)))
                             },
                         });
+                        if live.primed_for(Some(room.as_str())) && tx.borrow().thread.state=="snapshot" && thread_refetch.is_none() {
+                            thread_refetch=Some(tokio::time::Instant::now()+policy.live_poll);
+                        }
                     }
                 }
             },
@@ -798,11 +923,11 @@ async fn observe_inner(
                         Ok(())|Err("history_stale_cursor")=>"idle",
                         Err(error)=> {eprintln!("omarchy-buzz: older history read failed: {error}");"unavailable"},
                     };
-                    if let Some(view)=held.project() {publish_status(tx,|s|s.history=view);}
+                    if let Some(view)=project!() {publish_status(tx,|s|s.history=view);}
                 },
                 Some(Err(error)) if !error.is_cancelled()=> {
                     held.older_state="unavailable";
-                    if let Some(view)=held.project() {publish_status(tx,|s|s.history=view);}
+                    if let Some(view)=project!() {publish_status(tx,|s|s.history=view);}
                 },
                 _=>{},
             },
@@ -814,7 +939,8 @@ async fn observe_inner(
                 if let Some(Ok((ticket,generation,room,result)))=result {
                     let allowed=ticket==history_ticket && generation==tx.borrow().generation && fresh && selected_history.as_deref()==Some(room.as_str()) && tx.borrow().catalog.state=="partial" && tx.borrow().catalog.rooms.iter().any(|r|r.id==room);
                     if allowed {
-                        history_due=tokio::time::Instant::now()+Duration::from_secs(5);
+                        history_due=tokio::time::Instant::now()+head_interval!(&room);
+                        let fetched=matches!(&result,Ok(h) if h.room==room);
                         let denied=result.as_ref().is_err_and(|error|history_category(error)=="history_access_denied");
                         let mut revoked_delivery=None;
                         if denied {
@@ -830,7 +956,7 @@ async fn observe_inner(
                         }
                         // A new head is reconciled with held older pages; any error drops them.
                         let projected=match result {
-                            Ok(h) if h.room==room=> {held.head(h);held.project().expect("head just held")},
+                            Ok(h) if h.room==room=> {held.head(h);project!().expect("head just held")},
                             Ok(_)=> {drop_older!();History::unavailable(Some(room.clone()),Some("history_invalid"))},
                             Err(error)=> {drop_older!();History::unavailable(Some(room.clone()),Some(history_category(error)))},
                         };
@@ -843,6 +969,12 @@ async fn observe_inner(
                             s.activity=activity.summaries();
                             s.history=projected;
                         });
+                        // The live subscription is (re)armed only after a verified
+                        // head page for the selected room in a fresh session.
+                        if fetched && fresh && live.room().is_none() && live.can_arm(tokio::time::Instant::now()) {
+                            let request=live.arm(&room,nostr::Timestamp::now().as_secs());
+                            send_frame!(request);
+                        }
                     }
                 }
             },
@@ -933,8 +1065,59 @@ async fn observe_inner(
                     if !fresh {fresh=true;catalog_due=tokio::time::Instant::now();}
                 },
                 Ok(RelayMessage::Closed { subscription_id, .. }) if pending.as_deref()==Some(subscription_id.as_str())=>return ConnectionExit::Failure("relay_protocol_error"),
+                Ok(RelayMessage::Eose { subscription_id }) if live.is(&subscription_id)=> {
+                    if live.eose(&subscription_id) {
+                        let primed=live.primed_room().map(str::to_owned);
+                        publish_status(tx,|s|s.history.live=s.history.state=="snapshot" && s.history.room_id==primed);
+                        history_due=tokio::time::Instant::now()+policy.live_poll;
+                        let open=tx.borrow().thread.state=="snapshot" && tx.borrow().thread.room_id==primed;
+                        if open && thread_refetch.is_none() {thread_refetch=Some(tokio::time::Instant::now()+policy.live_poll);}
+                    }
+                },
+                // The relay ended the live subscription: poll, re-arm after backoff.
+                Ok(RelayMessage::Closed { subscription_id, .. }) if live.is(&subscription_id)=> {
+                    live.closed_by_relay(tokio::time::Instant::now());
+                    thread_refetch=None;
+                    publish_status(tx,|s|s.history.live=false);
+                    history_due=history_due.min(tokio::time::Instant::now()+policy.head);
+                },
+                Ok(RelayMessage::Event { subscription_id, event }) if live.is(&subscription_id)=> {
+                    let now=tokio::time::Instant::now();
+                    let verdict={
+                        let status=tx.borrow();
+                        live.event(&subscription_id,&event,*relay_pin,|id|status.history.rows.iter().any(|r|r.id==id),now)
+                    };
+                    match verdict {
+                        crate::live::Frame::Trigger { thread }=> {
+                            let gap=live.gap(now);
+                            let at=|last:Option<tokio::time::Instant>|(now+crate::live::DEBOUNCE).max(last.map_or(now,|l|l+gap));
+                            if head_refetch.is_none() {head_refetch=Some(at(last_head));}
+                            let open={let status=tx.borrow();status.thread.root_id.is_some() && status.thread.room_id.as_deref()==live.room()};
+                            if thread && open {
+                                let next=at(last_thread);
+                                thread_refetch=Some(thread_refetch.map_or(next,|t|t.min(next)));
+                            }
+                        },
+                        crate::live::Frame::Flood(close)=> {
+                            // A count only; frame contents are never logged.
+                            eprintln!("omarchy-buzz: live subscription closed after repeated unverifiable frames");
+                            thread_refetch=None;
+                            publish_status(tx,|s|s.history.live=false);
+                            send_frame!(close);
+                            history_due=history_due.min(now+policy.head);
+                        },
+                        crate::live::Frame::Ignored|crate::live::Frame::Other=>{},
+                    }
+                },
                 Ok(RelayMessage::Auth { challenge })=> {
                     if challenge.len()>1024 { return ConnectionExit::Failure("relay_protocol_error"); }
+                    // Close the live subscription before `authenticate`: while it
+                    // waits for the challenge and OK, the pinned client buffers every
+                    // unrelated frame in an unbounded queue. With the subscription
+                    // closed only frames already in flight can land there. It is
+                    // re-armed after `fresh` and a new head page (history result arm).
+                    close_live!();
+                    head_refetch=None;
                     if let Some(delivery)=sender.unknown() {publish_status(tx, |s|s.delivery=delivery);}
                     if let Some(view)=opener.unknown() {publish_status(tx, |s|s.dm_open=view);}
                     recipient_jobs.abort_all();recipient_jobs=tokio::task::JoinSet::new();recipient_ticket=recipient_ticket.wrapping_add(1);
@@ -1215,6 +1398,7 @@ mod thread_policy_tests {
             category: Some("history_completeness_unknown".into()),
             next_cursor: None,
             older_state: "idle".into(),
+            live: false,
         };
         let allowed = |s: &Status, selected: Option<&str>, fresh, pinned| {
             thread_allowed(s, selected, room, &root, fresh, pinned)
@@ -1325,6 +1509,7 @@ mod thread_policy_tests {
             category: Some("history_completeness_unknown".into()),
             next_cursor: None,
             older_state: "idle".into(),
+            live: false,
         };
         status.thread = Thread {
             state: "snapshot".into(),
@@ -1364,3 +1549,7 @@ mod send_integration_tests;
 #[cfg(test)]
 #[path = "auth_activity_tests.rs"]
 mod activity_integration_tests;
+
+#[cfg(test)]
+#[path = "auth_live_tests.rs"]
+mod live_integration_tests;

@@ -105,6 +105,8 @@ async fn scenario(in_flight: bool, automatic: bool, automatic_failure: bool) {
                         match value[0].as_str().unwrap() {
                             "COUNT"=>{assert_eq!(value[2],json!({"kinds":[0],"authors":[public.to_hex()],"limit":1}));ws.send(Message::Text(json!(["COUNT",value[1],{"count":0}]).to_string().into())).await.unwrap();},
                             "AUTH"=>{assert!(challenged);let event:Event=serde_json::from_value(value[1].clone()).unwrap();event.verify().unwrap();assert_eq!(event.pubkey,public);assert!(event.tags.iter().any(|t|t.as_slice()==["challenge","again"]));timeout(Duration::from_secs(4),ack_wait.take().unwrap()).await.unwrap().unwrap();ws.send(Message::Text(json!(["OK",event.id.to_hex(),true,""]).to_string().into())).await.unwrap();},
+                            // Never primed here: the polling fallback is under test.
+                            "REQ"|"CLOSE"=>{},
                             other=>panic!("unexpected observer request {other}"),
                         }
                     }
@@ -252,6 +254,10 @@ async fn older_page_is_held_across_head_refresh_and_dropped_on_reselect() {
             let _websocket = AbortTask(tokio::spawn(async move {
                 while let Some(Ok(Message::Text(text))) = ws.next().await {
                     let value: Value = serde_json::from_str(&text).unwrap();
+                    // Never primed here: the polling fallback is under test.
+                    if matches!(value[0].as_str(), Some("REQ" | "CLOSE")) {
+                        continue;
+                    }
                     assert_eq!(value[0], "COUNT");
                     ws.send(Message::Text(json!(["COUNT", value[1], {"count": 0}]).to_string().into())).await.unwrap();
                 }

@@ -52,7 +52,7 @@ def status(frame, kind):
     assert frame["status"]["catalog"]["rooms"] == [], frame
     assert frame["status"]["history"] == {
         "state": "unavailable", "roomId": None, "rows": [], "hasMore": None, "category": None,
-        "nextCursor": None, "olderState": "idle",
+        "nextCursor": None, "olderState": "idle", "live": False,
     }, frame
     assert frame["status"]["thread"] == {
         "state": "unavailable", "roomId": None, "rootId": None, "rows": [], "hasMore": None, "category": None,
