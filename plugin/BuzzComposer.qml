@@ -15,7 +15,8 @@ ColumnLayout {
   property bool pickerExpanded: false
   property int mentionIndex: 0
   property bool mentionDismissed: false
-  // The 📎 control reveals a field for a file's full path; the helper checks it.
+  // The 📎 control reveals a field for a file's full path, with Browse… for the
+  // desktop's file chooser; the helper checks the path either way.
   property bool attachOpen: false
   readonly property var pending: service && service.attachmentsSupported ? service.pendingFor(rootId) : []
   readonly property string uploadNote: service && service.attachmentsSupported ? service.uploadLabelFor(rootId) : ""
@@ -201,7 +202,7 @@ ColumnLayout {
       id: attachPath
       objectName: root.fieldName + "AttachPath"
       Layout.fillWidth: true
-      placeholderText: "Full path of a file, e.g. /home/you/Pictures/photo.png"
+      placeholderText: "Full path of a file, or Browse…"
       placeholderTextColor: Util.alpha(Color.foreground, 0.5)
       color: Color.foreground
       font.family: Style.font.family
@@ -213,6 +214,7 @@ ColumnLayout {
         radius: Style.cornerRadius
       }
       onAccepted: root.attach()
+      onTextChanged: attachChooser.problem = ""
       Keys.onEscapePressed: function(event) { root.attachOpen = false; area.forceActiveFocus(); event.accepted = true }
     }
     Ui.Button {
@@ -228,6 +230,30 @@ ColumnLayout {
       opacity: attachPath.text.trim() !== "" && !root.service.uploadingFor(root.rootId) && root.pending.length < 4 ? 1 : 0.5
       onClicked: root.attach()
     }
+    // The desktop's file chooser fills the field and attaches, as Attach does.
+    BuzzFileChooser {
+      id: attachChooser
+      title: "Attach a file"
+      tooltipText: "Choose a file to attach"
+      nameFilters: ["All files (*)", "Images (*.png *.jpg *.jpeg *.gif *.webp)"]
+      enabled: !!root.service && root.service.attachmentsAvailable
+      onChosen: function(path) {
+        attachPath.text = path
+        root.attach()
+      }
+    }
+  }
+  Text {
+    objectName: root.fieldName + "BrowseProblem"
+    Layout.fillWidth: true
+    visible: root.attachOpen && root.usable && attachChooser.problem !== ""
+    text: attachChooser.problem
+    textFormat: Text.PlainText
+    wrapMode: Text.WordWrap
+    color: Color.foreground
+    opacity: 0.7
+    font.family: Style.font.family
+    font.pixelSize: Style.font.caption
   }
   Text {
     objectName: root.fieldName + "UploadStatus"
@@ -350,7 +376,7 @@ ColumnLayout {
       objectName: root.fieldName + "AttachToggle"
       Layout.alignment: Qt.AlignBottom
       text: "📎" + (root.pending.length ? " " + root.pending.length : "")
-      tooltipText: "Attach a file by its full path (up to four per message)"
+      tooltipText: "Attach a file by its full path or with Browse… (up to four per message)"
       focusable: true
       selected: root.attachOpen
       visible: !!root.service && root.usable && root.service.attachmentsSupported
