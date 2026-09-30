@@ -122,6 +122,11 @@ pub struct Persona {
     pub workspace: String,
     pub identity: Option<String>,
     pub start_at_login: bool,
+    /// Launch without a room filter so the agent also answers direct messages
+    /// (to its owner only; `respondTo` still applies in rooms). Stores written
+    /// before this field existed load it as false.
+    #[serde(default)]
+    pub answers_dms: bool,
     /// The owner's NIP-OA `auth` tag JSON for `identity` (public, not secret).
     pub auth_tag: Option<String>,
     /// True only after the relay's `OK` for every enrollment publication.

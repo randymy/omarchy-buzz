@@ -63,8 +63,14 @@ pub fn exec_argv(
         "--relay".into(),
         relay.into(),
     ];
-    for room in &persona.rooms {
-        argv.extend(["--room".into(), room.clone()]);
+    if persona.answers_dms {
+        // No room filter: the agent listens in every channel it is a member
+        // of (the rooms added at enrollment and DMs opened with it).
+        argv.push("--answers-dms".into());
+    } else {
+        for room in &persona.rooms {
+            argv.extend(["--room".into(), room.clone()]);
+        }
     }
     argv.extend([
         "--owner".into(),

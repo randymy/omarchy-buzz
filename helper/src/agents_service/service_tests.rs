@@ -125,7 +125,7 @@ impl Fixture {
 fn fields_json() -> serde_json::Value {
     serde_json::json!({"name":"Scout","description":"Reads the logs.","instructions":"Answer briefly.",
         "harness":"codex","model":"","rooms":[ROOM_A],"respondTo":"owner-only","workspace":"",
-        "startAtLogin":false,"acpCommand":"buzz-acp"})
+        "startAtLogin":false,"acpCommand":"buzz-acp","answersDms":false})
 }
 const UNREACHABLE: &str = "ws://127.0.0.1:9/";
 
@@ -571,6 +571,20 @@ async fn updates_stop_only_for_launch_fields_and_republish_enrolled_agents() {
         .unwrap();
     assert_eq!(f.control.units.lock().unwrap()[&name].0, "inactive");
     assert_eq!(relay.seen.lock().unwrap().len(), before);
+    // Answering direct messages changes the launch argv: it stops the agent
+    // like a rooms edit, and publishes nothing.
+    assert!(!f.agent(&id).answers_dms);
+    f.control
+        .units
+        .lock()
+        .unwrap()
+        .insert(name.clone(), ("active", false));
+    f.run(serde_json::json!({"type":"update_agent","agentId":id,"fields":{"answersDms":true}}))
+        .await
+        .unwrap();
+    assert_eq!(f.control.units.lock().unwrap()[&name].0, "inactive");
+    assert_eq!(relay.seen.lock().unwrap().len(), before);
+    assert!(f.agent(&id).answers_dms && f.stored(&id).answers_dms);
     // Invalid edits change nothing.
     for bad in [
         serde_json::json!({"name":""}),
@@ -874,6 +888,7 @@ async fn status_frames_have_exactly_the_contract_shape_and_fit_the_bound() {
         keys(&frame["status"]["agents"][0]),
         [
             "acpCommand",
+            "answersDms",
             "description",
             "enrolled",
             "harness",

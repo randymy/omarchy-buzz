@@ -36,6 +36,21 @@ fn renders_the_reviewed_template_exactly() {
 }
 
 #[test]
+fn answering_dms_renders_no_room_filter() {
+    let mut p = enrolled();
+    p.answers_dms = true;
+    let rendered = render(&example_paths(), &p, RELAY, OWNER).unwrap();
+    assert_eq!(rendered, include_str!("testdata/agent-dms.service"));
+    let argv = exec_argv(&example_paths(), &p, RELAY, OWNER).unwrap();
+    assert!(!argv
+        .iter()
+        .any(|w| w == "--room" || w == ROOM_A || w == ROOM_B));
+    let at = argv.iter().position(|w| w == "--answers-dms").unwrap();
+    assert_eq!(argv[at - 1], RELAY);
+    assert_eq!(argv[at + 1], "--owner");
+}
+
+#[test]
 fn exec_start_is_the_contract_argv() {
     let paths = example_paths();
     let mut p = enrolled();

@@ -44,6 +44,7 @@ installation and identity administration for this one component.
 | `workspace` | absolute existing directory owned by the user; default `~/.local/state/omarchy-buzz-room-workspaces/<id>`; never `$HOME` itself, never under `~/.config`, `~/.ssh`, `~/.gnupg`, `~/.local/state/omarchy-buzz*` or another agent's workspace/profile |
 | `identity` | agent public key once enrolled; the private key lives only in Secret Service (`omarchy-buzz.room-agent.v1` / account = public key) |
 | `startAtLogin` | boolean, maps to `systemctl --user enable` |
+| `answersDms` | boolean, default false: launch without a room filter so the agent also answers direct messages (see Units) |
 
 ## IPC (line-delimited JSON, same envelope style as the helper)
 
@@ -63,12 +64,12 @@ status: {
   harnesses: [{id:"claude-code"|"codex", bundle:"ready"|"missing", signedIn:true|false|null}],
   agents: [{id,name,description,instructions,harness,model,acpCommand,rooms,respondTo,workspace,
             identity|null, enrolled:bool, unit:"active"|"inactive"|"failed"|"unknown",
-            startAtLogin:bool, published:bool, lastError:string|null}],
+            startAtLogin:bool, answersDms:bool, published:bool, lastError:string|null}],
   pending: {requestId,type,state:"working"|"done"|"failed",category:string|null} | null
 }
 ```
 
-Each agent has exactly those 16 keys; `id` is a lowercase UUID v4; `enrolled`
+Each agent has exactly those 17 keys; `id` is a lowercase UUID v4; `enrolled`
 is true only with a non-null `identity`; at most 16 agents. `pending.type` is
 one of the eight mutating types; `category` is non-null exactly when `state` is
 `failed`. Error frames have exactly `{"version":1,"type":"error","id":<request
@@ -80,7 +81,7 @@ The target agent is `agentId` because `id` is the request UUID:
 | type | other keys |
 | --- | --- |
 | `subscribe` | none |
-| `create_agent` | `fields:{name, description, instructions, harness, model, rooms, respondTo, workspace, startAtLogin, acpCommand:"buzz-acp"}` (all present; empty `workspace` = service default) |
+| `create_agent` | `fields:{name, description, instructions, harness, model, rooms, respondTo, workspace, startAtLogin, answersDms, acpCommand:"buzz-acp"}` (all present; empty `workspace` = service default) |
 | `update_agent` | `agentId`, `fields` with only the changed persona fields (never `startAtLogin`) |
 | `delete_agent` | `agentId`, `forget` (optional, default false) |
 | `enroll_agent`, `start_agent`, `stop_agent` | `agentId` |
@@ -88,7 +89,7 @@ The target agent is `agentId` because `id` is the request UUID:
 | `sign_in` | `harness` |
 
 `update_agent` stops a running agent first only when `harness`, `workspace`,
-`rooms` or `respondTo` change; other edits republish and take effect on next
+`rooms`, `respondTo` or `answersDms` change; other edits republish and take effect on next
 start. A room dropped from an enrolled agent is left on the relay (the owner's
 kind 9001 remove-member) during that republication. `delete_agent` removes an
 enrolled agent from all its rooms, then stops, disables, removes the unit,
@@ -119,10 +120,13 @@ argv array, no shell):
 ~/.local/share/omarchy-buzz/agent-<harness>/launcher/room-agent --harness <claude-code|codex>
   --profile ~/.local/state/omarchy-buzz-agent-preview/<harness> --workspace <ws>
   --bundle ~/.local/share/omarchy-buzz/agent-<harness> --relay <ws(s)://origin>
-  --room <uuid> [--room <uuid> … up to 8] --owner <hex> --identity <hex>
+  (--room <uuid> [--room <uuid> … up to 8] | --answers-dms) --owner <hex> --identity <hex>
   --respond-to <owner-only|mentions> --auth-tag <file> [--instructions <file>]
   [--model <name>]
 ```
+
+With `answersDms` true, `ExecStart` has no `--room` arguments and carries
+`--answers-dms` in their place (after `--relay`, before `--owner`).
 
 `mentions` is passed literally (the launcher maps it to upstream `anyone`).
 `--auth-tag` (added September 30 with the integration fixes) is always present
@@ -160,7 +164,8 @@ clients, idle exit after 30 s unless a request is still running).
   owner, stream rooms only; otherwise `relay_unavailable`); `respondTo`.
 - Store: `$XDG_STATE_HOME/omarchy-buzz/agents/personas.json`, 0600 in a 0700
   directory, replaced atomically (temporary file, fsync, rename, directory
-  fsync), ≤ 1 MiB, unknown keys refused, a group/other-readable or invalid file
+  fsync), ≤ 1 MiB, unknown keys refused (a missing `answersDms`, from a store
+  written before that field, loads as false), a group/other-readable or invalid file
   refused rather than repaired. Unique ids and identities, at most 16.
 - Workspace: absolute and normalized (no `.`, `..`, repeated or trailing
   separators, control characters), an existing directory with no symlinked
@@ -332,10 +337,26 @@ lowercase UUIDs, no duplicates):
 <bundle>/launcher/room-agent --harness claude-code|codex
   --profile ~/.local/state/omarchy-buzz-agent-preview/<harness>
   --workspace <workspace> --bundle ~/.local/share/omarchy-buzz/agent-<harness>
-  --relay <ws(s)://origin> --room <uuid> [--room <uuid> …]
+  --relay <ws(s)://origin> (--room <uuid> [--room <uuid> …] | --answers-dms)
   --owner <hex> --identity <hex> --respond-to owner-only|mentions
   [--auth-tag <file>] [--instructions <file>] [--model <name>]
 ```
+
+With `--answers-dms` (added September 30 for direct messages) `--room` may be
+omitted; rooms given anyway are validated (at most 8, canonical, distinct) but
+not passed on. `buzz-acp` then runs **without `--channels`**: it subscribes to
+every channel its identity is a member of and follows memberships added later
+(upstream `crates/buzz-acp/src/config.rs` `resolve_channel_filters` and
+`resolve_dynamic_channel_filter`, which only filter when `--channels` is set).
+**Membership defines the scope**: the rooms the service added the agent to at
+enrollment, plus any direct message opened with it. `--subscribe mentions` and
+`--respond-to` are unchanged; in a direct message upstream answers only the
+owner (or an agent sharing its owner) whatever `--respond-to` says
+(`crates/buzz-acp/src/lib.rs` `author_allowed`), and the mention filter is a
+`#p` filter, which a DM message satisfies because clients tag every other
+participant (Desktop `messageMentionPubkeys.ts`; the helper does the same since
+this change). A room the agent was added to outside this service is also in
+scope while the option is on.
 
 `--harness` and `--model` are additions to the Units list above. Defaults
 (`--harness codex`, `--respond-to owner-only`, no instructions, no model, one
@@ -349,7 +370,8 @@ is read: `separate_agent_and_owner_required`, `room_count_invalid`,
 
 Inside the sandbox `buzz-acp` runs with `--agent-command codex-acp` or
 `claude-agent-acp` (both names are upstream standard adapters,
-`crates/buzz-acp/src/acp.rs`), `--channels <rooms joined by commas>`,
+`crates/buzz-acp/src/acp.rs`), `--channels <rooms joined by commas>` (omitted
+with `--answers-dms`),
 `--subscribe mentions` and `--respond-to owner-only` or, for `mentions`,
 `--respond-to anyone` (upstream values: `owner-only|allowlist|anyone|nobody`,
 `crates/buzz-acp/src/config.rs`). Limits, permission mode and the memfd key

@@ -167,6 +167,24 @@ fn store_round_trips_at_0600_and_refuses_invalid_files() {
     assert_eq!(Store::open(&t.paths).err(), Some("store_invalid"));
     std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
     let text = String::from_utf8(good.clone()).unwrap();
+    // A store written before `answersDms` existed loads with it off; a
+    // non-boolean value is refused.
+    assert!(text.contains("\"answersDms\": false"));
+    std::fs::write(&file, text.replace("\"answersDms\": false,", "")).unwrap();
+    assert_eq!(Store::open(&t.paths).unwrap().agents, store.agents);
+    std::fs::write(
+        &file,
+        text.replace("\"answersDms\": false", "\"answersDms\": true"),
+    )
+    .unwrap();
+    assert!(Store::open(&t.paths).unwrap().agents[0].answers_dms);
+    std::fs::write(
+        &file,
+        text.replace("\"answersDms\": false", "\"answersDms\": \"yes\""),
+    )
+    .unwrap();
+    assert_eq!(Store::open(&t.paths).err(), Some("store_invalid"));
+    std::fs::write(&file, &good).unwrap();
     for bad in [
         "not json".to_string(),
         text.replace("\"version\": 1", "\"version\": 2"),
