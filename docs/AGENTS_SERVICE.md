@@ -215,12 +215,14 @@ AUTH event (`auth::connect_attested`), kind 0 `{"about","display_name"}` with th
 whose removal was not, so a dropped room stays there until its 9001 is
 acknowledged and is retried on the next publication (any republishing edit or
 `enroll_agent`); taking such a room back before that neither adds nor removes
-it, and an acknowledged room is never added again. At most 64 entries. 30175/30177 use a monotonic
-`created_at` (`max(now, previous + 1)`). `published` is true only after all of
-these; a rejection is `enroll_failed`, a missing answer, closed socket or
-unreachable relay `relay_unavailable`; relay text is never reported. A retry
-reuses the stored identity; if the owner identity changed, the attestation is
-reissued and rooms are added again.
+it, and an acknowledged room is never added again. At most 64 entries.
+30175/30177 (and that publication's 9000/9001) use a monotonic `created_at`
+(`max(now, previous + 1)`). `published` is true only after all of these; a
+rejection is `enroll_failed`, a missing answer, closed socket or unreachable
+relay `relay_unavailable`; relay text is never reported. A retry reuses the
+stored identity; if the owner identity changed, the attestation is reissued
+and rooms are added again (memberships recorded under the previous owner are
+forgotten, not left).
 
 **Harness scripts** (through a spawner trait, argv only, 15 s bound):
 `<bundle>/launcher/agent-bundle --check <harness>` (exit 0 and `ready` → ready,
