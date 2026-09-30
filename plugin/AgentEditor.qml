@@ -119,6 +119,10 @@ ColumnLayout {
   RowLayout {
     Layout.fillWidth: true
     spacing: Style.space(8)
+    BuzzAvatar {
+      key: root.agents && root.entry ? root.agents.avatarKey(root.entry) : ""
+      name: root.creating ? "New agent" : root.entry ? root.entry.name : ""
+    }
     Text {
       objectName: "buzzAgentTitle"
       text: root.creating ? "New agent" : root.entry ? root.entry.name : ""

@@ -43,6 +43,8 @@ Item {
 
   function harnessLabel(id) { return ({"claude-code": "Claude Code", codex: "Codex"})[id] || id }
   function harness(id) { return harnesses.find(function(entry) { return entry.id === id }) || null }
+  // Avatar key: the agent's public key once enrolled, else its persona id.
+  function avatarKey(entry) { return entry ? (entry.enrolled && entry.identity ? entry.identity : entry.id) : "" }
   function agent(id) { return agents.find(function(entry) { return entry.id === id }) || null }
   function statusWord(entry) {
     if (!entry) return ""
