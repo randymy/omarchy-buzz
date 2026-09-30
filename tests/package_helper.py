@@ -38,7 +38,7 @@ class Packaging(unittest.TestCase):
                 self.assertEqual(manifest["artifacts"][0]["bytes"], first.stat().st_size)
                 with tarfile.open(fileobj=io.BytesIO(first.read_bytes()), mode="r:gz") as tar:
                     names = tar.getnames()
-                    self.assertEqual(len(names), 7)
+                    self.assertEqual(len(names), 10)
                     self.assertTrue(all("config" not in name for name in names))
                     version = json.load(tar.extractfile(next(name for name in names if name.endswith("version.json"))))
                     self.assertEqual(version["architecture"], arch)

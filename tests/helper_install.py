@@ -81,6 +81,21 @@ class HelperInstall(unittest.TestCase):
         self.assertEqual(len(list(backups.iterdir())), 2)
         self.assertIn(("disable", "--now", "omarchy-buzz.socket"), self.calls)
 
+    def test_upgrade_from_install_without_agent_files(self):
+        paths = self.paths()
+        installer.install(self.home, self.archive, self.sidecar)
+        for name in ("service/omarchy-buzz-agents.service", "service/omarchy-buzz-agents.socket", "scripts/agent-login"):
+            paths[name].unlink()
+        self.calls.clear()
+        installer.install(self.home, self.archive, self.sidecar)
+        self.assertTrue(all(path.exists() for path in paths.values()))
+        self.assertIn(("enable", "--now", "omarchy-buzz-agents.socket"), self.calls)
+        self.assertNotIn(("stop", "omarchy-buzz-agents.socket", "omarchy-buzz-agents.service"), self.calls)
+        paths["scripts/agent-login"].unlink()
+        paths["bin/omarchy-buzz"].unlink()
+        with self.assertRaisesRegex(ValueError, "partial installation"):
+            installer.inspect_existing(paths)
+
     def test_checksum_and_unexpected_unit_rejected_before_systemd(self):
         data = json.loads(self.sidecar.read_text())
         data["artifacts"][0]["sha256"] = "0" * 64

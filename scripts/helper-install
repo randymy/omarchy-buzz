@@ -20,7 +20,15 @@ FILES = {
     "bin/omarchy-buzz": (".local/bin/omarchy-buzz", 0o755),
     "service/omarchy-buzz.service": (".config/systemd/user/omarchy-buzz.service", 0o644),
     "service/omarchy-buzz.socket": (".config/systemd/user/omarchy-buzz.socket", 0o644),
+    "service/omarchy-buzz-agents.service": (".config/systemd/user/omarchy-buzz-agents.service", 0o644),
+    "service/omarchy-buzz-agents.socket": (".config/systemd/user/omarchy-buzz-agents.socket", 0o644),
+    "scripts/agent-login": (".local/share/omarchy-buzz/scripts/agent-login", 0o755),
 }
+# Installations before 0.0.13 have only these; the rest may be absent on upgrade.
+CORE = ("bin/omarchy-buzz", "service/omarchy-buzz.service", "service/omarchy-buzz.socket")
+REVIEWED = tuple(name for name in FILES if name != "bin/omarchy-buzz")
+SOCKETS = ("omarchy-buzz.socket", "omarchy-buzz-agents.socket")
+SERVICES = ("omarchy-buzz.service", "omarchy-buzz-agents.service")
 MAX_ARCHIVE = 32 * 1024 * 1024
 MAX_BINARY = 24 * 1024 * 1024
 
@@ -131,9 +139,9 @@ def read_package(archive, sidecar):
             or pins[0] != pins[1] or pin is None
             or metadata["backendRevision"] != pins[0] or metadata["backendRevision"] != pin[1]):
         raise ValueError("package does not match checkout version and Buzz pin")
-    for name in ("service/omarchy-buzz.service", "service/omarchy-buzz.socket"):
+    for name in REVIEWED:
         if content[name] != (ROOT / name).read_bytes():
-            raise ValueError("package unit does not match reviewed local unit")
+            raise ValueError("package unit or script does not match the reviewed local copy")
     return {name: content[name] for name in FILES}, metadata
 
 
@@ -159,17 +167,20 @@ def probe_binary(data, expected):
 
 
 def inspect_existing(paths, create=True):
-    present = []
+    present = {}
     for name, path in paths.items():
         safe_directory(path.parent, create=create)
         if path.is_symlink() or (path.exists() and not path.is_file()):
             raise ValueError(f"unexpected installed path: {path}")
-        present.append(path.exists())
-    if any(present) and not all(present):
+        present[name] = path.exists()
+    core = [present[name] for name in CORE]
+    if any(core) and not all(core):
         raise ValueError("partial installation; review installed files manually")
-    if all(present):
-        for name in ("service/omarchy-buzz.service", "service/omarchy-buzz.socket"):
-            if paths[name].read_bytes() != (ROOT / name).read_bytes():
+    if not all(core) and any(present[name] for name in FILES if name not in CORE):
+        raise ValueError("partial installation; review installed files manually")
+    if all(core):
+        for name in REVIEWED:
+            if present[name] and paths[name].read_bytes() != (ROOT / name).read_bytes():
                 raise ValueError(f"modified or unrecognized unit: {paths[name]}")
         if paths["bin/omarchy-buzz"].stat().st_size > MAX_BINARY:
             raise ValueError("installed binary is too large")
@@ -184,7 +195,7 @@ def inspect_existing(paths, create=True):
                 or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?", str(version.get("helperVersion")))
                 or not re.fullmatch(r"[0-9a-f]{40}", str(version.get("backendRevision")))):
             raise ValueError("unrecognized installed helper")
-    return all(present)
+    return all(core)
 
 
 def backup(paths, home):
@@ -193,6 +204,8 @@ def backup(paths, home):
     target = base / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
     target.mkdir(mode=0o700)
     for name, path in paths.items():
+        if not path.exists():
+            continue
         copy = target / name
         safe_directory(copy.parent)
         shutil.copy2(path, copy, follow_symlinks=False)
@@ -215,7 +228,7 @@ def put(path, data, mode):
 
 def restore(paths, saved):
     for name, path in paths.items():
-        if saved is None:
+        if saved is None or not (saved / name).exists():
             path.unlink(missing_ok=True)
         else:
             put(path, (saved / name).read_bytes(), FILES[name][1])
@@ -230,34 +243,44 @@ def install(home, archive, sidecar, dry_run=False):
         print(("Upgrade" if existing else "Install") + " preview:")
         for path in paths.values():
             print(f"  {path}")
-        print("  systemctl --user: stop existing units if upgrading; daemon-reload; enable --now socket")
+        print("  systemctl --user: stop existing units if upgrading; daemon-reload; enable --now both sockets")
         if existing:
             print(f"  backup under {home / '.local/share/omarchy-buzz/backups'}")
         return
     probe_binary(content["bin/omarchy-buzz"], metadata)
     for path in paths.values():
         safe_directory(path.parent)
-    was_enabled = systemctl("is-enabled", "omarchy-buzz.socket", check=False) if existing else False
-    was_active = systemctl("is-active", "omarchy-buzz.socket", check=False) if existing else False
+    agents_installed = existing and paths["service/omarchy-buzz-agents.socket"].exists()
+    was_enabled = {socket: systemctl("is-enabled", socket, check=False) if existing else False for socket in SOCKETS}
+    was_active = {socket: systemctl("is-active", socket, check=False) if existing else False for socket in SOCKETS}
     saved = backup(paths, home) if existing else None
     try:
         if existing:
             systemctl("stop", "omarchy-buzz.socket", "omarchy-buzz.service")
+            if agents_installed:
+                systemctl("stop", "omarchy-buzz-agents.socket", "omarchy-buzz-agents.service")
         for name, path in paths.items():
             put(path, content[name], FILES[name][1])
         systemctl("daemon-reload")
-        systemctl("enable", "--now", "omarchy-buzz.socket")
+        for socket in SOCKETS:
+            systemctl("enable", "--now", socket)
     except Exception:
-        systemctl("stop", "omarchy-buzz.socket", "omarchy-buzz.service", check=False)
+        systemctl("stop", *SOCKETS, *SERVICES, check=False)
         if not existing:
-            systemctl("disable", "--now", "omarchy-buzz.socket", check=False)
+            for socket in SOCKETS:
+                systemctl("disable", "--now", socket, check=False)
+        elif not agents_installed:
+            systemctl("disable", "--now", "omarchy-buzz-agents.socket", check=False)
         restore(paths, saved)
-        if existing and was_enabled:
-            systemctl("enable", "omarchy-buzz.socket")
-        elif existing:
-            systemctl("disable", "--now", "omarchy-buzz.socket")
-        if existing and was_active:
-            systemctl("start", "omarchy-buzz.socket")
+        for socket in SOCKETS:
+            if not existing or (socket == "omarchy-buzz-agents.socket" and not agents_installed):
+                continue
+            if was_enabled[socket]:
+                systemctl("enable", socket)
+            else:
+                systemctl("disable", "--now", socket)
+            if was_active[socket]:
+                systemctl("start", socket)
         raise
     print(("Upgraded" if existing else "Installed") + f" helper; rollback: {saved or 'not needed'}")
 
@@ -270,24 +293,27 @@ def uninstall(home, dry_run=False):
         print("Uninstall preview:")
         for path in paths.values():
             print(f"  {path}")
-        print("  systemctl --user: disable --now socket; stop service; daemon-reload")
+        print("  systemctl --user: disable --now both sockets; stop services; daemon-reload")
         print(f"  backup under {home / '.local/share/omarchy-buzz/backups'}")
         return
     saved = backup(paths, home)
-    was_enabled = systemctl("is-enabled", "omarchy-buzz.socket", check=False)
-    was_active = systemctl("is-active", "omarchy-buzz.socket", check=False)
+    installed = [socket for socket in SOCKETS if paths["service/" + socket].exists()]
+    was_enabled = {socket: systemctl("is-enabled", socket, check=False) for socket in installed}
+    was_active = {socket: systemctl("is-active", socket, check=False) for socket in installed}
     try:
-        systemctl("disable", "--now", "omarchy-buzz.socket")
-        systemctl("stop", "omarchy-buzz.service")
+        for socket in installed:
+            systemctl("disable", "--now", socket)
+            systemctl("stop", socket.replace(".socket", ".service"))
         for path in paths.values():
-            path.unlink()
+            path.unlink(missing_ok=True)
         systemctl("daemon-reload")
     except Exception:
         restore(paths, saved)
-        if was_enabled:
-            systemctl("enable", "omarchy-buzz.socket")
-        if was_active:
-            systemctl("start", "omarchy-buzz.socket")
+        for socket in installed:
+            if was_enabled[socket]:
+                systemctl("enable", socket)
+            if was_active[socket]:
+                systemctl("start", socket)
         raise
     print(f"Removed helper files; rollback: {saved}")
 
