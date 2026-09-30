@@ -131,13 +131,12 @@ Already prepared on this machine, outside git:
 Resume steps, in order:
 
 1. Done (see above).
-2. The owner signs in to Claude Code from the panel (opens a detached terminal
-   with the vendor login against the shared profile).
-3. The owner creates and starts the first agent from the panel (publishes kind
-   30175/30177, a kind 0 profile, and kind 9000 membership on the real relay).
-   Watch the unit and fix what breaks. Nothing agent-related has been exercised
-   against a real relay, real systemd or real Secret Service yet.
-4. Then: ASCII avatars (identicon default plus optional pasted art per agent),
+2. Done: Claude Code signed in from the panel.
+3. Done: agent `vClaude` created, enrolled, started and answering (see the
+   checkpoint entry "First agent created from the panel" and its follow-ups:
+   auto-retry after `auth_rejected`, `@name` resolution on send, faster
+   sign-in status refresh).
+4. ASCII avatars are merged on `main` (not yet installed at this line's writing);
    then onboarding without a terminal (identity generation in the plugin,
    joining a community from the panel, an opt-in Super+B offer in the setup
    view). Teams, sharing and import stay on hold. Git history is not rewritten.

@@ -1955,3 +1955,28 @@ there when the service gains one. No third-party art is bundled.
 Evidence is synthetic: `scripts/preview --identicon`, the avatar checks added to
 `--thread-replies` and `--agents`, and every other preview mode. Not verified:
 rendering in the installed shell under real themes and fonts.
+
+## First agent created from the panel — September 30 morning
+
+With 0.0.13 installed, the owner signed in to Claude Code from the panel
+(detached terminal, browser login; `agent-login --status` flipped to
+`signed-in` about a minute later), created the agent `vClaude` (Claude Code
+harness, one room, answers only the owner), enrolled it (identity in Secret
+Service, kind 30175/30177/0 acknowledged, kind 9000 membership) and started it.
+The unit came up as `buzz-acp → claude-agent-acp` inside the bubblewrap sandbox
+(about 170 MB) and the agent answered the owner's exact-key mention in the
+room. No maintainer message was sent.
+
+Two things went wrong on the way and are now follow-ups:
+
+- The helper's relay session reported `auth_rejected` on a mid-session
+  re-authentication while the sign-in was in progress and stayed disconnected
+  until a `retry_connection` was sent; the panel showed "Rooms unavailable"
+  and the agent form could not be submitted. Follow-up: retry a rejected
+  re-authentication automatically with backoff, and offer Reconnect in every
+  view, not only the room view.
+- A hand-typed `@vclaude` did not reach the agent because only the picker
+  attaches the exact key. Follow-up: on send, resolve `@name` tokens that
+  match exactly one roster name to that key, as Desktop does.
+- Also: `harnesses[].signedIn` refreshes only every 60 s; re-check every
+  5 s for two minutes after a `sign_in` request completes.
