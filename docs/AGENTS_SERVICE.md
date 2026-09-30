@@ -89,8 +89,10 @@ The target agent is `agentId` because `id` is the request UUID:
 
 `update_agent` stops a running agent first only when `harness`, `workspace`,
 `rooms` or `respondTo` change; other edits republish and take effect on next
-start. `delete_agent` stops, disables, removes the unit, keeps the identity in
-Secret Service unless `forget: true`. `enroll_agent` generates the identity,
+start. A room dropped from an enrolled agent is left on the relay (the owner's
+kind 9001 remove-member) during that republication. `delete_agent` removes an
+enrolled agent from all its rooms, then stops, disables, removes the unit,
+keeps the identity in Secret Service unless `forget: true`. `enroll_agent` generates the identity,
 signs the NIP-OA attestation with the owner key, publishes kind 30175 persona
 and kind 30177 managed-agent records, and adds the agent to each room as the
 owner does in Desktop. `sign_in` opens a terminal running the vendor CLI login
@@ -199,9 +201,21 @@ publishes, each counted only after the relay's `OK` for its id (15 s bound):
 3. kind 9000 per room not yet acknowledged, `["h",room],["p",agent],["role","bot"]`
    (`buzz_sdk::build_add_member`, as `buzz-cli` and Desktop's
    `attachManagedAgentToChannel`), so repeated enrollment does not re-add rooms;
+4. kind 9001 per room whose membership was acknowledged but which is no longer
+   in `rooms`, `["h",room],["p",agent]`, empty content (`buzz_sdk::build_remove_member`,
+   next to `build_add_member` in `crates/buzz-sdk/src/builders.rs`; no role
+   tag). The relay (`crates/buzz-relay/src/handlers/side_effects.rs`, 9001
+   branch and `handle_remove_user`) lets a channel owner or admin remove any
+   member, and a plain member remove an agent it owns (`is_agent_owner`, set
+   when the agent authenticated with the owner's attestation);
 then, on a connection authenticated as the agent with the attestation in its
 AUTH event (`auth::connect_attested`), kind 0 `{"about","display_name"}` with the
-`auth` tag, as Desktop's `build_profile_event`. 30175/30177 use a monotonic
+`auth` tag, as Desktop's `build_profile_event`.
+`member_rooms` (service-private) holds rooms whose add was acknowledged and
+whose removal was not, so a dropped room stays there until its 9001 is
+acknowledged and is retried on the next publication (any republishing edit or
+`enroll_agent`); taking such a room back before that neither adds nor removes
+it, and an acknowledged room is never added again. At most 64 entries. 30175/30177 use a monotonic
 `created_at` (`max(now, previous + 1)`). `published` is true only after all of
 these; a rejection is `enroll_failed`, a missing answer, closed socket or
 unreachable relay `relay_unavailable`; relay text is never reported. A retry
@@ -232,8 +246,15 @@ with `harness_missing`/`not_signed_in`.
 writes the instructions and attestation files, renders and writes the unit
 (0600), runs `daemon-reload`, `enable` when `startAtLogin`, then `start`.
 `set_start_at_login` on an enrolled agent installs the unit and enables or
-disables it; otherwise it only records the choice. `delete_agent` keeps the
-default workspace and does not publish deletions or remove relay membership.
+disables it; otherwise it only records the choice. `delete_agent` first
+removes an enrolled agent from every room in `member_rooms` (kind 9001 per
+room on one owner-authenticated connection, each counted only after its `OK`,
+same categories as enrollment); if that fails, the acknowledged removals are
+recorded, `lastError` is set and nothing else changes, so the delete can be
+retried. Memberships attested by a previous owner identity are skipped (the
+current owner has no authority over them). Only then does it stop and remove
+the unit and files. It keeps the default workspace and does not publish
+deletions of the 30175/30177 records.
 Internal failures without a contract category (for example a store write
 failure) are reported as `agent_invalid`. Unit states are refreshed on
 `subscribe`, after unit operations and every 15 s while a client is connected;
@@ -284,12 +305,13 @@ limited to 108 bytes).
   `systemd-run --user --scope` launch from the socket-activated service, and
   whether the user manager's environment carries the display variables on a
   given login, are unverified.
-- The relay's acceptance of kind 30175/30177/9000 over WebSocket with these
+- The relay's acceptance of kind 30175/30177/9000/9001 over WebSocket with these
   exact contents, the owner's permission to add members to each room, and the
   kind-0 publication through an owner attestation were checked against the
   pinned source only, not a live relay.
-- Room removal (kind 9001) when rooms are dropped, and deletion of relay
-  records on `delete_agent`, are not implemented.
+- Deletion of the 30175/30177 relay records on `delete_agent` is not
+  implemented. A delete needs the relay and the owner key whenever the agent
+  still has memberships.
 
 ## Bundles and sign-in
 

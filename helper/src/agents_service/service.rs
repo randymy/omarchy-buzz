@@ -407,7 +407,8 @@ impl Service {
         {
             return Err("agent_invalid");
         }
-        new.member_rooms.retain(|room| new.rooms.contains(room));
+        // Dropped rooms stay in `member_rooms` until the relay acknowledges
+        // their removal (kind 9001) during the republication below.
         if !new.valid() {
             return Err("agent_invalid");
         }
@@ -449,7 +450,58 @@ impl Service {
         }
     }
 
+    /// Removes an enrolled agent from every room it is still a member of
+    /// (kind 9001 per room, owner-signed). On failure the acknowledged
+    /// removals are recorded and the category returned; nothing else changes.
+    /// Memberships added under a previous owner identity are not attempted:
+    /// the current owner cannot remove them on the owner's behalf.
+    async fn leave_all_rooms(&self, id: &str) -> Result<(), &'static str> {
+        let persona = self.persona(id)?;
+        let Some(identity) = persona.identity.clone() else {
+            return Ok(());
+        };
+        if persona.member_rooms.is_empty() {
+            return Ok(());
+        }
+        let agent = nostr::PublicKey::from_hex(&identity).map_err(|_| "agent_invalid")?;
+        let (relay, owner_hex) = self.scope()?;
+        let keyring = self.deps.keyring.clone();
+        let config = Config {
+            relay: Some(relay.clone()),
+            identity: Some(owner_hex),
+        };
+        let owner = blocking(move || keyring.owner_keys(&config)).await;
+        let Ok(owner) = owner else {
+            let mut persona = persona;
+            persona.last_error = Some("enroll_failed".into());
+            self.commit(persona)?;
+            return Err("enroll_failed");
+        };
+        let attested = persona.auth_tag.as_deref().is_some_and(|tag| {
+            buzz_sdk::nip_oa::verify_auth_tag(tag, &agent)
+                .is_ok_and(|key| key == owner.public_key())
+        });
+        if !attested {
+            return Ok(());
+        }
+        let at = enroll::next_timestamp(persona.published_at);
+        let report = enroll::leave_rooms(&relay, &owner, &agent, &persona.member_rooms, at).await;
+        let mut persona = self.persona(id)?;
+        persona
+            .member_rooms
+            .retain(|room| !report.removed_rooms.contains(room));
+        if let Some(category) = report.error {
+            persona.last_error = Some(category.into());
+            self.commit(persona)?;
+            return Err(category);
+        }
+        self.commit(persona)
+    }
+
     async fn delete(&self, id: &str, forget: bool) -> Result<(), &'static str> {
+        // Leave the relay rooms first: if that fails, the agent, its unit and
+        // its identity are kept so that the deletion can be retried.
+        self.leave_all_rooms(id).await?;
         let persona = self.persona(id)?;
         let unit_path = self.paths.unit_file(id);
         if std::fs::symlink_metadata(&unit_path).is_ok() {
@@ -619,6 +671,9 @@ impl Service {
         let report = enroll::publish_all(relay, owner, agent, &persona).await;
         let mut persona = self.persona(id)?;
         persona.member_rooms.extend(report.member_rooms);
+        persona
+            .member_rooms
+            .retain(|room| !report.removed_rooms.contains(room));
         if let Some(at) = report.published_at {
             persona.published_at = persona.published_at.max(at);
         }

@@ -553,6 +553,7 @@ async fn updates_stop_only_for_launch_fields_and_republish_enrolled_agents() {
         adds[0].event.tags.iter().next().unwrap().as_slice(),
         ["h", ROOM_C]
     );
+    assert!(!seen.iter().any(|s| s.event.kind.as_u16() == 9001));
     assert_eq!(
         f.stored(&id).member_rooms,
         vec![ROOM_A.to_string(), ROOM_C.to_string()]
@@ -593,6 +594,183 @@ async fn updates_stop_only_for_launch_fields_and_republish_enrolled_agents() {
     assert_eq!(agent.model, "gpt-5");
     assert!(!agent.published);
     assert_eq!(agent.last_error.as_deref(), Some("relay_unavailable"));
+}
+
+static REJECT_REMOVALS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn new_kinds(
+    relay: &crate::agents_service::test_support::Relay,
+    before: usize,
+) -> Vec<(u16, String)> {
+    relay.seen.lock().unwrap()[before..]
+        .iter()
+        .map(|s| {
+            let h = s
+                .event
+                .tags
+                .iter()
+                .find(|t| t.as_slice()[0] == "h")
+                .map(|t| t.as_slice()[1].clone())
+                .unwrap_or_default();
+            (s.event.kind.as_u16(), h)
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn dropped_rooms_and_deleted_agents_leave_the_relay_rooms() {
+    use std::sync::atomic::Ordering::SeqCst;
+    let _network_fixture = crate::NETWORK_TEST_LOCK.lock().await;
+    REJECT_REMOVALS.store(false, SeqCst);
+    let relay = relay(
+        |kind| {
+            if kind == 9001 && REJECT_REMOVALS.load(std::sync::atomic::Ordering::SeqCst) {
+                Answer::Reject
+            } else {
+                Answer::Accept
+            }
+        },
+        false,
+    )
+    .await;
+    let f = fixture(&relay.url);
+    let id = f
+        .create(serde_json::json!({"rooms":[ROOM_A, ROOM_B]}))
+        .await
+        .unwrap();
+    f.run(serde_json::json!({"type":"enroll_agent","agentId":id}))
+        .await
+        .unwrap();
+    let both = vec![ROOM_A.to_string(), ROOM_B.to_string()];
+    assert_eq!(f.stored(&id).member_rooms, both);
+    let (a, b) = (ROOM_A.to_string(), ROOM_B.to_string());
+    let rooms = |value: &[&str]| serde_json::json!({"type":"update_agent","agentId":id,"fields":{"rooms":value}});
+
+    // A rejected removal keeps the membership recorded, to be left later.
+    REJECT_REMOVALS.store(true, SeqCst);
+    let before = relay.seen.lock().unwrap().len();
+    assert_eq!(f.run(rooms(&[ROOM_A])).await, Err("enroll_failed"));
+    assert_eq!(
+        new_kinds(&relay, before),
+        [
+            (30175, String::new()),
+            (30177, String::new()),
+            (9001, b.clone())
+        ]
+    );
+    let stored = f.stored(&id);
+    assert_eq!(
+        (stored.rooms.clone(), stored.member_rooms.clone()),
+        (vec![a.clone()], both.clone())
+    );
+    assert_eq!(f.agent(&id).last_error.as_deref(), Some("enroll_failed"));
+    // Taking the room back while still a member neither adds nor removes it.
+    let before = relay.seen.lock().unwrap().len();
+    f.run(rooms(&[ROOM_A, ROOM_B])).await.unwrap();
+    assert_eq!(
+        new_kinds(&relay, before),
+        [
+            (30175, String::new()),
+            (30177, String::new()),
+            (0, String::new())
+        ]
+    );
+    // Dropping it again with a cooperative relay leaves it.
+    REJECT_REMOVALS.store(false, SeqCst);
+    let before = relay.seen.lock().unwrap().len();
+    f.run(rooms(&[ROOM_A])).await.unwrap();
+    assert_eq!(
+        new_kinds(&relay, before),
+        [
+            (30175, String::new()),
+            (30177, String::new()),
+            (9001, b.clone()),
+            (0, String::new())
+        ]
+    );
+    assert_eq!(f.stored(&id).member_rooms, vec![a.clone()]);
+    // Adding it back is one add, and ROOM_A is never added again.
+    let before = relay.seen.lock().unwrap().len();
+    f.run(rooms(&[ROOM_A, ROOM_B])).await.unwrap();
+    assert_eq!(
+        new_kinds(&relay, before),
+        [
+            (30175, String::new()),
+            (30177, String::new()),
+            (9000, b.clone()),
+            (0, String::new())
+        ]
+    );
+    assert_eq!(f.stored(&id).member_rooms, both);
+
+    // A delete whose removal is rejected keeps the agent, its unit state and
+    // the memberships not yet left, so it can be retried.
+    REJECT_REMOVALS.store(true, SeqCst);
+    f.control.calls.lock().unwrap().clear();
+    let before = relay.seen.lock().unwrap().len();
+    assert_eq!(
+        f.run(serde_json::json!({"type":"delete_agent","agentId":id}))
+            .await,
+        Err("enroll_failed")
+    );
+    assert_eq!(new_kinds(&relay, before), [(9001, a.clone())]);
+    assert!(f.control.calls.lock().unwrap().is_empty());
+    assert_eq!(f.stored(&id).member_rooms, both);
+    assert!(f.home.paths.agent_dir(&id).exists());
+    // The retry leaves every room, publishes nothing else and deletes.
+    REJECT_REMOVALS.store(false, SeqCst);
+    let before = relay.seen.lock().unwrap().len();
+    f.run(serde_json::json!({"type":"delete_agent","agentId":id}))
+        .await
+        .unwrap();
+    assert_eq!(new_kinds(&relay, before), [(9001, a), (9001, b)]);
+    assert!(f.service.snapshot().agents.is_empty());
+    assert_eq!(
+        relay
+            .seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|s| s.event.kind.as_u16() == 9000)
+            .count(),
+        3,
+        "two at enrollment, one when ROOM_B was taken back"
+    );
+}
+
+#[tokio::test]
+async fn delete_skips_memberships_of_a_previous_owner() {
+    let _network_fixture = crate::NETWORK_TEST_LOCK.lock().await;
+    let relay = relay(|_| Answer::Accept, false).await;
+    let f = fixture(&relay.url);
+    let id = f.create(serde_json::json!({})).await.unwrap();
+    f.run(serde_json::json!({"type":"enroll_agent","agentId":id}))
+        .await
+        .unwrap();
+    // The helper's owner identity changed: it did not attest or add the agent.
+    let owner = nostr::Keys::generate();
+    let keyring = Arc::new(FakeKeyring::default());
+    *keyring.owner.lock().unwrap() = Some(owner.clone());
+    let config = Config {
+        relay: Some(relay.url.clone()),
+        identity: Some(owner.public_key().to_hex()),
+    };
+    let service = Service::open(
+        f.home.paths.clone(),
+        Deps {
+            control: f.control.clone(),
+            keyring,
+            spawner: f.spawner.clone(),
+            rooms: f.rooms.clone(),
+        },
+        Box::new(move || Ok(config.clone())),
+    )
+    .unwrap();
+    let before = relay.seen.lock().unwrap().len();
+    let r = f.request(serde_json::json!({"type":"delete_agent","agentId":id}));
+    service.execute(&r, service.begin().unwrap()).await.unwrap();
+    assert_eq!(relay.seen.lock().unwrap().len(), before);
+    assert!(service.snapshot().agents.is_empty());
 }
 
 #[tokio::test]
