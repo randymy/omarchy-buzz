@@ -4,6 +4,7 @@ use super::{
     enroll,
     harness::{self, HarnessView, Spawner},
     keys::Keyring,
+    models,
     request::{Fields, Request},
     rooms::RoomSource,
     store::{self, Paths, Persona, Store},
@@ -78,13 +79,39 @@ pub struct Pending {
     pub kind: String,
     pub state: &'static str,
     pub category: Option<&'static str>,
+    /// A fixed detail code (`models::DETAILS`) for some failures, else null.
+    pub detail: Option<&'static str>,
+}
+
+/// The last model probe: `idle` (never run, or reset by an edit of that
+/// agent's model or harness), `running`, or its outcome with one fixed
+/// sentence (`models::SENTENCES`). Never the probe's output.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelProbe {
+    pub agent_id: Option<String>,
+    pub state: &'static str,
+    pub model: String,
+    pub detail: Option<&'static str>,
+}
+impl Default for ModelProbe {
+    fn default() -> Self {
+        Self {
+            agent_id: None,
+            state: "idle",
+            model: String::new(),
+            detail: None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Status {
     pub harnesses: Vec<HarnessView>,
     pub agents: Vec<AgentView>,
     pub pending: Option<Pending>,
+    pub model_probe: ModelProbe,
 }
 
 pub fn envelope(kind: &str, id: Option<&str>, instance: &str, s: &Status) -> serde_json::Value {
@@ -125,6 +152,9 @@ pub struct Service {
     schedule: Mutex<HarnessSchedule>,
     units: Mutex<BTreeMap<String, &'static str>>,
     pending: Mutex<Option<Pending>>,
+    // The detail of the running request's refusal, reported with `failed`.
+    detail: Mutex<Option<&'static str>>,
+    probe: Mutex<ModelProbe>,
     mutation: Arc<tokio::sync::Mutex<()>>,
     status: watch::Sender<Status>,
 }
@@ -161,6 +191,8 @@ impl Service {
             }),
             units: Mutex::new(BTreeMap::new()),
             pending: Mutex::new(None),
+            detail: Mutex::new(None),
+            probe: Mutex::new(ModelProbe::default()),
             mutation: Arc::new(tokio::sync::Mutex::new(())),
             status,
         });
@@ -212,6 +244,7 @@ impl Service {
             harnesses: self.harnesses.lock().unwrap().clone(),
             agents,
             pending: self.pending.lock().unwrap().clone(),
+            model_probe: self.probe.lock().unwrap().clone(),
         };
         drop((store, units));
         self.status.send_replace(status);
@@ -293,14 +326,37 @@ impl Service {
     pub fn begin(&self) -> Option<OwnedMutexGuard<()>> {
         self.mutation.clone().try_lock_owned().ok()
     }
-    fn set_pending(&self, request: &Request, state: &'static str, category: Option<&'static str>) {
+    fn set_pending(
+        &self,
+        request: &Request,
+        state: &'static str,
+        category: Option<&'static str>,
+        detail: Option<&'static str>,
+    ) {
         *self.pending.lock().unwrap() = Some(Pending {
             request_id: request.id.clone(),
             kind: request.kind.clone(),
             state,
             category,
+            detail,
         });
         self.publish();
+    }
+    /// Refuses a create or update whose model does not belong to its harness.
+    fn refuse_model(&self) -> &'static str {
+        *self.detail.lock().unwrap() = Some(models::NOT_FOR_HARNESS);
+        "agent_invalid"
+    }
+    fn set_probe(&self, probe: ModelProbe) {
+        *self.probe.lock().unwrap() = probe;
+        self.publish();
+    }
+    /// Forgets the last probe when it was of this agent.
+    fn reset_probe(&self, id: &str) {
+        let mut probe = self.probe.lock().unwrap();
+        if probe.agent_id.as_deref() == Some(id) {
+            *probe = ModelProbe::default();
+        }
     }
     /// Runs a mutating request while holding the slot from `begin`.
     pub async fn execute(
@@ -308,11 +364,13 @@ impl Service {
         request: &Request,
         _slot: OwnedMutexGuard<()>,
     ) -> Result<(), &'static str> {
-        self.set_pending(request, "working", None);
+        *self.detail.lock().unwrap() = None;
+        self.set_pending(request, "working", None, None);
         let result = self.dispatch(request).await.map_err(fixed);
+        let detail = self.detail.lock().unwrap().take();
         match result {
-            Ok(()) => self.set_pending(request, "done", None),
-            Err(category) => self.set_pending(request, "failed", Some(category)),
+            Ok(()) => self.set_pending(request, "done", None, None),
+            Err(category) => self.set_pending(request, "failed", Some(category), detail),
         }
         result
     }
@@ -328,6 +386,7 @@ impl Service {
             "enroll_agent" => self.enroll(&agent()?).await,
             "start_agent" => self.start(&agent()?).await,
             "stop_agent" => self.stop(&agent()?).await,
+            "probe_model" => self.probe_model(&agent()?).await,
             "set_start_at_login" => {
                 self.set_start_at_login(&agent()?, r.enabled.ok_or("agent_invalid")?)
                     .await
@@ -436,6 +495,9 @@ impl Service {
         if !persona.valid() || !(requested.is_empty() || store::canonical_path(&requested)) {
             return Err("agent_invalid");
         }
+        if !models::valid_for(&persona.harness, &persona.model) {
+            return Err(self.refuse_model());
+        }
         self.verify_rooms(&persona.rooms).await?;
         persona.workspace = self.workspace(&requested, &id)?;
         self.commit(persona)
@@ -456,6 +518,9 @@ impl Service {
         if let Some(v) = fields.instructions {
             new.instructions = v;
         }
+        // A model saved before the harness patterns existed is kept until
+        // the model or harness is edited.
+        let model_edited = fields.model.is_some() || fields.harness.is_some();
         if let Some(v) = fields.harness {
             new.harness = v;
         }
@@ -485,6 +550,9 @@ impl Service {
         // their removal (kind 9001) during the republication below.
         if !new.valid() {
             return Err("agent_invalid");
+        }
+        if model_edited && !models::valid_for(&new.harness, &new.model) {
+            return Err(self.refuse_model());
         }
         if new.rooms != old.rooms {
             self.verify_rooms(&new.rooms).await?;
@@ -517,7 +585,12 @@ impl Service {
         if republish {
             new.published = false;
         }
+        let probe_stale = new.model != old.model || new.harness != old.harness;
         self.commit(new)?;
+        if probe_stale {
+            self.reset_probe(id);
+            self.publish();
+        }
         if republish {
             self.publish_records(id).await
         } else {
@@ -617,6 +690,7 @@ impl Service {
             }
         }
         self.units.lock().unwrap().remove(id);
+        self.reset_probe(id);
         self.publish();
         Ok(())
     }
@@ -789,23 +863,7 @@ impl Service {
         if persona.identity.is_none() || !persona.published {
             return Err("agent_invalid");
         }
-        self.inspect_harnesses().await;
-        let view = self
-            .harnesses
-            .lock()
-            .unwrap()
-            .iter()
-            .find(|h| h.id == persona.harness)
-            .cloned()
-            .ok_or("harness_missing")?;
-        match view.bundle {
-            "ready" => {}
-            "stale" => return Err("bundle_stale"),
-            _ => return Err("harness_missing"),
-        }
-        if view.signed_in != Some(true) {
-            return Err("not_signed_in");
-        }
+        self.harness_ready(&persona.harness).await?;
         let others = self.others(id);
         let refs: Vec<&Persona> = others.iter().collect();
         store::check_workspace(&self.paths, &persona.workspace, id, &refs)?;
@@ -822,6 +880,65 @@ impl Service {
         .await;
         self.inspect_units().await;
         result
+    }
+
+    /// Re-reads harness readiness; refuses a stale or missing bundle and a
+    /// harness that does not report signed in.
+    async fn harness_ready(&self, harness: &str) -> Result<(), &'static str> {
+        self.inspect_harnesses().await;
+        let view = self
+            .harnesses
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|h| h.id == harness)
+            .cloned()
+            .ok_or("harness_missing")?;
+        match view.bundle {
+            "ready" => {}
+            "stale" => return Err("bundle_stale"),
+            _ => return Err("harness_missing"),
+        }
+        if view.signed_in != Some(true) {
+            return Err("not_signed_in");
+        }
+        Ok(())
+    }
+
+    /// Runs one bounded model turn in the agent's sandbox view (see
+    /// `models`). The request is done once a result is known, whatever it
+    /// is; the result is `status.modelProbe`.
+    async fn probe_model(&self, id: &str) -> Result<(), &'static str> {
+        let persona = self.persona(id)?;
+        if persona.model.is_empty() || !models::valid_for(&persona.harness, &persona.model) {
+            return Err("agent_invalid");
+        }
+        self.harness_ready(&persona.harness).await?;
+        let launcher = unit::launcher(&self.paths, &persona.harness);
+        let argv = models::probe_argv(&self.paths, &persona.harness, &persona.model);
+        let env = models::probe_environment(std::env::vars_os());
+        let spawner = self.deps.spawner.clone();
+        if !blocking({
+            let spawner = spawner.clone();
+            move || spawner.present(&launcher)
+        })
+        .await
+        {
+            return Err("harness_missing");
+        }
+        let probe = |state, detail| ModelProbe {
+            agent_id: Some(id.to_owned()),
+            state,
+            model: persona.model.clone(),
+            detail,
+        };
+        self.set_probe(probe("running", None));
+        let (state, detail) = match blocking(move || spawner.probe(&argv, &env)).await {
+            Ok((code, output)) => models::classify(code, &output),
+            Err(_) => ("failed", models::FAILED),
+        };
+        self.set_probe(probe(state, Some(detail)));
+        Ok(())
     }
 
     async fn stop(&self, id: &str) -> Result<(), &'static str> {

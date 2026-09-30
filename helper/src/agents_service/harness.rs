@@ -48,6 +48,15 @@ pub trait Spawner: Send + Sync {
     fn output(&self, argv: &[String]) -> Result<(Option<i32>, String), &'static str>;
     /// Starts a process with exactly `env` and returns without waiting for it.
     fn spawn(&self, argv: &[String], env: &[(OsString, OsString)]) -> Result<(), &'static str>;
+    /// Runs a model probe with exactly `env` for at most
+    /// [`super::models::PROBE_DEADLINE`] and returns its exit status (`None`
+    /// when killed) and at most [`super::models::PROBE_OUTPUT`] bytes of its
+    /// combined standard output and error.
+    fn probe(
+        &self,
+        argv: &[String],
+        env: &[(OsString, OsString)],
+    ) -> Result<(Option<i32>, String), &'static str>;
 }
 
 /// Session variables `agent-login` needs to open a terminal on this desktop:
@@ -183,13 +192,28 @@ impl Spawner for Processes {
         });
         Ok(())
     }
+    fn probe(
+        &self,
+        argv: &[String],
+        env: &[(OsString, OsString)],
+    ) -> Result<(Option<i32>, String), &'static str> {
+        use super::models::{run_merged, PROBE_DEADLINE, PROBE_OUTPUT};
+        run_merged(argv, env, PROBE_DEADLINE, PROBE_OUTPUT)
+            .map(|(code, out)| (code, String::from_utf8_lossy(&out).into_owned()))
+    }
 }
 
 /// In-memory spawner: scripts are absent unless `present` is set; outputs
 /// come from `outputs` keyed by the argv joined with spaces, with the exit
 /// status from `codes` under the same key (default 0; 1 without an output).
+/// A probe answers `probe_answer` (default: exit 1, no output) and is
+/// recorded with its environment in `probes`.
 #[derive(Default)]
 pub struct FakeSpawner {
+    pub probe_answer: Mutex<Option<(Option<i32>, String)>>,
+    /// When set, a probe waits for one message on it before answering.
+    pub probe_hold: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+    pub probes: Mutex<Vec<(Vec<String>, Vec<(OsString, OsString)>)>>,
     pub present: Mutex<bool>,
     pub outputs: Mutex<std::collections::BTreeMap<String, String>>,
     pub codes: Mutex<std::collections::BTreeMap<String, i32>>,
@@ -216,6 +240,25 @@ impl Spawner for FakeSpawner {
         self.spawned.lock().unwrap().push(argv.to_vec());
         self.spawned_env.lock().unwrap().push(env.to_vec());
         Ok(())
+    }
+    fn probe(
+        &self,
+        argv: &[String],
+        env: &[(OsString, OsString)],
+    ) -> Result<(Option<i32>, String), &'static str> {
+        self.probes
+            .lock()
+            .unwrap()
+            .push((argv.to_vec(), env.to_vec()));
+        if let Some(hold) = self.probe_hold.lock().unwrap().take() {
+            let _ = hold.recv();
+        }
+        Ok(self
+            .probe_answer
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or((Some(1), String::new())))
     }
 }
 

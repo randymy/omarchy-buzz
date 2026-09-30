@@ -61,7 +61,8 @@ def check_status(frame, kind, instance=None):
     if instance is not None:
         assert frame["instanceId"] == instance, frame
     status = frame["status"]
-    assert set(status) == {"harnesses", "agents", "pending"}, status
+    assert set(status) == {"harnesses", "agents", "pending", "modelProbe"}, status
+    assert status["modelProbe"] == {"agentId": None, "state": "idle", "model": "", "detail": None}, status
     assert [h["id"] for h in status["harnesses"]] == ["claude-code", "codex"], status
     for harness in status["harnesses"]:
         # Fake mode has no reviewed scripts: nothing is reported ready.
@@ -147,7 +148,8 @@ def main():
                           "workspace": "", "startAtLogin": False, "acpCommand": "buzz-acp", "answersDms": False}
                 client.sendall(request(uuid(2), instance, "create_agent", fields=fields))
                 status = check_status(frames.answer(uuid(2)), "status", instance)
-                assert status["pending"] == {"requestId": uuid(2), "type": "create_agent", "state": "done", "category": None}, status
+                assert status["pending"] == {"requestId": uuid(2), "type": "create_agent", "state": "done", "category": None,
+                                             "detail": None}, status
                 [agent] = status["agents"]
                 assert agent["name"] == "Smoke" and agent["enrolled"] is False and agent["identity"] is None
                 assert agent["unit"] == "inactive" and agent["published"] is False and agent["lastError"] is None
@@ -175,10 +177,25 @@ def main():
                                          "category": "agent_invalid"}, frame
                     else:
                         assert frame["status"]["pending"] == {"requestId": uuid(n), "type": kind, "state": "failed",
-                                                              "category": "agent_invalid"}, frame
+                                                              "category": "agent_invalid", "detail": None}, frame
                 # sign_in for a known harness: the reviewed script is absent.
                 client.sendall(request(uuid(8), instance, "sign_in", harness="codex"))
                 assert frames.answer(uuid(8))["status"]["pending"]["category"] == "harness_missing"
+                # A model of the other harness: refused with the detail, nothing saved.
+                client.sendall(request(uuid(12), instance, "update_agent", agentId=agent["id"], fields={"model": "opus"}))
+                status = check_status(frames.answer(uuid(12)), "status", instance)
+                assert status["pending"] == {"requestId": uuid(12), "type": "update_agent", "state": "failed",
+                                             "category": "agent_invalid", "detail": "model_not_for_harness"}, status
+                assert status["agents"][0]["model"] == "" and json.loads(store.read_text())["agents"][0]["model"] == ""
+                client.sendall(request(uuid(13), instance, "update_agent", agentId=agent["id"], fields={"model": "gpt-5.5"}))
+                assert check_status(frames.answer(uuid(13)), "status", instance)["agents"][0]["model"] == "gpt-5.5"
+                # probe_model: no reviewed scripts in fake mode, so nothing runs.
+                client.sendall(request(uuid(14), instance, "probe_model", agentId=agent["id"]))
+                status = check_status(frames.answer(uuid(14)), "status", instance)
+                assert status["pending"]["category"] == "harness_missing", status
+                client.sendall(request(uuid(15), instance, "probe_model", agentId=agent["id"], model="opus"))
+                assert frames.answer(uuid(15)) == {"version": 1, "type": "error", "id": uuid(15), "instanceId": instance,
+                                                   "category": "agent_invalid"}
                 # refresh_bundle: the installed agent-bundle is absent.
                 client.sendall(request(uuid(11), instance, "refresh_bundle", harness="codex"))
                 assert frames.answer(uuid(11))["status"]["pending"]["category"] == "harness_missing"
@@ -242,6 +259,7 @@ def main():
             assert written == ["config/omarchy-buzz", "config/omarchy-buzz/config.toml"], written
             assert not list((base / "data").rglob("*")), "fake mode wrote into the data directory"
             print("PASS: agents hello/status, create/update/delete round trip, refused requests, "
+                  "harness model check and probe gating, "
                   "malformed and oversized frames, bridge EOF, SIGTERM socket cleanup")
         finally:
             for process in reversed(processes):

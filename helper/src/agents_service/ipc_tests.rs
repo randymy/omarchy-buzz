@@ -110,7 +110,7 @@ async fn hello_subscribe_create_and_errors() {
     assert_eq!(done["type"], "status");
     assert_eq!(
         done["status"]["pending"],
-        serde_json::json!({"requestId":R2,"type":"create_agent","state":"done","category":null})
+        serde_json::json!({"requestId":R2,"type":"create_agent","state":"done","category":null,"detail":null})
     );
     assert_eq!(done["status"]["agents"][0]["name"], "Scout");
 
