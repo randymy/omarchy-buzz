@@ -110,11 +110,14 @@ Do not claim full live desktop acceptance solely from helper/socket tests.
 
 ## In flight at the September 30 afternoon stop (read before continuing)
 
-Everything is merged and pushed; `main` carries release 0.0.13 (`7b1ce8a`).
-**0.0.13 is installed** (helper SHA256
-`379983b018adebc2ef0ed607d60ca7c83811f8f6dba26b4696407806e0c02e7b`, ARM64 run
-36731957484, read-only relay check passed, rollback backup
-`~/.local/share/omarchy-buzz/backups/20260930T145546.237884Z`). Both sockets are
+`main` carries release 0.0.14 (`404db2f`): panel setup for relay and
+identity, automatic retry after a rejected re-authentication, `@name`
+resolution on send, message copy, identicon avatars. **0.0.14 is installed**
+(helper SHA256 `e387a6aa28be8b3e8ee01a3a77b9164e511480d6d5bde58d8a63456c13013aff`,
+ARM64 run 36742880923, read-only relay check passed, rollback backup
+`~/.local/share/omarchy-buzz/backups/20260930T162237.934414Z`). After a helper
+upgrade the shell sometimes needs a second `omarchy restart shell` before the
+new panel code loads ("Incompatible helper" until then). Both sockets are
 enabled; the agent manager answered over `agents-bridge` with both harnesses
 `ready` (codex signed in, claude-code signed out, no agents yet), and the panel
 shows the Agents section. Live reply counts were seen on the real room.
