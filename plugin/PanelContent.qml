@@ -11,7 +11,29 @@ FocusScope {
   property bool windowMode: false
   property alias recipientPickerExpanded: roomComposer.pickerExpanded
   readonly property bool connected: !!service && (service.sampleMode || service.connection === "authenticated")
-  readonly property bool threadOpen: !!service && service.threadRootId !== "" && service.threadRoot !== null
+  // Agents (docs/AGENTS_SERVICE.md): shown only while the agent service is
+  // connected and offers `agent_manager`. The editor replaces the room view;
+  // the room, its drafts and any open thread come back unchanged.
+  readonly property var agentService: service ? service.agents : null
+  readonly property bool agentsVisible: !!agentService && agentService.available
+  readonly property bool agentsUnavailableShown: !!service && !service.sampleMode && service.connection === "authenticated"
+    && !!agentService && !agentsVisible && agentService.connection !== "connecting"
+  property bool agentEditorOpen: false
+  property string agentEditorId: ""
+  readonly property bool agentEditorShown: agentEditorOpen && agentsVisible
+  onAgentsVisibleChanged: if (!agentsVisible) closeAgentEditor()
+  function openAgentEditor(id) {
+    if (!agentsVisible || (id !== "" && !agentService.agent(id))) return false
+    agentEditorId = id
+    agentEditorOpen = true
+    agentEditor.load()
+    return true
+  }
+  function closeAgentEditor() {
+    agentEditorOpen = false
+    agentEditorId = ""
+  }
+  readonly property bool threadOpen: !agentEditorShown && !!service && service.threadRootId !== "" && service.threadRoot !== null
   // An open thread sits beside the room. Narrow windows give up the room list
   // first, then the room itself, so the thread always has a readable column.
   readonly property bool showRooms: !threadOpen || width >= Style.space(1100)
@@ -381,6 +403,70 @@ FocusScope {
                 onClicked: root.service.selectRoom(modelData.id)
               }
             }
+            Text {
+              objectName: "buzzAgentsHeading"
+              visible: root.agentsVisible
+              Layout.fillWidth: true
+              text: "Agents"
+              textFormat: Text.PlainText
+              elide: Text.ElideRight
+              color: Color.foreground
+              opacity: 0.6
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+            }
+            Repeater {
+              model: root.agentsVisible ? root.agentService.agents : []
+              delegate: RowLayout {
+                required property var modelData
+                Layout.fillWidth: true
+                spacing: Style.space(4)
+                Ui.Button {
+                  objectName: "buzzAgentRow"
+                  readonly property string agentId: modelData.id
+                  Layout.fillWidth: true
+                  clip: true
+                  text: modelData.name + " · " + root.agentService.statusWord(modelData)
+                  tooltipText: modelData.name + " · " + root.agentService.harnessLabel(modelData.harness)
+                  leftAlign: true
+                  focusable: true
+                  selected: root.agentEditorShown && root.agentEditorId === modelData.id
+                  onClicked: root.openAgentEditor(modelData.id)
+                }
+                Text {
+                  text: modelData.harness
+                  textFormat: Text.PlainText
+                  color: Color.foreground
+                  opacity: 0.45
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.caption
+                }
+              }
+            }
+            Ui.Button {
+              objectName: "buzzNewAgent"
+              visible: root.agentsVisible
+              Layout.fillWidth: true
+              text: "+ New agent"
+              tooltipText: "Create an agent that runs on this machine"
+              fontSize: Style.font.caption
+              leftAlign: true
+              focusable: true
+              selected: root.agentEditorShown && root.agentEditorId === ""
+              onClicked: root.openAgentEditor("")
+            }
+            Text {
+              objectName: "buzzAgentsUnavailable"
+              visible: root.agentsUnavailableShown
+              Layout.fillWidth: true
+              text: "Agent manager unavailable"
+              textFormat: Text.PlainText
+              elide: Text.ElideRight
+              color: Color.foreground
+              opacity: 0.6
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+            }
           }
         }
         ColumnLayout {
@@ -420,8 +506,22 @@ FocusScope {
         color: Util.alpha(Color.foreground, 0.14)
       }
 
+      AgentEditor {
+        id: agentEditor
+        objectName: "buzzAgentEditor"
+        visible: root.agentEditorShown
+        Layout.fillWidth: true
+        Layout.fillHeight: true
+        Layout.preferredWidth: Style.space(400)
+        agents: root.agentService
+        agentId: root.agentEditorId
+        onBackRequested: root.closeAgentEditor()
+        // A create finished while its editor is still open: show the new agent.
+        onAgentChosen: function(agentId) { if (root.agentEditorShown && root.agentEditorId === "") root.openAgentEditor(agentId) }
+      }
+
       ColumnLayout {
-        visible: root.showTimeline
+        visible: root.showTimeline && !root.agentEditorShown
         Layout.fillWidth: true
         Layout.fillHeight: true
         Layout.preferredWidth: Style.space(400)
