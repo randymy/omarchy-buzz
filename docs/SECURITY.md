@@ -145,6 +145,18 @@ files are pending for one draft (room or thread, at most four) and go out as
 `imeta` tags with the message; the relay's own membership, hash and type checks
 still apply. Errors are fixed categories; no URL, path or byte is logged.
 
+## Clock offset (`status.clockSkewSeconds`)
+
+The helper compares the relay's HTTP `Date` response header with the local
+clock: on the NIP-11 `GET` it already makes for the relay signer, and with one
+`HEAD /info` after each rejected authentication (never more often). The offset
+is informational only. It never adjusts event timestamps, AUTH signing, token
+expirations or the system clock, and it never authorizes or retries anything
+beyond the existing bounded backoff; it only selects the `clock_skew` category
+and the panel's hint to fix the clock. The `Date` header is unauthenticated
+beyond TLS to the configured origin, so a relay can make the panel show a wrong
+offset, nothing more. It is bounded to ±10 years and cleared on a relay change.
+
 ## Release gates
 
 - Upstream WS authentication buffers and frame controls need explicit resource
