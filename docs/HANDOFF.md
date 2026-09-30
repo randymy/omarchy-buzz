@@ -110,11 +110,14 @@ Do not claim full live desktop acceptance solely from helper/socket tests.
 
 ## In flight at the September 30 afternoon stop (read before continuing)
 
-Everything is merged and pushed; `main` is at `7b1ce8a` (release 0.0.13 commit).
-The ARM64 helper build for it was started as
-https://github.com/randymy/omarchy-buzz/actions/runs/36731957484 and had not
-finished at the stop. Installed and running on this machine: still **0.0.12**
-(helper SHA256 `15408fe5…`); nothing from the agent work is installed or enabled.
+Everything is merged and pushed; `main` carries release 0.0.13 (`7b1ce8a`).
+**0.0.13 is installed** (helper SHA256
+`379983b018adebc2ef0ed607d60ca7c83811f8f6dba26b4696407806e0c02e7b`, ARM64 run
+36731957484, read-only relay check passed, rollback backup
+`~/.local/share/omarchy-buzz/backups/20260930T145546.237884Z`). Both sockets are
+enabled; the agent manager answered over `agents-bridge` with both harnesses
+`ready` (codex signed in, claude-code signed out, no agents yet), and the panel
+shows the Agents section. Live reply counts were seen on the real room.
 
 Already prepared on this machine, outside git:
 
@@ -127,14 +130,7 @@ Already prepared on this machine, outside git:
 
 Resume steps, in order:
 
-1. When run 36731957484 succeeds: download the artifact, verify hashes and
-   `build.json`, run it read-only against the relay in a private short-path
-   runtime directory (see the `check010.py` pattern in the checkpoint), then
-   `scripts/helper-install install …` — this now also installs and enables
-   `omarchy-buzz-agents.socket`/`.service` and `~/.local/share/omarchy-buzz/scripts/agent-login`.
-   Then `omarchy plugin update community.buzz --yes`, `omarchy restart shell`.
-   Verify `systemctl --user status omarchy-buzz-agents.socket` and that the
-   panel shows the Agents section with both harnesses `ready`.
+1. Done (see above).
 2. The owner signs in to Claude Code from the panel (opens a detached terminal
    with the vendor login against the shared profile).
 3. The owner creates and starts the first agent from the panel (publishes kind
