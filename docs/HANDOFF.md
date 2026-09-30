@@ -110,46 +110,40 @@ Do not claim full live desktop acceptance solely from helper/socket tests.
 
 ## In flight at the September 30 evening stop (read before continuing)
 
-`main` carries release 0.0.16 (`9717ba0`): account menu at the bottom-left
-with a Settings view (avatar, brightness, alerts, window, shortcut note,
-About), stale harness-bundle detection with in-place refresh, and the launcher
-scripts shipped in the helper package. Its ARM64 build
-(https://github.com/randymy/omarchy-buzz/actions/runs/36754066288) had not
-finished at the stop; it passed, and release 0.0.17 (`9684942`, Invite people
-in Settings) followed. **0.0.17 is installed** (helper SHA256
-`a605d55aaea4d2f78c57d64c39ecef4c109324d17afc2624283bc94fef50d788`, ARM64 run
-36765602361, rollback backup `~/.local/share/omarchy-buzz/backups/20260930T193257.874381Z`);
-bundles refreshed and `ready`. Release 0.0.18 (`a812003`, file attachments per
-`docs/ATTACHMENTS_MAP.md`) followed and **is installed** (helper SHA256
-`6183fba08731931a169acc138235d88393da05125294dd836edb0cf87ca5ec7a`, ARM64 run
-36772295227, rollback backup `~/.local/share/omarchy-buzz/backups/20260930T203041.252399Z`).
-The helper projects a real attachment on the owner's room (a 47 KB file shared
-from Desktop); no real download or upload had been exercised at this line's
-writing.
+**Installed:** helper 0.0.19 (`01e5a74`; clock-skew detection and the file
+chooser; SHA256 `f3e223730432f5ff53d4ff4d9b1f29a2c74fb64f4a04ba7b65433e44ac15cd78`,
+ARM64 run 36781835423, rollback backup
+`~/.local/share/omarchy-buzz/backups/20260930T220104.787912Z`) with both
+harness bundles `ready`, and the plugin at `216bc24` (`main`), which moves the
+file chooser out of the shell: **Browse…** now runs `scripts/pick-file`
+(python-gobject → xdg-desktop-portal `FileChooser.OpenFile`) in its own
+process, because the earlier in-shell `QtQuick.Dialogs` dialog aborted
+omarchy-shell (two SIGABRT coredumps, GLib "dconf worker"). The script alone
+was verified to open the portal's dialog; the click from the live panel was
+handed to the maintainer to try and had no verdict at this line's writing. If
+it still misbehaves: `journalctl --user -f | grep -i buzz` shows the picker's
+first stderr line as `Buzz: pick-file: …`.
+
 If the helper shows `auth_rejected` after the VM was suspended, check the clock
-first (see the checkpoint entry on clock drift). The bundles under `~/.local/share/omarchy-buzz/agent-*` were
-reassembled by hand on September 30 afternoon from the 0.0.15 scripts; after
-installing 0.0.16 the service compares them with
-`~/.local/share/omarchy-buzz/scripts/` and may report `stale` for files that
-changed since (`room-agent` etc.) — use the panel's `Refresh bundle` (or
-`scripts/agent-bundle <harness> --refresh-launcher`).
+first (0.0.19 reports `clock_skew`; see the checkpoint entry on clock drift).
 
-Verified live today: agent `vClaude` (Claude Code) answers owner mentions in a
-room and, with `Answers direct messages` on, answers the owner's DM with no
-mention. Copy, live updates, reply counts and the yellow ANSI portrait avatar
-are in daily use.
+Verified live: agent `vClaude` (Claude Code) answers owner mentions and DMs;
+copy, live updates, reply counts, the yellow ANSI portrait avatar, Settings,
+Invite people and attachment cards (a real 47 KB row) are in daily use. No
+real upload or download had been exercised at this line's writing.
 
-Branch in progress: `invite-people` (worktree `~/Projects/omarchy-buzz-invites`):
-Settings → "Invite people" (mint via `POST /api/invites`, Desktop and web
-links, a newcomer blurb). It may hold a WIP commit; check its tests before
-merging.
+Branch in progress: `model-check` (worktree `~/Projects/omarchy-buzz-model`,
+Opus builder): a `probe_model` request on the agent manager so a Claude Code
+agent's model name is checked before it is saved. Read its checkpoint entry and
+run the suites before merging; release 0.0.20 after the merge.
 
-Resume order: install 0.0.16 (artifact verify → read-only relay check →
-`helper-install` → plugin update → shell restart twice if "Incompatible
-helper") → merge `invite-people` when green and release 0.0.17 → file
-attachments (view/download media tags, upload from the composer) → model
-availability check for Claude Code agents → presence/"Update your status".
-Teams, sharing and import stay on hold. Git history is never rewritten.
+Resume order: hear the Browse… verdict (fix if needed) → merge `model-check`
+when green and release 0.0.20 (bump `helper/Cargo.toml`, `Cargo.lock`,
+`manifest.json`; `tests/package_helper.py`; push; `gh workflow run
+helper-arm64.yml --ref main`; verify → read-only relay check → `helper-install`
+→ plugin update → shell restart) → presence/"Update your status" → community
+distribution (x86-64 package, notices, listing). Teams, sharing and import stay
+on hold. Git history is never rewritten.
 
 ## Shell restarts
 
