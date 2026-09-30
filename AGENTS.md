@@ -1,5 +1,7 @@
 # Project instructions
 
+- For an incoming maintainer, start with [docs/HANDOFF.md](docs/HANDOFF.md); verify its dated baseline against the checkout and installed state.
+
 - Read DESIGN.md before implementation and docs/CHECKPOINT.md for current capabilities and remaining gates. Historical milestone evidence is not a claim about the current installed build. Do not treat proposed interfaces as existing upstream APIs.
 - Keep the public plugin generic. Downstream trading, registry, credential, deployment, and authority integrations belong outside the base plugin.
 - Do not maintain a Buzz/Omarchy product fork, modify installed upstream sources, or modify vPerps as part of base plugin work. The user approved a contribution-only Buzz fork and signed-off draft WebSocket PR on September 29; this does not authorize deploying patched upstream as a production dependency.

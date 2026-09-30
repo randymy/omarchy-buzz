@@ -1,0 +1,218 @@
+# Buzz for Omarchy — engineering handoff
+
+Last verified: September 29, 2026 (America/Chicago). This is a point-in-time
+handoff; verify the checkout and installed state before making changes.
+
+## Start here
+
+The project is a generic Omarchy community plugin for upstream Block Buzz.
+Messaging and one isolated Codex subscription room agent work on the operator's
+self-hosted relay. This is still a development preview, not a finished agent
+product or a published community release.
+
+Read, in order:
+
+1. [AGENTS.md](../AGENTS.md): binding project instructions and approved decisions.
+2. [DESIGN.md](../DESIGN.md): architecture, source references and trust boundaries.
+   Its opening status describes the original design stage, not current capability.
+3. This handoff, then the **latest sections** of [CHECKPOINT.md](CHECKPOINT.md).
+   Earlier checkpoint entries record historical blockers that may be resolved.
+4. [ROOM_AGENTS.md](ROOM_AGENTS.md), [DEVELOPMENT.md](DEVELOPMENT.md), and
+   [helper installation](../service/README.md) for the area being changed.
+
+Do not reconstruct the project from the chat history. Credentials were pasted
+in that history; do not reproduce or reuse them. Current source, installed
+metadata, and dated test evidence are the working references. Reconcile any
+conflict explicitly rather than assuming an old milestone is current.
+
+## Verified baseline
+
+| Component | State at handoff |
+| --- | --- |
+| Repository | `https://github.com/randymy/omarchy-buzz`, branch `main`; local `~/Projects/omarchy-buzz` |
+| Latest implementation commit | `388d3d6adc40b8a6ab04d6803445cddc432b217c` — quiet background updates; subsequent documentation commits may follow |
+| Installed UI | `~/.config/omarchy/plugins/community.buzz`, verified at the same implementation commit |
+| Plugin/helper version | `0.0.8`; this preview version covers multiple development commits, so verify commits and hashes too |
+| Helper binary | `~/.local/bin/omarchy-buzz`; SHA256 `f6b8f6d6c870828152b26110984456a4023f6e53530719a1cf31cabedf30eda7` |
+| Helper build | [ARM64 run 36646298882](https://github.com/randymy/omarchy-buzz/actions/runs/36646298882), source `5cdad73372e074efc01954f6385b27d7390a1be9` |
+| Buzz dependency | Official upstream `781d39510cf23cfe224e8f521ae06a23377e06de`; do not silently advance the pin |
+| Agent runtime | Stock Buzz ACP, Codex ACP `2.0.0`, native Codex `0.158.0`; [stock build 36639519388](https://github.com/randymy/omarchy-buzz/actions/runs/36639519388) |
+| Host | ARM64 Omarchy VM; installed Omarchy package reported `4.0.3-1`; see DESIGN for source/package distinction |
+| Supervision | `omarchy-buzz.service` active/running, socket active/enabled; `omarchy-buzz-codex.service` active/running, static and manually started |
+
+The helper may legitimately exit when idle and reactivate from its socket.
+Codex is **not enabled at login**; do not promise it survives reboot automatically.
+Artifact downloads expire; the local verified helper artifact is under
+`~/.cache/omarchy-buzz/helper/36646298882/` while retained.
+
+## What works, and what remains limited
+
+- Native bar integration, normal Buzz window and optional overlay; hosted or
+  custom relay configuration. The operator currently uses a Mac mini relay.
+- Joined-room snapshots, recent messages, sending, thread reading/replying,
+  room-scoped display names, exact-key mention completion and optional alerts.
+- Type `@codex`, then choose the actual roster suggestion with Tab/Enter/click.
+  Text resembling a mention alone is not proof of an attached routing key.
+- The dedicated **Codex (isolated)** agent uses the existing separate ChatGPT
+  login, with forced subscription authentication and no automatic API fallback.
+  It accepts only its configured owner's mentions in the configured room.
+- Real subscription acceptance passed. A later user message also received a
+  signed Codex reply after 18 seconds. See [acceptance evidence](evidence/stock-codex-room-2026-09-29.json)
+  and the checkpoint's reply-visibility entry. Do not send another production
+  task merely to prove the UI works.
+- 👀 and 💬 are observed, verified reactions: queued and actively prompting
+  in stock ACP. They are removed after completion. They are cosmetic evidence,
+  not authoritative agent state or reply counts. Refresh is periodic, not live
+  streaming; short-lived reactions can occur between snapshots.
+- Room/message completeness and activity remain explicitly partial/local.
+  There is no synchronized unread counter, full history pagination, attachment
+  support, full agent dashboard or security approval UI.
+- **No Claude room service is installed.** Separate subscription smoke evidence
+  is not room acceptance. Goose is prospective, not a verified supported runtime.
+- Public release packages, community listing and general agent setup/lifecycle
+  UX remain unfinished. [SHARING.md](SHARING.md) describes preview sharing.
+
+## Most recent bug fixes: preserve these
+
+1. Names/mentions could stay unavailable after a busy recipient lookup. There
+   are bounded, scope-checked read retries. Never retry uncertain message sends.
+2. Thread expansion could leave replies outside the scrollable viewport. The
+   rendered test now checks a bottommost message's expanded reply is visible.
+3. Every status frame replaced UI arrays; the thread timer cleared replies every
+   eight seconds. Commit `388d3d6` retains identical projections, keeps same-scope
+   snapshots visible during loading, and updates message delegates by event ID.
+   The rendered regression checks delegate and scroll retention on new messages.
+
+The quiet-refresh fix is installed and has synthetic rendered test coverage.
+There is no subsequent user confirmation of the improved experience yet.
+Do not claim full live desktop acceptance solely from helper/socket tests.
+
+## Next three priorities
+
+1. **Stabilize daily messaging UX.** Observe the installed quiet-refresh behavior;
+   preserve scrolling, drafts, focus and open threads through updates. Check
+   reconnect/error paths and reply discoverability. Use synthetic data for
+   repeatable tests; never populate the real room just to exercise UI states.
+2. **Make agent setup reproducible.** Package the approved stock Codex path with
+   explicit workspace selection and supervised start/stop/status. Then complete
+   Claude subscription room acceptance as a separate milestone. Reuse native
+   login/refresh mechanisms; do not copy provider credentials into plugin state.
+3. **Prepare community distribution.** Review ARM64 and x86-64 packages, notices,
+   install/update/uninstall and version compatibility; clean up stale docs and
+   prepare release/listing. vPerps consumes this same generic plugin through
+   configuration or separate extensions, never a trading-branded fork.
+
+These priorities are recommendations, not authorization to expand an agent's
+workspace, start arbitrary model work, invite users, or publish externally.
+
+## Runtime locations and credential boundaries
+
+| Location | Purpose |
+| --- | --- |
+| `~/.config/omarchy-buzz/config.toml` | Public relay and human identity metadata; read this for the current relay rather than hard-coding operator infrastructure |
+| `$XDG_RUNTIME_DIR/omarchy-buzz/control.sock` | Local bounded helper IPC; sanitized presentation data only |
+| `~/.local/state/omarchy-buzz/delivery/ledger.json` | Durable send deduplication state; preserve across upgrades/uninstall |
+| `~/.local/share/omarchy-buzz/stock-agent-codex` | Installed stock agent bundle and launcher copies |
+| `~/.local/state/omarchy-buzz-agent-preview/codex` | Dedicated provider profile; native Codex owns its credentials and refresh |
+| `~/.local/state/omarchy-buzz-room-workspaces/codex` | Only the explicitly selected task workspace; mounted as `/workspace` |
+| `~/.local/state/omarchy-buzz-room-workspaces/codex-identity.json` | Public agent identity/room metadata |
+| `~/.config/systemd/user/omarchy-buzz-codex.service` | Operator-specific, separately supervised room agent |
+
+Human and dedicated agent Buzz signing identities are in Linux Secret Service.
+The launcher uses the agent's `omarchy-buzz.room-agent.v1` service/account lookup;
+the helper uses `omarchy-buzz.identity.v1`. Inspect the existing implementation
+for access; do not dump keyring values, auth files, environments or raw agent logs.
+QML must never own keys, provider tokens, capability credentials or authority.
+
+The approved stock runtime automatically permits tools **inside its filesystem
+sandbox**. It has shared network access, its dedicated provider profile and its
+own Buzz signing key so the stock CLI can publish replies. It does not mount
+normal HOME, desktop D-Bus/display or the vPerps checkout. Room/owner filters are
+routing controls, not cryptographic restrictions on everything that key can sign.
+The service has 2 GiB/128-task bounds, 180-second turn/60-second idle limits and
+core dumps disabled. Raw stdout/stderr are suppressed; absence of journal text
+is not proof that no task ran. Read ROOM_AGENTS.md before changing this boundary.
+
+## Verification and deployment commands
+
+Start read-only from `~/Projects/omarchy-buzz`:
+
+```sh
+git status --short
+git log -5 --oneline
+git -C ~/.config/omarchy/plugins/community.buzz rev-parse HEAD
+~/.local/bin/omarchy-buzz --version
+sha256sum ~/.local/bin/omarchy-buzz
+systemctl --user show omarchy-buzz.service omarchy-buzz.socket omarchy-buzz-codex.service -p Id -p ActiveState -p SubState -p UnitFileState
+```
+
+Focused UI checks, already passed for the recent changes:
+
+```sh
+scripts/preview --thread-replies
+scripts/preview --mentions
+scripts/preview --thread-send
+scripts/preview --author-names
+scripts/preview --send-bridge
+```
+
+The preview uses the pinned sibling Omarchy checkout. Offscreen window-mask and
+sandbox-denied test IPC warnings can be expected; inspect the actual PASS/error
+and process result. Real helper socket tests require socket access. A failed
+local helper build recently lacked `pkg-config`; do not weaken dependencies to
+hide that. The existing manual ARM64 workflow passed with native prerequisites.
+For Rust changes use locked tests and the relevant manual CI workflow; avoid
+triggering the entire workflow matrix for a UI-only fix.
+
+After testing a UI change and ensuring the installed checkout has no user edits:
+
+```sh
+omarchy plugin update community.buzz --yes
+omarchy restart shell
+omarchy-shell shell summon community.buzz '{"mode":"window"}'
+```
+
+Use the Omarchy skill for desktop configuration/install work. Updating/rescanning
+alone has previously left old compiled QML running; verify the rendered window
+after reload. Reload disrupts the shell and can discard in-memory drafts, so
+minimize it. The installed UI checkout currently follows the local source repo;
+check its origin before assuming a public fetch/deploy relationship.
+
+Helper upgrades are separate. Follow [service/README.md](../service/README.md),
+verify the artifact source and hash, run installer `--dry-run`, then install.
+The installer preserves config, identities and ledger, and automatically restores
+prior files if activation fails. Latest upgrade backup:
+`~/.local/share/omarchy-buzz/backups/20260930T003325.465724Z`.
+There is no public `rollback` subcommand: review backup contents and compatibility
+before deliberate restoration/repackaging. Do not downgrade below 0.0.8 after
+thread sends. For UI rollback, revert the specific source change in a new commit
+and deploy it normally; do not reset unrelated work or delete the installed tree.
+
+## Upstream and collaboration expectations
+
+- Keep Buzz/Omarchy upstream unmodified in deployed dependencies. The authorized
+  contribution-only [Buzz draft PR #7976](https://github.com/block/buzz/pull/7976)
+  concerns WebSocket resource limits; it is not an adopted production dependency.
+  Staged ACP patches/experimental bundles are not the running stock agent.
+- Track upstream changes and inspect candidate interfaces before upgrading.
+  A moving `main`, app version string or green unrelated workflow is insufficient.
+- Subscription authentication is a product requirement. Native ChatGPT login was
+  verified; do not claim a specific subscription tier or billing audit from that.
+- Work autonomously on authorized engineering. Ask only for material product,
+  authority or scope decisions. Do not ask the user to run routine commands the
+  agent can execute. Respect the execution environment's approval requirements;
+  do not promise a bypass mode.
+- The user permits selective inexpensive subagents. Delegate bounded independent
+  tasks with explicit file ownership; do not spawn several agents just to reread
+  the same history. Check current tool/model availability and budget guidance.
+- The user dislikes repeated GitHub failure emails. Keep automatic workflows
+  disabled as currently configured; use focused manual runs and inspect failures.
+  Account-wide notification settings were not changed.
+- Do not reopen settled decisions: generic community plugin; no product forks;
+  hosted or self-hosted relays; ordinary Buzz permissions for first-release room
+  publication; approved stock Codex isolation described above. Optional stronger
+  future authority/signing architecture is not an implicit blocker to this path.
+
+At the next handoff, update this baseline, exact deployed evidence, unresolved
+issues and next priorities. Leave a clean, reviewable commit history and identify
+any work that is saved locally but not pushed or installed.
