@@ -730,7 +730,7 @@ async fn observe_inner(
                         *relay_pin=Some(catalog.signer);
                         let next_catalog=crate::protocol::Catalog {
                             state:catalog.state.into(),category:Some(catalog.category.into()),
-                            rooms:catalog.rooms.into_iter().map(|r|crate::protocol::Room {id:r.id,name:r.name,description:r.description}).collect(),
+                            rooms:catalog.rooms.into_iter().map(|r|crate::protocol::Room {id:r.id,name:r.name,description:r.description,kind:r.kind.into(),participants:r.participants,hidden:r.hidden}).collect(),
                         };
                         activity.retain(&next_catalog.rooms);
                         let removed_selection=selected_history.as_ref().filter(|room|!next_catalog.rooms.iter().any(|r|r.id==**room)).cloned();
@@ -1029,6 +1029,9 @@ mod thread_policy_tests {
             id: room.into(),
             name: "room".into(),
             description: String::new(),
+            kind: "stream".into(),
+            participants: Vec::new(),
+            hidden: false,
         });
         status.history = History {
             state: "snapshot".into(),
@@ -1133,6 +1136,9 @@ mod thread_policy_tests {
             id: room.into(),
             name: "room".into(),
             description: String::new(),
+            kind: "stream".into(),
+            participants: Vec::new(),
+            hidden: false,
         });
         status.history = History {
             state: "snapshot".into(),

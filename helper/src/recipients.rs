@@ -81,7 +81,8 @@ pub fn roster(
         agents: Vec::new(),
     })
 }
-fn name(event: &Event) -> String {
+/// Sanitized display name from one kind 0 event; empty when absent or malformed.
+pub(crate) fn name(event: &Event) -> String {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(&event.content) else {
         return String::new();
     };

@@ -385,3 +385,25 @@ fn agent_profile_request_is_exact_author_and_bounded() {
     .body(&viewer)
     .is_err());
 }
+
+#[test]
+fn dm_visibility_request_is_viewer_scoped() {
+    let viewer = Keys::generate();
+    let relay = Keys::generate();
+    let request = QueryRequest::DmVisibility;
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&request.body(&viewer).unwrap()).unwrap(),
+        serde_json::json!([{"kinds":[30622],"#p":[viewer.public_key().to_hex()],"limit":1}])
+    );
+    let own = viewer.public_key().to_hex();
+    let mine = EventBuilder::new(Kind::Custom(30622), "")
+        .tags([Tag::parse(["p", own.as_str()]).unwrap()])
+        .sign_with_keys(&relay)
+        .unwrap();
+    assert!(request.matches(&mine, &viewer));
+    let theirs = EventBuilder::new(Kind::Custom(30622), "")
+        .tags([Tag::parse(["p", relay.public_key().to_hex().as_str()]).unwrap()])
+        .sign_with_keys(&relay)
+        .unwrap();
+    assert!(!request.matches(&theirs, &viewer));
+}
