@@ -1,5 +1,45 @@
 # Room replies: read-path readiness
 
+## Current mode (September 29, 2026): Desktop's oldest-first threads
+
+The owner chose Buzz Desktop's thread mode. The helper no longer uses the
+newest-first `thread_window` / `kind:39007` read described in the historical
+sections below. It sends the legacy oldest-first filter that Desktop's
+`get_thread_replies` sends (`desktop/src-tauri/src/commands/messages.rs:245-315`,
+`docs/nips/NIP-CW.md` "Legacy Oldest-first Threads"):
+
+```json
+[{"#h":["<room>"],"#e":["<root>"],"kinds":[9,40002],"depth_limit":64,"limit":50,"include_aux":true}]
+```
+
+and continues with `thread_cursor`/`thread_cursor_id` from the last reply row
+of a full page. Kinds are Desktop's `TIMELINE_KINDS` restricted to the two the
+helper already verifies and renders. Pages are read in order until a short
+page or 200 replies (four pages of 50).
+
+**Verified on every page:** signatures; `h` equal to the room (reactions may
+omit `h`); only kinds 9/40002 rows and 40003/5/9005/7 auxiliaries; NIP-10
+markers (a direct reply names the root as `reply`; a nested reply names the
+root as `root` and its parent as `reply`, as relay ingest resolves them);
+relay order strictly ascending after the cursor; no id repeated within a page
+or across pages (root auxiliaries, which every page repeats, excepted);
+per-page budget 400 events / 1 MiB and a whole-thread budget of 1000 events /
+2 MiB. Any failure rejects the whole read. Edits and deletions keep the
+existing conservative rules. Depth is computed by walking parents; a reply
+whose parent is neither the root nor an earlier displayed reply is hidden,
+with its descendants, and the snapshot says `thread_replies_hidden`. The relay
+produces such orphans legitimately: it drops soft-deleted and inaccessible
+parents but keeps their children. Desktop renders them at a guessed depth;
+this helper does not invent a parent.
+
+**Heuristic, not signed:** this path has no bounds event. A short page ending
+the read is the legacy stop rule (`thread_completeness_unknown`); access
+filtering can also shorten a page. A full fourth page yields `hasMore: true`
+and `thread_more_unshown` ("more exist"), which may be wrong for an exact
+multiple of 50. Status frames now allow 512 KiB to carry 200 replies.
+
+The sections below record the earlier depth-one design and its evidence.
+
 Source preview 0.0.7 now implements the bounded read-only thread view described
 below. Helper unit tests and offscreen QML checks pass. The synthetic ACP
 acceptance proves a signed reply is persisted, but the subsequent actual

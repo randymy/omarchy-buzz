@@ -1667,3 +1667,18 @@ Still helper-bound: reply counts on room messages (every message offers
 eight replies, older history, live updates, and direct messages. DMs remain
 excluded by DESIGN.md; the catalog admits only `stream` rooms. The selected
 room is not remembered across shell restarts.
+
+## September 29, 2026 — threads read like Buzz Desktop
+
+Branch `desktop-thread-mode`; not merged, installed or run against a relay.
+The helper reads a thread with Desktop's legacy oldest-first filter
+(`depth_limit` 64, pages of 50 with the composite `thread_cursor`) until a
+short page or 200 replies. Each row carries `depth` and `parent`; the panel
+indents nested replies (at most three steps) under a "↳ replying to" caption
+and rejects any frame whose reply tree does not chain to the root through
+earlier rows. Replies with an unknown parent are hidden and disclosed ("some
+hidden"); a capped thread reads "First 200 replies · more exist". Completeness
+is a heuristic in this mode: there is no signed bounds event. The IPC response
+bound rose from 96 KiB to 512 KiB (worst case measured at ~428 KiB). Replies
+are still sent to the root. Details: [THREAD_REPLY_READINESS.md](THREAD_REPLY_READINESS.md).
+Evidence is synthetic only: helper unit tests and the offscreen preview modes.
