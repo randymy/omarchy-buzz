@@ -73,6 +73,13 @@ elif [[ ${1:-} == --ansi-art ]]; then
   head -c 270000 /dev/zero | tr '\0' x > "$preview_dir/files/large.ans"
   export BUZZ_ANSI_FIXTURE="$preview_dir/files/avatar.ans"
   export BUZZ_ANSI_LARGE="$preview_dir/files/large.ans"
+elif [[ ${1:-} == --settings ]]; then
+  # Synthetic frames only. BUZZ_SETTINGS_CAPTURE_DIR optionally saves the open
+  # account menu and the settings view to PNG files after the checks pass.
+  cp "$project_root/tests/Settings.qml" "$preview_dir/shell.qml"
+  mkdir -m 700 "$preview_dir/files"
+  cp "$project_root/tests/fixtures/avatar.ans" "$preview_dir/files/avatar.ans"
+  export BUZZ_ANSI_FIXTURE="$preview_dir/files/avatar.ans"
 elif [[ ${1:-} == --author-names ]]; then
   cp "$project_root/tests/AuthorNames.qml" "$preview_dir/shell.qml"
 elif [[ ${1:-} == --presentation ]]; then
