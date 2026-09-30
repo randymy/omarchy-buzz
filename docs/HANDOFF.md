@@ -110,19 +110,39 @@ Do not claim full live desktop acceptance solely from helper/socket tests.
 
 ## In flight at the September 30 evening stop (read before continuing)
 
-**Installed:** helper 0.0.19 (`01e5a74`; clock-skew detection and the file
-chooser; SHA256 `f3e223730432f5ff53d4ff4d9b1f29a2c74fb64f4a04ba7b65433e44ac15cd78`,
-ARM64 run 36781835423, rollback backup
-`~/.local/share/omarchy-buzz/backups/20260930T220104.787912Z`) with both
-harness bundles `ready`, and the plugin at `216bc24` (`main`), which moves the
-file chooser out of the shell: **Browse…** now runs `scripts/pick-file`
-(python-gobject → xdg-desktop-portal `FileChooser.OpenFile`) in its own
-process, because the earlier in-shell `QtQuick.Dialogs` dialog aborted
-omarchy-shell (two SIGABRT coredumps, GLib "dconf worker"). The script alone
-was verified to open the portal's dialog; the click from the live panel was
-handed to the maintainer to try and had no verdict at this line's writing. If
-it still misbehaves: `journalctl --user -f | grep -i buzz` shows the picker's
-first stderr line as `Buzz: pick-file: …`.
+**Installed:** helper 0.0.20 (`26cb346`; model check for agents, clock skew,
+portal file chooser; SHA256
+`dd72a3ab9bd4302ac2d2c9f17922a437e51834d5fa8d6e789cc9463bc5dc2739`, ARM64 run
+36784460429, rollback backup
+`~/.local/share/omarchy-buzz/backups/20260930T222412.125256Z`), both harness
+bundles refreshed to `ready` (the launcher changed; the running `vClaude`
+unit still holds the previous launcher until its next start), and the plugin
+at `5c5471b` (`main`) after one clean shell restart.
+
+Two things from that install to know:
+
+- The file chooser: **Browse…** now runs `scripts/pick-file` (python-gobject
+  → xdg-desktop-portal `FileChooser.OpenFile`) in its own process, because the
+  earlier in-shell `QtQuick.Dialogs` dialog aborted omarchy-shell (two SIGABRT
+  coredumps, GLib "dconf worker"). The script alone opens the portal's dialog;
+  the click from the live panel was handed to the maintainer and had no
+  verdict at this line's writing. On trouble, `journalctl --user -f | grep -i
+  buzz` shows the picker's first stderr line as `Buzz: pick-file: …`.
+- The installer used to compare installed reviewed scripts with the *current*
+  checkout, so the first release that changed `scripts/room-agent` refused to
+  upgrade ("modified or unrecognized unit"). `scripts/helper-install` now
+  records the hashes of what it installs in
+  `~/.local/share/omarchy-buzz/installed.json` and accepts those on the next
+  run (an unrecorded edit is still refused). This machine's record was
+  bootstrapped by hand after verifying every installed file against the
+  0.0.19 commit; new installs write it themselves.
+
+The model check (`docs/AGENTS_SERVICE.md` "Model check"): a create or update
+whose model does not fit its harness is refused with `pending.detail =
+model_not_for_harness`; **Test model** in the agent editor runs one bounded
+probe turn in the sandbox (`systemd-run --user --scope`, verified to work from
+a service-like unit) and reports a fixed sentence in `status.modelProbe`. No
+real probe has been run yet; the vendor error patterns are inferred.
 
 If the helper shows `auth_rejected` after the VM was suspended, check the clock
 first (0.0.19 reports `clock_skew`; see the checkpoint entry on clock drift).
@@ -132,18 +152,17 @@ copy, live updates, reply counts, the yellow ANSI portrait avatar, Settings,
 Invite people and attachment cards (a real 47 KB row) are in daily use. No
 real upload or download had been exercised at this line's writing.
 
-Branch in progress: `model-check` (worktree `~/Projects/omarchy-buzz-model`,
-Opus builder): a `probe_model` request on the agent manager so a Claude Code
-agent's model name is checked before it is saved. Read its checkpoint entry and
-run the suites before merging; release 0.0.20 after the merge.
+No branch is in progress; all worktrees are removed.
 
-Resume order: hear the Browse… verdict (fix if needed) → merge `model-check`
-when green and release 0.0.20 (bump `helper/Cargo.toml`, `Cargo.lock`,
+Resume order: hear the Browse… verdict (fix if needed) → a real **Test model**
+run on `vClaude` from the panel (then adjust the patterns in
+`helper/src/agents_service/models.rs` if the sentence is wrong) →
+presence/"Update your status" → community distribution (x86-64 package,
+notices, listing). Release steps: bump `helper/Cargo.toml`, `Cargo.lock`,
 `manifest.json`; `tests/package_helper.py`; push; `gh workflow run
 helper-arm64.yml --ref main`; verify → read-only relay check → `helper-install`
-→ plugin update → shell restart) → presence/"Update your status" → community
-distribution (x86-64 package, notices, listing). Teams, sharing and import stay
-on hold. Git history is never rewritten.
+→ bundle `--check`/`--refresh-launcher` → plugin update → shell restart. Teams,
+sharing and import stay on hold. Git history is never rewritten.
 
 ## Shell restarts
 

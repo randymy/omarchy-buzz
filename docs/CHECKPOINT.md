@@ -2545,3 +2545,21 @@ unavailable model failed silently on the agent's first turn. Contract in
   intended in 2.1.280, and Codex's `exec` output inside the sandbox),
   `systemd-run --user --scope` from the socket-activated service, and the panel
   against the real service.
+
+## Installer records what it installed — September 30
+
+- `scripts/helper-install install` refused the 0.0.20 upgrade with "modified
+  or unrecognized unit: …/scripts/room-agent": `inspect_existing` compared
+  every installed reviewed file with the current checkout's copy, so the first
+  release to change a shipped script could not be installed over the previous
+  one (earlier upgrades only added files, which the check allowed).
+- Now the installer writes `~/.local/share/omarchy-buzz/installed.json`
+  (mode 600; `{name: sha256}` for every reviewed file) after putting the
+  files, backs it up beside the files, restores or removes it with them, and
+  accepts an installed file that matches either the checkout's copy or its
+  recorded hash. A damaged or oversized record reads as empty; an edit nobody
+  recorded is still refused. `tests/helper_install.py` gains
+  `test_upgrade_accepts_its_own_recorded_copy_but_not_an_edit` (12 tests).
+- This machine had no record: it was bootstrapped after verifying all 13
+  installed reviewed files byte-for-byte against commit `01e5a74` (0.0.19),
+  then 0.0.20 installed normally.
