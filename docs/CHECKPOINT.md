@@ -2594,3 +2594,6 @@ unavailable model failed silently on the agent's first turn. Contract in
   window presentation, now the default, is unaffected. `--presentation`
   checks the step-aside and return; `--attachments`, `--ansi-art`, `--agents`,
   `--settings` pass.
+
+- Live verdict (maintainer, 18:20 CDT): Browse… from the window opened the
+  portal dialog and the chosen file attached — "it worked".

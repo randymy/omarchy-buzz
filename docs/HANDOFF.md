@@ -121,13 +121,13 @@ at `5c5471b` (`main`) after one clean shell restart.
 
 Two things from that install to know:
 
-- The file chooser: **Browse…** now runs `scripts/pick-file` (python-gobject
-  → xdg-desktop-portal `FileChooser.OpenFile`) in its own process, because the
-  earlier in-shell `QtQuick.Dialogs` dialog aborted omarchy-shell (two SIGABRT
-  coredumps, GLib "dconf worker"). The script alone opens the portal's dialog;
-  the click from the live panel was handed to the maintainer and had no
-  verdict at this line's writing. On trouble, `journalctl --user -f | grep -i
-  buzz` shows the picker's first stderr line as `Buzz: pick-file: …`.
+- The file chooser: **Browse…** runs `scripts/pick-file` (python-gobject →
+  xdg-desktop-portal `FileChooser.OpenFile`) in its own process, because the
+  earlier in-shell `QtQuick.Dialogs` dialog aborted omarchy-shell. **Verified
+  live by the maintainer** ("it worked") after two follow-ups: Super+B opens
+  a normal window by default (`795be64`), and in overlay mode the overlay
+  steps aside while a dialog is up (`7ce0b8a`; the Overlay layer had covered
+  the dialog, which looked like a crash). Plugin at `7ce0b8a`.
 - The installer used to compare installed reviewed scripts with the *current*
   checkout, so the first release that changed `scripts/room-agent` refused to
   upgrade ("modified or unrecognized unit"). `scripts/helper-install` now
@@ -154,7 +154,7 @@ real upload or download had been exercised at this line's writing.
 
 No branch is in progress; all worktrees are removed.
 
-Resume order: hear the Browse… verdict (fix if needed) → a real **Test model**
+Resume order: a real **Test model**
 run on `vClaude` from the panel (then adjust the patterns in
 `helper/src/agents_service/models.rs` if the sentence is wrong) →
 presence/"Update your status" → community distribution (x86-64 package,
