@@ -34,7 +34,6 @@ pub const SOCKET: &str = "agents.sock";
 const MAX_CLIENTS: usize = 8;
 const IDLE_EXIT: Duration = Duration::from_secs(30);
 const UNIT_INSPECTION: Duration = Duration::from_secs(15);
-const HARNESS_INSPECTION: Duration = Duration::from_secs(60);
 
 fn deps_from_env() -> Deps {
     if std::env::var("OMARCHY_BUZZ_AGENTS_FAKE_CONTROL").as_deref() == Ok("1") {
@@ -140,7 +139,6 @@ pub async fn daemon(keep: bool) -> Result<(), &'static str> {
     let mut tick = tokio::time::interval(Duration::from_secs(1));
     let mut idle = Instant::now();
     let mut units_due = Instant::now() + UNIT_INSPECTION;
-    let mut harnesses_due = Instant::now() + HARNESS_INSPECTION;
     loop {
         tokio::select! {
             _ = terminate.recv() => break,
@@ -154,8 +152,7 @@ pub async fn daemon(keep: bool) -> Result<(), &'static str> {
                         let service = service.clone();
                         tokio::spawn(async move { service.inspect_units().await });
                     }
-                    if now >= harnesses_due {
-                        harnesses_due = now + HARNESS_INSPECTION;
+                    if service.harness_inspection_due(now) {
                         let service = service.clone();
                         tokio::spawn(async move { service.inspect_harnesses().await });
                     }

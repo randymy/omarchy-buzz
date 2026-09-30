@@ -260,7 +260,9 @@ deletions of the 30175/30177 records.
 Internal failures without a contract category (for example a store write
 failure) are reported as `agent_invalid`. Unit states are refreshed on
 `subscribe`, after unit operations and every 15 s while a client is connected;
-harness readiness on `subscribe`, before `start_agent` and every 60 s.
+harness readiness on `subscribe`, before `start_agent` and every 60 s, or every
+5 s for two minutes after a successful `sign_in` until that harness reports
+signed-in.
 
 `OMARCHY_BUZZ_AGENTS_FAKE_CONTROL=1` makes unit control, the keyring, the
 spawner and the room source in-memory fakes (rooms from
