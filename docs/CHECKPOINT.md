@@ -1980,3 +1980,15 @@ Two things went wrong on the way and are now follow-ups:
   match exactly one roster name to that key, as Desktop does.
 - Also: `harnesses[].signedIn` refreshes only every 60 s; re-check every
   5 s for two minutes after a `sign_in` request completes.
+
+## Agent run follow-ups — September 30, 2026
+
+Branch `agent-followups` (from `bef49ed`); not merged or installed. A rejected
+mid-session re-authentication now reconnects on the network budget (1/2/4/8/16 s),
+shown as `connecting`/`auth_rejected`, then waits for Retry; a rejected first
+authentication still stops at once. On send, a typed `@name` adds the one key whose
+name in this room's verified roster it matches (longest case-insensitive match,
+spaces kept, removed or dashed, word boundaries), within 20 keys; ambiguous names
+resolve nothing and the composer shows `Notifies: <names>`. After `sign_in` the
+agent service re-reads harness status every 5 s for two minutes. Evidence is
+synthetic (loopback and fake-spawner tests, `tests/Mentions.qml`, every preview).

@@ -189,21 +189,43 @@ const FRESHNESS: FreshnessPolicy = FreshnessPolicy {
     head: Duration::from_secs(5),
     live_poll: Duration::from_secs(30),
 };
-#[derive(Default)]
 struct Backoff {
     failures: u8,
+    // Set when the relay rejected a re-authentication of a session that had
+    // authenticated since start or Retry. Until success, Retry or exhaustion,
+    // `auth_rejected` then retries like a network failure. A rejected first
+    // authentication never sets it: that means a wrong or revoked identity.
+    reauth_rejected: bool,
+    unit: Duration,
+}
+impl Default for Backoff {
+    fn default() -> Self {
+        Self {
+            failures: 0,
+            reauth_rejected: false,
+            unit: Duration::from_secs(1),
+        }
+    }
 }
 impl Backoff {
     fn reset(&mut self) {
         self.failures = 0;
+        self.reauth_rejected = false;
     }
     fn delay(&mut self, error: &str) -> Option<Duration> {
-        if !matches!(error, "relay_timeout" | "relay_unavailable") || self.failures >= 5 {
+        let retryable = matches!(error, "relay_timeout" | "relay_unavailable")
+            || (error == "auth_rejected" && self.reauth_rejected);
+        if !retryable || self.failures >= 5 {
+            self.reauth_rejected = false;
             return None;
         }
-        let seconds = 1_u64 << self.failures;
+        let factor = 1_u32 << self.failures;
         self.failures += 1;
-        Some(Duration::from_secs(seconds))
+        Some(self.unit * factor)
+    }
+    /// The category shown while an automatic retry is in progress.
+    fn retrying(&self) -> Option<&'static str> {
+        self.reauth_rejected.then_some("auth_rejected")
     }
 }
 enum ConnectionExit {
@@ -353,7 +375,16 @@ async fn wait_after_failure(
     retry: &mut mpsc::Receiver<Command>,
     tx: &watch::Sender<Status>,
 ) -> bool {
-    if let Some(delay) = backoff.delay(error) {
+    let delay = backoff.delay(error);
+    // A rejected re-authentication that is being retried is still an attempt to
+    // connect; it becomes `disconnected` only once the budget is spent.
+    let state = if delay.is_some() && error == "auth_rejected" {
+        "connecting"
+    } else {
+        "disconnected"
+    };
+    update(tx, state, Some(error));
+    if let Some(delay) = delay {
         tokio::select! {
             _=tokio::time::sleep(delay)=>true,
             r=next_retry(retry,tx)=> { if r { backoff.reset(); true } else { false } }
@@ -1139,7 +1170,13 @@ async fn observe_inner(
                     update(tx,"connecting",None);
                     match timeout(Duration::from_secs(25),conn.authenticate(keys,None)).await {
                         Ok(Ok(()))=> { pending=None; due=tokio::time::Instant::now(); },
-                        Ok(Err(e))=>return ConnectionExit::Failure(category(&e)),
+                        Ok(Err(e))=> {
+                            let error=category(&e);
+                            // This session authenticated once; a rejection now is retried
+                            // with backoff (observed transiently on a live relay).
+                            if error=="auth_rejected" {backoff.reauth_rejected=true;}
+                            return ConnectionExit::Failure(error);
+                        },
                         Err(_)=>return ConnectionExit::Failure("relay_timeout"),
                     }
                 },
@@ -1207,7 +1244,7 @@ pub async fn run(
             backoff.reset();
             continue;
         }
-        update(&tx, "connecting", None);
+        update(&tx, "connecting", backoff.retrying());
         let cfg = c.clone();
         let mut key_read = tokio::task::spawn_blocking(move || read_keys(&cfg));
         let key_result = match timeout(Duration::from_secs(15), &mut key_read).await {
@@ -1258,22 +1295,10 @@ pub async fn run(
                 continue;
             }
         };
-        update(&tx, "connecting", None);
         let relay = c.relay.as_deref().unwrap_or_default();
-        let mut conn = match connect_identity(relay, &keys).await {
-            Ok(connection) => connection,
-            Err(error) => {
-                update(&tx, "disconnected", Some(error));
-                if !wait_after_failure(error, &mut backoff, &mut retry, &tx).await {
-                    return;
-                }
-                continue;
-            }
-        };
-        let exit = observe_sending(
-            &mut conn,
-            &keys,
+        if !connect_and_observe(
             relay,
+            &keys,
             &mut relay_pin,
             &tx,
             &mut retry,
@@ -1281,21 +1306,44 @@ pub async fn run(
             FRESHNESS,
             &mut sender,
         )
-        .await;
-        // A timed-out socket is dropped before backoff; graceful close is only
-        // attempted for deliberate Retry, under its own short deadline.
-        match exit {
-            ConnectionExit::Retry => {
-                let _ = timeout(Duration::from_secs(3), conn.disconnect()).await;
-            }
-            ConnectionExit::Shutdown => return,
-            ConnectionExit::Failure(error) => {
-                drop(conn);
-                update(&tx, "disconnected", Some(error));
-                if !wait_after_failure(error, &mut backoff, &mut retry, &tx).await {
-                    return;
-                }
-            }
+        .await
+        {
+            return;
+        }
+    }
+}
+/// One connection: authenticate, observe until it ends, then wait out any
+/// backoff. Returns false on shutdown.
+async fn connect_and_observe(
+    relay: &str,
+    keys: &nostr::Keys,
+    relay_pin: &mut Option<nostr::PublicKey>,
+    tx: &watch::Sender<Status>,
+    retry: &mut mpsc::Receiver<Command>,
+    backoff: &mut Backoff,
+    policy: FreshnessPolicy,
+    sender: &mut crate::sending::Sender,
+) -> bool {
+    update(tx, "connecting", backoff.retrying());
+    let mut conn = match connect_identity(relay, keys).await {
+        Ok(connection) => connection,
+        Err(error) => return wait_after_failure(error, backoff, retry, tx).await,
+    };
+    let exit = observe_sending(
+        &mut conn, keys, relay, relay_pin, tx, retry, backoff, policy, sender,
+    )
+    .await;
+    // A timed-out socket is dropped before backoff; graceful close is only
+    // attempted for deliberate Retry, under its own short deadline.
+    match exit {
+        ConnectionExit::Retry => {
+            let _ = timeout(Duration::from_secs(3), conn.disconnect()).await;
+            true
+        }
+        ConnectionExit::Shutdown => false,
+        ConnectionExit::Failure(error) => {
+            drop(conn);
+            wait_after_failure(error, backoff, retry, tx).await
         }
     }
 }
@@ -1562,3 +1610,7 @@ mod activity_integration_tests;
 #[cfg(test)]
 #[path = "auth_live_tests.rs"]
 mod live_integration_tests;
+
+#[cfg(test)]
+#[path = "auth_reauth_tests.rs"]
+mod reauth_tests;

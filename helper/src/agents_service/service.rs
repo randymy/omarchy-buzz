@@ -15,8 +15,29 @@ use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
 };
-use tokio::sync::{watch, OwnedMutexGuard};
+use tokio::{
+    sync::{watch, OwnedMutexGuard},
+    time::{Duration, Instant},
+};
 use zeroize::Zeroizing;
+
+/// Cadence of the harness readiness and sign-in scripts.
+pub const HARNESS_INSPECTION: Duration = Duration::from_secs(60);
+/// Cadence while a completed `sign_in` waits for its harness to report
+/// signed-in, for at most `SIGN_IN_WINDOW`.
+pub const SIGN_IN_INSPECTION: Duration = Duration::from_secs(5);
+pub const SIGN_IN_WINDOW: Duration = Duration::from_secs(120);
+
+/// When the daemon next re-reads harness status.
+struct HarnessSchedule {
+    due: Instant,
+    // The harness a completed `sign_in` started a login for, and the end of
+    // its fast re-check window.
+    watching: Option<(String, Instant)>,
+    // A scheduled inspection is still running; the next one waits for it
+    // (each script may take up to its 15 s deadline).
+    running: bool,
+}
 
 pub struct Deps {
     pub control: Arc<dyn UnitControl>,
@@ -99,6 +120,7 @@ pub struct Service {
     config: ConfigLoader,
     store: Mutex<Store>,
     harnesses: Mutex<Vec<HarnessView>>,
+    schedule: Mutex<HarnessSchedule>,
     units: Mutex<BTreeMap<String, &'static str>>,
     pending: Mutex<Option<Pending>>,
     mutation: Arc<tokio::sync::Mutex<()>>,
@@ -130,6 +152,11 @@ impl Service {
             config,
             store: Mutex::new(store),
             harnesses: Mutex::new(harnesses),
+            schedule: Mutex::new(HarnessSchedule {
+                due: Instant::now() + HARNESS_INSPECTION,
+                watching: None,
+                running: false,
+            }),
             units: Mutex::new(BTreeMap::new()),
             pending: Mutex::new(None),
             mutation: Arc::new(tokio::sync::Mutex::new(())),
@@ -219,8 +246,44 @@ impl Service {
         let paths = self.paths.clone();
         let spawner = self.deps.spawner.clone();
         let views = blocking(move || harness::inspect(&paths, spawner.as_ref())).await;
+        {
+            let mut schedule = self.schedule.lock().unwrap();
+            schedule.running = false;
+            let signed_in = schedule.watching.as_ref().is_some_and(|(id, _)| {
+                views
+                    .iter()
+                    .any(|v| &v.id == id && v.signed_in == Some(true))
+            });
+            if signed_in {
+                schedule.watching = None;
+                schedule.due = Instant::now() + HARNESS_INSPECTION;
+            }
+        }
         *self.harnesses.lock().unwrap() = views;
         self.publish();
+    }
+    /// Whether the periodic harness inspection is due at `now`. A true answer
+    /// claims it: the caller runs `inspect_harnesses` once.
+    pub fn harness_inspection_due(&self, now: Instant) -> bool {
+        let mut schedule = self.schedule.lock().unwrap();
+        if now < schedule.due || schedule.running {
+            return false;
+        }
+        if schedule
+            .watching
+            .as_ref()
+            .is_some_and(|(_, until)| now >= *until)
+        {
+            schedule.watching = None;
+        }
+        schedule.due = now
+            + if schedule.watching.is_some() {
+                SIGN_IN_INSPECTION
+            } else {
+                HARNESS_INSPECTION
+            };
+        schedule.running = true;
+        true
     }
 
     /// Claims the single mutation slot, or `None` (`agent_busy`).
@@ -789,7 +852,14 @@ impl Service {
             }
             spawner.spawn(&argv, &env).map_err(|_| "harness_missing")
         })
-        .await
+        .await?;
+        // The login finishes in a detached terminal and browser: re-check its
+        // status often for a while rather than waiting for the next minute.
+        let now = Instant::now();
+        let mut schedule = self.schedule.lock().unwrap();
+        schedule.watching = Some((harness.to_owned(), now + SIGN_IN_WINDOW));
+        schedule.due = schedule.due.min(now + SIGN_IN_INSPECTION);
+        Ok(())
     }
 }
 

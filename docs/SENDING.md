@@ -140,7 +140,14 @@ claim these resource limits are fixed by the sender.
 
 Input is limited to 4096 UTF-8 bytes and 20 distinct canonical mention keys; the
 native composer supplies selected keys from the current verified room roster.
-Names are optional self-asserted profile hints; typed `@name` text is not resolved. It has no reply/media inputs.
+Names are optional self-asserted profile hints. On send, a typed `@name` adds
+one key when it cannot mean anyone else: at an `@` that starts a word, the
+longest form of a roster name that follows (case-insensitive; the trimmed name,
+or the name with spaces removed or replaced by dashes) and ends at a word
+boundary must belong to exactly one key of the current room's verified roster
+snapshot. Ambiguous forms and other rooms' rosters resolve nothing; resolved keys
+join the explicit ones within the same 20-key limit, and the composer shows
+`Notifies: <names>` before sending. It has no reply/media inputs.
 Terminal outcomes preserve the draft except for a matching acknowledgement of
 unchanged text. Rejected or reused submissions require an explicit new request;
 unknown outcomes require starting a new draft and may already have been delivered.

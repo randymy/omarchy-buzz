@@ -96,7 +96,10 @@ async fn exact_count_ack_authenticates_and_mismatched_chatter_does_not() {
     let mut ws = server.await.unwrap();
     let (tx, mut rx) = status();
     let (send_retry, mut retry) = mpsc::channel(1);
-    let mut backoff = Backoff { failures: 4 };
+    let mut backoff = Backoff {
+        failures: 4,
+        ..Backoff::default()
+    };
     let mut pin = None;
     let server = tokio::spawn(async move {
         let Message::Text(text) = ws.next().await.unwrap().unwrap() else {

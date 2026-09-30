@@ -916,3 +916,98 @@ async fn status_frames_have_exactly_the_contract_shape_and_fit_the_bound() {
         bytes.len()
     );
 }
+
+fn login_status(f: &Fixture, harness: &str, word: &str) {
+    f.spawner.outputs.lock().unwrap().insert(
+        super::harness::status_argv(&f.home.paths, harness).join(" "),
+        format!("{word}\n"),
+    );
+}
+fn signed_in(f: &Fixture, harness: &str) -> Option<bool> {
+    let views = f.service.snapshot().harnesses;
+    views
+        .into_iter()
+        .find(|h| h.id == harness)
+        .unwrap()
+        .signed_in
+}
+
+#[tokio::test]
+async fn sign_in_rechecks_status_every_five_seconds_until_signed_in() {
+    let f = fixture(UNREACHABLE);
+    f.ready("claude-code");
+    login_status(&f, "claude-code", "signed-out");
+    f.service.inspect_harnesses().await;
+    assert_eq!(signed_in(&f, "claude-code"), Some(false));
+    // Without a sign-in the cadence is a minute.
+    let start = Instant::now();
+    assert!(!f.service.harness_inspection_due(start + SIGN_IN_INSPECTION));
+    f.run(serde_json::json!({"type":"sign_in","harness":"claude-code"}))
+        .await
+        .unwrap();
+    let t = Instant::now();
+    assert!(!f
+        .service
+        .harness_inspection_due(t + SIGN_IN_INSPECTION - Duration::from_secs(1)));
+    assert!(f.service.harness_inspection_due(t + SIGN_IN_INSPECTION));
+    // A claimed inspection is not claimed twice while it runs.
+    assert!(!f
+        .service
+        .harness_inspection_due(t + Duration::from_secs(30)));
+    f.service.inspect_harnesses().await;
+    assert_eq!(signed_in(&f, "claude-code"), Some(false));
+    // The browser login completes; the next five-second check shows it.
+    login_status(&f, "claude-code", "signed-in");
+    assert!(!f.service.harness_inspection_due(t + Duration::from_secs(9)));
+    assert!(f
+        .service
+        .harness_inspection_due(t + Duration::from_secs(10)));
+    f.service.inspect_harnesses().await;
+    assert_eq!(signed_in(&f, "claude-code"), Some(true));
+    // Signed in: back to the one-minute cadence.
+    let after = Instant::now();
+    assert!(!f
+        .service
+        .harness_inspection_due(after + Duration::from_secs(30)));
+    assert!(f.service.harness_inspection_due(after + HARNESS_INSPECTION));
+}
+
+#[tokio::test]
+async fn sign_in_fast_window_ends_after_two_minutes() {
+    let f = fixture(UNREACHABLE);
+    f.ready("codex");
+    login_status(&f, "codex", "signed-out");
+    // A refused sign-in does not start the window.
+    assert_eq!(
+        f.run(serde_json::json!({"type":"sign_in","harness":"bash"}))
+            .await,
+        Err("agent_invalid")
+    );
+    assert!(!f
+        .service
+        .harness_inspection_due(Instant::now() + SIGN_IN_INSPECTION));
+    f.run(serde_json::json!({"type":"sign_in","harness":"codex"}))
+        .await
+        .unwrap();
+    let t = Instant::now();
+    let mut checks = 0;
+    let mut at = t;
+    while at < t + SIGN_IN_WINDOW {
+        at += Duration::from_secs(1);
+        if f.service.harness_inspection_due(at) {
+            checks += 1;
+            f.service.inspect_harnesses().await;
+        }
+    }
+    // Every five seconds for two minutes, never signed in.
+    assert_eq!(checks, 24);
+    assert_eq!(signed_in(&f, "codex"), Some(false));
+    // The check at the window's end already returns to the minute cadence.
+    assert!(!f
+        .service
+        .harness_inspection_due(at + Duration::from_secs(5)));
+    assert!(!f
+        .service
+        .harness_inspection_due(at + Duration::from_secs(59)));
+    assert!(f.service.harness_inspection_due(at + HARNESS_INSPECTION));
+}

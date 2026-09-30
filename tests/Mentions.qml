@@ -7,9 +7,10 @@ ShellRoot {
   property alias testedService: service
   Buzz.Service { id: service; autoConnect: false }
   Buzz.PanelContent { id: view; width: 1100; height: 1000; service: test.testedService }
-  function findComposer(item) {
-    if (item.objectName === "buzzComposer") return item
-    for (var i=0;i<item.children.length;i++) { var found=findComposer(item.children[i]); if(found) return found }
+  function findComposer(item) { return findNamed(item, "buzzComposer") }
+  function findNamed(item, name) {
+    if (item.objectName === name) return item
+    for (var i=0;i<item.children.length;i++) { var found=findNamed(item.children[i], name); if(found) return found }
     return null
   }
   Timer {
@@ -61,7 +62,59 @@ ShellRoot {
         service.selectedRoomId=room
         type("@claudeExtra")
         check(service.selectedRecipients.indexOf(claude)===-1,"Mention prefix retained removed token identity")
-        console.log("PASS: rendered @ completion, duplicate identities, exact wire keys, deletion, acknowledgement cleanup and room boundaries")
+        // Hand-typed names resolve on send only when they can mean one entry.
+        service.toggleRecipient(codex)
+        check(service.selectedRecipients.length===0,"Explicit selection not cleared")
+        var vclaude="e".repeat(64), spaced="f".repeat(64)
+        service.recipientEntries=[{key:codex,name:"Codex (isolated)"},{key:duplicate,name:"Codex (isolated)"},{key:claude,name:"Claude"},{key:vclaude,name:"vClaude"},{key:spaced,name:"Claude Code"}]
+        var caption=findNamed(view, "buzzComposerNotifies")
+        check(caption!==null,"Notifies caption missing")
+        function typed(text, keys, why) {
+          type(text)
+          check(JSON.stringify(service.outgoingMentions)===JSON.stringify(keys),why+": "+JSON.stringify(service.outgoingMentions))
+        }
+        typed("@vclaude are you up?",[vclaude],"Exact hand-typed name not resolved")
+        check(caption.visible && caption.text==="Notifies: vClaude","Caption not shown before send: "+caption.text)
+        check(service.selectedRecipients.length===0,"Resolution changed the explicit selection")
+        request=service.prepareSubmission()
+        check(request.mentions.length===1 && request.mentions[0]===vclaude,"Resolved key not sent")
+        service.applyDelivery({state:"acknowledged",requestId:request.id,roomId:room,eventId:"e".repeat(64),category:null})
+        check(service.draftText==="" && service.outgoingMentions.length===0 && !caption.visible,"Resolution outlived its message")
+        typed("hi @VCLAUDE.",[vclaude],"Case difference not resolved")
+        typed("@Codex (isolated) look",[],"Ambiguous name resolved")
+        check(!caption.visible,"Caption shown without mentions")
+        typed("@Claude Code please",[spaced],"Name with spaces not resolved as the longest name")
+        typed("@claude-code and @claudecode",[spaced],"Dashed or joined name not resolved")
+        typed("@Claude codex",[claude],"Shorter exact name not resolved")
+        typed("@claudeExtra person@vclaude @vclaude's",[],"Partial word or email resolved")
+        typed("@vclaude @Claude",[vclaude,claude],"Two names not both resolved")
+        check(caption.text==="Notifies: vClaude, Claude","Caption does not list every name: "+caption.text)
+        service.toggleRecipient(vclaude)
+        typed("@vClaude hi",[vclaude],"Already-selected key duplicated")
+        request=service.prepareSubmission()
+        check(request.mentions.length===1 && request.mentions[0]===vclaude,"Duplicate wire mention")
+        service.applyDelivery({state:"acknowledged",requestId:request.id,roomId:room,eventId:"f".repeat(64),category:null})
+        // An explicit choice outlives the message, as before; clear it here.
+        service.toggleRecipient(vclaude)
+        check(service.selectedRecipients.length===0,"Explicit choice not cleared")
+        service.recipientsRoomId=other
+        typed("@vclaude hi",[],"Roster of another room used")
+        service.recipientsRoomId=room
+        service.recipientsState="loading"
+        typed("@vclaude hi",[],"Roster that is not a snapshot used")
+        service.recipientsState="snapshot"
+        // The 20-key limit covers explicit and resolved keys together.
+        var many=[]
+        for (var n=10;n<30;n++) many.push({key:String(n).repeat(32),name:"P"+n})
+        service.recipientEntries=service.recipientEntries.concat(many)
+        type("")
+        many.forEach(function(entry) { service.toggleRecipient(entry.key) })
+        check(service.selectedRecipients.length===20,"Explicit selection limit changed")
+        typed("@vclaude hi",many.map(function(entry) { return entry.key }),"Resolved key exceeded the limit")
+        many.forEach(function(entry) { service.toggleRecipient(entry.key) })
+        typed("@vclaude hi",[vclaude],"Resolution after the limit cleared")
+        type("")
+        console.log("PASS: rendered @ completion, duplicate identities, exact wire keys, deletion, acknowledgement cleanup, room boundaries and hand-typed name resolution")
         Qt.quit()
       } catch(e) { console.error(e); Qt.exit(1) }
     }
