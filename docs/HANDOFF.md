@@ -30,11 +30,11 @@ conflict explicitly rather than assuming an old milestone is current.
 | Component | State at handoff |
 | --- | --- |
 | Repository | `https://github.com/randymy/omarchy-buzz`, branch `main`; local `~/Projects/omarchy-buzz` |
-| Latest implementation commit | `4b14cda` — right-hand thread panel and denser layout, on top of `d0e5299` (periodic room check); local only, not pushed; documentation commits may follow |
+| Latest implementation commit | `01ba573` — release 0.0.10 (reply counts, quiet helper room check, existing direct messages, Desktop-mode nested threads up to 200 replies, last-room memory); pushed to `origin/main` |
 | Installed UI | `~/.config/omarchy/plugins/community.buzz`, verified at the same implementation commit |
-| Plugin/helper version | `0.0.8`; this preview version covers multiple development commits, so verify commits and hashes too |
-| Helper binary | `~/.local/bin/omarchy-buzz`; SHA256 `f6b8f6d6c870828152b26110984456a4023f6e53530719a1cf31cabedf30eda7` |
-| Helper build | [ARM64 run 36646298882](https://github.com/randymy/omarchy-buzz/actions/runs/36646298882), source `5cdad73372e074efc01954f6385b27d7390a1be9` |
+| Plugin/helper version | `0.0.10` (installed September 29, 2026, late evening); `0.0.9` was installed briefly the same evening |
+| Helper binary | `~/.local/bin/omarchy-buzz`; SHA256 `3527f4868fc7cb9b06a49d3c2b6f0d2ad1a0064043ddd2b92e172c88a8fe1fc5` |
+| Helper build | [ARM64 run 36661719034](https://github.com/randymy/omarchy-buzz/actions/runs/36661719034), source `01ba573de4f43ee9944e8a238e92f066eed0e29b`; the 0.0.10 binary was first run read-only in a private runtime directory against the real relay (authenticated, 4 stream rooms, no rejection) before installation; rollback backup `~/.local/share/omarchy-buzz/backups/20260930T025630.824489Z` |
 | Buzz dependency | Official upstream `781d39510cf23cfe224e8f521ae06a23377e06de`; do not silently advance the pin |
 | Agent runtime | Stock Buzz ACP, Codex ACP `2.0.0`, native Codex `0.158.0`; [stock build 36639519388](https://github.com/randymy/omarchy-buzz/actions/runs/36639519388) |
 | Host | ARM64 Omarchy VM; installed Omarchy package reported `4.0.3-1`; see DESIGN for source/package distinction |
@@ -42,8 +42,17 @@ conflict explicitly rather than assuming an old milestone is current.
 
 The helper may legitimately exit when idle and reactivate from its socket.
 Codex is **not enabled at login**; do not promise it survives reboot automatically.
-Artifact downloads expire; the local verified helper artifact is under
-`~/.cache/omarchy-buzz/helper/36646298882/` while retained.
+Artifact downloads expire; the local verified helper artifacts are under
+`~/.cache/omarchy-buzz/helper/<run id>/` while retained.
+
+Local helper builds work without root: the wrapper
+`/tmp/claude-1000/…/scratchpad/tools/helper-cargo` (session scratch, recreate
+if missing: pinned toolchain `~/.rustup/toolchains/1.95.0-aarch64-unknown-linux-gnu`,
+a read-only Python `pkg-config` shim over `/usr/lib/pkgconfig`, per-worktree
+`CARGO_TARGET_DIR`). Never share one target directory between worktrees: cargo
+ran another worktree's test binary. Never use `git stash` with several
+worktrees: the stash list is shared. The `auth::send_integration_tests::observer_*`
+tests use 1-second timeouts and flake when the load average exceeds ~5.
 
 ## What works, and what remains limited
 
