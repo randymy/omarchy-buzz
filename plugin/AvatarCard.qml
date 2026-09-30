@@ -13,15 +13,18 @@ FocusScope {
   property string key: ""
   property string name: ""
   property string art: ""
+  // Grid art brightness, as on the thumbnail (0: colors as stored).
+  property real brightness: 0
   property bool opened: false
   signal closed()
   visible: opened
   z: 20
 
-  function show(authorKey, authorName, authorArt) {
+  function show(authorKey, authorName, authorArt, authorBrightness) {
     key = authorKey || ""
     name = authorName || ""
     art = authorArt || ""
+    brightness = authorBrightness > 0 ? authorBrightness : 0
     opened = true
     forceActiveFocus()
   }
@@ -35,7 +38,7 @@ FocusScope {
   readonly property bool colored: AnsiArt.isAnsi(art)
   readonly property var grid: {
     if (!colored) return null
-    var full = AnsiArt.gridFor(art)
+    var full = AnsiArt.shownGridFor(art, brightness)
     return full.rows > 50 || full.cols > 100 ? AnsiArt.thumbnail(full, 50, 100) : full
   }
   readonly property real availableWidth: Math.max(0, width - Style.space(64))
@@ -85,7 +88,7 @@ FocusScope {
         onInkChanged: requestPaint()
         onWidthChanged: requestPaint()
         onHeightChanged: requestPaint()
-        // Each cell's own character in its own color, as a terminal shows it.
+        // Each cell's background, then its own character in its own color, as a terminal shows it.
         onPaint: {
           var ctx = getContext("2d")
           ctx.reset()
@@ -96,6 +99,14 @@ FocusScope {
           ctx.textAlign = "center"
           for (var r = 0; r < grid.rows; r++) {
             for (var c = 0; c < grid.cols; c++) {
+              var back = grid.cells[r][c].bg
+              if (back === null) continue
+              ctx.fillStyle = back
+              ctx.fillRect(c * cell, r * cell * 2, cell, cell * 2)
+            }
+          }
+          for (r = 0; r < grid.rows; r++) {
+            for (c = 0; c < grid.cols; c++) {
               var item = grid.cells[r][c]
               if (/^\s$/.test(item.ch)) continue
               ctx.fillStyle = item.fg === "" ? ink : item.fg

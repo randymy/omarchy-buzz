@@ -7,7 +7,7 @@ import "AnsiArt.js" as AnsiArt
 
 // Loads avatar art from a local .ans or .txt file the user names by absolute
 // path. The file is checked before it is read (a regular file of at most
-// 64 KiB), read once with FileView, checked again, then sanitized: only the
+// 256 KiB), read once with FileView, checked again, then sanitized: only the
 // sanitized text is handed on, never the path. Every failure is closed: no art
 // changes. Nothing is sent anywhere.
 ColumnLayout {
@@ -20,7 +20,7 @@ ColumnLayout {
   property string problem: ""
   property int generation: 0
   property string pendingPath: ""
-  readonly property int maxBytes: 65536
+  readonly property int maxBytes: 262144
   readonly property alias field: pathField
   signal artLoaded(string art)
   signal clearRequested()
@@ -55,7 +55,7 @@ ColumnLayout {
   }
   function finish(expected, text, bytes) {
     if (expected !== generation || status !== "reading") return
-    if (bytes > maxBytes) { fail("The file is larger than 64 KiB."); return }
+    if (bytes > maxBytes) { fail("The file is larger than 256 KiB."); return }
     var art = AnsiArt.sanitize(text)
     if (art === "") { fail("The file holds no art."); return }
     status = "loaded"
@@ -76,7 +76,7 @@ ColumnLayout {
       var lines = statOutput.text.split("\n")
       if (exitCode !== 0) { root.fail("The file could not be read."); return }
       if (lines[0] !== "regular file" && lines[0] !== "regular empty file") { root.fail("That path is not a regular file."); return }
-      if (!/^\d+$/.test(lines[1] || "") || parseInt(lines[1], 10) > root.maxBytes) { root.fail("The file is larger than 64 KiB."); return }
+      if (!/^\d+$/.test(lines[1] || "") || parseInt(lines[1], 10) > root.maxBytes) { root.fail("The file is larger than 256 KiB."); return }
       file.expected = root.generation
       if (file.path === root.pendingPath) file.reload()
       else file.path = root.pendingPath
@@ -109,7 +109,7 @@ ColumnLayout {
     Ui.Button {
       objectName: root.fieldName + "Apply"
       text: root.status === "reading" ? "Reading…" : "Apply"
-      tooltipText: ".ans or .txt, at most 64 KiB; the art is kept, not the path"
+      tooltipText: ".ans or .txt, at most 256 KiB; the art is kept, not the path"
       fontSize: Style.font.caption
       focusable: true
       enabled: root.status !== "reading"

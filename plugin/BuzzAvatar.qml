@@ -17,11 +17,13 @@ Text {
   // colored avatar takes exactly the space an identicon does.
   property string art: ""
   property real pixelSize: Style.font.caption
+  // Grid art brightness (AnsiArt.adjust); 0 shows the colors as stored.
+  property real brightness: 0
   // Message rows open a profile card; elsewhere the avatar only has a tooltip.
   property bool clickable: false
   signal activated()
   readonly property bool colored: AnsiArt.isAnsi(art)
-  readonly property var thumbnail: colored ? AnsiArt.thumbnailFor(art, 6, 12) : null
+  readonly property var thumbnail: colored ? AnsiArt.thumbnailFor(art, 6, 12, brightness) : null
   readonly property bool usesColor: colored && !!thumbnail && thumbnail.rows > 0
   readonly property string shownArt: colored ? "" : Identicon.normalizeArt(art)
   readonly property bool usesArt: shownArt !== "" || usesColor
@@ -38,8 +40,8 @@ Text {
   lineHeightMode: Text.FixedHeight
   lineHeight: Math.ceil(pixelSize * 1.1)
 
-  // Each thumbnail cell is a filled block in its color, twice as tall as wide
-  // like a terminal cell, centred in the footprint. Blank cells stay empty.
+  // Each thumbnail cell is a filled block, twice as tall as wide like a
+  // terminal cell, centred in the footprint (colors: AnsiArt.blockColor).
   Canvas {
     id: thumbCanvas
     objectName: "buzzAvatarCanvas"
@@ -59,9 +61,9 @@ Text {
       var left = (width - cell * grid.cols) / 2, top = (height - cell * 2 * grid.rows) / 2
       for (var r = 0; r < grid.rows; r++) {
         for (var c = 0; c < grid.cols; c++) {
-          var item = grid.cells[r][c]
-          if (/^\s$/.test(item.ch)) continue
-          ctx.fillStyle = item.fg === "" ? ink : item.fg
+          var fill = AnsiArt.blockColor(grid.cells[r][c], ink.toString())
+          if (fill === "") continue
+          ctx.fillStyle = fill
           var x = Math.floor(left + c * cell), y = Math.floor(top + r * cell * 2)
           ctx.fillRect(x, y, Math.floor(left + (c + 1) * cell) - x, Math.floor(top + (r + 1) * cell * 2) - y)
         }
