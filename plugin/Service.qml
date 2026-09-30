@@ -150,6 +150,8 @@ Item {
   property string submissionRoot: ""
   property string submissionDraftKey: ""
   property string submissionText: ""
+  // The pending attachment hashes the helper will add to this submission.
+  property string submissionAttachments: ""
   property int submissionGeneration: 0
   property string submissionInstance: ""
   property string acknowledgedRefreshId: ""
@@ -190,7 +192,8 @@ Item {
 
   readonly property bool canSend: sendSupported && !sampleMode && !sessionFailed && connection === "authenticated"
     && selectedRoom !== null && deliveryState !== "sending" && deliveryState !== "unknown" && deliveryState !== "rejected" && deliveryCategory !== "send_request_reused"
-    && replyReady && recipientIntentValid && draftText.trim().length > 0 && draftText.indexOf("\u0000") === -1 && utf8Size(draftText) <= 4096
+    && replyReady && recipientIntentValid && (draftText.trim().length > 0 || pendingFor(replyRootId).length > 0)
+    && draftText.indexOf("\u0000") === -1 && utf8Size(draftText) <= 4096 && !uploadingFor(replyRootId)
   // The room and the open thread each have a composer. Editing or submitting one
   // makes it the single active destination; drafts never move between them.
   readonly property string roomDraftText: drafts[selectedRoomId] || ""
@@ -214,7 +217,13 @@ Item {
       && !recipientPickerLocked && (!rootId || canReplyTo(rootId))
       && (chosen.length === 0 || (recipientsSupported && recipientsState === "snapshot"
         && chosen.every(function(key) { return recipientEntries.some(function(entry) { return entry.key === key }) })))
-      && text.trim().length > 0 && text.indexOf("\u0000") === -1 && utf8Size(text) <= 4096
+      && (text.trim().length > 0 || pendingFor(rootId).length > 0) && text.indexOf("\u0000") === -1 && utf8Size(text) <= 4096
+      && !uploadingFor(rootId)
+  }
+  // A file still being checked or uploaded for this draft holds Send.
+  function uploadingFor(rootId) {
+    var scope = draftScopeFor(rootId)
+    return (uploadLocal === "sending" && uploadLocalScope === scope) || (upload.state === "uploading" && upload.scope === scope)
   }
   function submitFor(rootId) { return composeScope(rootId) && submitDraft() }
   readonly property bool deliveryScopeMismatch: submissionId !== "" && submissionDraftKey !== composerKey
@@ -771,6 +780,288 @@ Item {
     return {state: value.state, code: null, expiresAt: null, maxUses: null, role: null, category: value.category}
   }
 
+  // File attachments (`attachments`). The helper downloads, verifies and saves
+  // files, uploads the path the user types and signs every request; the panel
+  // only shows validated projections, the verified preview files the helper
+  // names, and asks it to open a file it saved.
+  property bool attachmentsSupported: false
+  property var download: ({state: "idle", eventId: null, hash: null, path: null, received: 0, size: null, category: null})
+  property var thumbnails: []
+  property var pendingAttachments: []
+  property var upload: ({state: "idle", scope: null, name: null, category: null})
+  property string downloadRequestId: ""
+  property string downloadLocal: "idle"
+  property string downloadLocalCategory: ""
+  property string downloadTarget: ""
+  property string uploadRequestId: ""
+  property string uploadLocal: "idle"
+  property string uploadLocalCategory: ""
+  property string uploadLocalScope: ""
+  property string openRequestId: ""
+  property string openCategory: ""
+  property var thumbnailWanted: []
+  property var thumbnailAsked: ({})
+  property string thumbnailRequestId: ""
+  property string thumbnailRequestHash: ""
+  property bool thumbnailBackoff: false
+  readonly property bool attachmentsAvailable: attachmentsSupported && !sampleMode && !sessionFailed && instanceId !== "" && bridge.running
+  readonly property var attachmentMessages: ({
+    attachment_unknown: "This attachment is no longer on screen. Refresh and try again.",
+    attachment_forbidden: "The relay refused access to this file.",
+    attachment_mismatch: "The file did not match what the message describes, so it was not kept.",
+    attachment_too_large: "The file is too large.",
+    attachment_invalid: "Choose an existing file of yours by its full path (at most four per message).",
+    attachment_type_refused: "This type of file cannot be attached.",
+    attachment_storage_unavailable: "The file could not be written. Check free space and permissions.",
+    relay_unavailable: "Could not reach the relay. Check the connection and try again.",
+    setup_busy: "Another transfer is running. Try again when it finishes."
+  })
+  function mediaOrigin(relay) {
+    var match = typeof relay === "string" ? /^(wss?):\/\/([^\/\s@?#]+)\/$/.exec(relay) : null
+    return match ? (match[1] === "wss" ? "https://" : "http://") + match[2] : ""
+  }
+  function attachmentName(value) {
+    // Sanitized by the helper: at most 128 characters, no separators, controls or leading dot.
+    return typeof value === "string" && value.length >= 1 && value.length <= 256 && utf8Size(value) <= 255
+      && value.indexOf(".") !== 0 && !/[\/\\\u0000-\u001f\u007f-\u009f]/.test(value)
+  }
+  function attachmentFields(value, origin) {
+    return typeof value.mime === "string" && value.mime.length <= 64 && /^[a-z0-9.+-]+\/[a-z0-9.+-]+$/.test(value.mime)
+      && Number.isInteger(value.size) && value.size >= 1 && value.size <= 1073741824
+      && typeof value.hash === "string" && /^[a-f0-9]{64}$/.test(value.hash)
+      && typeof value.url === "string" && value.url.length <= 360 && origin !== ""
+      && new RegExp("^" + origin.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "/media/" + value.hash + "\\.[a-z0-9]{1,8}$").test(value.url)
+      && attachmentName(value.name)
+      && (value.dim === null || typeof value.dim === "string" && /^[1-9][0-9]{0,4}x[1-9][0-9]{0,4}$/.test(value.dim)
+        && value.dim.split("x").every(function(n) { return Number(n) <= 16384 }))
+  }
+  function attachmentKind(mime) {
+    return ["image/jpeg", "image/png", "image/gif", "image/webp"].indexOf(mime) !== -1 ? "image" : mime.indexOf("video/") === 0 ? "video" : "file"
+  }
+  function validatedAttachment(value, origin) {
+    if (!value || typeof value !== "object" || Array.isArray(value)
+        || Object.keys(value).sort().join(",") !== "dim,hash,kind,mime,name,size,url"
+        || !attachmentFields(value, origin) || value.kind !== attachmentKind(value.mime)) return null
+    return {name: value.name, mime: value.mime, size: value.size, url: value.url, hash: value.hash, dim: value.dim, kind: value.kind}
+  }
+  function scopeValue(value) { return typeof value === "string" && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}(:[a-f0-9]{64})?$/.test(value) }
+  function plainPath(value) {
+    return typeof value === "string" && value.length > 1 && value.length <= 4096 && value.charAt(0) === "/"
+      && !/[\u0000-\u001f\u007f-\u009f]/.test(value)
+      && value.slice(1).split("/").every(function(part) { return part !== "" && part !== "." && part !== ".." })
+  }
+  // download, thumbnails, pendingAttachments and upload, exactly as the helper publishes them.
+  function validatedTransfers(state, origin) {
+    var d = state.download
+    var failures = Object.keys(attachmentMessages)
+    if (!d || typeof d !== "object" || Array.isArray(d)
+        || Object.keys(d).sort().join(",") !== "category,eventId,hash,path,received,size,state"
+        || ["idle", "downloading", "done", "failed"].indexOf(d.state) === -1
+        || !Number.isInteger(d.received) || d.received < 0) return null
+    if (d.state === "idle") {
+      if (d.eventId !== null || d.hash !== null || d.path !== null || d.size !== null || d.category !== null || d.received !== 0) return null
+    } else if (typeof d.eventId !== "string" || !/^[a-f0-9]{64}$/.test(d.eventId) || typeof d.hash !== "string" || !/^[a-f0-9]{64}$/.test(d.hash)
+        || !Number.isInteger(d.size) || d.size < 1 || d.size > 1073741824 || d.received > d.size
+        || (d.state === "done" ? !plainPath(d.path) || d.received !== d.size || d.category !== null
+          : d.path !== null || (d.state === "failed" ? failures.indexOf(d.category) === -1 : d.category !== null))) return null
+    var thumbs = state.thumbnails
+    if (!Array.isArray(thumbs) || thumbs.length > 64) return null
+    var seen = ({})
+    for (var t = 0; t < thumbs.length; t++) {
+      var thumb = thumbs[t]
+      if (!thumb || typeof thumb !== "object" || Array.isArray(thumb) || Object.keys(thumb).sort().join(",") !== "hash,path"
+          || typeof thumb.hash !== "string" || !/^[a-f0-9]{64}$/.test(thumb.hash) || seen[thumb.hash]
+          || !plainPath(thumb.path) || thumb.path.length > 256
+          || !new RegExp("/" + thumb.hash + "\\.(jpg|png|gif|webp)$").test(thumb.path)) return null
+      seen[thumb.hash] = true
+    }
+    var pending = state.pendingAttachments
+    if (!Array.isArray(pending) || pending.length > 16) return null
+    var perScope = ({})
+    var cleanPending = []
+    for (var p = 0; p < pending.length; p++) {
+      var item = pending[p]
+      if (!item || typeof item !== "object" || Array.isArray(item)
+          || Object.keys(item).sort().join(",") !== "dim,hash,mime,name,scope,size,url"
+          || !scopeValue(item.scope) || !attachmentFields(item, origin)) return null
+      var bucket = perScope[item.scope] || []
+      if (bucket.length >= 4 || bucket.indexOf(item.hash) !== -1) return null
+      bucket.push(item.hash)
+      perScope[item.scope] = bucket
+      cleanPending.push({scope: item.scope, name: item.name, mime: item.mime, size: item.size, url: item.url, hash: item.hash, dim: item.dim,
+        kind: attachmentKind(item.mime)})
+    }
+    var u = state.upload
+    if (!u || typeof u !== "object" || Array.isArray(u) || Object.keys(u).sort().join(",") !== "category,name,scope,state"
+        || ["idle", "uploading", "done", "failed"].indexOf(u.state) === -1
+        || (u.scope !== null && !scopeValue(u.scope)) || (u.name !== null && !attachmentName(u.name))) return null
+    if (u.state === "idle" ? u.scope !== null || u.name !== null || u.category !== null
+        : u.state === "failed" ? failures.indexOf(u.category) === -1
+        : u.scope === null || u.name === null || u.category !== null) return null
+    return {download: {state: d.state, eventId: d.eventId, hash: d.hash, path: d.path, received: d.received, size: d.size, category: d.category},
+      thumbnails: thumbs.map(function(x) { return {hash: x.hash, path: x.path} }), pending: cleanPending,
+      upload: {state: u.state, scope: u.scope, name: u.name, category: u.category}}
+  }
+  function applyTransfers(value, frame) {
+    if (!value) { clearTransfers(); return }
+    if (!sameProjection(download, value.download)) download = value.download
+    var thumbsChanged = !sameProjection(thumbnails, value.thumbnails)
+    if (thumbsChanged) thumbnails = value.thumbnails
+    if (!sameProjection(pendingAttachments, value.pending)) pendingAttachments = value.pending
+    if (!sameProjection(upload, value.upload)) upload = value.upload
+    if (frame.type !== "status") return
+    if (downloadLocal === "sending" && frame.id === downloadRequestId) { downloadLocal = "idle"; downloadRequestId = "" }
+    if (uploadLocal === "sending" && frame.id === uploadRequestId) { uploadLocal = "idle"; uploadRequestId = "" }
+    if (openRequestId !== "" && frame.id === openRequestId) openRequestId = ""
+    if (thumbnailRequestId !== "" && frame.id === thumbnailRequestId) { thumbnailRequestId = ""; thumbnailRequestHash = "" }
+    if (thumbsChanged) thumbnailBackoff = false
+    pumpThumbnails()
+  }
+  function clearTransfers() {
+    attachmentsSupported = false
+    download = {state: "idle", eventId: null, hash: null, path: null, received: 0, size: null, category: null}
+    thumbnails = []
+    pendingAttachments = []
+    upload = {state: "idle", scope: null, name: null, category: null}
+    downloadRequestId = ""; downloadLocal = "idle"; downloadLocalCategory = ""; downloadTarget = ""
+    uploadRequestId = ""; uploadLocal = "idle"; uploadLocalCategory = ""; uploadLocalScope = ""
+    openRequestId = ""; openCategory = ""
+    thumbnailWanted = []; thumbnailAsked = ({}); thumbnailRequestId = ""; thumbnailRequestHash = ""; thumbnailBackoff = false
+  }
+  // A refusal of one of this panel's attachment requests.
+  function attachmentRefused(frame) {
+    var category = frame.category === "request_busy" ? "setup_busy" : frame.category
+    if (frame.id === downloadRequestId && downloadLocal === "sending") {
+      downloadLocal = "failed"; downloadLocalCategory = category; downloadRequestId = ""
+      return true
+    }
+    if (frame.id === uploadRequestId && uploadLocal === "sending") {
+      uploadLocal = "failed"; uploadLocalCategory = category; uploadRequestId = ""
+      return true
+    }
+    if (frame.id === openRequestId) { openRequestId = ""; openCategory = category; return true }
+    if (frame.id === thumbnailRequestId) {
+      // A full helper queue is retried once a preview arrives; anything else is final.
+      if (category === "setup_busy") {
+        var asked = Object.assign({}, thumbnailAsked)
+        delete asked[thumbnailRequestHash]
+        thumbnailAsked = asked
+        thumbnailBackoff = true
+      }
+      thumbnailRequestId = ""; thumbnailRequestHash = ""
+      pumpThumbnails()
+      return true
+    }
+    return false
+  }
+  function attachmentRequest(kind, fields) {
+    requestSequence++
+    var request = {version: 1, id: "ui-" + requestSequence, type: kind}
+    for (var key in fields) request[key] = fields[key]
+    bridge.write(JSON.stringify(request) + "\n")
+    return request.id
+  }
+  function thumbnailFor(hash) {
+    var found = thumbnails.find(function(entry) { return entry.hash === hash })
+    return found ? found.path : ""
+  }
+  function thumbnailUrl(hash) {
+    var path = thumbnailFor(hash)
+    return path ? "file://" + path.split("/").map(encodeURIComponent).join("/") : ""
+  }
+  // Images of at most 8 MiB on a shown row get a verified preview, one request at a time.
+  function wantThumbnail(eventId, attachment) {
+    if (!attachmentsAvailable || !attachment || attachment.kind !== "image" || attachment.size > 8388608
+        || thumbnailFor(attachment.hash) !== "" || thumbnailAsked[attachment.hash]
+        || thumbnailWanted.some(function(entry) { return entry.hash === attachment.hash })) return false
+    thumbnailWanted = thumbnailWanted.concat([{eventId: eventId, hash: attachment.hash}]).slice(-64)
+    pumpThumbnails()
+    return true
+  }
+  function pumpThumbnails() {
+    if (!attachmentsAvailable || connection !== "authenticated" || thumbnailRequestId !== "" || thumbnailBackoff || thumbnailWanted.length === 0) return
+    var next = thumbnailWanted[0]
+    thumbnailWanted = thumbnailWanted.slice(1)
+    if (thumbnailFor(next.hash) !== "" || thumbnailAsked[next.hash]) { pumpThumbnails(); return }
+    var asked = Object.assign({}, thumbnailAsked)
+    asked[next.hash] = true
+    thumbnailAsked = asked
+    thumbnailRequestHash = next.hash
+    thumbnailRequestId = attachmentRequest("thumbnail_attachment", {eventId: next.eventId, hash: next.hash})
+  }
+  readonly property bool downloadBusy: downloadLocal === "sending" || download.state === "downloading"
+  function downloadAttachment(eventId, hash) {
+    if (!attachmentsAvailable || connection !== "authenticated" || downloadBusy
+        || typeof eventId !== "string" || !/^[a-f0-9]{64}$/.test(eventId) || typeof hash !== "string" || !/^[a-f0-9]{64}$/.test(hash)) return false
+    downloadTarget = eventId + ":" + hash
+    downloadLocal = "sending"
+    downloadLocalCategory = ""
+    openCategory = ""
+    downloadRequestId = attachmentRequest("download_attachment", {eventId: eventId, hash: hash})
+    return true
+  }
+  function downloadedPath(eventId, hash) {
+    return download.state === "done" && download.eventId === eventId && download.hash === hash ? download.path : ""
+  }
+  function openDownload(path) {
+    if (!attachmentsAvailable || !plainPath(path) || path !== download.path || download.state !== "done") return false
+    openCategory = ""
+    openRequestId = attachmentRequest("open_download", {path: path})
+    return true
+  }
+  function downloadLabelFor(eventId, hash) {
+    var target = eventId + ":" + hash
+    if (downloadTarget === target && downloadLocal === "failed") return attachmentMessages[downloadLocalCategory] || "The download did not start."
+    if (download.eventId !== eventId || download.hash !== hash) return downloadTarget === target && downloadLocal === "sending" ? "Starting download…" : ""
+    if (download.state === "downloading") return "Downloading " + formatSize(download.received) + " of " + formatSize(download.size) + "…"
+    if (download.state === "failed") return attachmentMessages[download.category] || "The download failed."
+    if (download.state === "done") return openCategory !== "" ? "Saved, but it could not be opened." : "Saved to " + download.path
+    return ""
+  }
+  function formatSize(bytes) {
+    if (!Number.isInteger(bytes) || bytes < 0) return ""
+    if (bytes < 1000) return bytes + " B"
+    var units = ["KB", "MB", "GB"]
+    var value = bytes / 1000
+    var unit = 0
+    while (value >= 1000 && unit < units.length - 1) { value /= 1000; unit++ }
+    return value.toFixed(1) + " " + units[unit]
+  }
+  function draftScopeFor(rootId) { return selectedRoomId + (rootId ? ":" + rootId : "") }
+  function pendingFor(rootId) {
+    var scope = draftScopeFor(rootId)
+    return selectedRoomId === "" ? [] : pendingAttachments.filter(function(item) { return item.scope === scope })
+  }
+  function uploadAttachment(path, rootId) {
+    if (!attachmentsAvailable || connection !== "authenticated" || uploadLocal === "sending" || upload.state === "uploading"
+        || !selectedRoom || typeof path !== "string") return false
+    path = path.trim()
+    if (!plainPath(path)) { uploadLocal = "failed"; uploadLocalCategory = "attachment_invalid"; uploadLocalScope = draftScopeFor(rootId); return false }
+    if (rootId && !canReplyTo(rootId)) return false
+    if (pendingFor(rootId).length >= 4) { uploadLocal = "failed"; uploadLocalCategory = "attachment_invalid"; uploadLocalScope = draftScopeFor(rootId); return false }
+    var fields = {roomId: selectedRoomId, path: path}
+    if (rootId) fields.rootId = rootId
+    uploadLocal = "sending"
+    uploadLocalCategory = ""
+    uploadLocalScope = draftScopeFor(rootId)
+    uploadRequestId = attachmentRequest("upload_attachment", fields)
+    return true
+  }
+  function removePendingAttachment(hash) {
+    if (!attachmentsAvailable || deliveryState === "sending" || !pendingAttachments.some(function(item) { return item.hash === hash })) return false
+    attachmentRequest("remove_pending_attachment", {hash: hash})
+    return true
+  }
+  function uploadLabelFor(rootId) {
+    var scope = draftScopeFor(rootId)
+    if (uploadLocal === "failed" && uploadLocalScope === scope) return attachmentMessages[uploadLocalCategory] || "The file was not attached."
+    if (uploadLocal === "sending" && uploadLocalScope === scope) return "Checking the file…"
+    if (upload.scope !== scope) return ""
+    if (upload.state === "uploading") return "Uploading " + upload.name + "…"
+    if (upload.state === "failed") return attachmentMessages[upload.category] || "The file was not attached."
+    return ""
+  }
+
   function chooseSetupProvider(provider) {
     // Presentation only: choosing a provider never writes config or sends IPC.
     if (provider === "hosted" || provider === "custom") setupProvider = provider
@@ -930,7 +1221,10 @@ Item {
   }
   function prepareSubmission() {
     if (!canSend) return null
-    if (!submissionId || submissionRoom !== selectedRoomId || submissionRoot !== replyRootId || submissionText !== draftText || JSON.stringify(submissionMentions) !== JSON.stringify(outgoingMentions)) submissionId = correlationUuid()
+    var attached = pendingFor(replyRootId).map(function(item) { return item.hash }).join(",")
+    if (!submissionId || submissionRoom !== selectedRoomId || submissionRoot !== replyRootId || submissionText !== draftText || JSON.stringify(submissionMentions) !== JSON.stringify(outgoingMentions)
+        || submissionAttachments !== attached) submissionId = correlationUuid()
+    submissionAttachments = attached
     submissionRoom = selectedRoomId
     submissionRoot = replyRootId
     submissionDraftKey = composerKey
@@ -1123,7 +1417,7 @@ Item {
   function closeThread() { clearThread(); if (threadSupported) send("close_thread") }
   // Up to 200 replies, oldest first. Each names its parent: the root at depth 1,
   // otherwise an earlier reply one level up. Anything else rejects the frame.
-  function validatedThread(value) {
+  function validatedThread(value, media) {
     var failures = ["thread_unavailable", "thread_timeout", "thread_invalid", "thread_access_denied"]
     var snapshots = ["thread_completeness_unknown", "thread_more_unshown", "thread_replies_hidden"]
     if (!value || !Array.isArray(value.rows) || value.rows.length > 200
@@ -1135,7 +1429,7 @@ Item {
     if (value.state === "snapshot" && (snapshots.indexOf(value.category) === -1
         || value.category === "thread_more_unshown" && value.hasMore !== true
         || value.category === "thread_completeness_unknown" && value.hasMore !== false)) return null
-    var checked = validatedHistory({state:value.state, roomId:value.roomId, rows:value.rows, hasMore:value.hasMore, category:null}, 200)
+    var checked = validatedHistory({state:value.state, roomId:value.roomId, rows:value.rows, hasMore:value.hasMore, category:null}, 200, media)
     if (!checked || checked.rows.some(function(row) { return row.id === value.rootId })) return null
     var depths = ({})
     for (var i = 0; i < checked.rows.length; i++) {
@@ -1260,10 +1554,10 @@ Item {
     if (!sampleMode) selectedRoomId = ""
   }
   function validCapabilities(capabilities) {
-    return Array.isArray(capabilities) && capabilities.length >= 1 && capabilities.length <= 17
+    return Array.isArray(capabilities) && capabilities.length >= 1 && capabilities.length <= 18
       && capabilities.indexOf("connection_status") !== -1
       && capabilities.every(function(cap, index) {
-        return ["connection_status", "room_catalog", "room_history", "message_send", "room_recipients", "history_auto_refresh", "room_activity", "agent_profiles", "thread_replies", "thread_send", "thread_summaries", "dm_open", "older_history", "live_updates", "setup_assist", "community_join", "invite_mint"].indexOf(cap) !== -1 && capabilities.indexOf(cap) === index
+        return ["connection_status", "room_catalog", "room_history", "message_send", "room_recipients", "history_auto_refresh", "room_activity", "agent_profiles", "thread_replies", "thread_send", "thread_summaries", "dm_open", "older_history", "live_updates", "setup_assist", "community_join", "invite_mint", "attachments"].indexOf(cap) !== -1 && capabilities.indexOf(cap) === index
       })
   }
   // Streams carry no participants and are never hidden. A DM lists 2-9 distinct
@@ -1299,7 +1593,7 @@ Item {
     if (["unavailable", "loading"].indexOf(catalog.state) !== -1 && clean.length !== 0) return null
     return {state: catalog.state, rooms: clean, category: catalog.category || ""}
   }
-  function validatedHistory(history, limit) {
+  function validatedHistory(history, limit, media) {
     var uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/
     if (!history || ["unavailable", "loading", "snapshot"].indexOf(history.state) === -1
         || (history.roomId !== null && (typeof history.roomId !== "string" || !uuid.test(history.roomId)))
@@ -1339,16 +1633,32 @@ Item {
             || !thread.participants.every(function(key, index) { return typeof key === "string" && /^[a-f0-9]{64}$/.test(key) && thread.participants.indexOf(key) === index })))) return null
       try { if (encodeURIComponent(row.text).replace(/%[A-F0-9]{2}/gi, "x").length > 2048) return null }
       catch (_) { return null }
+      // Present exactly with the `attachments` capability; bounded per frame.
+      var attached = []
+      if (media) {
+        if (typeof row.attachmentsUnavailable !== "boolean" || !Array.isArray(row.attachments) || row.attachments.length > 4
+            || ((row.unavailable || row.attachmentsUnavailable) && row.attachments.length !== 0)
+            || (row.unavailable && row.attachmentsUnavailable)) return null
+        for (var a = 0; a < row.attachments.length; a++) {
+          var attachment = validatedAttachment(row.attachments[a], media.origin)
+          if (!attachment || attached.some(function(other) { return other.hash === attachment.hash })) return null
+          attached.push(attachment)
+        }
+        media.count += attached.length
+        if (media.count > 48) return null
+      } else if (row.attachments !== undefined || row.attachmentsUnavailable !== undefined) return null
       ids[row.id] = true
       clean.push({id: row.id, author: row.author, time: row.time, text: row.unavailable ? "" : row.text,
         edited: row.edited, truncated: row.truncated, unavailable: row.unavailable,
         reactions: reactions == null ? null : {seen: reactions.seen, working: reactions.working},
-        thread: thread == null ? null : {replies: thread.replies, lastReplyAt: thread.lastReplyAt, participants: thread.participants.slice()}})
+        thread: thread == null ? null : {replies: thread.replies, lastReplyAt: thread.lastReplyAt, participants: thread.participants.slice()},
+        attachments: attached, attachmentsUnavailable: media ? row.attachmentsUnavailable : false})
     }
     return {state: history.state, roomId: history.roomId, rows: clean, hasMore: history.hasMore, category: history.category || "",
       nextCursor: cursor === null ? null : {createdAt: cursor.createdAt, id: cursor.id}, olderState: olderState, live: live}
   }
   function beginSession() {
+    clearTransfers()
     loseSetup()
     setupAssistSupported = false
     loseInvite()
@@ -1377,6 +1687,7 @@ Item {
     category = ""
   }
   function fail(reason) {
+    clearTransfers()
     loseSetup()
     setupAssistSupported = false
     loseInvite()
@@ -1421,7 +1732,8 @@ Item {
         "dm_open_busy", "dm_open_scope_changed", "dm_open_request_reused", "dm_open_invalid", "dm_open_unavailable", "dm_open_access_denied", "dm_open_unknown",
         "setup_invalid_relay", "identity_exists", "identity_unavailable", "relay_unavailable", "setup_busy", "setup_not_allowed", "config_unavailable",
         "invite_invalid", "invite_relay_mismatch", "invite_rejected", "invite_rate_limited", "policy_required", "room_not_open", "join_rejected", "leave_rejected",
-        "invite_forbidden"].indexOf(frame.category) !== -1) {
+        "invite_forbidden", "attachment_unknown", "attachment_forbidden", "attachment_mismatch", "attachment_too_large", "attachment_invalid",
+        "attachment_type_refused", "attachment_storage_unavailable"].indexOf(frame.category) !== -1) {
       if (instanceId === "" || frame.instanceId !== instanceId) return false
       if (!boundedString(frame.id, 128) || !/^ui-[0-9]+$/.test(frame.id) && !uuidValue(frame.id)) { fail("invalid_response"); return false }
       if (frame.id === setupRequestId && setupState === "sending") {
@@ -1436,6 +1748,7 @@ Item {
         mintRequestId = ""
         return true
       }
+      if (attachmentRefused(frame)) return true
       if (frame.id === inviteRequestId && inviteState === "sending") {
         // A refusal or a failed redemption; the status view carries the same category.
         inviteTimeout.stop()
@@ -1531,12 +1844,15 @@ Item {
     }
     var history = null
     var supportsHistory = frame.capabilities.indexOf("room_history") !== -1
+    var supportsAttachments = supportsHistory && frame.capabilities.indexOf("attachments") !== -1
+    var origin = mediaOrigin(state.relay)
+    if (frame.capabilities.indexOf("attachments") !== -1 && (!supportsHistory || (state.relay !== null && origin === ""))) { fail("invalid_response"); return false }
     if (supportsHistory) {
-      history = validatedHistory(state.history)
+      history = validatedHistory(state.history, 100, supportsAttachments ? {origin: origin, count: 0} : null)
       if (!history || (history.live && frame.capabilities.indexOf("live_updates") === -1)) { fail("invalid_response"); return false }
     }
     var supportsThread = frame.capabilities.indexOf("thread_replies") !== -1
-    var thread = supportsThread ? validatedThread(state.thread) : null
+    var thread = supportsThread ? validatedThread(state.thread, supportsAttachments ? {origin: origin, count: 0} : null) : null
     if (supportsThread && (!supportsHistory || !thread)) { fail("invalid_response"); return false }
     var supportsRecipients = frame.capabilities.indexOf("room_recipients") !== -1
     var recipients = supportsRecipients ? validatedRecipients(state.recipients) : null
@@ -1558,6 +1874,8 @@ Item {
     var supportsMint = frame.capabilities.indexOf("invite_mint") !== -1
     var minted = supportsMint ? validatedInvites(state.invites) : null
     if (supportsMint && !minted) { fail("invalid_response"); return false }
+    var transfers = supportsAttachments ? validatedTransfers(state, origin) : null
+    if (supportsAttachments && !transfers) { fail("invalid_response"); return false }
     var supportsActivity = frame.capabilities.indexOf("room_activity") !== -1
     if (supportsActivity && (!Array.isArray(state.activity) || state.activity.length > 20 || state.activity.some(function(a, i) {
       return !RoomActivity.valid(a) || !uuidValue(a.roomId) || !catalog.rooms.some(function(r) { return r.id === a.roomId })
@@ -1723,6 +2041,8 @@ Item {
         mintRequestId = ""
       }
     }
+    attachmentsSupported = supportsAttachments
+    applyTransfers(transfers, frame)
     applyDelivery(delivery)
     applyDmOpen(dmOpen)
     handshake.stop()
@@ -1898,6 +2218,26 @@ Item {
     // Beyond the helper's own 60-second bound for one HTTP request.
     interval: 70000
     onTriggered: { if (root.mintState === "sending") { root.mintState = "failed"; root.mintCategory = "setup_busy" }; root.mintRequestId = "" }
+  }
+  Timer {
+    id: thumbnailRetry
+    // A full helper preview queue is asked again a little later.
+    interval: 3000
+    running: root.thumbnailBackoff
+    onTriggered: { root.thumbnailBackoff = false; root.pumpThumbnails() }
+  }
+  Timer {
+    id: transferTimeout
+    // The helper answers transfer requests at once; its outcome is in the status view.
+    interval: 15000
+    running: root.downloadLocal === "sending" || root.uploadLocal === "sending" || root.thumbnailRequestId !== ""
+    onTriggered: {
+      if (root.downloadLocal === "sending") { root.downloadLocal = "failed"; root.downloadLocalCategory = "setup_busy"; root.downloadRequestId = "" }
+      if (root.uploadLocal === "sending") { root.uploadLocal = "failed"; root.uploadLocalCategory = "setup_busy"; root.uploadRequestId = "" }
+      root.thumbnailRequestId = ""
+      root.thumbnailRequestHash = ""
+      root.pumpThumbnails()
+    }
   }
   Timer {
     id: roomActionTimeout
