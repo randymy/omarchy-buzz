@@ -1541,3 +1541,22 @@ are deleted or an unchanged draft is acknowledged; explicit picker selections
 remain independent. Rendered tests cover duplicate names, exact submission keys,
 deleted tokens, acknowledgment cleanup, emails, missing/foreign recipients and
 room switching. No model task was used to test these UI changes.
+
+## Codex reply visibility and native reaction follow-through
+
+The user's September 29 18:16:45 CDT message carried the correct Codex `p`
+mention. The stock agent replied 18 seconds later in the correct thread:
+root `c6ac01443861699fff2693f415343cf139e8414c1fe8d8383f44227ec255c9b6`,
+reply `ec38ad8828267776880f4166d33e6c67b288567948b0cb65bf9b141dad657de1`.
+Both the upstream CLI and installed helper's verified thread projection returned
+the response. No replacement task or test message was sent. The room service
+was active. The UI could expand a bottommost thread below its visible viewport.
+
+Upstream `crates/buzz-acp/src/pool.rs` uses signed kind-7 👀 for queued and 💬
+for actively prompting; the cleanup guard removes both when the turn ends.
+These are cosmetic reactions, not proof of successful completion or reply counts.
+The helper now projects observed distinct-author counts from its existing bounded,
+verified history auxiliary set, applies reaction deletions, and suppresses uncertain
+authority. It does not introduce a separate reaction polling CLI, raw events in QML,
+or a new Buzz protocol. Thread rows currently omit reaction metadata. Empty counts
+are not a completeness claim; absent metadata remains compatible with older helpers.

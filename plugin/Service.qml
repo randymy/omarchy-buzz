@@ -175,6 +175,11 @@ Item {
   property var threadRows: []
   property var threadHasMore: null
   property string pendingThreadRequestId: ""
+  property int threadRetryBudget: 0
+  property string threadRetryRoom: ""
+  property string threadRetryRoot: ""
+  property string threadRetryInstance: ""
+  property int threadRetryGeneration: 0
   readonly property string threadLabel: threadState === "loading" ? "Loading replies" : threadState === "snapshot"
     ? (threadRows.length ? "Replies" : "No replies in this snapshot") + (threadHasMore ? " · older replies available" : "")
     : threadCategory === "thread_access_denied" ? "Replies unavailable for this room" : "Replies unavailable · try Refresh replies"
@@ -422,6 +427,7 @@ Item {
     send("fetch_recent", selectedRoomId)
   }
   function clearThread() {
+    threadRetry.stop()
     threadRootId = ""
     threadState = "unavailable"
     threadCategory = ""
@@ -438,6 +444,11 @@ Item {
     clearThread()
     threadRootId = id
     threadState = "loading"
+    threadRetryBudget = 2
+    threadRetryRoom = selectedRoomId
+    threadRetryRoot = id
+    threadRetryInstance = instanceId
+    threadRetryGeneration = generation
     send("fetch_thread", selectedRoomId, id)
   }
   function refreshThread() { if (threadRootId) openThread(threadRootId) }
@@ -575,16 +586,20 @@ Item {
     var ids = ({})
     for (var i = 0; i < history.rows.length; i++) {
       var row = history.rows[i]
+      var reactions = row && row.reactions
       if (!row || typeof row.id !== "string" || !/^[a-f0-9]{64}$/.test(row.id) || ids[row.id]
           || typeof row.author !== "string" || !/^[a-f0-9]{64}$/.test(row.author)
           || !Number.isInteger(row.time) || row.time < 0 || row.time > 253402300799
           || !boundedString(row.text, 2048) || typeof row.edited !== "boolean"
-          || typeof row.truncated !== "boolean" || typeof row.unavailable !== "boolean") return null
+          || typeof row.truncated !== "boolean" || typeof row.unavailable !== "boolean"
+          || (reactions != null && (!Number.isInteger(reactions.seen) || reactions.seen < 0 || reactions.seen > 200
+            || !Number.isInteger(reactions.working) || reactions.working < 0 || reactions.working > 200))) return null
       try { if (encodeURIComponent(row.text).replace(/%[A-F0-9]{2}/gi, "x").length > 2048) return null }
       catch (_) { return null }
       ids[row.id] = true
       clean.push({id: row.id, author: row.author, time: row.time, text: row.unavailable ? "" : row.text,
-        edited: row.edited, truncated: row.truncated, unavailable: row.unavailable})
+        edited: row.edited, truncated: row.truncated, unavailable: row.unavailable,
+        reactions: reactions == null ? null : {seen: reactions.seen, working: reactions.working}})
     }
     return {state: history.state, roomId: history.roomId, rows: clean, hasMore: history.hasMore, category: history.category || ""}
   }
@@ -637,10 +652,15 @@ Item {
         historyCategory = "request_busy"
       }
       if (frame.id === pendingThreadRequestId) {
-        threadRows = []
-        threadState = "unavailable"
-        threadCategory = "thread_unavailable"
         pendingThreadRequestId = ""
+        if (frame.category === "request_busy" && threadRetryBudget > 0) {
+          threadRetryBudget--
+          threadRetry.restart()
+        } else {
+          threadRows = []
+          threadState = "unavailable"
+          threadCategory = "thread_unavailable"
+        }
       }
       if (frame.id === pendingRecipientsRequestId) {
         clearRecipients()
@@ -751,6 +771,10 @@ Item {
       threadState = thread.state
       threadCategory = thread.category
       threadHasMore = thread.hasMore
+      if (thread.state !== "loading") {
+        threadRetry.stop()
+        pendingThreadRequestId = ""
+      }
     } else if (thread && thread.rootId === null && threadState !== "loading") clearThread()
     if (state.connection !== "authenticated" || !supportsRecipients || ["loading", "unavailable"].indexOf(catalogState) !== -1) clearRecipients()
     else if (recipients && recipients.roomId === selectedRoomId && selectedRoomId !== "") {
@@ -816,6 +840,17 @@ Item {
     if (autoConnect && !sampleMode) retry()
   }
 
+  Timer {
+    id: threadRetry
+    interval: 300
+    onTriggered: {
+      if (root.sessionFailed || root.connection !== "authenticated" || root.threadState !== "loading"
+          || root.selectedRoomId !== root.threadRetryRoom || root.threadRootId !== root.threadRetryRoot
+          || root.instanceId !== root.threadRetryInstance || root.generation !== root.threadRetryGeneration
+          || !root.canOpenThread(root.threadRetryRoot)) return
+      root.send("fetch_thread", root.threadRetryRoom, root.threadRetryRoot)
+    }
+  }
   Timer {
     interval: 15000
     running: root.threadState === "loading"

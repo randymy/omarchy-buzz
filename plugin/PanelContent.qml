@@ -10,6 +10,8 @@ FocusScope {
   property bool recipientPickerExpanded: false
   property bool presentationSwitchEnabled: false
   property bool windowMode: false
+  property var pendingRevealRow: null
+  property var pendingRevealDetails: null
   property int mentionIndex: 0
   property bool mentionDismissed: false
   readonly property var mentionQuery: {
@@ -40,6 +42,26 @@ FocusScope {
     composer.cursorPosition = nextCursor
     composer.forceActiveFocus()
     return true
+  }
+  function revealThread(row, details) {
+    pendingRevealRow = row
+    pendingRevealDetails = details
+    revealThreadTimer.restart()
+  }
+  Timer {
+    id: revealThreadTimer
+    interval: 50
+    onTriggered: {
+      var row = root.pendingRevealRow
+      var details = root.pendingRevealDetails
+      root.pendingRevealRow = null
+      root.pendingRevealDetails = null
+      if (!row || !details || !service || service.threadRootId !== row.modelData.id || !details.visible) return
+      var viewport = historyScroll.contentItem
+      if (!viewport || typeof viewport.contentY === "undefined") return
+      var top = row.y + details.y - Style.space(12)
+      viewport.contentY = Math.max(0, Math.min(top, viewport.contentHeight - historyScroll.availableHeight))
+    }
   }
   signal closeRequested()
   signal presentationRequested()
@@ -364,12 +386,17 @@ FocusScope {
           }
         }
         Controls.ScrollView {
+          id: historyScroll
+          objectName: "buzzHistoryScroll"
           Layout.fillWidth: true
           Layout.fillHeight: true
           clip: true
           contentWidth: availableWidth
+          contentHeight: historyList.childrenRect.height
           Column {
+            id: historyList
             width: parent.width
+            height: childrenRect.height
             spacing: Style.space(root.service && root.service.sampleMode ? 22 : 10)
             Repeater {
               model: root.service ? root.service.messages : []
@@ -377,6 +404,7 @@ FocusScope {
                 id: messageRow
                 required property var modelData
                 width: parent.width
+                height: childrenRect.height
                 spacing: Style.space(6)
                 Text {
                   width: parent.width
@@ -407,74 +435,130 @@ FocusScope {
                   font.family: Style.font.family
                   font.pixelSize: Style.font.body
                 }
-                Ui.Button {
-                  focusable: true
-                  visible: root.service && root.service.canOpenThread(messageRow.modelData.id)
-                  text: root.service && root.service.threadRootId === messageRow.modelData.id ? "Hide replies" : "View replies"
-                  onClicked: {
-                    if (root.service.threadRootId === messageRow.modelData.id) root.service.closeThread()
-                    else root.service.openThread(messageRow.modelData.id)
-                  }
-                }
-                Column {
-                  visible: root.service && root.service.threadRootId === messageRow.modelData.id
-                  width: parent.width
-                  spacing: Style.space(8)
+                Row {
+                  objectName: "buzzMessageReactions"
+                  visible: !!modelData.reactions && (modelData.reactions.seen > 0 || modelData.reactions.working > 0)
+                  spacing: Style.space(10)
                   Text {
-                    width: parent.width
-                    text: root.service ? root.service.threadLabel : ""
+                    visible: !!modelData.reactions && modelData.reactions.seen > 0
+                    text: "👀 " + (modelData.reactions ? modelData.reactions.seen : 0)
                     textFormat: Text.PlainText
-                    wrapMode: Text.WordWrap
                     color: Color.foreground
                     font.family: Style.font.family
                     font.pixelSize: Style.font.caption
-                  }
-                  Ui.Button {
-                    text: "Reply in thread"
-                    focusable: true
-                    visible: root.service && root.service.threadSendSupported
-                    enabled: root.service && !root.service.recipientPickerLocked && root.service.canReplyTo(messageRow.modelData.id)
-                    onClicked: if (root.service.composeReply(messageRow.modelData.id)) composer.forceActiveFocus()
-                  }
-                  Repeater {
-                    model: parent.visible && root.service ? root.service.threadRows : []
-                    delegate: Column {
-                      required property var modelData
-                      width: parent.width
-                      spacing: Style.space(4)
-                      Text {
-                        width: parent.width
-                        text: root.service.messageAuthorLabel(modelData.author) + " · " + root.service.formatTimestamp(modelData.time)
-                        Controls.ToolTip.visible: replyAuthorHover.containsMouse
-                        Controls.ToolTip.text: modelData.author
-                        MouseArea {
-                          id: replyAuthorHover
-                          anchors.fill: parent
-                          hoverEnabled: true
-                          acceptedButtons: Qt.NoButton
-                        }
-                        textFormat: Text.PlainText
-                        wrapMode: Text.WordWrap
-                        color: Color.accent
-                        font.family: Style.font.family
-                        font.pixelSize: Style.font.caption
-                      }
-                      Text {
-                        width: parent.width
-                        text: modelData.unavailable ? "Content unavailable" : modelData.text + (modelData.edited ? "\n[edited]" : "") + (modelData.truncated ? "\n[truncated]" : "")
-                        textFormat: Text.PlainText
-                        wrapMode: Text.WordWrap
-                        color: Color.foreground
-                        font.family: Style.font.family
-                        font.pixelSize: Style.font.body
-                      }
+                    Controls.ToolTip.visible: seenReactionHover.containsMouse
+                    Controls.ToolTip.text: "Queued reaction (snapshot)"
+                    MouseArea {
+                      id: seenReactionHover
+                      anchors.fill: parent
+                      hoverEnabled: true
+                      acceptedButtons: Qt.NoButton
                     }
                   }
-                  Ui.Button {
-                    focusable: true
-                    text: "Refresh replies"
-                    enabled: root.service && root.service.threadState !== "loading"
-                    onClicked: root.service.refreshThread()
+                  Text {
+                    visible: !!modelData.reactions && modelData.reactions.working > 0
+                    text: "💬 " + (modelData.reactions ? modelData.reactions.working : 0)
+                    textFormat: Text.PlainText
+                    color: Color.foreground
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.caption
+                    Controls.ToolTip.visible: workingReactionHover.containsMouse
+                    Controls.ToolTip.text: "Working reaction (snapshot)"
+                    MouseArea {
+                      id: workingReactionHover
+                      anchors.fill: parent
+                      hoverEnabled: true
+                      acceptedButtons: Qt.NoButton
+                    }
+                  }
+                }
+                Ui.Button {
+                  objectName: "buzzThreadToggle"
+                  focusable: true
+                  visible: root.service && root.service.canOpenThread(messageRow.modelData.id)
+                  text: root.service && root.service.threadRootId === messageRow.modelData.id ? "💬 Hide replies" : "💬 View replies"
+                  onClicked: {
+                    if (root.service.threadRootId === messageRow.modelData.id) root.service.closeThread()
+                    else {
+                      root.service.openThread(messageRow.modelData.id)
+                      root.revealThread(messageRow, threadDetails)
+                    }
+                  }
+                }
+                Rectangle {
+                  id: threadDetails
+                  objectName: "buzzThreadDetails"
+                  visible: root.service && root.service.threadRootId === messageRow.modelData.id
+                  width: parent.width
+                  implicitHeight: threadBody.height + Style.space(16)
+                  color: Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.07)
+                  border.color: Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.25)
+                  radius: Style.cornerRadius
+                  Column {
+                    id: threadBody
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    anchors.margins: Style.space(8)
+                    height: childrenRect.height
+                    spacing: Style.space(8)
+                    Text {
+                      width: parent.width
+                      text: root.service ? root.service.threadLabel : ""
+                      textFormat: Text.PlainText
+                      wrapMode: Text.WordWrap
+                      color: Color.foreground
+                      font.family: Style.font.family
+                      font.pixelSize: Style.font.caption
+                    }
+                    Ui.Button {
+                      text: "Reply in thread"
+                      focusable: true
+                      visible: root.service && root.service.threadSendSupported
+                      enabled: root.service && !root.service.recipientPickerLocked && root.service.canReplyTo(messageRow.modelData.id)
+                      onClicked: if (root.service.composeReply(messageRow.modelData.id)) composer.forceActiveFocus()
+                    }
+                    Repeater {
+                      model: threadDetails.visible && root.service ? root.service.threadRows : []
+                      delegate: Column {
+                        required property var modelData
+                        width: parent.width
+                        height: childrenRect.height
+                        spacing: Style.space(4)
+                        Text {
+                          width: parent.width
+                          text: root.service.messageAuthorLabel(modelData.author) + " · " + root.service.formatTimestamp(modelData.time)
+                          Controls.ToolTip.visible: replyAuthorHover.containsMouse
+                          Controls.ToolTip.text: modelData.author
+                          MouseArea {
+                            id: replyAuthorHover
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            acceptedButtons: Qt.NoButton
+                          }
+                          textFormat: Text.PlainText
+                          wrapMode: Text.WordWrap
+                          color: Color.accent
+                          font.family: Style.font.family
+                          font.pixelSize: Style.font.caption
+                        }
+                        Text {
+                          width: parent.width
+                          text: modelData.unavailable ? "Content unavailable" : modelData.text + (modelData.edited ? "\n[edited]" : "") + (modelData.truncated ? "\n[truncated]" : "")
+                          textFormat: Text.PlainText
+                          wrapMode: Text.WordWrap
+                          color: Color.foreground
+                          font.family: Style.font.family
+                          font.pixelSize: Style.font.body
+                        }
+                      }
+                    }
+                    Ui.Button {
+                      focusable: true
+                      text: "Refresh replies"
+                      enabled: root.service && root.service.threadState !== "loading"
+                      onClicked: root.service.refreshThread()
+                    }
                   }
                 }
               }
