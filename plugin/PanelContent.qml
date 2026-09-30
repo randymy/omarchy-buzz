@@ -441,6 +441,7 @@ FocusScope {
                 BuzzAvatar {
                   key: root.agentService.avatarKey(modelData)
                   name: modelData.name
+                  art: root.agentService.avatarArtFor(modelData.id)
                   pixelSize: root.sidebarAvatarSize
                 }
                 Ui.Button {

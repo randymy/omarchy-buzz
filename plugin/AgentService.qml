@@ -1,6 +1,7 @@
 import QtQuick
 import Quickshell
 import Quickshell.Io
+import "Identicon.js" as Identicon
 
 // Client of the separate agent service (docs/AGENTS_SERVICE.md). It sends only
 // the structured requests of that interface and renders validated status; it
@@ -45,6 +46,72 @@ Item {
   function harness(id) { return harnesses.find(function(entry) { return entry.id === id }) || null }
   // Avatar key: the agent's public key once enrolled, else its persona id.
   function avatarKey(entry) { return entry ? (entry.enrolled && entry.identity ? entry.identity : entry.id) : "" }
+
+  // Pasted avatar art, stored only on this machine in the plugin's state
+  // directory beside the last-room memory, keyed by persona id. The service's
+  // persona record has no avatar field yet; this moves into the persona record
+  // (and the service contract) when the service gains one. Nothing here is sent.
+  readonly property string avatarStateDir: (Quickshell.env("XDG_STATE_HOME").startsWith("/")
+    ? Quickshell.env("XDG_STATE_HOME") : Quickshell.env("HOME") + "/.local/state") + "/omarchy-buzz"
+  readonly property string avatarsPath: avatarStateDir + "/avatars.json"
+  property var avatarArt: ({})
+  property bool avatarWritePending: false
+  function avatarArtFor(id) { return typeof id === "string" && avatarArt.hasOwnProperty(id) ? avatarArt[id] : "" }
+  // Art for a message author: only this machine's enrolled agents have any.
+  function avatarArtForKey(key) {
+    var entry = agents.find(function(candidate) { return candidate.enrolled && candidate.identity === key })
+    return entry ? avatarArtFor(entry.id) : ""
+  }
+  function validatedAvatars(raw) {
+    // Missing or malformed files fail closed: no art is shown from them.
+    var parsed
+    try { parsed = JSON.parse(raw) } catch (_) { return {} }
+    if (!exactKeys(parsed, "avatars,version") || parsed.version !== 1 || !parsed.avatars
+        || typeof parsed.avatars !== "object" || Array.isArray(parsed.avatars)) return {}
+    var ids = Object.keys(parsed.avatars)
+    if (ids.length > 16) return {}
+    var result = {}
+    for (var i = 0; i < ids.length; i++) {
+      var art = parsed.avatars[ids[i]]
+      if (!uuidV4(ids[i]) || typeof art !== "string" || art === "" || Identicon.normalizeArt(art) !== art) return {}
+      result[ids[i]] = art
+    }
+    return result
+  }
+  function setAvatarArt(id, text) {
+    if (!agent(id) || typeof text !== "string") return false
+    var art = Identicon.normalizeArt(text)
+    if (avatarArtFor(id) === art) return true
+    // Keep only agents the service still lists, so deleted agents' art is dropped.
+    var next = {}
+    Object.keys(avatarArt).forEach(function(key) { if (key !== id && root.agent(key)) next[key] = root.avatarArt[key] })
+    if (art !== "") next[id] = art
+    avatarArt = next
+    avatarWritePending = true
+    writeAvatars()
+    return true
+  }
+  function writeAvatars() {
+    if (!avatarWritePending || !mainService || !mainService.notificationSettingsDirReady) return
+    avatarsFile.setText(JSON.stringify({version: 1, avatars: avatarArt}) + "\n")
+    avatarWritePending = false
+  }
+  Connections {
+    target: root.mainService
+    function onNotificationSettingsDirReadyChanged() { root.writeAvatars() }
+  }
+  FileView {
+    id: avatarsFile
+    path: root.avatarsPath
+    watchChanges: false
+    atomicWrites: true
+    printErrors: false
+    blockLoading: true
+    onLoaded: root.loadAvatars()
+  }
+  function loadAvatars() { if (!avatarWritePending) avatarArt = validatedAvatars(avatarsFile.text()) }
+  // blockLoading makes text() wait for the file, so art is there on first render.
+  Component.onCompleted: loadAvatars()
   function agent(id) { return agents.find(function(entry) { return entry.id === id }) || null }
   function statusWord(entry) {
     if (!entry) return ""

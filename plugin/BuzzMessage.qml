@@ -64,6 +64,8 @@ Column {
         visible: root.lead && root.ready
         key: root.ready ? root.row.author : ""
         name: !root.ready ? "" : root.sample ? root.row.author : root.service.messageAuthorName(root.row.author)
+        // Pasted art of this machine's own enrolled agents; everyone else has an identicon.
+        art: root.ready && !root.sample && root.service.agents ? root.service.agents.avatarArtForKey(root.row.author) : ""
       }
     }
     Column {

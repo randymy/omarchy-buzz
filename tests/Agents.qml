@@ -3,6 +3,7 @@ import QtQuick
 import Quickshell
 import Quickshell.Io
 import "plugin" as Buzz
+import "plugin/Identicon.js" as Identicon
 
 ShellRoot {
   id: test
@@ -32,6 +33,56 @@ ShellRoot {
     Buzz.PanelContent { id: offlineView; anchors.fill: parent; service: offline }
   }
   FileView { id: record; path: Quickshell.env("BUZZ_SEND_RECORD"); blockLoading: true }
+  FileView { id: avatarsFile; path: Quickshell.env("XDG_STATE_HOME") + "/omarchy-buzz/avatars.json"; blockLoading: true; printErrors: false }
+  readonly property string pastedArt: "+----------+\n|  fixture |\n+----------+\n4\n5\n6"
+  // A fresh service object reads the avatar file on creation; nothing connects.
+  function freshArt(id) {
+    var fresh = Qt.createQmlObject('import "plugin" as Buzz\nBuzz.Service { autoConnect: false }', test, "freshService")
+    var art = fresh.agents.avatarArtFor(id)
+    fresh.destroy()
+    return art
+  }
+  function avatarCases() {
+    var editor = findNamed(view, "buzzAgentEditor", [])[0]
+    var field = one(view, "buzzAgentAvatarArt")
+    var header = shown(editor, "buzzAvatar").filter(function(item) { return item !== editor.artPreview })
+    var rowAvatar = shown(view, "buzzAvatar").filter(function(item) { return item.name === "Fixture agent" && item !== header[0] })
+    if (header.length !== 1 || header[0].key !== "b".repeat(64) || header[0].text !== Identicon.glyph("b".repeat(64))
+        || rowAvatar.length !== 1 || rowAvatar[0].key !== "b".repeat(64))
+      throw new Error("Enrolled agent avatars are not its public key's identicon")
+    if (field.text !== "" || editor.artPreview.usesArt || editor.artPreview.text !== Identicon.glyph("b".repeat(64)))
+      throw new Error("Editor without art does not preview the identicon")
+    // Pasting is held to 6 x 12 without control characters, on the field itself.
+    field.text = "+----------+XYZ\n|  fixture\u0007 |\n+----------+\n4\n5\n6\n7\n8"
+    if (field.text !== pastedArt || editor.draftArt !== pastedArt || editor.artPreview.text !== pastedArt)
+      throw new Error("Pasted art not clipped or previewed: " + JSON.stringify(field.text))
+    if (!one(view, "buzzAgentSave").enabled) throw new Error("Art change cannot be saved")
+    var before = requests().length
+    one(view, "buzzAgentSave").clicked()
+    if (requests().length !== before || agents().requestState !== "idle")
+      throw new Error("Saving art alone sent an agent service request")
+    if (service.agents.avatarArtFor(agentId) !== pastedArt || header[0].text !== pastedArt || rowAvatar[0].text !== pastedArt
+        || service.agents.avatarArtForKey("b".repeat(64)) !== pastedArt || one(view, "buzzAgentSave").enabled)
+      throw new Error("Saved art not shown in the header, list and messages")
+    avatarsFile.reload()
+    var stored = JSON.parse(avatarsFile.text())
+    if (Object.keys(stored).sort().join(",") !== "avatars,version" || stored.version !== 1
+        || JSON.stringify(stored.avatars) !== JSON.stringify({"33333333-3333-4333-8333-333333333333": pastedArt}))
+      throw new Error("Avatar file holds unexpected data: " + avatarsFile.text())
+    if (freshArt(agentId) !== pastedArt) throw new Error("Art not restored by a fresh service object")
+    // Damaged or out-of-contract files fail closed.
+    var damaged = ["{broken", JSON.stringify({version: 2, avatars: {}}),
+      JSON.stringify({version: 1, avatars: {"33333333-3333-4333-8333-333333333333": "bell\u0007"}}),
+      JSON.stringify({version: 1, avatars: {"not-an-id": "x"}}),
+      JSON.stringify({version: 1, avatars: {"33333333-3333-4333-8333-333333333333": "1\n2\n3\n4\n5\n6\n7"}}),
+      JSON.stringify({version: 1, avatars: {"33333333-3333-4333-8333-333333333333": "x"}, extra: true})]
+    damaged.forEach(function(text, index) {
+      avatarsFile.setText(text)
+      if (freshArt(agentId) !== "") throw new Error("Damaged avatar file " + index + " was trusted")
+    })
+    avatarsFile.setText(JSON.stringify({version: 1, avatars: stored.avatars}) + "\n")
+  }
+  function agents() { return service.agents }
   function findNamed(item, name, found) {
     if (item.objectName === name) found.push(item)
     for (var i = 0; i < item.children.length; i++) findNamed(item.children[i], name, found)
@@ -172,6 +223,7 @@ ShellRoot {
           if (test.shown(view, "buzzAgentEnroll").length || test.shown(view, "buzzAgentStop").length || test.shown(view, "buzzAgentSignIn").length)
             throw new Error("Enrolled, stopped, signed-in agent offered the wrong actions")
           if (test.one(view, "buzzAgentSave").enabled) throw new Error("Save enabled with nothing changed")
+          test.avatarCases()
           // Delete asks for a second click and sends nothing on the first.
           var remove = test.one(view, "buzzAgentDelete")
           remove.clicked()
@@ -183,6 +235,10 @@ ShellRoot {
           if (test.one(view, "buzzAgentTitle").text !== "New agent" || test.one(view, "buzzAgentName").text !== "")
             throw new Error("New agent editor is not empty")
           if (test.one(view, "buzzAgentSave").enabled) throw new Error("Create enabled for an empty agent")
+          var newEditor = test.findNamed(view, "buzzAgentEditor", [])[0]
+          if (test.one(view, "buzzAgentAvatarArt").text !== "" || newEditor.artPreview.usesArt
+              || newEditor.artPreview.text !== Identicon.neutralGlyph())
+            throw new Error("New agent editor does not preview the identicon before art is pasted")
           test.one(view, "buzzAgentName").text = "Rejected agent"
           var harness = test.shown(view, "buzzAgentHarness").filter(function(b) { return b.harnessId === "claude-code" })[0]
           harness.clicked()
@@ -211,12 +267,16 @@ ShellRoot {
               || test.one(view, "buzzAgentStatus").text !== "Creating agent · failed. The agent service refused these settings.")
             throw new Error("Refused create not shown: " + test.one(view, "buzzAgentStatus").text)
           test.one(view, "buzzAgentName").text = "Created agent"
+          test.one(view, "buzzAgentAvatarArt").text = "[new]"
           test.one(view, "buzzAgentSave").clicked()
           test.stage = 2
         } else if (test.stage === 2 && agents.requestState === "done" && view.agentEditorId === test.createdId) {
           if (test.shown(view, "buzzAgentRow").length !== 2 || test.one(view, "buzzAgentTitle").text !== "Created agent"
               || test.one(view, "buzzAgentStatus").text !== "Creating agent · done")
             throw new Error("Created agent not listed or opened")
+          if (agents.avatarArtFor(test.createdId) !== "[new]" || agents.avatarArtFor(test.agentId) !== test.pastedArt
+              || test.freshArt(test.createdId) !== "[new]" || test.one(view, "buzzAgentAvatarArt").text !== "[new]")
+            throw new Error("Art pasted before create was not kept for the new agent")
           test.one(view, "buzzAgentEnroll")
           if (test.shown(view, "buzzAgentStart").length || test.shown(view, "buzzAgentRow")[1].text !== "Created agent · not enrolled")
             throw new Error("Unenrolled agent offered Start")
@@ -249,7 +309,7 @@ ShellRoot {
               || !test.shown(view, "buzzHistoryScroll").length || agents.requestState !== "unknown")
             throw new Error("Malformed status did not end the agent session")
           test.validationCases()
-          console.log("PASS: Agents section lists the service's agents, edits, creates, starts and shows refusals; one request at a time; malformed frames end the session; no agent_manager hides the section")
+          console.log("PASS: Agents section lists the service's agents, edits, creates, starts and shows refusals; one request at a time; malformed frames end the session; no agent_manager hides the section; pasted avatar art is clipped, previewed, kept locally and restored, damaged avatar files fail closed")
           Qt.quit()
         }
       } catch (error) { console.error(error.message); Qt.exit(1) }

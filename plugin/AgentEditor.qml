@@ -3,6 +3,7 @@ import QtQuick.Layouts
 import QtQuick.Controls as Controls
 import qs.Ui as Ui
 import qs.Commons
+import "Identicon.js" as Identicon
 
 // Editor for one agent persona in the middle column. It edits a local draft and
 // sends only structured, locally validated requests through the agent service.
@@ -25,7 +26,11 @@ ColumnLayout {
   property string draftRespondTo: "owner-only"
   property string draftWorkspace: ""
   property bool draftStartAtLogin: false
+  // Pasted avatar art: kept on this machine only, never sent to the agent service.
+  property string draftArt: ""
+  property string pendingCreateArt: ""
   property bool deleteArmed: false
+  readonly property alias artPreview: artPreview
 
   function load() {
     deleteArmed = false
@@ -39,6 +44,7 @@ ColumnLayout {
     draftRespondTo = source ? source.respondTo : "owner-only"
     draftWorkspace = source ? source.workspace : ""
     draftStartAtLogin = source ? source.startAtLogin : false
+    draftArt = source ? agents.avatarArtFor(source.id) : ""
   }
   onAgentIdChanged: load()
   // Fields follow the draft when it is loaded; typing updates the draft.
@@ -47,6 +53,7 @@ ColumnLayout {
   onDraftInstructionsChanged: if (instructions.text !== draftInstructions) instructions.text = draftInstructions
   onDraftModelChanged: if (modelField.text !== draftModel) modelField.text = draftModel
   onDraftWorkspaceChanged: if (workspaceField.text !== draftWorkspace) workspaceField.text = draftWorkspace
+  onDraftArtChanged: if (artField.text !== draftArt) artField.text = draftArt
   Component.onCompleted: load()
 
   readonly property var draftFields: ({name: draftName, description: draftDescription, instructions: draftInstructions,
@@ -68,13 +75,22 @@ ColumnLayout {
     return fields
   }
   readonly property string problem: agents ? agents.fieldsProblem(saveFields, creating) : ""
-  readonly property bool dirty: creating || Object.keys(changedFields).length > 0
-  readonly property bool canSave: !!agents && agents.canMutate && problem === "" && (creating || !!entry)
+  readonly property bool serviceChanged: Object.keys(changedFields).length > 0
+  readonly property bool artChanged: !creating && !!entry && Identicon.normalizeArt(draftArt) !== agents.avatarArtFor(agentId)
+  readonly property bool dirty: creating || serviceChanged || artChanged
+  // Art alone is saved locally and needs no agent service request.
+  readonly property bool canSave: !!agents && (creating || !!entry)
+    && (creating || serviceChanged ? agents.canMutate && problem === "" : artChanged)
   readonly property var harnessState: agents ? agents.harness(entry ? entry.harness : draftHarness) : null
 
   function save() {
     if (!canSave) return false
-    return creating ? agents.createAgent(saveFields) : agents.updateAgent(agentId, saveFields)
+    if (creating) {
+      pendingCreateArt = Identicon.normalizeArt(draftArt)
+      return agents.createAgent(saveFields)
+    }
+    if (artChanged && !agents.setAvatarArt(agentId, draftArt)) return false
+    return serviceChanged ? agents.updateAgent(agentId, saveFields) : true
   }
   function toggleRoom(id) {
     var copy = draftRooms.slice()
@@ -94,7 +110,12 @@ ColumnLayout {
   Timer { id: disarm; interval: 5000; onTriggered: root.deleteArmed = false }
   Connections {
     target: root.agents
-    function onAgentCreated(agentId) { if (root.creating) root.agentChosen(agentId) }
+    function onAgentCreated(agentId) {
+      if (!root.creating) return
+      if (root.pendingCreateArt !== "") root.agents.setAvatarArt(agentId, root.pendingCreateArt)
+      root.pendingCreateArt = ""
+      root.agentChosen(agentId)
+    }
     function onRequestStateChanged() {
       if (!root.agents || root.agents.requestState !== "done") return
       if (root.agents.requestType === "delete_agent" && root.agents.requestAgent === root.agentId) root.backRequested()
@@ -122,6 +143,7 @@ ColumnLayout {
     BuzzAvatar {
       key: root.agents && root.entry ? root.agents.avatarKey(root.entry) : ""
       name: root.creating ? "New agent" : root.entry ? root.entry.name : ""
+      art: root.agents && root.entry ? root.agents.avatarArtFor(root.agentId) : ""
     }
     Text {
       objectName: "buzzAgentTitle"
@@ -201,6 +223,56 @@ ColumnLayout {
             radius: Style.cornerRadius
           }
           onTextChanged: if (text !== root.draftInstructions) root.draftInstructions = text
+        }
+      }
+      Caption { text: "Avatar (ASCII art, optional)" }
+      RowLayout {
+        spacing: Style.space(8)
+        Controls.TextArea {
+          id: artField
+          objectName: "buzzAgentAvatarArt"
+          Layout.preferredWidth: artMetrics.advanceWidth + leftPadding + rightPadding
+          Layout.preferredHeight: artMetrics.height * 6 + topPadding + bottomPadding
+          textFormat: TextEdit.PlainText
+          wrapMode: TextEdit.NoWrap
+          text: root.draftArt
+          placeholderText: "6 × 12"
+          placeholderTextColor: Util.alpha(Color.foreground, 0.5)
+          color: Color.foreground
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+          background: Rectangle {
+            color: Color.popups.background
+            border.color: artField.activeFocus ? Color.popups.border : Util.alpha(Color.foreground, 0.25)
+            radius: Style.cornerRadius
+          }
+          // Input is held to 6 lines of 12 columns without control characters.
+          onTextChanged: {
+            var clipped = Identicon.clipArt(text)
+            if (clipped !== text) {
+              var position = Math.min(cursorPosition, clipped.length)
+              text = clipped
+              cursorPosition = position
+              return
+            }
+            if (text !== root.draftArt) root.draftArt = text
+          }
+          TextMetrics {
+            id: artMetrics
+            font: artField.font
+            text: "MMMMMMMMMMMM"
+          }
+        }
+        BuzzAvatar {
+          id: artPreview
+          Layout.alignment: Qt.AlignTop
+          key: root.agents && root.entry ? root.agents.avatarKey(root.entry) : ""
+          name: "Preview"
+          art: root.draftArt
+        }
+        Caption {
+          Layout.alignment: Qt.AlignTop
+          text: "Kept on this machine only"
         }
       }
       Caption { text: "Harness" }
