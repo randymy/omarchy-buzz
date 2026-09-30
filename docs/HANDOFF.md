@@ -108,29 +108,43 @@ Both refresh fixes are installed and have synthetic rendered test coverage.
 There is no subsequent user confirmation of the improved experience yet.
 Do not claim full live desktop acceptance solely from helper/socket tests.
 
-## In flight at the September 30 stop (read before continuing)
+## In flight at the September 30 afternoon stop (read before continuing)
 
-`main` is at the merge of `human-docs`; everything below is committed and pushed
-as branches, not merged:
+Everything is merged and pushed; `main` is at `7b1ce8a` (release 0.0.13 commit).
+The ARM64 helper build for it was started as
+https://github.com/randymy/omarchy-buzz/actions/runs/36731957484 and had not
+finished at the stop. Installed and running on this machine: still **0.0.12**
+(helper SHA256 `15408fe5…`); nothing from the agent work is installed or enabled.
 
-- `agentsui` (4 commits): the panel's Agents section and `plugin/AgentService.qml`
-  against `docs/AGENTS_SERVICE.md`; all preview modes pass; needs the service.
-- `agentbundle` (5 commits): launcher flags (`--harness`, repeated `--room`,
-  `--respond-to`, `--instructions`, `--model`), Claude Code sandbox wrappers,
-  `scripts/agent-bundle`, `scripts/agent-login`; 45 Python tests pass.
-- `agentsvc`: the Rust agent manager service, unfinished when the session
-  ended; the last commit may be a WIP. Its brief required source and tests only:
-  nothing installed, no systemd, no Secret Service, no relay. The exact frame and
-  request shapes it must honour are the panel's (see the checkpoint entry for the
-  Agents section) and the launcher argv is the bundle branch's.
+Already prepared on this machine, outside git:
 
-Merge order when resuming: `agentbundle`, `agentsui`, then `agentsvc` once its
-tests pass; then a human-reviewed installation step (new units, bundles, sign-in)
-before any real agent is created. After that, in this order: ASCII avatars
-(identicon default plus optional pasted art per agent), then onboarding without
-a terminal (identity generation in the plugin, joining a community from the
-panel). Teams, sharing and import stay on hold. Git history is not to be
-rewritten.
+- Harness bundles assembled and verified with `scripts/agent-bundle … --check`
+  → `ready`: `~/.local/share/omarchy-buzz/agent-codex` (608 MB, from the stock
+  bundle) and `~/.local/share/omarchy-buzz/agent-claude-code` (490 MB, locked
+  `npm ci` from the public registry, pinned `claude` CLI copied in).
+- Sign-in status: Codex `signed-in` (existing profile), Claude Code `signed-out`
+  (profile `~/.local/state/omarchy-buzz-agent-preview/claude-code` not yet used).
+
+Resume steps, in order:
+
+1. When run 36731957484 succeeds: download the artifact, verify hashes and
+   `build.json`, run it read-only against the relay in a private short-path
+   runtime directory (see the `check010.py` pattern in the checkpoint), then
+   `scripts/helper-install install …` — this now also installs and enables
+   `omarchy-buzz-agents.socket`/`.service` and `~/.local/share/omarchy-buzz/scripts/agent-login`.
+   Then `omarchy plugin update community.buzz --yes`, `omarchy restart shell`.
+   Verify `systemctl --user status omarchy-buzz-agents.socket` and that the
+   panel shows the Agents section with both harnesses `ready`.
+2. The owner signs in to Claude Code from the panel (opens a detached terminal
+   with the vendor login against the shared profile).
+3. The owner creates and starts the first agent from the panel (publishes kind
+   30175/30177, a kind 0 profile, and kind 9000 membership on the real relay).
+   Watch the unit and fix what breaks. Nothing agent-related has been exercised
+   against a real relay, real systemd or real Secret Service yet.
+4. Then: ASCII avatars (identicon default plus optional pasted art per agent),
+   then onboarding without a terminal (identity generation in the plugin,
+   joining a community from the panel, an opt-in Super+B offer in the setup
+   view). Teams, sharing and import stay on hold. Git history is not rewritten.
 
 ## Next three priorities
 
