@@ -2135,3 +2135,17 @@ against a relay, systemd, Secret Service or an agent.
 - Not verified: a real relay's invite endpoints, policy text, rate limit and
   9021/9022 handling; that `buzz-acp` without `--channels` picks up a DM opened
   after it started; an agent answering a real DM.
+
+## 0.0.15 installed; agent answered a direct message — September 30 afternoon
+
+0.0.15 (helper SHA256 `13533201810076b552de65d13b295644a5b51d4e9704879cd1571af5227c6ef5`,
+ARM64 run 36748809963) is installed. Turning on `Answers direct messages` for
+`vClaude` first failed: the unit exited with status 2 because the harness
+bundles assembled under 0.0.13 carry their own copy of `room-agent`, which did
+not know `--answers-dms`; `agent-bundle --check` compares a bundle only with
+its own `bundle.json`, so it still reported `ready`. Both bundles were
+reassembled from the current scripts with the already-present adapters (no
+network) and swapped in; the agent started without `--channels` and answered
+the owner's direct message with no mention. Follow-up: install the launcher
+scripts with the helper package, make `--check` report `stale` when a bundle's
+launcher differs from the installed scripts, and offer a refresh from the panel.
