@@ -30,11 +30,11 @@ conflict explicitly rather than assuming an old milestone is current.
 | Component | State at handoff |
 | --- | --- |
 | Repository | `https://github.com/randymy/omarchy-buzz`, branch `main`; local `~/Projects/omarchy-buzz` |
-| Latest implementation commit | `bb989e5` — release 0.0.11 (adds older room history on request and starting a direct message, on top of 0.0.10's reply counts, quiet helper room check, existing direct messages, Desktop-mode nested threads up to 200 replies and last-room memory); pushed to `origin/main` |
+| Latest implementation commit | `44c3e2c` — release 0.0.12 (live updates for the open room and thread through a relay subscription that only triggers verified refetches; on top of 0.0.11's older history, new-DM open, reply counts, quiet room check, existing DMs, Desktop-mode threads and last-room memory); pushed to `origin/main` |
 | Installed UI | `~/.config/omarchy/plugins/community.buzz`, verified at the same implementation commit |
-| Plugin/helper version | `0.0.11` (installed September 29, 2026, 22:31 CDT); `0.0.9` and `0.0.10` were installed briefly the same evening |
-| Helper binary | `~/.local/bin/omarchy-buzz`; SHA256 `1e401197eaf79bcf357be87bbd015513a28b223622fadcfed22d7c553b80e741` |
-| Helper build | [ARM64 run 36664349836](https://github.com/randymy/omarchy-buzz/actions/runs/36664349836), source `bb989e5425996aebe2a5270c3d581a365e790ec5`; each new binary is first run read-only in a private short-path runtime directory against the real relay (`scratchpad/check010.py` pattern: authenticated, 4 stream rooms, no rejection) before installation; rollback backup `~/.local/share/omarchy-buzz/backups/20260930T033106.323752Z` |
+| Plugin/helper version | `0.0.12` (installed September 30, 2026, 07:14 CDT); 0.0.9–0.0.11 were installed briefly the previous evening |
+| Helper binary | `~/.local/bin/omarchy-buzz`; SHA256 `15408fe56624fcd2b16f7c23ed1085cba3dca072a78a5e6e63313b66488996de` |
+| Helper build | [ARM64 run 36712850154](https://github.com/randymy/omarchy-buzz/actions/runs/36712850154), source `44c3e2c589e4ad868df6c599a8d262b77c59fdf6`; after installation the live subscription was observed primed on the real relay (`history.live=true` for the selected room); each new binary is first run read-only in a private short-path runtime directory against the real relay (`scratchpad/check010.py` pattern: authenticated, 4 stream rooms, no rejection) before installation; rollback backup `~/.local/share/omarchy-buzz/backups/20260930T121404.583817Z` |
 | Buzz dependency | Official upstream `781d39510cf23cfe224e8f521ae06a23377e06de`; do not silently advance the pin |
 | Agent runtime | Stock Buzz ACP, Codex ACP `2.0.0`, native Codex `0.158.0`; [stock build 36639519388](https://github.com/randymy/omarchy-buzz/actions/runs/36639519388) |
 | Host | ARM64 Omarchy VM; installed Omarchy package reported `4.0.3-1`; see DESIGN for source/package distinction |
