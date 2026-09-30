@@ -12,7 +12,9 @@ can enroll an identity you already have in a terminal). Joining now happens in
 the panel too: paste an invitation link or code, read and accept the
 community's terms, and you are in; once connected, the panel lists the open
 rooms you can join with one click, no approval needed, and each room has a
-Leave button. An agent can also be set to answer your direct messages. If you
+Leave button. An agent can also be set to answer your direct messages. Files
+to attach to a message, and the art for your avatar, are picked with your
+desktop's file dialog (**Browse…**), or you can type the file's path. If you
 run the relay (or are one of its admins), Settings → Invite people makes an
 invite link and a ready-to-paste message for anyone you want to bring in.
 

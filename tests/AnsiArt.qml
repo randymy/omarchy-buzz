@@ -1,6 +1,6 @@
 // ANSI art avatars: parser, thumbnail and stored form; the colored message
 // avatar, profile card and the Settings avatar section against synthetic
-// frames and a synthetic fixture file. No helper, relay, keys or network.
+// frames and a synthetic fixture file; a stub stands in for the file chooser. No helper, relay, keys or network.
 import QtQuick
 import QtTest
 import Quickshell
@@ -31,6 +31,14 @@ ShellRoot {
   }
   FileView { id: fixture; path: test.fixturePath; blockLoading: true; printErrors: false }
   FileView { id: avatarsFile; path: Quickshell.env("XDG_STATE_HOME") + "/omarchy-buzz/avatars.json"; blockLoading: true; blockWrites: true; printErrors: false }
+  // Stands in for the desktop file chooser: offscreen, no real dialog is opened.
+  QtObject {
+    id: chooserStub
+    property int opens: 0
+    signal accepted(string path)
+    signal rejected()
+    function open() { opens++ }
+  }
   // Mouse and key events go through the real window, as a pointer and keyboard would.
   TestCase { id: input; when: false; name: "AnsiArtInput" }
 
@@ -228,6 +236,32 @@ ShellRoot {
     check(service.agents.avatarArtForKey(test.me) === before, "Refused path changed the avatar")
   }
 
+  // Browse… opens the chooser (a stub here, never the dialog); a cancelled,
+  // relative or .. choice leaves the field and the avatar as they were.
+  function chooserCases(loader) {
+    var chooser = findNamed(loader, "buzzBrowse", [])[0]
+    check(chooser && chooser.visible && chooser.nameFilters.join("|") === "ANSI or text art (*.ans *.txt)", "Avatar Browse missing or filters wrong")
+    chooser.stub = chooserStub
+    input.mouseClick(chooser, chooser.width / 2, chooser.height / 2)
+    check(chooserStub.opens === 1 && chooser.dialog === null, "Browse did not open the stub chooser, or made a dialog")
+    var before = service.agents.avatarArtForKey(test.me)
+    test.one("buzzMyAvatarPath").text = "/typed/by/hand.ans"
+    loader.status = "idle"
+    loader.problem = ""
+    chooserStub.rejected()
+    check(test.one("buzzMyAvatarPath").text === "/typed/by/hand.ans" && loader.status === "idle", "Cancel changed the field or loader")
+    ;["relative/art.ans", "file:///tmp/../etc/art.ans", "file:///tmp/%2e%2e/art.ans", "sftp://host/art.ans"].forEach(function(path) {
+      chooserStub.accepted(path)
+      check(test.one("buzzMyAvatarPath").text === "/typed/by/hand.ans" && loader.status === "failed" && loader.problem !== "",
+        "Unsafe choice accepted: " + path)
+    })
+    check(service.agents.avatarArtForKey(test.me) === before, "Refused choice changed the avatar")
+    check(chooser.localPath("file:///tmp/my%20art.ans") === "/tmp/my art.ans", "File URL not decoded")
+    test.one("buzzMyAvatarPath").text = ""
+    loader.status = "idle"
+    loader.problem = ""
+  }
+
   Timer {
     interval: 100
     running: true
@@ -252,6 +286,7 @@ ShellRoot {
           test.openSettings()
           myLoader = test.one("buzzMyAvatarPath").parent
           test.loaderCases(myLoader)
+          test.chooserCases(myLoader)
           test.one("buzzMyAvatarPath").text = test.fixturePath
           test.one("buzzMyAvatarPathApply").clicked()
           check(myLoader.status === "reading", "Loader did not start reading")
@@ -330,6 +365,18 @@ ShellRoot {
           if (myLoader.status === "reading") return
           check(myLoader.status === "failed" && myLoader.problem === "The file is larger than 256 KiB."
             && service.agents.avatarArtForKey(test.me) === test.fixtureArt, "Oversized file not refused: " + myLoader.problem)
+          // A chosen file URL is decoded into the field and applied at once
+          // (Settings is closed here; the stub still stands in for the chooser).
+          check(myLoader.status === "failed", "Precondition")
+          chooserStub.accepted("file://" + test.fixturePath.replace(/avatar\.ans$/, "%61vatar.ans"))
+          check(myLoader.field.text === test.fixturePath && myLoader.status === "reading", "Chosen file not filled and applied: "
+            + myLoader.field.text + " " + myLoader.status)
+          service.agents.setOwnAvatarArt(test.me, test.fixtureArt, 2)
+          test.stage = 41
+        } else if (test.stage === 41) {
+          if (myLoader.status === "reading") return
+          check(myLoader.status === "loaded" && service.agents.avatarArtForKey(test.me) === test.fixtureArt
+            && service.agents.avatarBrightnessForKey(test.me) === 1.5, "Chosen file not loaded as the avatar: " + myLoader.problem)
           myLoader.load(test.fixturePath.replace(/avatar\.ans$/, "missing.ans"))
           test.stage = 5
         } else if (test.stage === 5) {
@@ -358,7 +405,7 @@ ShellRoot {
           check(JSON.stringify(JSON.parse(test.readStore()).avatars) === "{}" && test.freshOwnArt() === "", "Clear not saved")
           test.messageAvatars()
           if (test.capturePath === "") {
-            console.log("PASS: ANSI art parses truecolor, 256 and basic colors and resets, drops cursor sequences, controls and SAUCE, clips at 60 x 120 and 256 KiB; keeps backgrounds; thumbnails sample block centres deterministically; brightness auto-levels, is monotonic, clamped, stepped from Settings, saved with the art and restored; my avatar loads from a file into the local store, shows colored in the same slot width, restores, clears and fails closed on unsafe paths, oversized or missing files and damaged state; the profile card opens on click and closes on Escape or outside click")
+            console.log("PASS: ANSI art parses truecolor, 256 and basic colors and resets, drops cursor sequences, controls and SAUCE, clips at 60 x 120 and 256 KiB; keeps backgrounds; thumbnails sample block centres deterministically; brightness auto-levels, is monotonic, clamped, stepped from Settings, saved with the art and restored; my avatar loads from a file into the local store, shows colored in the same slot width, restores, clears and fails closed on unsafe paths; Browse… (a stub chooser) fills the path and applies it, decodes file URLs and refuses cancelled, relative and .. choices; it fails closed on oversized or missing files and damaged state; the profile card opens on click and closes on Escape or outside click")
             Qt.quit()
             return
           }

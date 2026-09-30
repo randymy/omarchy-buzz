@@ -1,6 +1,7 @@
 // File attachments against a synthetic stdio helper: no relay, key, network or
 // real files. Cards, the verified preview, a completed and a failed download,
-// Open, refused and accepted uploads, removal, and a send with an attachment.
+// Open, refused and accepted uploads (typed, and through a stub file chooser),
+// removal, and a send with an attachment.
 import QtQuick
 import QtTest
 import Quickshell
@@ -30,6 +31,16 @@ ShellRoot {
     implicitHeight: 760
     Buzz.PanelContent { id: view; anchors.fill: parent; service: service }
   }
+  // Stands in for the desktop file chooser: offscreen, no real dialog is opened.
+  QtObject {
+    id: chooserStub
+    property int opens: 0
+    signal accepted(string path)
+    signal rejected()
+    function open() { opens++ }
+  }
+  property var fieldHistory: []
+  function recordField() { test.fieldHistory.push(one("buzzComposerAttachPath").text) }
   FileView { id: record; path: Quickshell.env("BUZZ_SEND_RECORD"); blockLoading: true }
   TestCase { id: input; when: false; name: "AttachmentsInput" }
   function findNamed(item, name, found) {
@@ -138,6 +149,31 @@ ShellRoot {
           click("buzzComposerAttachToggle")
           test.stage = 41
         } else if (test.stage === 41) {
+          // Browse… opens the chooser (a stub here); the dialog itself is never made.
+          var chooser = one("buzzBrowse", one("buzzComposerAttachRow"))
+          chooser.stub = chooserStub
+          // By keyboard: the paperclip's hover tooltip can still cover this row offscreen.
+          chooser.forceActiveFocus()
+          input.keyClick(Qt.Key_Return)
+          check(chooserStub.opens === 1 && chooser.dialog === null, "Browse did not open the stub chooser, or made a dialog: " + chooserStub.opens)
+          check(chooser.folder.indexOf("file:///") === 0 && chooser.nameFilters.join("|") === "All files (*)|Images (*.png *.jpg *.jpeg *.gif *.webp)",
+            "Chooser folder or filters wrong: " + chooser.folder + " " + chooser.nameFilters)
+          type(one("buzzComposerAttachPath"), "typed/by hand")
+          var localBefore = service.uploadLocal
+          // Cancel, a relative path and a path with .. leave the field as it was and send nothing.
+          chooserStub.rejected()
+          chooserStub.accepted("relative/photo.png")
+          check(one("buzzComposerBrowseProblem").text !== "", "Refused choice not explained")
+          chooserStub.accepted("file:///home/fixture/../etc/passwd")
+          chooserStub.accepted("file:///home/fixture/%2E%2E/x.png")
+          chooserStub.accepted("https://example.com/x.png")
+          check(one("buzzComposerAttachPath").text === "typed/by hand" && service.uploadLocal === localBefore && localBefore !== "sending",
+            "A cancelled or refused choice changed the field or attached: " + one("buzzComposerAttachPath").text + " " + service.uploadLocal)
+          check(chooser.localPath("file:///home/fixture/a%20b.png") === "/home/fixture/a b.png"
+            && chooser.localPath("file://localhost/home/x") === "/home/x" && chooser.localPath("file:///bad%zz") === "",
+            "URL decoding wrong")
+          test.stage = 411
+        } else if (test.stage === 411) {
           // The revealed row is laid out before it is used.
           attachTyped("notes.txt")
           test.stage = 42
@@ -161,7 +197,14 @@ ShellRoot {
           check(shown("buzzComposerUploadStatus").length === 0, "Stale upload note shown")
           test.stage = 61
         } else if (test.stage === 61) {
-          attachTyped("/home/fixture/shot 2.png")
+          // A chosen file URL is decoded, fills the field and is attached at once.
+          var field = one("buzzComposerAttachPath")
+          field.textChanged.connect(test.recordField)
+          chooserStub.accepted("file:///home/fixture/shot%202.png")
+          field.textChanged.disconnect(test.recordField)
+          check(test.fieldHistory.join("|") === "/home/fixture/shot 2.png|" && field.text === "" && service.uploadLocal === "sending"
+            && shown("buzzComposerBrowseProblem").length === 0, "Chosen file not filled and attached: " + JSON.stringify(test.fieldHistory))
+          test.lastClick = test.ticks
           test.stage = 7
         } else if (test.stage === 7 && service.pendingAttachments.length === 2 && service.upload.state === "done") {
           test.stage = 71
@@ -200,7 +243,7 @@ ShellRoot {
             && downloads.every(function(r) { return r.eventId === test.rowA }), "Downloads wrong: " + JSON.stringify(downloads))
           check(opens.length === 1 && opens[0].path === "/home/fixture/Downloads/report.pdf", "Open wrong: " + JSON.stringify(opens))
           check(removed.length === 1 && removed[0].hash === "4".repeat(64), "Removal wrong: " + JSON.stringify(removed))
-          console.log("PASS: attachment cards show name, size and a verified bounded preview; downloads report progress, Saved/Open or a refusal; uploads refuse relative paths and SVG, list pending files with removal, and a message with only an attachment sends and clears them")
+          console.log("PASS: attachment cards show name, size and a verified bounded preview; downloads report progress, Saved/Open or a refusal; uploads refuse relative paths and SVG; the file chooser fills the path and attaches, decodes file URLs and refuses cancelled, relative and .. choices; pending files are listed with removal, and a message with only an attachment sends and clears them")
           Qt.quit()
         }
       } catch (error) { console.error(error.message || error); Qt.exit(1) }

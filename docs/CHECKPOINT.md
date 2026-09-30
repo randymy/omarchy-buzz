@@ -2370,3 +2370,40 @@ Upstream references are to the pinned Buzz `781d3951`; the research map is
   environment), the observer wiring end to end (covered by unit, IPC and
   fixture tests only), and the panel in the live shell. A panel older than this
   one refuses a helper announcing 18 capabilities: update both together.
+
+## File chooser for attachments and avatars — September 30
+
+- Branch `file-chooser`. QML only; no helper, service or protocol change.
+- `plugin/BuzzFileChooser.qml`: a `Ui.Button` (**Browse…**, `objectName`
+  `buzzBrowse`) that opens `QtQuick.Dialogs` `FileDialog` (`OpenFile`) with a
+  `title` and `nameFilters`, starting in `folder` (default `file://$HOME` from
+  `Quickshell.env`, then the folder of the last file chosen with that button,
+  for the session). The dialog is created lazily from a `Component` on the first
+  real click (`dialog` stays `null` until then), so nothing is made or shown in
+  offscreen tests. On accept it emits `chosen(path)` with a plain absolute path:
+  `file://` (and `localhost`) stripped, percent-escapes decoded; other schemes,
+  relative paths, `..` segments, control characters and bad escapes are refused
+  with `refused(reason)` (and `problem`). Cancel emits `canceled()`. `stub`
+  (null in production) replaces the dialog: `open()` calls `stub.open()` and the
+  stub's `accepted(path)`/`rejected()` drive the same handling.
+- Composer: **Browse…** sits after **Attach** in the 📎 row (filters `All files`
+  and `Images (*.png *.jpg *.jpeg *.gif *.webp)`); a chosen file fills the path
+  field and runs the same attach as **Attach**; a refusal shows
+  `buzzComposerBrowseProblem` until the field changes. The typed field stays.
+- Avatar loader (Settings and the agent editor): **Browse…** beside **Apply**
+  (filter `ANSI or text art (*.ans *.txt)`); a chosen file fills the field and
+  runs Apply; a refusal fails the loader closed with its reason. The field stays
+  the loader's direct child, so existing lookups are unchanged.
+- Evidence (synthetic, stub chooser): `--attachments` (Browse opens the stub and
+  makes no dialog; cancel, relative, `..`, `%2E%2E` and non-file URLs leave the
+  field and send nothing; `file:///home/fixture/shot%202.png` fills the field
+  with `/home/fixture/shot 2.png` and uploads it) and `--ansi-art` (the same
+  refusals leave the field and avatar; a chosen `%61vatar.ans` URL fills the
+  decoded fixture path and loads it). Every preview mode, including
+  `--presentation` and `--bridge` with a freshly built helper, passes.
+- Not verified here: the real dialog. The maintainer opened one once from a
+  Quickshell `FloatingWindow` on Wayland through xdg-desktop-portal (a harmless
+  "Failed to register with host portal … app ID" warning is printed); this
+  branch was not tried in the live shell, including from the overlay
+  (`PanelWindow`) presentation and the returned URL form for names with
+  non-ASCII characters.

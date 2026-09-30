@@ -6,9 +6,10 @@ import Quickshell.Io
 import "AnsiArt.js" as AnsiArt
 
 // Loads avatar art from a local .ans or .txt file the user names by absolute
-// path. The file is checked before it is read (a regular file of at most
-// 256 KiB), read once with FileView, checked again, then sanitized: only the
-// sanitized text is handed on, never the path. Every failure is closed: no art
+// path, typed or chosen with Browse… (the desktop's file chooser). The file is
+// checked before it is read (a regular file of at most 256 KiB), read once
+// with FileView, checked again, then sanitized: only the sanitized text is
+// handed on, never the path. Every failure is closed: no art
 // changes. Nothing is sent anywhere.
 ColumnLayout {
   id: root
@@ -114,6 +115,19 @@ ColumnLayout {
       focusable: true
       enabled: root.status !== "reading"
       onClicked: root.load(pathField.text)
+    }
+    // The desktop's file chooser fills the field and applies, as Apply does.
+    BuzzFileChooser {
+      id: chooser
+      title: "Choose avatar art"
+      tooltipText: "Choose a .ans or .txt file"
+      nameFilters: ["ANSI or text art (*.ans *.txt)"]
+      enabled: root.status !== "reading"
+      onChosen: function(path) {
+        pathField.text = path
+        root.load(path)
+      }
+      onRefused: function(reason) { root.fail(reason) }
     }
     Ui.Button {
       objectName: root.fieldName + "Clear"
