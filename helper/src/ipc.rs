@@ -113,6 +113,7 @@ async fn client(
                 let command=match r.kind.as_str() {
                     "retry_connection"=>Some(protocol::Command::Retry),
                     "fetch_recent"=>Some(protocol::Command::FetchRecent(r.room_id.clone().unwrap())),
+                    "fetch_older"=>Some(protocol::Command::FetchOlder(r.room_id.clone().unwrap())),
                     "fetch_thread"=>Some(protocol::Command::FetchThread(r.room_id.clone().unwrap(),r.root_id.clone().unwrap())),
                     "close_thread"=>Some(protocol::Command::CloseThread),
                     "fetch_recipients"=>Some(protocol::Command::FetchRecipients(r.room_id.clone().unwrap())),

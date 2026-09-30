@@ -418,6 +418,19 @@ async fn observe_inner(
     let mut activity_cursor = 0_usize;
     let mut recipient_jobs = tokio::task::JoinSet::new();
     let mut recipient_ticket = 0_u64;
+    // Older pages held for the selected room. Every path that resets that
+    // room's history (`drop_older!`) discards them and any in-flight older read.
+    let mut held = crate::history::Held::default();
+    let mut older_jobs = tokio::task::JoinSet::new();
+    let mut older_ticket = 0_u64;
+    macro_rules! drop_older {
+        () => {{
+            older_jobs.abort_all();
+            older_jobs = tokio::task::JoinSet::new();
+            older_ticket = older_ticket.wrapping_add(1);
+            held = crate::history::Held::default();
+        }};
+    }
     loop {
         tokio::select! {
             biased;
@@ -523,7 +536,7 @@ async fn observe_inner(
                     thread_jobs.abort_all();thread_jobs=tokio::task::JoinSet::new();thread_ticket=thread_ticket.wrapping_add(1);
                     publish_status(tx,|s|s.thread=Thread::unavailable(None,None,None));
                     history_jobs.abort_all(); history_jobs=tokio::task::JoinSet::new();
-                    history_ticket=history_ticket.wrapping_add(1);
+                    history_ticket=history_ticket.wrapping_add(1); drop_older!();
                     selected_history=None;
                     let allowed=fresh && relay_pin.is_some() && tx.borrow().catalog.rooms.iter().any(|r|r.id==room);
                     let parsed=uuid::Uuid::parse_str(&room).ok().filter(|id|id.to_string()==room);
@@ -538,6 +551,23 @@ async fn observe_inner(
                     history_jobs.spawn(async move {
                         let result=match timeout(Duration::from_secs(15),crate::history::fetch(&relay,&keys,pin,id)).await {Ok(r)=>r,Err(_)=>Err("history_timeout")};
                         (ticket,generation,room,result)
+                    });
+                },
+                Some(Command::FetchOlder(room))=> {
+                    // One older page at a time, only for the selected room's current
+                    // snapshot and only from the signed cursor the helper holds.
+                    let status=tx.borrow();
+                    let allowed=fresh && relay_pin.is_some() && selected_history.as_deref()==Some(room.as_str())
+                        && status.catalog.state=="partial" && status.catalog.rooms.iter().any(|r|r.id==room)
+                        && status.history.state=="snapshot" && status.history.room_id.as_deref()==Some(room.as_str());
+                    let generation=status.generation;drop(status);
+                    let Some(cursor)=held.continuation().cloned().filter(|_|allowed && older_jobs.is_empty()) else {continue;};
+                    held.older_state="loading";
+                    if let Some(view)=held.project() {publish_status(tx,|s|s.history=view);}
+                    let ticket=older_ticket;let relay=relay.to_owned();let keys=keys.clone();let pin=relay_pin.unwrap();let id=uuid::Uuid::parse_str(&room).expect("selected canonical room");
+                    older_jobs.spawn(async move {
+                        let result=match timeout(Duration::from_secs(15),crate::history::fetch_older(&relay,&keys,pin,id,&cursor)).await {Ok(r)=>r,Err(_)=>Err("history_timeout")};
+                        (ticket,generation,room,cursor,result)
                     });
                 }
             },
@@ -567,7 +597,7 @@ async fn observe_inner(
                         let mut revoked_delivery=None;
                         if denied {
                             if tx.borrow().history.room_id.as_deref()==Some(room.as_str()) {
-                                history_jobs.abort_all();history_jobs=tokio::task::JoinSet::new();history_ticket=history_ticket.wrapping_add(1);
+                                history_jobs.abort_all();history_jobs=tokio::task::JoinSet::new();history_ticket=history_ticket.wrapping_add(1); drop_older!();
                                 selected_history=None;
                             }
                             revoked_delivery=sender.revoke_room(&room);
@@ -618,7 +648,7 @@ async fn observe_inner(
                                 activity.forget(&room);
                                 if selected_history.as_deref()==Some(room.as_str()) {
                                     selected_history=None;
-                                    history_jobs.abort_all();history_jobs=tokio::task::JoinSet::new();history_ticket=history_ticket.wrapping_add(1);
+                                    history_jobs.abort_all();history_jobs=tokio::task::JoinSet::new();history_ticket=history_ticket.wrapping_add(1); drop_older!();
                                 }
                                 if tx.borrow().recipients.room_id.as_deref()==Some(room.as_str()) {
                                     recipient_jobs.abort_all();recipient_jobs=tokio::task::JoinSet::new();recipient_ticket=recipient_ticket.wrapping_add(1);
@@ -664,7 +694,7 @@ async fn observe_inner(
                     if allowed {
                         if result.as_ref().is_err_and(|error|thread_category(error)=="thread_access_denied") {
                             selected_history=None;
-                            history_jobs.abort_all();history_jobs=tokio::task::JoinSet::new();history_ticket=history_ticket.wrapping_add(1);
+                            history_jobs.abort_all();history_jobs=tokio::task::JoinSet::new();history_ticket=history_ticket.wrapping_add(1); drop_older!();
                             let revoked_delivery=sender.revoke_room(&room);
                             publish_status(tx,|s| {
                                 s.catalog.rooms.retain(|entry|entry.id!=room);
@@ -690,9 +720,50 @@ async fn observe_inner(
                     }
                 }
             },
+            result=older_jobs.join_next(), if !older_jobs.is_empty()=>match result {
+                Some(Ok((ticket,generation,room,cursor,result)))=> {
+                    let status=tx.borrow();
+                    let allowed=ticket==older_ticket && generation==status.generation && fresh && selected_history.as_deref()==Some(room.as_str())
+                        && status.catalog.state=="partial" && status.catalog.rooms.iter().any(|r|r.id==room)
+                        && status.history.state=="snapshot" && status.history.room_id.as_deref()==Some(room.as_str());
+                    drop(status);
+                    if !allowed {continue;}
+                    if result.as_ref().is_err_and(|error|history_category(error)=="history_access_denied") {
+                        // As for a denied head read: the room is revoked everywhere.
+                        selected_history=None;
+                        history_jobs.abort_all();history_jobs=tokio::task::JoinSet::new();history_ticket=history_ticket.wrapping_add(1); drop_older!();
+                        if tx.borrow().recipients.room_id.as_deref()==Some(room.as_str()) {
+                            recipient_jobs.abort_all();recipient_jobs=tokio::task::JoinSet::new();recipient_ticket=recipient_ticket.wrapping_add(1);
+                        }
+                        activity.forget(&room);
+                        let revoked_delivery=sender.revoke_room(&room);
+                        publish_status(tx,|s| {
+                            s.catalog.rooms.retain(|r|r.id!=room);
+                            s.activity=activity.summaries();
+                            s.history=History::unavailable(Some(room.clone()),Some("history_access_denied"));
+                            if s.recipients.room_id.as_deref()==Some(room.as_str()) {s.recipients=crate::protocol::RecipientsView::unavailable(Some(room.clone()),Some("recipients_access_denied"));}
+                            if let Some(delivery)=revoked_delivery {s.delivery=delivery;}
+                        });
+                        continue;
+                    }
+                    // A stale page (the cursor moved meanwhile) is discarded quietly.
+                    // Any other failure keeps the rows shown and reports the attempt.
+                    let outcome=result.and_then(|page|held.older(&cursor,page));
+                    held.older_state=match outcome {
+                        Ok(())|Err("history_stale_cursor")=>"idle",
+                        Err(error)=> {eprintln!("omarchy-buzz: older history read failed: {error}");"unavailable"},
+                    };
+                    if let Some(view)=held.project() {publish_status(tx,|s|s.history=view);}
+                },
+                Some(Err(error)) if !error.is_cancelled()=> {
+                    held.older_state="unavailable";
+                    if let Some(view)=held.project() {publish_status(tx,|s|s.history=view);}
+                },
+                _=>{},
+            },
             result=history_jobs.join_next(), if !history_jobs.is_empty()=> {
                 if matches!(&result,Some(Err(e)) if !e.is_cancelled()) {
-                    history_jobs.abort_all(); history_jobs=tokio::task::JoinSet::new(); history_ticket=history_ticket.wrapping_add(1);
+                    history_jobs.abort_all(); history_jobs=tokio::task::JoinSet::new(); history_ticket=history_ticket.wrapping_add(1); drop_older!();
                     publish_status(tx, |s|s.history=History::unavailable(s.history.room_id.clone(),Some("history_unavailable")));
                 }
                 if let Some(Ok((ticket,generation,room,result)))=result {
@@ -712,6 +783,12 @@ async fn observe_inner(
                             Ok(h) if h.room==room=>activity.observe(&room,&h.rows,&keys.public_key().to_hex(),nostr::Timestamp::now().as_secs()),
                             _=>activity.forget(&room),
                         }
+                        // A new head is reconciled with held older pages; any error drops them.
+                        let projected=match result {
+                            Ok(h) if h.room==room=> {held.head(h);held.project().expect("head just held")},
+                            Ok(_)=> {drop_older!();History::unavailable(Some(room.clone()),Some("history_invalid"))},
+                            Err(error)=> {drop_older!();History::unavailable(Some(room.clone()),Some(history_category(error)))},
+                        };
                         publish_status(tx, |s| {
                             if denied {
                                 s.catalog.rooms.retain(|r|r.id!=room);
@@ -719,11 +796,8 @@ async fn observe_inner(
                             }
                             if let Some(delivery)=revoked_delivery {s.delivery=delivery;}
                             s.activity=activity.summaries();
-                            s.history=match result {
-                            Ok(h) if h.room==room=>History {state:"snapshot".into(),room_id:Some(h.room),has_more:Some(h.has_more),category:Some(h.category.into()),rows:h.rows.into_iter().map(|r|crate::protocol::HistoryRow { reactions: r.reactions,thread: r.thread,id:r.id,author:r.author_pubkey,time:r.timestamp,text:r.text,edited:r.edited,truncated:r.truncated,unavailable:r.unavailable}).collect()},
-                            Ok(_)=>History::unavailable(Some(room),Some("history_invalid")),
-                            Err(error)=>History::unavailable(Some(room),Some(history_category(error))),
-                        };});
+                            s.history=projected;
+                        });
                     }
                 }
             },
@@ -749,7 +823,7 @@ async fn observe_inner(
                         let removed_selection=selected_history.as_ref().filter(|room|!next_catalog.rooms.iter().any(|r|r.id==**room)).cloned();
                         if removed_selection.is_some() {
                             selected_history=None;
-                            history_jobs.abort_all();history_jobs=tokio::task::JoinSet::new();history_ticket=history_ticket.wrapping_add(1);
+                            history_jobs.abort_all();history_jobs=tokio::task::JoinSet::new();history_ticket=history_ticket.wrapping_add(1); drop_older!();
                         }
                         if lost_recipients.is_some() {recipient_jobs.abort_all();recipient_jobs=tokio::task::JoinSet::new();recipient_ticket=recipient_ticket.wrapping_add(1);}
                         if lost_thread {thread_jobs.abort_all();thread_jobs=tokio::task::JoinSet::new();thread_ticket=thread_ticket.wrapping_add(1);}
@@ -774,7 +848,7 @@ async fn observe_inner(
                         let category=match failed {Some(Ok(Err(error)))=>catalog_category(error),_=>"room_catalog_unavailable"};
                         // A failed check proves nothing about any room: clear every dependent view.
                         selected_history=None;
-                        history_jobs.abort_all();history_jobs=tokio::task::JoinSet::new();history_ticket=history_ticket.wrapping_add(1);
+                        history_jobs.abort_all();history_jobs=tokio::task::JoinSet::new();history_ticket=history_ticket.wrapping_add(1); drop_older!();
                         recipient_jobs.abort_all();recipient_jobs=tokio::task::JoinSet::new();recipient_ticket=recipient_ticket.wrapping_add(1);
                         thread_jobs.abort_all();thread_jobs=tokio::task::JoinSet::new();thread_ticket=thread_ticket.wrapping_add(1);
                         activity_jobs.abort_all();activity_jobs=tokio::task::JoinSet::new();
@@ -793,7 +867,7 @@ async fn observe_inner(
                 // result is known; only a first check shows loading.
                 let background=relay_pin.is_some() && matches!(tx.borrow().catalog.state.as_str(),"partial"|"ready");
                 if !background {
-                    history_jobs.abort_all(); history_jobs=tokio::task::JoinSet::new(); history_ticket=history_ticket.wrapping_add(1);
+                    history_jobs.abort_all(); history_jobs=tokio::task::JoinSet::new(); history_ticket=history_ticket.wrapping_add(1); drop_older!();
                     activity_jobs.abort_all();activity_jobs=tokio::task::JoinSet::new();
                     recipient_jobs.abort_all();recipient_jobs=tokio::task::JoinSet::new();recipient_ticket=recipient_ticket.wrapping_add(1);
                     publish_status(tx, |s| {s.activity.clear();s.catalog=crate::protocol::Catalog::loading();s.history=History::unavailable(None,None);s.recipients=crate::protocol::RecipientsView::unavailable(None,None);});
@@ -820,7 +894,7 @@ async fn observe_inner(
                     recipient_jobs.abort_all();recipient_jobs=tokio::task::JoinSet::new();recipient_ticket=recipient_ticket.wrapping_add(1);
                     fresh=false;
                     jobs.abort_all();
-                    history_jobs.abort_all(); history_jobs=tokio::task::JoinSet::new(); history_ticket=history_ticket.wrapping_add(1);
+                    history_jobs.abort_all(); history_jobs=tokio::task::JoinSet::new(); history_ticket=history_ticket.wrapping_add(1); drop_older!();
                     selected_history=None;
                     activity_jobs.abort_all();activity_jobs=tokio::task::JoinSet::new();
                     activity=crate::activity::Tracker::default();
@@ -1085,6 +1159,8 @@ mod thread_policy_tests {
             }],
             has_more: Some(false),
             category: Some("history_completeness_unknown".into()),
+            next_cursor: None,
+            older_state: "idle".into(),
         };
         let allowed = |s: &Status, selected: Option<&str>, fresh, pinned| {
             thread_allowed(s, selected, room, &root, fresh, pinned)
@@ -1193,6 +1269,8 @@ mod thread_policy_tests {
             }],
             has_more: Some(false),
             category: Some("history_completeness_unknown".into()),
+            next_cursor: None,
+            older_state: "idle".into(),
         };
         status.thread = Thread {
             state: "snapshot".into(),

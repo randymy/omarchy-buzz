@@ -31,9 +31,12 @@ pub enum QueryRequest {
     RoomMetadata {
         rooms: Vec<Uuid>,
     },
+    /// NIP-CW channel window. `before` is the previous page's signed
+    /// `next_cursor` echoed verbatim as `until` + `before_id`; `None` is the head.
     RoomHistory {
         room: Uuid,
         limit: u16,
+        before: Option<(u64, EventId)>,
     },
     /// Desktop's legacy oldest-first thread read (NIP-CW "Legacy Oldest-first
     /// Threads"); `after` is the last loaded reply's `(created_at, id)`.
@@ -75,8 +78,18 @@ impl QueryRequest {
             Self::RoomMetadata { rooms } if !rooms.is_empty() && rooms.len() <= 20 => {
                 serde_json::json!({"kinds":[39000],"#d":rooms.iter().map(Uuid::to_string).collect::<Vec<_>>(),"limit":rooms.len()})
             }
-            Self::RoomHistory { room, limit } if (1..=20).contains(limit) => {
-                serde_json::json!({"kinds":[9,40002],"#h":[room.to_string()],"limit":limit,"top_level":true,"include_aux":true,"include_summaries":true})
+            Self::RoomHistory {
+                room,
+                limit,
+                before,
+            } if (1..=20).contains(limit) => {
+                let mut filter = serde_json::json!({"kinds":[9,40002],"#h":[room.to_string()],"limit":limit,"top_level":true,"include_aux":true,"include_summaries":true});
+                // Both or neither (NIP-CW); a continuation is never demoted to a head read.
+                if let Some((until, id)) = before {
+                    filter["until"] = serde_json::json!(until);
+                    filter["before_id"] = serde_json::json!(id.to_hex());
+                }
+                filter
             }
             Self::ThreadReplies { room, root, after } => {
                 let mut filter = serde_json::json!({"#h":[room.to_string()],"#e":[root.to_hex()],"kinds":[9,40002],"depth_limit":THREAD_DEPTH,"limit":THREAD_PAGE_ROWS,"include_aux":true});

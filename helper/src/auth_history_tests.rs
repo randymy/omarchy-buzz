@@ -204,3 +204,147 @@ async fn selected_history_refreshes_without_loading_flicker() {
 async fn failed_background_refresh_clears_stale_rows() {
     scenario(false, true, true).await;
 }
+
+/// Older pages through the production observer: the continuation request, rows
+/// prepended, kept across the automatic head refresh, dropped on re-selection,
+/// and never requested for a room that is not selected.
+#[tokio::test]
+async fn older_page_is_held_across_head_refresh_and_dropped_on_reselect() {
+    let _fixture = crate::NETWORK_TEST_LOCK.lock().await;
+    timeout(Duration::from_secs(25), async {
+        let user = Keys::generate();
+        let relay = Keys::generate();
+        let signer = relay.public_key();
+        let public = user.public_key();
+        let room = uuid::Uuid::new_v4().to_string();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("ws://{}/", listener.local_addr().unwrap());
+        let now = nostr::Timestamp::now().as_secs();
+        let membership = event(&relay, 39002, "", vec![Tag::parse(["d", &room]).unwrap(), Tag::parse(["p", &public.to_hex()]).unwrap()]);
+        let metadata = event(&relay, 39000, "", vec![Tag::parse(["d", &room]).unwrap(), Tag::parse(["name", "Synthetic Room"]).unwrap(), Tag::parse(["t", "stream"]).unwrap()]);
+        let stamp = |content: &str, at: u64| {
+            EventBuilder::new(Kind::Custom(40002), content)
+                .tags([Tag::parse(["h", &room]).unwrap()])
+                .custom_created_at(nostr::Timestamp::from(at))
+                .sign_with_keys(&user)
+                .unwrap()
+        };
+        let recent = stamp("synthetic recent", now - 10);
+        let older = stamp("synthetic older", now - 100);
+        let head_cursor = json!({"created_at": now - 10, "id": recent.id.to_hex()});
+        let heads = Arc::new(AtomicUsize::new(0));
+        let continuations = Arc::new(AtomicUsize::new(0));
+        let (head_count, older_count) = (heads.clone(), continuations.clone());
+        let (server_room, server_relay, server_origin) = (room.clone(), relay.clone(), origin.clone());
+        let (recent_page, older_page) = (recent.clone(), older.clone());
+        let expected_cursor = head_cursor.clone();
+        let (finish_send, mut finish_wait) = oneshot::channel::<()>();
+        let server = AbortTask(tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut ws = accept_async(tcp).await.unwrap();
+            ws.send(Message::Text(json!(["AUTH", "initial"]).to_string().into())).await.unwrap();
+            let Some(Ok(Message::Text(text))) = ws.next().await else { panic!("AUTH expected") };
+            let frame: Value = serde_json::from_str(&text).unwrap();
+            let auth: Event = serde_json::from_value(frame[1].clone()).unwrap();
+            auth.verify().unwrap();
+            assert!(auth.tags.iter().any(|t| t.as_slice() == ["relay", server_origin.as_str()]));
+            ws.send(Message::Text(json!(["OK", auth.id.to_hex(), true, ""]).to_string().into())).await.unwrap();
+            let _websocket = AbortTask(tokio::spawn(async move {
+                while let Some(Ok(Message::Text(text))) = ws.next().await {
+                    let value: Value = serde_json::from_str(&text).unwrap();
+                    assert_eq!(value[0], "COUNT");
+                    ws.send(Message::Text(json!(["COUNT", value[1], {"count": 0}]).to_string().into())).await.unwrap();
+                }
+            }));
+            let bounds = |d: String, content: Value| {
+                event(&server_relay, 39006, &content.to_string(), vec![Tag::parse(["h", &server_room]).unwrap(), Tag::parse(["d", &d]).unwrap()])
+            };
+            loop {
+                let (mut stream, _) = tokio::select! {
+                    accepted = listener.accept() => accepted.unwrap(),
+                    _ = &mut finish_wait => break,
+                };
+                let (head, body) = request(&mut stream).await;
+                let payload = if head.starts_with("get /info ") {
+                    json!({"self": signer.to_hex()}).to_string()
+                } else {
+                    let body = body.unwrap();
+                    if body[0]["kinds"] == json!([39002]) {
+                        serde_json::to_string(&vec![membership.clone()]).unwrap()
+                    } else if body[0]["kinds"] == json!([39000]) {
+                        serde_json::to_string(&vec![metadata.clone()]).unwrap()
+                    } else if body[0].get("until").is_some() {
+                        older_count.fetch_add(1, Ordering::SeqCst);
+                        assert_eq!(body, json!([{"kinds":[9,40002],"#h":[server_room],"limit":20,"top_level":true,"include_aux":true,"include_summaries":true,
+                            "until": expected_cursor["created_at"], "before_id": expected_cursor["id"]}]));
+                        let d = format!("{server_room}:{}:{}", expected_cursor["created_at"], expected_cursor["id"].as_str().unwrap());
+                        serde_json::to_string(&vec![older_page.clone(), bounds(d, json!({"has_more": false, "next_cursor": null}))]).unwrap()
+                    } else {
+                        head_count.fetch_add(1, Ordering::SeqCst);
+                        assert_eq!(body, json!([{"kinds":[9,40002],"#h":[server_room],"limit":20,"top_level":true,"include_aux":true,"include_summaries":true}]));
+                        serde_json::to_string(&vec![recent_page.clone(), bounds(format!("{server_room}:head"), json!({"has_more": true, "next_cursor": expected_cursor}))]).unwrap()
+                    }
+                };
+                let _ = stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", payload.len(), payload).as_bytes()).await;
+            }
+        }));
+        let config = config::Config { relay: Some(origin.clone()), identity: Some(public.to_hex()) };
+        let (tx, mut status) = watch::channel(Status::new(&config));
+        let (commands, mut command_rx) = mpsc::channel(4);
+        let mut conn = connect_identity(&origin, &user).await.unwrap();
+        let observer = AbortTask(tokio::spawn(async move {
+            let mut pin = None;
+            let mut backoff = Backoff::default();
+            observe_connection(&mut conn, &user, &origin, &mut pin, &tx, &mut command_rx, &mut backoff,
+                FreshnessPolicy { interval: Duration::from_secs(2), response: Duration::from_secs(1), ..FRESHNESS }).await
+        }));
+        wait_status(&mut status, |s| s.catalog.rooms.len() == 1).await;
+        // Nothing is selected yet: an older read is ignored without any HTTP request.
+        commands.send(crate::protocol::Command::FetchOlder(room.clone())).await.unwrap();
+        commands.send(crate::protocol::Command::FetchRecent(room.clone())).await.unwrap();
+        wait_status(&mut status, |s| s.history.state == "snapshot" && s.history.rows.len() == 1).await;
+        assert_eq!(continuations.load(Ordering::SeqCst), 0);
+        {
+            let s = status.borrow();
+            let cursor = s.history.next_cursor.as_ref().expect("signed continuation offered");
+            assert_eq!((cursor.created_at, cursor.id.as_str()), (now - 10, recent.id.to_hex().as_str()));
+            assert_eq!(s.history.has_more, Some(true));
+        }
+        commands.send(crate::protocol::Command::FetchOlder(room.clone())).await.unwrap();
+        wait_status(&mut status, |s| s.history.rows.len() == 2 && s.history.older_state == "idle").await;
+        {
+            let s = status.borrow();
+            assert_eq!(s.history.rows[0].id, older.id.to_hex(), "older row goes first");
+            assert_eq!(s.history.rows[1].id, recent.id.to_hex());
+            assert!(s.history.next_cursor.is_none());
+            assert_eq!(s.history.has_more, Some(false));
+            assert_eq!(s.history.category.as_deref(), Some("history_completeness_unknown"));
+        }
+        assert_eq!(continuations.load(Ordering::SeqCst), 1);
+        // The automatic head refresh keeps the older page.
+        let before = heads.load(Ordering::SeqCst);
+        timeout(Duration::from_secs(8), async {
+            while heads.load(Ordering::SeqCst) == before {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("automatic head refresh");
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(status.borrow().history.rows.len(), 2, "head refresh dropped the older page");
+        // Selecting the room again starts from its head.
+        commands.send(crate::protocol::Command::FetchRecent(room.clone())).await.unwrap();
+        wait_status(&mut status, |s| s.history.state == "snapshot" && s.history.rows.len() == 1).await;
+        assert!(status.borrow().history.next_cursor.is_some());
+        assert_eq!(continuations.load(Ordering::SeqCst), 1);
+        // Another room's request never reads older pages.
+        commands.send(crate::protocol::Command::FetchOlder(uuid::Uuid::new_v4().to_string())).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(continuations.load(Ordering::SeqCst), 1);
+        drop(observer);
+        let _ = finish_send.send(());
+        drop(server);
+    })
+    .await
+    .expect("older history observer fixture deadline");
+}

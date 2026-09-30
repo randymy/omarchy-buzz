@@ -334,6 +334,8 @@ async fn real_relay_messaging_conformance() {
                 .collect(),
             has_more: Some(current_history.has_more),
             category: Some(current_history.category.into()),
+            next_cursor: None,
+            older_state: "idle".into(),
         };
         let initial_thread = thread::fetch(&relay, &user, discovered.signer, room, &event_id)
             .await
