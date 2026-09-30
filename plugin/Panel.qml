@@ -15,6 +15,7 @@ Item {
   property bool windowMode: true
   // The shared view, for synthetic presentation checks.
   readonly property alias content: content
+  readonly property alias overlayShown: overlayWindow.visible
   onOpenedChanged: if (service) service.panelOpen = opened
   Component.onDestruction: if (service) service.panelOpen = false
 
@@ -50,7 +51,9 @@ Item {
 
   PanelWindow {
     id: overlayWindow
-    visible: root.opened && !root.windowMode
+    // Hidden while a file chooser is up: the dialog is a normal window, which
+    // this overlay layer would cover.
+    visible: root.opened && !root.windowMode && !(root.service && root.service.filePickersOpen > 0)
     implicitWidth: Math.min(Style.space(820), (screen ? screen.width : 900) - Style.space(32))
     implicitHeight: Math.min(Style.space(570), (screen ? screen.height : 700) - Style.space(64))
     color: "transparent"

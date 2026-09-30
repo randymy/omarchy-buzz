@@ -26,10 +26,14 @@ Ui.Button {
   // Where the chooser opens; it follows the last file chosen here, for this session.
   property string folder: Quickshell.env("HOME") || "/"
   property var stub: null
+  // The shared service, told while a dialog is up (`filePickersOpen`).
+  property var service: null
   // True while the picker process is up (a dialog is on screen).
   readonly property bool picking: picker.running
   // Why the last choice was refused, or "".
   property string problem: ""
+  onPickingChanged: if (service) service.filePickersOpen = Math.max(0, service.filePickersOpen + (picking ? 1 : -1))
+  Component.onDestruction: if (picking && service) service.filePickersOpen = Math.max(0, service.filePickersOpen - 1)
   signal chosen(string path)
   signal refused(string reason)
   signal canceled()

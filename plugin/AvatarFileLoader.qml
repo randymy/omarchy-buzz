@@ -13,6 +13,8 @@ import "AnsiArt.js" as AnsiArt
 // changes. Nothing is sent anywhere.
 ColumnLayout {
   id: root
+  // The shared service, for the chooser (may be null in tests).
+  property var service: null
   property string fieldName: "buzzAvatarPath"
   property bool showClear: false
   property bool canClear: false
@@ -119,6 +121,7 @@ ColumnLayout {
     // The desktop's file chooser fills the field and applies, as Apply does.
     BuzzFileChooser {
       id: chooser
+      service: root.service
       title: "Choose avatar art"
       tooltipText: "Choose a .ans or .txt file"
       nameFilters: ["ANSI or text art (*.ans *.txt)"]

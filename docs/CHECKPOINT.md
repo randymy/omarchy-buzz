@@ -2574,3 +2574,23 @@ unavailable model failed silently on the agent's first turn. Contract in
   `window` re-summon keeps it) and `--settings` (Window shown as current, both
   switches still requested) updated and green; default, `--onboarding` and
   `--bridge` pass. README and `docs/NATIVE.md` say the default.
+
+## The overlay steps aside for the file chooser — September 30
+
+- Randy: "the file selection crashed again" after the portal picker shipped.
+  The journal shows no coredump and the shell alive across four portal
+  dialogs (17:57–18:00; xdg-desktop-portal-gtk logs only "Unhandled parent
+  window type", from the empty parent handle). Buzz was in the overlay then:
+  the portal's dialog is a normal window, so the Overlay-layer Buzz surface
+  (exclusive keyboard focus) covered it, and closing Buzz with Escape unloaded
+  the panel, killed the picker process and so the dialog — nothing visible,
+  everything gone. The last attempt (18:00:35) also coincided with the
+  maintainer's shell restart for the window-default change.
+- Fix: `Service.filePickersOpen` counts choosers with a dialog up
+  (`BuzzFileChooser.service`, wired from the composer and both avatar loaders
+  through `AvatarFileLoader.service` and `AgentEditor.service`; decremented on
+  finish and on destruction). `Panel.qml` hides the overlay window while it is
+  above zero (`overlayShown` alias for tests) and shows it again after; the
+  window presentation, now the default, is unaffected. `--presentation`
+  checks the step-aside and return; `--attachments`, `--ansi-art`, `--agents`,
+  `--settings` pass.

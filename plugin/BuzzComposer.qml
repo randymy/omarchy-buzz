@@ -233,6 +233,7 @@ ColumnLayout {
     // The desktop's file chooser fills the field and attaches, as Attach does.
     BuzzFileChooser {
       id: attachChooser
+      service: root.service
       title: "Attach a file"
       tooltipText: "Choose a file to attach"
       nameFilters: ["All files (*)", "Images (*.png *.jpg *.jpeg *.gif *.webp)"]

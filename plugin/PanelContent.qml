@@ -1004,6 +1004,7 @@ FocusScope {
         Layout.fillHeight: true
         Layout.preferredWidth: Style.space(400)
         agents: root.agentService
+        service: root.service
         agentId: root.agentEditorId
         onBackRequested: root.closeAgentEditor()
         // A create finished while its editor is still open: show the new agent.
@@ -1077,6 +1078,7 @@ FocusScope {
               }
               AvatarFileLoader {
                 id: myAvatarLoader
+                service: root.service
                 Layout.fillWidth: true
                 fieldName: "buzzMyAvatarPath"
                 showClear: true

@@ -48,9 +48,15 @@ ShellRoot {
         panel.close()
         if (panel.opened || service.panelOpen || host.closes) throw new Error("Host close reentered hide")
         panel.open('{"mode":"overlay"}')
+        // The overlay steps aside while a file chooser's dialog is up, and returns after.
+        if (!panel.overlayShown) throw new Error("Overlay not shown")
+        service.filePickersOpen = 1
+        if (panel.overlayShown || !panel.opened) throw new Error("Overlay did not step aside for the file chooser")
+        service.filePickersOpen = 0
+        if (!panel.overlayShown) throw new Error("Overlay did not return after the file chooser")
         panel.dismiss()
         if (panel.opened || service.panelOpen || host.closes !== 1) throw new Error("User close missed host lifecycle")
-        console.log("PASS: shared window/overlay presentation switched from Settings and host close lifecycle")
+        console.log("PASS: shared window/overlay presentation switched from Settings, the overlay steps aside for a file chooser, and host close lifecycle")
         Qt.quit()
       } catch (e) {
         console.error(String(e))

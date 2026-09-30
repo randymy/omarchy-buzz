@@ -11,6 +11,7 @@ import "AnsiArt.js" as AnsiArt
 ColumnLayout {
   id: root
   property var agents: null
+  property var service: null
   // Empty for a new agent, otherwise the service's persona id.
   property string agentId: ""
   signal backRequested()
@@ -319,6 +320,7 @@ ColumnLayout {
       }
       AvatarFileLoader {
         id: artLoader
+        service: root.service
         visible: false
         Layout.maximumWidth: Style.space(360)
         Layout.fillWidth: true

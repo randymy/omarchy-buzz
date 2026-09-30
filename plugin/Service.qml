@@ -24,6 +24,9 @@ Item {
   property bool notificationPreferenceDirty: false
   property bool hydratingNotificationPreference: false
   property bool panelOpen: false
+  // File choosers (portal dialogs) open right now; the overlay steps aside
+  // while one is up, since the overlay layer would cover the dialog.
+  property int filePickersOpen: 0
   property var roomActivity: RoomActivity.fresh()
   property bool roomActivitySupported: false
   readonly property bool activityVisible: !sessionFailed && connection === "authenticated" && ["partial", "ready"].indexOf(catalogState) !== -1
