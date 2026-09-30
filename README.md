@@ -20,7 +20,7 @@ Everything below this line is written for maintainers and coding agents.
 
 ## Read Me Details
 
-**Status: messaging development preview (`0.0.12` installed; `0.0.13` adds the agent manager), not yet a community release.** The native bar and panel provide authenticated room discovery, recent messages, a bounded reply view with thread composition, plain-text sending, and exact public-key mentions. Local activity badges cover the monitored joined rooms. A verified signed profile can identify a participant as a *self-described agent*; execution state remains unknown. Production UI never displays synthetic activity.
+**Status: development preview, not yet a community release.** The manifest and helper currently report `0.0.12`; this checkout also includes the newly merged agent manager and its installation path. Earlier installed-build evidence does not validate that entire checkout. The native bar and panel provide authenticated room discovery, recent messages, a bounded reply view with thread composition, plain-text sending, and exact public-key mentions. Local activity badges cover the monitored joined rooms. A verified signed profile can identify a participant as a *self-described agent*; execution state remains unknown. Production UI never displays synthetic activity.
 
 Open **View replies**, then **Reply in thread** to compose a reply. Room and thread drafts are kept separately. **Back to room** returns to a top-level message. A missing thread target disables sending until it can be verified again; it never silently turns your reply into a room message. Update the helper and plugin together for this feature.
 
@@ -44,8 +44,8 @@ For another user, see [sharing and room access](docs/SHARING.md).
 
 ## Try the local development preview
 
-Use a disposable Omarchy session first. Get the public source (Git refuses to
-replace an existing directory):
+Use a disposable Omarchy session first. Clone the source using an account with
+repository access (Git refuses to replace an existing directory):
 
 ```bash
 git clone https://github.com/randymy/omarchy-buzz.git
@@ -63,7 +63,7 @@ omarchy plugin enable community.buzz --section right
 omarchy-shell shell summon community.buzz '{}'
 ```
 
-Git refuses to replace an existing destination. Keep any existing plugin of this ID; do not overwrite it. `community.buzz` is a development ID pending marketplace uniqueness review. Source is public on GitHub; the plugin has not been submitted to the marketplace.
+Git refuses to replace an existing destination. Keep any existing plugin of this ID; do not overwrite it. `community.buzz` is a development ID pending marketplace acceptance; no active or retired collision was found on September 30, 2026. The repository was private at that review, which blocks marketplace submission until the owner makes it public. The plugin has not been submitted to the marketplace.
 
 Click **Buzz** to toggle the panel, then use **Close** or Escape. An optional,
 reversible [Super+B shortcut](docs/NATIVE.md) checks for conflicts before installation. Without the separately installed helper/socket, the panel shows an unavailable state. No menu entry, shortcut, service, or credentials are installed by the plugin itself. Omarchy's enable command changes its plugin configuration through the native manager.
@@ -82,7 +82,7 @@ Linux. On Arch, install `pkgconf` and `dbus`; the target also needs
 cargo build --release --locked --manifest-path helper/Cargo.toml
 ```
 
-Package the local build and use the [helper installer](service/README.md) to preview and install or upgrade the binary and its user socket. It keeps rollback copies during upgrades. There is no automatic binary download. A functioning Linux Secret Service is required for enrollment and authentication.
+Package the local build and use the [helper installer](service/README.md) to preview and install or upgrade the binary, messaging and agent-manager user units, and sign-in script. Installation enables both sockets, including the agent manager. It keeps rollback copies during upgrades. There is no automatic binary download. A functioning Linux Secret Service is required for enrollment and authentication. The marketplace listing requires manual setup because the standard plugin command does not build or install this helper.
 
 You do not need to run a relay. Choose **Buzz hosted** to create or join a
 Block-hosted community through [buzz.xyz](https://buzz.xyz), or **Custom relay**
@@ -143,7 +143,7 @@ omarchy plugin disable community.buzz
 omarchy plugin remove community.buzz
 ```
 
-The native manager unloads the plugin and removes its Git checkout. Commit or save any development changes first. If you installed the helper separately, use its [preview and uninstall commands](service/README.md) too. Plugin removal does not remove the helper units or identity. The helper uninstaller preserves credentials, configuration, and the delivery ledger. The source repository is retained.
+Before removing the UI or helper, stop and delete any managed room agents through the agent manager; separately configured agents need their own removal procedure. The helper uninstaller does not remove per-agent units or bundles. The native manager unloads the plugin and removes its Git checkout. Commit or save any development changes first. If you installed the helper separately, use its [preview and uninstall commands](service/README.md) too. Plugin removal does not remove the helper units or identity. The helper uninstaller preserves credentials, configuration, and the delivery ledger. The source repository is retained.
 
 ## Isolated room-agent preview
 

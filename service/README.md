@@ -23,7 +23,9 @@ python3 scripts/helper-install install /tmp/buzz-helper-package/omarchy-buzz-*-l
 Use an empty package output directory and one matching archive at a time. The
 installer reads the adjacent `.sha256.json` sidecar, validates package members,
 binary hash, architecture and reviewed unit templates, then installs the binary
-and both user units. A sidecar detects accidental corruption; it does not prove
+and four user units (messaging service/socket and agent-manager service/socket),
+plus `scripts/agent-login` under `~/.local/share/omarchy-buzz/scripts/`.
+A sidecar detects accidental corruption; it does not prove
 who created the package. Only install an artifact you built or obtained through
 a trusted, independently verified channel. No download is performed.
 `--dry-run` checks package structure and previews installed paths without running
@@ -34,12 +36,20 @@ this checks target loadability before stopping the old service.
 The same `install` command upgrades an existing complete installation. It
 rejects symlinks, partial installations, edited units, unexpected directories,
 and architecture mismatches. It stops the old helper before replacement and
-keeps copies of all three previous files under
+keeps copies of the managed files that already exist under
 `~/.local/share/omarchy-buzz/backups/`. The tool reloads systemd and enables
 the socket. If activation fails, it restores the old files and prior socket
-state. Review an error before retrying; no configuration or identity is changed.
+state. Both the messaging and agent-manager sockets are enabled. Upgrades from
+the earlier messaging-only installation add the agent-manager files and socket.
+Review an error before retrying; no configuration or identity is changed.
 
-To remove only the helper and owned user units:
+Before uninstalling, stop and delete managed agents through the panel while the
+agent manager is available. Deletion stops/disables their generated units and
+keeps the identity by default; workspaces and relay membership remain. Separately
+configured room agents require their own removal procedure. The helper
+uninstaller does not remove per-agent units, agent bundles, or provider profiles.
+
+To remove the helper, its four owned user units, and installed sign-in script:
 
 ```bash
 python3 scripts/helper-install uninstall --dry-run
@@ -55,7 +65,7 @@ After changing helper configuration, select Retry in the panel. A service restar
 is an alternative when no UI is connected.
 
 Disable/remove the QML plugin first. Uninstall preserves a rollback copy of the
-three removed files and leaves configuration, Secret Service identity, and the
+removed managed files and leaves configuration, Secret Service identity, and the
 delivery ledger in place. Omarchy's native plugin removal cannot remove these
 separately installed files. The installer never uses root privileges or changes
 system units.
@@ -74,13 +84,21 @@ publication. Its lock is released when the helper exits. Ledger failure disables
 sending while read-only connectivity remains available. No message bodies or
 private keys are stored there.
 
-## Agent manager units (not yet installed)
+## Agent manager installation scope
 
 `omarchy-buzz-agents.service` and `omarchy-buzz-agents.socket` supervise
 `omarchy-buzz agents-daemon` on `%t/omarchy-buzz/agents.sock`, and
 `agent.service.in` is the reviewed template from which that daemon writes one
 `omarchy-buzz-agent-<id>.service` per agent (see
-[docs/AGENTS_SERVICE.md](../docs/AGENTS_SERVICE.md)). They are reviewed source
-only: `scripts/helper-install` does not install, enable or remove them, and no
-agent unit has been generated on this machine. Installing them is a separate,
-human-reviewed step listed in that document.
+[docs/AGENTS_SERVICE.md](../docs/AGENTS_SERVICE.md)). The current
+`scripts/helper-install` installs and enables the agent-manager socket alongside
+the messaging socket, and its uninstall command stops and removes those manager
+units. Installing the manager does not install harness bundles, sign in to a
+provider, enroll an agent identity, or create and start an individual agent.
+Those operations require separate setup and explicit actions in the panel.
+
+The merged manager has synthetic test evidence, but real systemd, Secret Service,
+provider sign-in and relay acceptance are not established by that evidence. Treat
+the older installed messaging build and stock Codex room-agent results separately
+from acceptance of the new manager. Review the implementation limitations in
+[AGENTS_SERVICE.md](../docs/AGENTS_SERVICE.md) before enabling individual agents.
