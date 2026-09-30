@@ -19,7 +19,7 @@ ShellRoot {
           return {version:1,type:service.instanceId === "" ? "hello" : "status",instanceId:"thread-send",generation:1,
             capabilities:["connection_status","room_catalog","room_history","thread_replies","message_send","thread_send"],
             status:{generation:1,connection:"authenticated",category:null,identity:"b".repeat(64),relay:"wss://fixture.example/",
-              catalog:{state:"ready",category:null,rooms:[{id:room,name:"Fixture",description:""},{id:otherRoom,name:"Other",description:""}]},
+              catalog:{state:"ready",category:null,rooms:[{id:room,name:"Fixture",description:"",kind:"stream",participants:[],hidden:false},{id:otherRoom,name:"Other",description:"",kind:"stream",participants:[],hidden:false}]},
               history:{state:"snapshot",roomId:room,rows:[row(rootId)],hasMore:false,category:"history_completeness_unknown"},
               delivery:{state:"idle",requestId:null,roomId:null,eventId:null,category:null},
               thread:{state:"snapshot",roomId:room,rootId:rootId,rows:[],hasMore:false,category:"thread_completeness_unknown"}}}

@@ -193,13 +193,49 @@ FocusScope {
           ColumnLayout {
             width: parent.width
             spacing: Style.space(2)
+            Text {
+              visible: root.service && root.service.streamRooms.length > 0
+              Layout.fillWidth: true
+              text: "Rooms"
+              textFormat: Text.PlainText
+              elide: Text.ElideRight
+              color: Color.foreground
+              opacity: 0.6
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+            }
             Repeater {
-              model: root.service ? root.service.rooms : []
+              model: root.service ? root.service.streamRooms : []
               delegate: Ui.Button {
                 required property var modelData
                 Layout.fillWidth: true
                 clip: true
                 text: "# " + modelData.name + (root.service && root.service.roomActivityCount(modelData.id) > 0 ? " · " + root.service.roomActivityCount(modelData.id) + "+" : "")
+                tooltipText: modelData.name + (root.service && root.service.roomActivityCount(modelData.id) > 0 ? " · new activity seen on this device, not synced unread" : "")
+                leftAlign: true
+                focusable: true
+                selected: root.service && root.service.selectedRoomId === modelData.id
+                onClicked: root.service.selectRoom(modelData.id)
+              }
+            }
+            Text {
+              visible: root.service && root.service.dmRooms.length > 0
+              Layout.fillWidth: true
+              text: "Direct messages"
+              textFormat: Text.PlainText
+              elide: Text.ElideRight
+              color: Color.foreground
+              opacity: 0.6
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+            }
+            Repeater {
+              model: root.service ? root.service.dmRooms : []
+              delegate: Ui.Button {
+                required property var modelData
+                Layout.fillWidth: true
+                clip: true
+                text: modelData.name + (root.service && root.service.roomActivityCount(modelData.id) > 0 ? " · " + root.service.roomActivityCount(modelData.id) + "+" : "")
                 tooltipText: modelData.name + (root.service && root.service.roomActivityCount(modelData.id) > 0 ? " · new activity seen on this device, not synced unread" : "")
                 leftAlign: true
                 focusable: true
@@ -256,7 +292,7 @@ FocusScope {
           Layout.fillWidth: true
           spacing: Style.space(8)
           Text {
-            text: root.service && root.service.selectedRoom ? "# " + root.service.selectedRoom.name : "Connect Buzz"
+            text: root.service && root.service.selectedRoom ? root.service.roomTitle(root.service.selectedRoom) : "Connect Buzz"
             textFormat: Text.PlainText
             elide: Text.ElideRight
             Layout.maximumWidth: Style.space(260)
@@ -437,7 +473,7 @@ FocusScope {
           }
           Text {
             Layout.fillWidth: true
-            text: root.service && root.service.selectedRoom ? "# " + root.service.selectedRoom.name : ""
+            text: root.service && root.service.selectedRoom ? root.service.roomTitle(root.service.selectedRoom) : ""
             textFormat: Text.PlainText
             elide: Text.ElideRight
             color: Color.foreground

@@ -21,7 +21,7 @@ ShellRoot {
         var phase = Quickshell.env("BUZZ_LAST_ROOM_PHASE")
         var first = "11111111-1111-4111-8111-111111111111"
         var second = "22222222-2222-4222-8222-222222222222"
-        var rooms = [{id:first,name:"First",description:""},{id:second,name:"Second",description:""}]
+        var rooms = [{id:first,name:"First",description:"",kind:"stream",participants:[],hidden:false},{id:second,name:"Second",description:"",kind:"stream",participants:[],hidden:false}]
         if (phase === "removed") rooms.pop()
         var frame = {version:1,type:"hello",instanceId:"last-room",generation:1,
           capabilities:["connection_status","room_catalog"],
