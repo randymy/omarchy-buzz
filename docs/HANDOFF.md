@@ -108,6 +108,30 @@ Both refresh fixes are installed and have synthetic rendered test coverage.
 There is no subsequent user confirmation of the improved experience yet.
 Do not claim full live desktop acceptance solely from helper/socket tests.
 
+## In flight at the September 30 stop (read before continuing)
+
+`main` is at the merge of `human-docs`; everything below is committed and pushed
+as branches, not merged:
+
+- `agentsui` (4 commits): the panel's Agents section and `plugin/AgentService.qml`
+  against `docs/AGENTS_SERVICE.md`; all preview modes pass; needs the service.
+- `agentbundle` (5 commits): launcher flags (`--harness`, repeated `--room`,
+  `--respond-to`, `--instructions`, `--model`), Claude Code sandbox wrappers,
+  `scripts/agent-bundle`, `scripts/agent-login`; 45 Python tests pass.
+- `agentsvc`: the Rust agent manager service, unfinished when the session
+  ended; the last commit may be a WIP. Its brief required source and tests only:
+  nothing installed, no systemd, no Secret Service, no relay. The exact frame and
+  request shapes it must honour are the panel's (see the checkpoint entry for the
+  Agents section) and the launcher argv is the bundle branch's.
+
+Merge order when resuming: `agentbundle`, `agentsui`, then `agentsvc` once its
+tests pass; then a human-reviewed installation step (new units, bundles, sign-in)
+before any real agent is created. After that, in this order: ASCII avatars
+(identicon default plus optional pasted art per agent), then onboarding without
+a terminal (identity generation in the plugin, joining a community from the
+panel). Teams, sharing and import stay on hold. Git history is not to be
+rewritten.
+
 ## Next three priorities
 
 1. **Stabilize daily messaging UX.** Observe the installed quiet-refresh behavior;
