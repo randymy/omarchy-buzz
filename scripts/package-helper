@@ -132,7 +132,9 @@ def package(binary, output, root=ROOT, metadata_runner=run_metadata, notices=Non
     members["version.json"] = encoded(metadata)
     for path in ("LICENSE", "service/omarchy-buzz.service", "service/omarchy-buzz.socket",
                  "service/omarchy-buzz-agents.service", "service/omarchy-buzz-agents.socket",
-                 "scripts/agent-login", "service/README.md", "helper/README.md"):
+                 "scripts/agent-login", "scripts/agent-bundle", "scripts/room-agent", "scripts/room-sandbox",
+                 "scripts/room-agent-entry", "scripts/room-codex", "scripts/room-codex-acp",
+                 "scripts/room-claude", "scripts/room-claude-acp", "service/README.md", "helper/README.md"):
         source = Path(root) / path
         if source.is_symlink() or not source.is_file():
             raise ValueError("package source must be a regular file: " + path)
@@ -143,7 +145,7 @@ def package(binary, output, root=ROOT, metadata_runner=run_metadata, notices=Non
             for path, content in sorted(members.items()):
                 info = tarfile.TarInfo(stem + "/" + path)
                 info.size = len(content)
-                info.mode = 0o755 if path in ("bin/omarchy-buzz", "scripts/agent-login") else 0o644
+                info.mode = 0o755 if path == "bin/omarchy-buzz" or path.startswith("scripts/") else 0o644
                 info.mtime = info.uid = info.gid = 0
                 info.uname = info.gname = ""
                 tar.addfile(info, io.BytesIO(content))

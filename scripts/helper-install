@@ -23,6 +23,14 @@ FILES = {
     "service/omarchy-buzz-agents.service": (".config/systemd/user/omarchy-buzz-agents.service", 0o644),
     "service/omarchy-buzz-agents.socket": (".config/systemd/user/omarchy-buzz-agents.socket", 0o644),
     "scripts/agent-login": (".local/share/omarchy-buzz/scripts/agent-login", 0o755),
+    "scripts/agent-bundle": (".local/share/omarchy-buzz/scripts/agent-bundle", 0o755),
+    "scripts/room-agent": (".local/share/omarchy-buzz/scripts/room-agent", 0o755),
+    "scripts/room-sandbox": (".local/share/omarchy-buzz/scripts/room-sandbox", 0o755),
+    "scripts/room-agent-entry": (".local/share/omarchy-buzz/scripts/room-agent-entry", 0o755),
+    "scripts/room-codex": (".local/share/omarchy-buzz/scripts/room-codex", 0o755),
+    "scripts/room-codex-acp": (".local/share/omarchy-buzz/scripts/room-codex-acp", 0o755),
+    "scripts/room-claude": (".local/share/omarchy-buzz/scripts/room-claude", 0o755),
+    "scripts/room-claude-acp": (".local/share/omarchy-buzz/scripts/room-claude-acp", 0o755),
 }
 # Installations before 0.0.13 have only these; the rest may be absent on upgrade.
 CORE = ("bin/omarchy-buzz", "service/omarchy-buzz.service", "service/omarchy-buzz.socket")
