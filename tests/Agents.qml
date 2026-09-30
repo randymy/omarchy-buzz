@@ -153,8 +153,13 @@ ShellRoot {
   function agentFrame(type, capabilities, status) {
     return JSON.stringify({version: 1, type: type, id: null, instanceId: "offline-agents", capabilities: capabilities, status: status})
   }
-  function validStatus(agents, pending) {
-    return {harnesses: [{id: "codex", bundle: "ready", signedIn: true}], agents: agents || [persona()], pending: pending || null}
+  readonly property var idleProbe: ({agentId: null, state: "idle", model: "", detail: null})
+  function validStatus(agents, pending, probe) {
+    return {harnesses: [{id: "codex", bundle: "ready", signedIn: true}], agents: agents || [persona()], pending: pending || null,
+      modelProbe: probe || idleProbe}
+  }
+  function probeState(state, detail, overrides) {
+    return Object.assign({agentId: agentId, state: state, model: "gpt-5.5", detail: detail}, overrides || {})
   }
   function helperFrame() {
     var status = {generation: 1, connection: "authenticated", category: null, identity: "a".repeat(64), relay: "wss://fixture.example/",
@@ -176,15 +181,42 @@ ShellRoot {
       throw new Error("Valid agent service hello refused")
     // A stale bundle is a documented state; its refusal category is known.
     if (!agents.acceptFrame(agentFrame("status", ["agent_manager"], {harnesses: [{id: "codex", bundle: "stale", signedIn: true}],
-        agents: [persona()], pending: {requestId: "00000000-0000-4000-8000-000000000008", type: "start_agent", state: "failed", category: "bundle_stale"}}))
+        agents: [persona()], pending: {requestId: "00000000-0000-4000-8000-000000000008", type: "start_agent", state: "failed", category: "bundle_stale", detail: null},
+        modelProbe: idleProbe}))
         || !agents.bundleStale("codex") || agents.startAgent(test.agentId)
         || agents.categorySentence("bundle_stale") !== "The harness bundle needs a refresh.")
       throw new Error("Stale bundle status refused")
     // The service's own pending work refuses every mutation.
-    var working = {requestId: "00000000-0000-4000-8000-000000000009", type: "start_agent", state: "working", category: null}
+    var working = {requestId: "00000000-0000-4000-8000-000000000009", type: "start_agent", state: "working", category: null, detail: null}
     if (!agents.acceptFrame(agentFrame("status", ["agent_manager"], validStatus(null, working))) || agents.canMutate
         || agents.statusLabel !== "Starting agent elsewhere…")
       throw new Error("Service pending work did not block mutations")
+    // Every probe state the contract names, each with one of the fixed sentences.
+    var probes = [probeState("running", null), probeState("ok", "The model answered."),
+      probeState("unavailable", "The provider does not offer this model to this account."),
+      probeState("not_signed_in", "The provider did not accept the harness sign-in. Sign in again."),
+      probeState("failed", "The probe did not finish in time."), probeState("failed", "The probe failed.")]
+    probes.forEach(function(probe) {
+      if (!agents.acceptFrame(agentFrame("status", ["agent_manager"], validStatus([persona({model: "gpt-5.5"})], null, probe)))
+          || JSON.stringify(agents.probeFor(test.agentId)) !== JSON.stringify(probe) || agents.probeFor(test.createdId) !== null)
+        throw new Error("Probe state refused: " + JSON.stringify(probe))
+    })
+    // A refused model: the service's detail is shown after the category.
+    agents.requestId = "00000000-0000-4000-8000-00000000000a"
+    agents.requestType = "update_agent"
+    agents.requestState = "working"
+    if (!agents.acceptFrame(agentFrame("status", ["agent_manager"], validStatus(null, {requestId: "00000000-0000-4000-8000-00000000000a",
+        type: "update_agent", state: "failed", category: "agent_invalid", detail: "model_not_for_harness"})))
+        || agents.requestDetail !== "model_not_for_harness"
+        || agents.statusLabel !== "Saving agent · failed. The agent service refused these settings. The model is not one of this harness's models.")
+      throw new Error("Refused model detail not shown: " + agents.statusLabel)
+    // Local rules name the harness's models before anything is sent.
+    if (agents.harnessModelProblem("opus", "codex") !== "Codex models are gpt-…, o… (for example o3) or codex-… ids."
+        || agents.harnessModelProblem("gpt-5.5", "claude-code") !== "Claude Code models are opus, sonnet, haiku, fable or a claude-… id."
+        || agents.harnessModelProblem("claude-opus-4-5", "claude-code") || agents.harnessModelProblem("o3", "codex")
+        || agents.harnessModelProblem("", "codex") || agents.fieldsProblem({harness: "claude-code"}, false, persona({model: "gpt-5.5"})) === ""
+        || agents.fieldsProblem({name: "Kept"}, false, persona({model: "GPT-5"})) !== "")
+      throw new Error("Harness model rules wrong")
     // Without `agent_manager` the section is hidden and nothing can be requested.
     agents.beginSession()
     if (!agents.acceptFrame(agentFrame("hello", [], {})) || agents.capabilitySupported || agents.available
@@ -199,10 +231,20 @@ ShellRoot {
       agentFrame("status", ["agent_manager"], validStatus()),
       agentFrame("hello", ["agent_manager"], {harnesses: [], agents: []}),
       agentFrame("hello", ["agent_manager"], Object.assign(validStatus(), {extra: true})),
-      agentFrame("hello", ["agent_manager"], {harnesses: [{id: "goose", bundle: "ready", signedIn: true}], agents: [], pending: null}),
-      agentFrame("hello", ["agent_manager"], {harnesses: [{id: "codex", bundle: "ready", signedIn: "yes"}], agents: [], pending: null}),
-      agentFrame("hello", ["agent_manager"], {harnesses: [{id: "codex", bundle: "outdated", signedIn: true}], agents: [], pending: null}),
-      agentFrame("hello", ["agent_manager"], {harnesses: [{id: "codex", bundle: "ready", signedIn: true}, {id: "codex", bundle: "missing", signedIn: null}], agents: [], pending: null}),
+      agentFrame("hello", ["agent_manager"], {harnesses: [{id: "goose", bundle: "ready", signedIn: true}], agents: [], pending: null, modelProbe: idleProbe}),
+      agentFrame("hello", ["agent_manager"], {harnesses: [{id: "codex", bundle: "ready", signedIn: "yes"}], agents: [], pending: null, modelProbe: idleProbe}),
+      agentFrame("hello", ["agent_manager"], {harnesses: [{id: "codex", bundle: "outdated", signedIn: true}], agents: [], pending: null, modelProbe: idleProbe}),
+      agentFrame("hello", ["agent_manager"], {harnesses: [{id: "codex", bundle: "ready", signedIn: true}, {id: "codex", bundle: "missing", signedIn: null}], agents: [], pending: null, modelProbe: idleProbe}),
+      // The model probe: present, exact, a known state and sentence, never raw output.
+      agentFrame("hello", ["agent_manager"], {harnesses: [], agents: [], pending: null}),
+      agentFrame("hello", ["agent_manager"], validStatus(null, null, Object.assign({}, idleProbe, {output: "OK"}))),
+      agentFrame("hello", ["agent_manager"], validStatus(null, null, probeState("failed", "Error: 401 {\"token\":\"x\"}"))),
+      agentFrame("hello", ["agent_manager"], validStatus(null, null, probeState("ok", null))),
+      agentFrame("hello", ["agent_manager"], validStatus(null, null, probeState("running", "The model answered."))),
+      agentFrame("hello", ["agent_manager"], validStatus(null, null, probeState("maybe", "The probe failed."))),
+      agentFrame("hello", ["agent_manager"], validStatus(null, null, probeState("ok", "The model answered.", {agentId: null}))),
+      agentFrame("hello", ["agent_manager"], validStatus(null, null, probeState("ok", "The model answered.", {model: "gpt 5"}))),
+      agentFrame("hello", ["agent_manager"], validStatus(null, null, Object.assign({}, idleProbe, {agentId: test.agentId}))),
       agentFrame("hello", ["agent_manager"], validStatus([Object.assign(persona(), {token: "x"})])),
       agentFrame("hello", ["agent_manager"], validStatus([persona({unit: "running"})])),
       agentFrame("hello", ["agent_manager"], validStatus([persona({answersDms: "yes"})])),
@@ -221,9 +263,12 @@ ShellRoot {
       agentFrame("hello", ["agent_manager"], validStatus([persona({identity: null})])),
       agentFrame("hello", ["agent_manager"], validStatus([persona({lastError: "segfault"})])),
       agentFrame("hello", ["agent_manager"], validStatus([persona(), persona()])),
-      agentFrame("hello", ["agent_manager"], validStatus(null, {requestId: "00000000-0000-4000-8000-000000000009", type: "start_agent", state: "failed", category: null})),
-      agentFrame("hello", ["agent_manager"], validStatus(null, {requestId: "00000000-0000-4000-8000-000000000009", type: "rm", state: "working", category: null})),
-      agentFrame("hello", ["agent_manager"], validStatus(null, {requestId: "ui-1", type: "start_agent", state: "working", category: null}))
+      agentFrame("hello", ["agent_manager"], validStatus(null, {requestId: "00000000-0000-4000-8000-000000000009", type: "start_agent", state: "failed", category: null, detail: null})),
+      agentFrame("hello", ["agent_manager"], validStatus(null, {requestId: "00000000-0000-4000-8000-000000000009", type: "rm", state: "working", category: null, detail: null})),
+      agentFrame("hello", ["agent_manager"], validStatus(null, {requestId: "ui-1", type: "start_agent", state: "working", category: null, detail: null})),
+      agentFrame("hello", ["agent_manager"], validStatus(null, {requestId: "00000000-0000-4000-8000-000000000009", type: "start_agent", state: "working", category: null})),
+      agentFrame("hello", ["agent_manager"], validStatus(null, {requestId: "00000000-0000-4000-8000-000000000009", type: "update_agent", state: "done", category: null, detail: "model_not_for_harness"})),
+      agentFrame("hello", ["agent_manager"], validStatus(null, {requestId: "00000000-0000-4000-8000-000000000009", type: "update_agent", state: "failed", category: "agent_invalid", detail: "The model is wrong"}))
     ]
     refused.forEach(function(line, index) {
       agents.beginSession()
@@ -278,6 +323,9 @@ ShellRoot {
             throw new Error("Stale harness bundle not shown or Start not held")
           if (test.shown(view, "buzzAgentEnroll").length || test.shown(view, "buzzAgentStop").length || test.shown(view, "buzzAgentSignIn").length)
             throw new Error("Enrolled, stopped, signed-in agent offered the wrong actions")
+          // Codex has no aliases: no chips, a hint instead.
+          if (test.shown(view, "buzzAgentModelChip").length || test.one(view, "buzzAgentModelHint").text.indexOf("gpt-5.5") === -1)
+            throw new Error("Codex model hint wrong")
           if (test.one(view, "buzzAgentSave").enabled) throw new Error("Save enabled with nothing changed")
           test.avatarCases()
           // Delete asks for a second click and sends nothing on the first.
@@ -299,10 +347,21 @@ ShellRoot {
           var harness = test.shown(view, "buzzAgentHarness").filter(function(b) { return b.harnessId === "claude-code" })[0]
           harness.clicked()
           if (test.one(view, "buzzAgentSignIn").text !== "Sign in to Claude Code") throw new Error("Sign-in not offered for a signed-out harness")
+          // Claude Code's aliases are chips under Model; a click fills the field.
+          var chips = test.shown(view, "buzzAgentModelChip")
+          if (chips.map(function(c) { return c.alias }).join(",") !== "opus,sonnet,haiku,fable" || test.shown(view, "buzzProbeModel").length)
+            throw new Error("Claude Code alias chips wrong or Test offered before the agent is saved")
+          chips[1].clicked()
+          if (test.one(view, "buzzAgentModel").text !== "sonnet" || !chips[1].selected || chips[0].selected)
+            throw new Error("Alias chip did not fill the model field")
           if (test.one(view, "buzzAgentSave").enabled) throw new Error("Create enabled without a room")
           test.shown(view, "buzzAgentRoom")[1].click()
           if (JSON.stringify(test.findNamed(view, "buzzAgentEditor", [])[0].draftRooms) !== JSON.stringify([test.roomB]))
             throw new Error("Room checkbox did not choose the room")
+          test.one(view, "buzzAgentModel").text = "gpt-5.5"
+          if (test.one(view, "buzzAgentSave").enabled || test.one(view, "buzzAgentProblem").text !== "Claude Code models are opus, sonnet, haiku, fable or a claude-… id.")
+            throw new Error("A Codex model on Claude Code was not refused: " + test.one(view, "buzzAgentProblem").text)
+          test.shown(view, "buzzAgentModelChip")[1].clicked()
           test.one(view, "buzzAgentWorkspace").text = "relative/path"
           if (test.one(view, "buzzAgentSave").enabled || test.one(view, "buzzAgentProblem").text !== "Workspace must be an absolute path.")
             throw new Error("Relative workspace accepted")
@@ -359,11 +418,43 @@ ShellRoot {
               || !test.one(view, "buzzAgentStart").enabled || test.one(view, "buzzAgentStart").tooltipText !== "")
             throw new Error("Refreshed bundle did not release Start: " + test.one(view, "buzzAgentStatus").text)
           if (agents.refreshBundle("codex")) throw new Error("Refresh offered for a ready bundle")
+          // Test model needs a saved model; it says that a probe may cost usage.
+          if (test.one(view, "buzzProbeModel").enabled || agents.probeModel(test.agentId)
+              || test.one(view, "buzzProbeModelResult").text !== "Set a model to test it; the harness default is not tested."
+              || test.one(view, "buzzProbeModelNote").text.indexOf("may count toward") === -1)
+            throw new Error("Test model offered without a model")
+          test.one(view, "buzzAgentModel").text = "opus"
+          if (test.one(view, "buzzAgentSave").enabled
+              || test.one(view, "buzzAgentProblem").text !== "Codex models are gpt-…, o… (for example o3) or codex-… ids.")
+            throw new Error("A Claude alias on Codex was not refused")
+          test.one(view, "buzzAgentModel").text = "gpt-5.5"
+          if (!test.one(view, "buzzAgentSave").enabled || test.one(view, "buzzProbeModel").enabled
+              || test.one(view, "buzzProbeModelResult").text !== "Save to test this model.")
+            throw new Error("Unsaved model offered for testing")
+          test.one(view, "buzzAgentSave").clicked()
+          test.stage = 22
+        } else if (test.stage === 22 && agents.requestState === "done" && agents.agent(test.agentId).model === "gpt-5.5") {
+          if (!test.one(view, "buzzProbeModel").enabled || test.shown(view, "buzzProbeModelResult").length)
+            throw new Error("Saved model not offered for testing")
+          test.one(view, "buzzProbeModel").clicked()
+          if (agents.requestState !== "working" || agents.probeModel(test.agentId) || test.one(view, "buzzProbeModel").enabled)
+            throw new Error("Probe was not sent once")
+          test.stage = 23
+        } else if (test.stage === 23 && agents.requestState === "done" && agents.modelProbe.state === "unavailable") {
+          if (test.one(view, "buzzProbeModelResult").text !== "gpt-5.5: The provider does not offer this model to this account."
+              || test.one(view, "buzzAgentStatus").text !== "Testing model · done")
+            throw new Error("Unavailable model not shown: " + test.one(view, "buzzProbeModelResult").text)
+          test.one(view, "buzzProbeModel").clicked()
+          test.stage = 24
+        } else if (test.stage === 24 && agents.requestState === "done" && agents.modelProbe.state === "ok") {
+          if (test.one(view, "buzzProbeModelResult").text !== "gpt-5.5: The model answered.")
+            throw new Error("Answered probe not shown")
           test.one(view, "buzzAgentStart").clicked()
           if (agents.requestState !== "working") throw new Error("Start was not sent")
           // One mutating request at a time: every other action is refused meanwhile.
           if (agents.startAgent(test.agentId) || agents.stopAgent(test.agentId) || agents.enrollAgent(test.createdId)
               || agents.deleteAgent(test.agentId, false) || agents.setStartAtLogin(test.agentId, true) || agents.signIn("claude-code")
+              || agents.probeModel(test.agentId) || test.one(view, "buzzProbeModel").enabled
               || agents.createAgent({name: "y", description: "", instructions: "", harness: "codex", model: "", rooms: [test.roomA], respondTo: "owner-only", workspace: ""})
               || test.one(view, "buzzAgentDelete").enabled)
             throw new Error("A second mutating request was allowed while one is pending")
@@ -378,13 +469,16 @@ ShellRoot {
           test.one(view, "buzzAgentDms").clicked()
           if (test.shown(view, "buzzAgentRestartNote").length) throw new Error("Restart note shown without a change")
           var sent = test.requests()
-          if (sent.map(function(r) { return r.type }).join(",") !== "subscribe,create_agent,create_agent,update_agent,refresh_bundle,start_agent") return
+          if (sent.map(function(r) { return r.type }).join(",")
+              !== "subscribe,create_agent,create_agent,update_agent,refresh_bundle,update_agent,probe_model,probe_model,start_agent") return
           var created = sent[2].fields
           if (JSON.stringify(created) !== JSON.stringify({name: "Created agent", description: "", instructions: "", harness: "claude-code",
-              model: "", rooms: [test.roomB], respondTo: "owner-only", workspace: "", answersDms: false, startAtLogin: false, acpCommand: "buzz-acp"})
+              model: "sonnet", rooms: [test.roomB], respondTo: "owner-only", workspace: "", answersDms: false, startAtLogin: false, acpCommand: "buzz-acp"})
               || sent[1].id === sent[2].id || JSON.stringify(sent[3].fields) !== JSON.stringify({answersDms: true})
               || sent[4].harness !== "codex" || Object.keys(sent[4]).sort().join(",") !== "harness,id,instanceId,type,version"
-              || sent[5].agentId !== test.agentId)
+              || JSON.stringify(sent[5].fields) !== JSON.stringify({model: "gpt-5.5"})
+              || sent[6].agentId !== test.agentId || Object.keys(sent[6]).sort().join(",") !== "agentId,id,instanceId,type,version"
+              || sent[8].agentId !== test.agentId)
             throw new Error("Create or start request fields wrong: " + JSON.stringify(sent))
           test.one(view, "buzzAgentStop").clicked()
           test.stage = 4
@@ -395,7 +489,7 @@ ShellRoot {
               || !test.shown(view, "buzzHistoryScroll").length || agents.requestState !== "unknown")
             throw new Error("Malformed status did not end the agent session")
           test.validationCases()
-          console.log("PASS: Agents section lists the service's agents, edits, creates, starts and shows refusals; one request at a time; malformed frames end the session; no agent_manager hides the section; pasted avatar art is clipped, previewed, kept locally and restored, colored art from a file is previewed, brightened, saved and cleared, damaged avatar files fail closed; the direct message toggle round-trips and notes the restart; a stale harness bundle holds Start until Refresh bundle makes it ready")
+          console.log("PASS: Agents section lists the service's agents, edits, creates, starts and shows refusals; one request at a time; malformed frames end the session; no agent_manager hides the section; pasted avatar art is clipped, previewed, kept locally and restored, colored art from a file is previewed, brightened, saved and cleared, damaged avatar files fail closed; the direct message toggle round-trips and notes the restart; a stale harness bundle holds Start until Refresh bundle makes it ready; model alias chips fill the field, models of the other harness are refused, Test model probes only a saved model and shows each probe state as a fixed sentence")
           Qt.quit()
         }
       } catch (error) { console.error(error.message); Qt.exit(1) }

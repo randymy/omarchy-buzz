@@ -22,6 +22,8 @@ Item {
   property var harnesses: []
   property var agents: []
   property var pending: null
+  // The service's last model probe: {agentId, state, model, detail}; idle has no agent.
+  property var modelProbe: ({agentId: null, state: "idle", model: "", detail: null})
   readonly property bool available: connection === "ready" && capabilitySupported && !sessionFailed
 
   // The one mutating request this panel has in flight, correlated by UUID.
@@ -30,6 +32,8 @@ Item {
   property string requestAgent: ""
   property string requestState: "idle"
   property string requestCategory: ""
+  // A fixed detail code the service gave with a failure, or "".
+  property string requestDetail: ""
   property var requestKnownIds: []
   signal agentCreated(string agentId)
 
@@ -37,7 +41,17 @@ Item {
   readonly property var errorCategories: ["agent_invalid", "agent_busy", "agent_limit", "harness_missing", "bundle_stale",
     "not_signed_in", "enroll_failed", "unit_failed", "workspace_refused", "relay_unavailable"]
   readonly property var mutatingTypes: ["create_agent", "update_agent", "delete_agent", "enroll_agent", "start_agent",
-    "stop_agent", "set_start_at_login", "sign_in", "refresh_bundle"]
+    "stop_agent", "set_start_at_login", "sign_in", "refresh_bundle", "probe_model"]
+  readonly property var pendingDetails: ["model_not_for_harness"]
+  // Model names per harness, as the service checks them (agents_service/models.rs).
+  readonly property var modelAliases: ({"claude-code": ["opus", "sonnet", "haiku", "fable"], codex: []})
+  readonly property var modelPatterns: ({"claude-code": /^claude-[a-z0-9-]+$/, codex: /^(gpt-[a-z0-9.-]+|o[0-9][a-z0-9-]*|codex-[a-z0-9.-]+)$/})
+  readonly property var probeStates: ["idle", "running", "ok", "unavailable", "not_signed_in", "failed"]
+  // The only sentences a probe result may carry; the probe's output is never sent.
+  readonly property var probeSentences: ["The model answered.", "The provider does not offer this model to this account.",
+    "The provider did not accept the harness sign-in. Sign in again.", "The probe did not finish in time.",
+    "The sandbox launcher refused the probe.", "The provider is busy or a usage limit was reached. Try again later.",
+    "The probe did not get the expected answer.", "The probe failed."]
   readonly property var personaFields: ["name", "description", "instructions", "harness", "model", "rooms", "respondTo", "workspace", "answersDms"]
   readonly property bool serviceWorking: !!pending && pending.state === "working"
   readonly property bool busy: requestState === "working" || serviceWorking
@@ -186,11 +200,14 @@ Item {
       request_unknown: "No answer from the agent service. Check the agent's state before retrying."
     })[category] || "The request failed."
   }
+  function detailSentence(detail) {
+    return ({model_not_for_harness: "The model is not one of this harness's models."})[detail] || ""
+  }
   function requestLabel(type) {
     return ({create_agent: "Creating agent", update_agent: "Saving agent", delete_agent: "Deleting agent",
       enroll_agent: "Enrolling agent", start_agent: "Starting agent", stop_agent: "Stopping agent",
       set_start_at_login: "Changing start at login", sign_in: "Opening sign-in",
-      refresh_bundle: "Refreshing harness bundle"})[type] || "Agent request"
+      refresh_bundle: "Refreshing harness bundle", probe_model: "Testing model"})[type] || "Agent request"
   }
   // One line for the editor: this panel's request first, then the service's own.
   readonly property string statusLabel: {
@@ -198,6 +215,7 @@ Item {
     if (requestState === "done") return requestLabel(requestType) + " · done"
     if (requestState === "failed" || requestState === "unknown")
       return requestLabel(requestType) + " · failed. " + categorySentence(requestCategory)
+        + (requestDetail ? " " + detailSentence(requestDetail) : "")
     if (serviceWorking) return requestLabel(pending.type) + " elsewhere…"
     return ""
   }
@@ -234,6 +252,13 @@ Item {
     return typeof value === "string" && /^[A-Za-z0-9._:-]{0,64}$/.test(value) ? ""
       : "Model must be empty or up to 64 letters, digits and . _ : -"
   }
+  // Empty is the harness default; otherwise an alias or an id of that harness.
+  function harnessModelProblem(value, harnessId) {
+    if (modelProblem(value) || value === "" || !modelAliases.hasOwnProperty(harnessId)) return modelProblem(value)
+    if (modelAliases[harnessId].indexOf(value) !== -1 || modelPatterns[harnessId].test(value)) return ""
+    return harnessId === "claude-code" ? "Claude Code models are opus, sonnet, haiku, fable or a claude-… id."
+      : "Codex models are gpt-…, o… (for example o3) or codex-… ids."
+  }
   function workspaceProblem(value, allowEmpty) {
     if (typeof value !== "string" || (value === "" && allowEmpty)) return typeof value === "string" ? "" : "Workspace must be a path."
     if (value.length > 4096 || value[0] !== "/" || unsafeText(value)) return "Workspace must be an absolute path."
@@ -249,8 +274,9 @@ Item {
       return "Choose only rooms verified by the Buzz helper."
     return ""
   }
-  // Complete persona fields as sent on create, or the changed subset on update.
-  function fieldsProblem(fields, creating) {
+  // Complete persona fields as sent on create, or the changed subset on update
+  // (`current`: the saved agent, for a model or harness change alone).
+  function fieldsProblem(fields, creating, current) {
     if (!fields || typeof fields !== "object" || Array.isArray(fields)) return "Invalid fields."
     var allowed = personaFields.concat(creating ? ["startAtLogin"] : [])
     var keys = Object.keys(fields)
@@ -270,7 +296,14 @@ Item {
       fields.hasOwnProperty("startAtLogin") && typeof fields.startAtLogin !== "boolean" ? "Invalid start at login." : "",
       fields.hasOwnProperty("answersDms") && typeof fields.answersDms !== "boolean" ? "Invalid direct message choice." : ""
     ]
-    return checks.find(function(text) { return text !== "" }) || ""
+    var problem = checks.find(function(text) { return text !== "" }) || ""
+    // A model saved before these patterns existed is kept until model or harness change.
+    if (!problem && (fields.hasOwnProperty("model") || fields.hasOwnProperty("harness"))) {
+      var base = current || {}
+      problem = harnessModelProblem(fields.hasOwnProperty("model") ? fields.model : base.model,
+        fields.hasOwnProperty("harness") ? fields.harness : base.harness)
+    }
+    return problem
   }
 
   function validCapabilities(value) {
@@ -322,19 +355,30 @@ Item {
   }
   function validatedPending(value) {
     if (value === null) return {value: null}
-    if (!exactKeys(value, "category,requestId,state,type") || !uuidValue(value.requestId)
+    if (!exactKeys(value, "category,detail,requestId,state,type") || !uuidValue(value.requestId)
         || mutatingTypes.indexOf(value.type) === -1 || ["working", "done", "failed"].indexOf(value.state) === -1
         || (value.state === "failed") !== (value.category !== null)
-        || (value.category !== null && errorCategories.indexOf(value.category) === -1)) return null
-    return {value: {requestId: value.requestId, type: value.type, state: value.state, category: value.category}}
+        || (value.category !== null && errorCategories.indexOf(value.category) === -1)
+        || (value.detail !== null && (value.state !== "failed" || pendingDetails.indexOf(value.detail) === -1))) return null
+    return {value: {requestId: value.requestId, type: value.type, state: value.state, category: value.category, detail: value.detail}}
+  }
+  function validatedModelProbe(value) {
+    if (!exactKeys(value, "agentId,detail,model,state") || probeStates.indexOf(value.state) === -1
+        || typeof value.model !== "string" || modelProblem(value.model)) return null
+    if (value.state === "idle") {
+      if (value.agentId !== null || value.model !== "" || value.detail !== null) return null
+    } else if (!uuidV4(value.agentId) || value.model === ""
+        || (value.state === "running" ? value.detail !== null : probeSentences.indexOf(value.detail) === -1)) return null
+    return {agentId: value.agentId, state: value.state, model: value.model, detail: value.detail}
   }
   function validatedStatus(value) {
-    if (!exactKeys(value, "agents,harnesses,pending")) return null
+    if (!exactKeys(value, "agents,harnesses,modelProbe,pending")) return null
     var harnessList = validatedHarnesses(value.harnesses)
     var agentList = validatedAgents(value.agents)
     var pendingView = validatedPending(value.pending)
-    if (!harnessList || !agentList || !pendingView) return null
-    return {harnesses: harnessList, agents: agentList, pending: pendingView.value}
+    var probe = validatedModelProbe(value.modelProbe)
+    if (!harnessList || !agentList || !pendingView || !probe) return null
+    return {harnesses: harnessList, agents: agentList, pending: pendingView.value, modelProbe: probe}
   }
 
   function clearData() {
@@ -342,6 +386,7 @@ Item {
     if (harnesses.length) harnesses = []
     if (agents.length) agents = []
     pending = null
+    modelProbe = {agentId: null, state: "idle", model: "", detail: null}
   }
   function loseRequest() {
     requestTimeout.stop()
@@ -373,6 +418,7 @@ Item {
         requestTimeout.stop()
         requestState = "failed"
         requestCategory = frame.category
+        requestDetail = ""
       }
       return true
     }
@@ -405,11 +451,13 @@ Item {
     if (!sameProjection(harnesses, status.harnesses)) harnesses = status.harnesses
     if (!sameProjection(agents, status.agents)) agents = status.agents
     if (!sameProjection(pending, status.pending)) pending = status.pending
+    if (!sameProjection(modelProbe, status.modelProbe)) modelProbe = status.modelProbe
     var view = status.pending
     if (view && view.requestId === requestId && requestState === "working" && view.state !== "working") {
       requestTimeout.stop()
       requestState = view.state
       requestCategory = view.category || ""
+      requestDetail = view.detail || ""
       if (view.state === "done" && requestType === "create_agent") {
         var known = requestKnownIds
         var added = agents.filter(function(entry) { return known.indexOf(entry.id) === -1 })
@@ -440,7 +488,10 @@ Item {
     requestKnownIds = agents.map(function(entry) { return entry.id })
     requestState = "working"
     requestCategory = ""
+    requestDetail = ""
     requestId = write(request)
+    // A model probe may take the service's full 90 s bound.
+    requestTimeout.interval = request.type === "probe_model" ? 120000 : 60000
     requestTimeout.restart()
     return true
   }
@@ -457,7 +508,7 @@ Item {
     return mutate({type: "create_agent", fields: copy}, "")
   }
   function updateAgent(id, fields) {
-    if (!agent(id) || fieldsProblem(fields, false)) return false
+    if (!agent(id) || fieldsProblem(fields, false, agent(id))) return false
     return mutate({type: "update_agent", agentId: id, fields: copyFields(fields)}, id)
   }
   function deleteAgent(id, forget) {
@@ -498,10 +549,24 @@ Item {
     if (!bundleStale(harnessId)) return false
     return mutate({type: "refresh_bundle", harness: harnessId}, "")
   }
+  // One real model turn in the agent's sandbox: the saved model, a signed-in harness, a ready bundle.
+  function canProbeModel(id) {
+    var entry = agent(id)
+    var state = entry ? harness(entry.harness) : null
+    return !!entry && entry.model !== "" && !harnessModelProblem(entry.model, entry.harness)
+      && !!state && state.bundle === "ready" && state.signedIn === true
+  }
+  function probeModel(id) {
+    if (!canProbeModel(id)) return false
+    return mutate({type: "probe_model", agentId: id}, id)
+  }
+  // The service's last probe of this agent, or null.
+  function probeFor(id) { return modelProbe.agentId === id ? modelProbe : null }
   function dismissRequest() {
     if (requestState === "working") return false
     requestState = "idle"
     requestCategory = ""
+    requestDetail = ""
     return true
   }
 

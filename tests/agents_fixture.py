@@ -56,7 +56,10 @@ def agents_service():
                "harness": "codex", "model": "", "acpCommand": "buzz-acp", "rooms": [ROOM_A], "respondTo": "owner-only",
                "workspace": "/home/fixture/.local/state/omarchy-buzz-room-workspaces/" + AGENT, "identity": "b" * 64,
                "enrolled": True, "unit": "inactive", "startAtLogin": False, "answersDms": False, "published": True, "lastError": None}]
-    state = {"pending": None}
+    state = {"pending": None, "probe": {"agentId": None, "state": "idle", "model": "", "detail": None}, "probes": 0}
+    # Probe results in order: a model the provider does not offer, then one it does.
+    probe_results = [("unavailable", "The provider does not offer this model to this account."),
+                     ("ok", "The model answered.")]
 
     def save():
         path = os.environ["BUZZ_SEND_RECORD"]
@@ -68,15 +71,18 @@ def agents_service():
     def emit(kind="status", request_id=None):
         print(json.dumps({"version": 1, "type": kind, "id": request_id, "instanceId": instance,
                           "capabilities": ["agent_manager"],
-                          "status": {"harnesses": harnesses, "agents": agents, "pending": state["pending"]}}), flush=True)
+                          "status": {"harnesses": harnesses, "agents": agents, "pending": state["pending"],
+                                     "modelProbe": state["probe"]}}), flush=True)
 
     def working(request):
         assert state["pending"] is None or state["pending"]["state"] != "working", "second mutating request"
-        state["pending"] = {"requestId": request["id"], "type": request["type"], "state": "working", "category": None}
+        state["pending"] = {"requestId": request["id"], "type": request["type"], "state": "working", "category": None,
+                            "detail": None}
         emit(request_id=request["id"])
 
     def done(request):
-        state["pending"] = {"requestId": request["id"], "type": request["type"], "state": "done", "category": None}
+        state["pending"] = {"requestId": request["id"], "type": request["type"], "state": "done", "category": None,
+                            "detail": None}
         emit(request_id=request["id"])
 
     save()
@@ -110,9 +116,19 @@ def agents_service():
             done(request)
         elif kind == "update_agent":
             assert sorted(request) == ["agentId", "fields", "id", "instanceId", "type", "version"] and request["agentId"] == AGENT
-            assert request["fields"] == {"answersDms": True}, request
+            assert request["fields"] in ({"answersDms": True}, {"model": "gpt-5.5"}), request
             working(request)
-            agents[0]["answersDms"] = True
+            agents[0].update(request["fields"])
+            done(request)
+        elif kind == "probe_model":
+            assert sorted(request) == ["agentId", "id", "instanceId", "type", "version"] and request["agentId"] == AGENT
+            assert agents[0]["model"] == "gpt-5.5" and harnesses[1] == {"id": "codex", "bundle": "ready", "signedIn": True}
+            working(request)
+            state["probe"] = {"agentId": AGENT, "state": "running", "model": agents[0]["model"], "detail": None}
+            emit()
+            result, sentence = probe_results[state["probes"]]
+            state["probes"] += 1
+            state["probe"] = {"agentId": AGENT, "state": result, "model": agents[0]["model"], "detail": sentence}
             done(request)
         elif kind == "refresh_bundle":
             assert sorted(request) == ["harness", "id", "instanceId", "type", "version"] and request["harness"] == "codex"
