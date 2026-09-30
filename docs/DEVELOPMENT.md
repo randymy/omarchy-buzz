@@ -270,3 +270,14 @@ fixture now publishes and queries a thread reply. It uses synthetic identities.
 target loadability, dry runs and rollback after partial service activation.
 Use `scripts/helper-install install --dry-run ARCHIVE` before a local install.
 The installer requires this checkout's exact version and Buzz dependency pin.
+
+## Preview modes
+
+`scripts/preview` with no argument checks the sample panel. Each mode below runs one
+rendered QML check against synthetic frames or a stdio fixture:
+`--send-bridge`, `--thread-send`, `--thread-replies`, `--live-updates`,
+`--catalog-refresh`, `--catalog-refresh-send`, `--new-dm`, `--older-history`,
+`--last-room`, `--mentions`, `--author-names`, `--activity`, `--room-activity`,
+`--notification-preference`, `--agents` (the Agents section against a fake agent
+service), `--presentation` (needs Wayland) and `--bridge` (needs
+`BUZZ_TEST_HELPER` set to a built helper).

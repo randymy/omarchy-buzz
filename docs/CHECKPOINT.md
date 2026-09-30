@@ -1812,3 +1812,46 @@ backoff, room change and Retry, the 30 s primed cadence, thread refetch on `e` t
 the periodic thread refresh), `tests/helper_smoke.py`, and every `scripts/preview`
 mode including the new `--live-updates`. Not verified: live delivery timing and
 `CLOSED` reasons of a real relay, and behaviour under a real burst.
+
+## Agents section in the panel — September 30, 2026
+
+Branch `agentsui`; not merged, installed or run against the agent service, which is
+being built separately. The panel implements its side of
+[AGENTS_SERVICE.md](AGENTS_SERVICE.md). `plugin/AgentService.qml` is owned by
+`Service.qml` (the manifest allows one service entry point) and exposed as
+`service.agents`. It runs `<helper> agents-bridge` through `Process`, exactly as
+`ui-bridge` is run, with the same 5-second handshake, and connects only where the
+main service auto-connects (again on Retry or when the panel opens after a lost
+session; nothing polls). Every frame is checked exactly: envelope keys, instance,
+capabilities (only `agent_manager` is known), `harnesses`, `agents` (all 16 persona
+and state fields with the contract's rules, UUID v4 ids, at most 16) and `pending`;
+errors must carry a known category and this session's instance. Anything else ends
+the session. A service without `agent_manager` is accepted but offers nothing.
+
+Requests are validated locally with the contract's rules before they are written:
+rooms must be 1–8 of the main helper's verified joined rooms (streams, not DMs), the
+workspace absolute (empty on create for the service default), and only one mutating
+request may be in flight, from this panel or reported `working` by the service. Each
+carries a fresh UUID and is correlated by it; no answer within 60 s is shown as an
+unknown outcome, never a failure. The panel sends no key, token or command line.
+
+The left column shows `Agents` under Direct messages, one row per agent (`running`,
+`stopped`, `failed`, `not enrolled` or `unknown`, and the harness), and `+ New agent`.
+The editor replaces the room view (an open thread is hidden, not closed) and offers
+the persona fields, start at login, Save/Create, Enroll, Start/Stop, Delete with a
+confirming second click (the identity is kept), and `Sign in to <harness>` when the
+service reports it signed out. Service categories are shown as short sentences. With
+the helper connected but no usable agent service the sidebar says `Agent manager
+unavailable`.
+
+Interface choices the service must honour (the contract leaves them open): the
+bridge subcommand is `agents-bridge`; persona fields travel as `fields` on
+`create_agent` (all fields plus `startAtLogin` and `acpCommand`) and on
+`update_agent` (only changed persona fields); the target agent is `agentId`, since
+`id` is the request's UUID; `delete_agent` always carries `forget`; status frames
+carry `id` as `null` or the UUID of the request they answer; `pending.category` is
+non-null exactly when `state` is `failed`; `enrolled` implies a non-null `identity`.
+
+Evidence is synthetic only: `scripts/preview --agents` (new) and every other
+`scripts/preview` mode, including `--bridge` with a locally built helper. Not
+verified: the real service, real sign-in, enrollment or units.
