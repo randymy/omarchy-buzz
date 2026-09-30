@@ -4,6 +4,7 @@ import QtQuick.Controls as Controls
 import qs.Ui as Ui
 import qs.Commons
 import "Identicon.js" as Identicon
+import "AnsiArt.js" as AnsiArt
 
 // Editor for one agent persona in the middle column. It edits a local draft and
 // sends only structured, locally validated requests through the agent service.
@@ -29,6 +30,9 @@ ColumnLayout {
   // Pasted avatar art: kept on this machine only, never sent to the agent service.
   property string draftArt: ""
   property string pendingCreateArt: ""
+  // Brightness of colored art (0 for plain art); saved with the art.
+  property real draftBrightness: 0
+  property real pendingCreateBrightness: 0
   property bool deleteArmed: false
   readonly property alias artPreview: artPreview
 
@@ -45,6 +49,7 @@ ColumnLayout {
     draftWorkspace = source ? source.workspace : ""
     draftStartAtLogin = source ? source.startAtLogin : false
     draftArt = source ? agents.avatarArtFor(source.id) : ""
+    draftBrightness = source ? agents.avatarBrightnessFor(source.id) : 0
   }
   onAgentIdChanged: load()
   // Fields follow the draft when it is loaded; typing updates the draft.
@@ -53,7 +58,8 @@ ColumnLayout {
   onDraftInstructionsChanged: if (instructions.text !== draftInstructions) instructions.text = draftInstructions
   onDraftModelChanged: if (modelField.text !== draftModel) modelField.text = draftModel
   onDraftWorkspaceChanged: if (workspaceField.text !== draftWorkspace) workspaceField.text = draftWorkspace
-  onDraftArtChanged: if (artField.text !== draftArt) artField.text = draftArt
+  // Colored art loaded from a file is not typed: the field keeps plain art only.
+  onDraftArtChanged: if (!AnsiArt.isAnsi(draftArt) && artField.text !== draftArt) artField.text = draftArt
   Component.onCompleted: load()
 
   readonly property var draftFields: ({name: draftName, description: draftDescription, instructions: draftInstructions,
@@ -76,7 +82,9 @@ ColumnLayout {
   }
   readonly property string problem: agents ? agents.fieldsProblem(saveFields, creating) : ""
   readonly property bool serviceChanged: Object.keys(changedFields).length > 0
-  readonly property bool artChanged: !creating && !!entry && Identicon.normalizeArt(draftArt) !== agents.avatarArtFor(agentId)
+  readonly property real shownBrightness: AnsiArt.isAnsi(draftArt) ? draftBrightness : 0
+  readonly property bool artChanged: !creating && !!entry && (AnsiArt.storedArt(draftArt) !== agents.avatarArtFor(agentId)
+    || shownBrightness !== agents.avatarBrightnessFor(agentId))
   readonly property bool dirty: creating || serviceChanged || artChanged
   // Art alone is saved locally and needs no agent service request.
   readonly property bool canSave: !!agents && (creating || !!entry)
@@ -86,10 +94,11 @@ ColumnLayout {
   function save() {
     if (!canSave) return false
     if (creating) {
-      pendingCreateArt = Identicon.normalizeArt(draftArt)
+      pendingCreateArt = AnsiArt.storedArt(draftArt)
+      pendingCreateBrightness = shownBrightness
       return agents.createAgent(saveFields)
     }
-    if (artChanged && !agents.setAvatarArt(agentId, draftArt)) return false
+    if (artChanged && !agents.setAvatarArt(agentId, draftArt, shownBrightness > 0 ? shownBrightness : undefined)) return false
     return serviceChanged ? agents.updateAgent(agentId, saveFields) : true
   }
   function toggleRoom(id) {
@@ -112,7 +121,8 @@ ColumnLayout {
     target: root.agents
     function onAgentCreated(agentId) {
       if (!root.creating) return
-      if (root.pendingCreateArt !== "") root.agents.setAvatarArt(agentId, root.pendingCreateArt)
+      if (root.pendingCreateArt !== "")
+        root.agents.setAvatarArt(agentId, root.pendingCreateArt, root.pendingCreateBrightness > 0 ? root.pendingCreateBrightness : undefined)
       root.pendingCreateArt = ""
       root.agentChosen(agentId)
     }
@@ -144,6 +154,7 @@ ColumnLayout {
       key: root.agents && root.entry ? root.agents.avatarKey(root.entry) : ""
       name: root.creating ? "New agent" : root.entry ? root.entry.name : ""
       art: root.agents && root.entry ? root.agents.avatarArtFor(root.agentId) : ""
+      brightness: root.agents && root.entry ? root.agents.avatarBrightnessFor(root.agentId) : 0
     }
     Text {
       objectName: "buzzAgentTitle"
@@ -231,6 +242,7 @@ ColumnLayout {
         Controls.TextArea {
           id: artField
           objectName: "buzzAgentAvatarArt"
+          visible: !AnsiArt.isAnsi(root.draftArt)
           Layout.preferredWidth: artMetrics.advanceWidth + leftPadding + rightPadding
           Layout.preferredHeight: artMetrics.height * 6 + topPadding + bottomPadding
           textFormat: TextEdit.PlainText
@@ -269,11 +281,42 @@ ColumnLayout {
           key: root.agents && root.entry ? root.agents.avatarKey(root.entry) : ""
           name: "Preview"
           art: root.draftArt
+          brightness: root.shownBrightness
         }
         Caption {
           Layout.alignment: Qt.AlignTop
-          text: "Kept on this machine only"
+          text: AnsiArt.isAnsi(root.draftArt) ? "Colored art from a file · kept on this machine only" : "Kept on this machine only"
         }
+      }
+      Ui.Button {
+        objectName: "buzzAgentAvatarLoad"
+        text: artLoader.visible ? "Hide file loader" : "Load from file…"
+        tooltipText: "Use a .ans or .txt file as this agent's avatar"
+        fontSize: Style.font.caption
+        focusable: true
+        onClicked: artLoader.visible = !artLoader.visible
+      }
+      AvatarFileLoader {
+        id: artLoader
+        visible: false
+        Layout.maximumWidth: Style.space(360)
+        Layout.fillWidth: true
+        fieldName: "buzzAgentAvatarPath"
+        showClear: true
+        canClear: AnsiArt.isAnsi(root.draftArt)
+        // Loaded art is a draft like typed art: Save keeps it.
+        // A newly loaded file starts at the default brightness (auto-levels, 1.5).
+        onArtLoaded: function(art) { root.draftBrightness = AnsiArt.DEFAULT_BRIGHTNESS; root.draftArt = art }
+        onClearRequested: { root.draftArt = ""; root.draftBrightness = 0 }
+      }
+      // A draft like the art: the preview above follows it and Save keeps it.
+      AvatarBrightness {
+        visible: AnsiArt.isAnsi(root.draftArt)
+        Layout.maximumWidth: Style.space(360)
+        Layout.fillWidth: true
+        fieldName: "buzzAgentAvatarBrightness"
+        value: root.draftBrightness > 0 ? root.draftBrightness : AnsiArt.DEFAULT_BRIGHTNESS
+        onChosen: function(value) { root.draftBrightness = value }
       }
       Caption { text: "Harness" }
       RowLayout {

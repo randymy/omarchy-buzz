@@ -3,6 +3,7 @@ import QtQuick.Layouts
 import QtQuick.Controls as Controls
 import qs.Ui as Ui
 import qs.Commons
+import "AnsiArt.js" as AnsiArt
 
 FocusScope {
   id: root
@@ -62,6 +63,16 @@ FocusScope {
   }
   // Sidebar rows use a smaller avatar so each stays close to one button high.
   readonly property int sidebarAvatarSize: Math.max(6, Math.round(Style.font.caption * 0.8))
+  // This user's own avatar art, keyed by their public key in the local avatar
+  // store. Local only until profile avatars are published to the relay.
+  readonly property bool myAvatarAvailable: !!service && !service.sampleMode && !!agentService
+    && /^[a-f0-9]{64}$/.test(service.identity)
+  readonly property string myAvatarArt: myAvatarAvailable ? agentService.avatarArtForKey(service.identity) : ""
+  readonly property real myAvatarBrightness: myAvatarAvailable ? agentService.avatarBrightnessForKey(service.identity) : 0
+  function openAvatarCard(key, name, art, brightness) {
+    avatarCard.show(key, name, art, brightness)
+    return true
+  }
   // A direct message shows the first participant other than this identity.
   function dmPartner(room) {
     if (!room || !Array.isArray(room.participants) || !service) return ""
@@ -186,7 +197,7 @@ FocusScope {
   }
   signal closeRequested()
   signal presentationRequested()
-  Keys.onEscapePressed: closeRequested()
+  Keys.onEscapePressed: avatarCard.opened ? avatarCard.close() : closeRequested()
 
   Rectangle {
     anchors.fill: parent
@@ -301,6 +312,58 @@ FocusScope {
           opacity: 0.6
           font.family: Style.font.family
           font.pixelSize: Style.font.caption
+        }
+        // My avatar: art from a local .ans or .txt file. Local only until profile
+        // avatars are published to the relay; others still see the identicon.
+        ColumnLayout {
+          objectName: "buzzMyAvatar"
+          visible: root.myAvatarAvailable
+          Layout.fillWidth: true
+          spacing: Style.space(2)
+          RowLayout {
+            Layout.fillWidth: true
+            spacing: Style.space(4)
+            BuzzAvatar {
+              objectName: "buzzMyAvatarPreview"
+              key: root.myAvatarAvailable ? root.service.identity : ""
+              name: "You"
+              art: root.myAvatarArt
+              brightness: root.myAvatarBrightness
+              pixelSize: root.sidebarAvatarSize
+            }
+            Ui.Button {
+              objectName: "buzzSetMyAvatar"
+              Layout.fillWidth: true
+              text: myAvatarLoader.visible ? "Hide my avatar" : "Set my avatar"
+              tooltipText: "Use a .ans or .txt file as your avatar on this machine"
+              fontSize: Style.font.caption
+              leftAlign: true
+              focusable: true
+              onClicked: myAvatarLoader.visible = !myAvatarLoader.visible
+            }
+          }
+          AvatarFileLoader {
+            id: myAvatarLoader
+            visible: false
+            Layout.fillWidth: true
+            fieldName: "buzzMyAvatarPath"
+            showClear: true
+            canClear: root.myAvatarArt !== ""
+            // A newly loaded file starts at the default brightness (auto-levels, 1.5).
+            onArtLoaded: function(art) {
+              if (!root.myAvatarAvailable || !root.agentService.setOwnAvatarArt(root.service.identity, art, AnsiArt.DEFAULT_BRIGHTNESS))
+                fail("The avatar could not be kept.")
+            }
+            onClearRequested: if (root.myAvatarAvailable) root.agentService.setOwnAvatarArt(root.service.identity, "")
+          }
+          // Applied as it is changed, so the thumbnail beside it is the preview.
+          AvatarBrightness {
+            visible: myAvatarLoader.visible && root.myAvatarBrightness > 0
+            Layout.fillWidth: true
+            fieldName: "buzzMyAvatarBrightness"
+            value: root.myAvatarBrightness > 0 ? root.myAvatarBrightness : AnsiArt.DEFAULT_BRIGHTNESS
+            onChosen: function(value) { root.agentService.setOwnAvatarArt(root.service.identity, root.myAvatarArt, value) }
+          }
         }
         Controls.ScrollView {
           Layout.fillWidth: true
@@ -469,6 +532,7 @@ FocusScope {
                   key: root.agentService.avatarKey(modelData)
                   name: modelData.name
                   art: root.agentService.avatarArtFor(modelData.id)
+                  brightness: root.agentService.avatarBrightnessFor(modelData.id)
                   pixelSize: root.sidebarAvatarSize
                 }
                 Ui.Button {
@@ -798,6 +862,7 @@ FocusScope {
                 threadLink: true
                 threadSelected: !!root.service && root.service.threadRootId === row.id
                 onThreadRequested: root.toggleThread(row.id)
+                onAvatarRequested: function(key, name, art, brightness) { root.openAvatarCard(key, name, art, brightness) }
               }
             }
           }
@@ -918,6 +983,7 @@ FocusScope {
               service: root.service
               row: root.threadOpen ? root.service.threadRoot : ({})
               showDate: true
+              onAvatarRequested: function(key, name, art, brightness) { root.openAvatarCard(key, name, art, brightness) }
             }
             Item {
               objectName: "buzzThreadDetails"
@@ -951,6 +1017,7 @@ FocusScope {
                 topPadding: row.grouped ? Style.space(3) : Style.space(8)
                 service: root.service
                 row: JSON.parse(payload)
+                onAvatarRequested: function(key, name, art, brightness) { root.openAvatarCard(key, name, art, brightness) }
               }
             }
           }
@@ -969,5 +1036,12 @@ FocusScope {
         }
       }
     }
+  }
+
+  // Profile card over the whole panel; closing it returns to the composer.
+  AvatarCard {
+    id: avatarCard
+    anchors.fill: parent
+    onClosed: root.activeComposer.field.forceActiveFocus()
   }
 }

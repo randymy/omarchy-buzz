@@ -2029,3 +2029,67 @@ or room is the next, separate step and is not built.
   membership (it may report `auth_rejected` until invited). With
   `identity_missing` (identity configured, secret absent) the panel shows only
   the enrollment note; `create_identity` would answer `identity_exists`.
+
+## ANSI art avatars — September 30, 2026
+
+Branch `ansi-avatars` (from `404db2f`); QML and tests only, not installed.
+Avatar art can now be true-color ANSI art (`.ans`) as well as the 6 × 12
+pasted text.
+
+- `plugin/AnsiArt.js` parses text into a grid of `{ch, fg, bg}` cells. It
+  keeps SGR `0`, `39`, `49`, `30–37`/`90–97` and `40–47`/`100–107` (fixed
+  mid-tone palette), `38;5;n`/`48;5;n` (xterm 256 table) and
+  `38;2;r;g;b`/`48;2;r;g;b`, and ignores bold. Every other
+  escape sequence (cursor movement, `ESC[K`, OSC, private modes, truncated
+  sequences), `\r`, control, C1 and direction characters, and anything after
+  the DOS end-of-file byte (SAUCE) is removed. Input is clipped to 256 KiB, 60
+  rows and 120 columns. The stored form is the grid re-serialized with
+  truecolor SGR only (`sanitize`, idempotent). A loaded plain `.txt` file is
+  stored the same way, so a leading reset marks grid art.
+- `BuzzAvatar` draws grid art as a `Canvas` thumbnail (`thumbnail(grid, 6,
+  12)`: for each block the centre cell, or the nearest non-blank cell when
+  the centre is blank, color kept, never averaged). Each cell is a filled
+  block of 1:2 aspect inside the identicon's own 5 × 3 footprint, filled with
+  a character's foreground or a blank's background (`blockColor`), so message
+  slots keep one width. Message-row avatars are clickable and open a
+  profile card (`AvatarCard.qml`, `buzzAvatarCard`) that draws the full grid,
+  backgrounds first, in its own characters and colors at the largest cell size that fits (4–12
+  px wide, at most 100 × 50 cells), with the display name and key prefix.
+  Escape or a click outside closes it.
+- **Set my avatar** in the sidebar (under the relay and room-list captions,
+  shown once the helper reports an identity) takes an absolute path to a
+  `.ans` or `.txt` file. `AvatarFileLoader.qml` refuses relative paths, `..`
+  and other extensions, runs `stat` to require a regular file of at most 256
+  KiB, reads it once with `FileView`, and checks the size again. It stores
+  only the sanitized art, never the path, in the existing `avatars.json`
+  keyed by the user's 64-hex public key. **Clear** removes it. This is local
+  only until profile avatars are published to the relay: other people still
+  see the identicon. The agent editor's **Load from file…** uses the same
+  loader for an agent's art. The store now accepts persona ids and 64-hex keys
+  (at most 32 entries) and writes synchronously.
+- Brightness: `adjust(grid, {brightness})` auto-levels (the brightest
+  foreground reaches lightness 0.95), then lifts lightness by the gamma
+  1 / brightness, scaling each color as a whole so its hue is kept and
+  clamping channels; backgrounds get the same curve. Grid art is stored as
+  `{art, brightness}` (0.5–3 in steps of 0.25; new file art starts at 1.5);
+  a plain string entry is still read and shown as stored. **Brightness −/+**
+  sits under Set my avatar (applied at once, the sidebar thumbnail is the
+  preview) and under the agent editor's avatar (a draft until Save). The
+  thumbnail and the profile card use the same adjusted colors.
+- Evidence (synthetic only): `scripts/preview --ansi-art`, which covers the
+  parser, clipping, thumbnail determinism, `toArt`, the stored form, slot width
+  with a colored avatar, the card opening on a real click and closing on
+  Escape or an outside click, and my avatar loaded from a fixture file,
+  persisted, restored by a fresh service, cleared, and refused on unsafe paths,
+  an oversized or missing file, and damaged stored art; backgrounds in the
+  parser, thumbnail and stored form; `adjust` monotonic, clamped, hue-keeping
+  and auto-leveling a synthetic dark grid; brightness stepped, saved and
+  restored, with damaged brightness entries refused. `--agents` covers
+  colored art and its brightness in the editor. All other preview modes pass.
+- Not verified: rendering in the installed shell under real themes and
+  fonts; CP437-encoded `.ans` files (read as UTF-8, so their block
+  characters are not converted); wide (double-column) characters, which count
+  as one cell. The thumbnail of a 100 × 50 portrait at 12 × 6 cells reads
+  as a head and shoulders with the right colors, not as a recognisable face.
+  In art with a dark background behind every character, brightness 1.5 lifts
+  the card's face only a little: the background fills most of each cell.
