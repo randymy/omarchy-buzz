@@ -26,7 +26,7 @@ ShellRoot {
           var loading = options.loading === true
           var rooms = options.revoked ? [roomA] : [roomA, roomB]
           var catalogRooms = loading ? [] : rooms.map(function(id) {
-            return {id:id, name:id === roomA ? "First" : "Second", description:""}
+            return {id:id, name:id === roomA ? "First" : "Second", description:"",kind:"stream",participants:[],hidden:false}
           })
           var history = loading ? {state:"unavailable",roomId:null,rows:[],hasMore:null,category:null}
             : {state:"snapshot",roomId:roomA,rows:[],hasMore:false,category:"history_completeness_unknown"}

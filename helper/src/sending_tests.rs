@@ -17,6 +17,9 @@ fn fixture() -> (Sender, SendIntent, Keys, Status, std::path::PathBuf) {
         id: intent.room.clone(),
         name: "synthetic".into(),
         description: String::new(),
+        kind: "stream".into(),
+        participants: Vec::new(),
+        hidden: false,
     });
     (Sender::new(Some(ledger)), intent, keys, status, path)
 }

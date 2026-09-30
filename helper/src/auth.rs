@@ -733,7 +733,7 @@ async fn observe_inner(
                         *relay_pin=Some(catalog.signer);
                         let next_catalog=crate::protocol::Catalog {
                             state:catalog.state.into(),category:Some(catalog.category.into()),
-                            rooms:catalog.rooms.into_iter().map(|r|crate::protocol::Room {id:r.id,name:r.name,description:r.description}).collect(),
+                            rooms:catalog.rooms.into_iter().map(|r|crate::protocol::Room {id:r.id,name:r.name,description:r.description,kind:r.kind.into(),participants:r.participants,hidden:r.hidden}).collect(),
                         };
                         // A room that left the joined set loses its views, jobs and pending
                         // delivery as an access denial would; remaining rooms keep theirs.
@@ -1064,6 +1064,9 @@ mod thread_policy_tests {
             id: room.into(),
             name: "room".into(),
             description: String::new(),
+            kind: "stream".into(),
+            participants: Vec::new(),
+            hidden: false,
         });
         status.history = History {
             state: "snapshot".into(),
@@ -1169,6 +1172,9 @@ mod thread_policy_tests {
             id: room.into(),
             name: "room".into(),
             description: String::new(),
+            kind: "stream".into(),
+            participants: Vec::new(),
+            hidden: false,
         });
         status.history = History {
             state: "snapshot".into(),

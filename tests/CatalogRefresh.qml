@@ -25,7 +25,7 @@ ShellRoot {
     return found
   }
   function row(id, text) { return {id:id,author:author,time:100,text:text,edited:false,truncated:false,unavailable:false} }
-  function rooms() { return [{id:room,name:"Fixture",description:""},{id:otherRoom,name:"Other",description:""}] }
+  function rooms() { return [{id:room,name:"Fixture",description:"",kind:"stream",participants:[],hidden:false},{id:otherRoom,name:"Other",description:"",kind:"stream",participants:[],hidden:false}] }
   function history() {
     var rows = []
     for (var i = 2; i <= 15; i++) rows.push(row(i.toString(16).repeat(64), "Synthetic message"))

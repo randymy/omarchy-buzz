@@ -7,7 +7,7 @@ import sys
 
 ROOM = "11111111-1111-4111-8111-111111111111"
 INSTANCE = "catalog-refresh-fixture"
-ROOMS = [{"id": ROOM, "name": "Synthetic room", "description": ""}]
+ROOMS = [{"id": ROOM, "name": "Synthetic room", "description": "", "kind": "stream", "participants": [], "hidden": False}]
 NO_HISTORY = {"state": "unavailable", "roomId": None, "rows": [], "hasMore": None, "category": None}
 NO_RECIPIENTS = {"state": "unavailable", "roomId": None, "entries": [], "partial": False, "category": None}
 assert sys.argv[1:] == ["ui-bridge"]

@@ -89,6 +89,9 @@ async fn scenario(accept: Option<bool>) {
         id: intent.room.clone(),
         name: "fixture".into(),
         description: String::new(),
+        kind: "stream".into(),
+        participants: Vec::new(),
+        hidden: false,
     });
     let (_, event) = sender.prepare(intent, &origin, &keys, &status, true, true);
     let event = event.unwrap();

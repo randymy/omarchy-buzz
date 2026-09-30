@@ -418,3 +418,25 @@ fn only_room_history_requests_and_admits_thread_summaries() {
     assert!(!history.matches(&summary(&Uuid::new_v4().to_string()), &keys));
     assert!(!thread.matches(&summary(&room.to_string()), &keys));
 }
+
+#[test]
+fn dm_visibility_request_is_viewer_scoped() {
+    let viewer = Keys::generate();
+    let relay = Keys::generate();
+    let request = QueryRequest::DmVisibility;
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&request.body(&viewer).unwrap()).unwrap(),
+        serde_json::json!([{"kinds":[30622],"#p":[viewer.public_key().to_hex()],"limit":1}])
+    );
+    let own = viewer.public_key().to_hex();
+    let mine = EventBuilder::new(Kind::Custom(30622), "")
+        .tags([Tag::parse(["p", own.as_str()]).unwrap()])
+        .sign_with_keys(&relay)
+        .unwrap();
+    assert!(request.matches(&mine, &viewer));
+    let theirs = EventBuilder::new(Kind::Custom(30622), "")
+        .tags([Tag::parse(["p", relay.public_key().to_hex().as_str()]).unwrap()])
+        .sign_with_keys(&relay)
+        .unwrap();
+    assert!(!request.matches(&theirs, &viewer));
+}

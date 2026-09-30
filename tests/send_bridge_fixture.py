@@ -12,7 +12,7 @@ assert sys.argv[1:] == ["ui-bridge"]
 record = {"sends": [], "fetches": 0, "recipientFetches": 0}
 status = {"connection": "authenticated", "identity": "a" * 64,
           "relay": "wss://fixture.invalid", "generation": 7, "category": None,
-          "catalog": {"state": "ready", "rooms": [{"id": ROOM, "name": "Synthetic room", "description": ""}], "category": None},
+          "catalog": {"state": "ready", "rooms": [{"id": ROOM, "name": "Synthetic room", "description": "", "kind": "stream", "participants": [], "hidden": False}], "category": None},
           "history": {"state": "unavailable", "roomId": None, "rows": [], "hasMore": None, "category": None},
           "recipients": {"state": "unavailable", "roomId": None, "entries": [], "partial": False, "category": None},
           "delivery": {"requestId": None, "roomId": None, "eventId": None, "state": "idle", "category": None}}

@@ -175,7 +175,7 @@ ShellRoot {
           return {version:1,type:service.instanceId === "" ? "hello" : "status",instanceId:"thread-fixture",generation:1,
             capabilities:["connection_status","room_catalog","room_history","thread_replies"],
             status:{generation:1,connection:"authenticated",category:null,identity:"b".repeat(64),relay:"wss://fixture.example/",
-              catalog:{state:"partial",category:"room_catalog_partial",rooms:[{id:room,name:"Fixture",description:""}]},
+              catalog:{state:"partial",category:"room_catalog_partial",rooms:[{id:room,name:"Fixture",description:"",kind:"stream",participants:[],hidden:false}]},
               history:{state:"snapshot",roomId:room,rows:[row(rootId)],hasMore:false,category:"history_completeness_unknown"},
               thread:{state:"unavailable",roomId:null,rootId:null,rows:[],hasMore:null,category:null}}}
         }

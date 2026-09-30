@@ -20,7 +20,7 @@ ShellRoot {
         service.beginSession()
         var room="11111111-1111-4111-8111-111111111111", other="22222222-2222-4222-8222-222222222222"
         var codex="a".repeat(64), duplicate="b".repeat(64), claude="c".repeat(64)
-        service.catalogRooms=[{id:room,name:"Test",description:""},{id:other,name:"Other",description:""}]
+        service.catalogRooms=[{id:room,name:"Test",description:"",kind:"stream",participants:[],hidden:false},{id:other,name:"Other",description:"",kind:"stream",participants:[],hidden:false}]
         service.catalogState="ready"; service.selectedRoomId=room; service.connection="authenticated"
         service.recipientsSupported=true; service.sendSupported=true
         service.instanceId="mentions-test"; service.generation=1

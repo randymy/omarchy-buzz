@@ -38,7 +38,7 @@ ShellRoot {
               identity:options.identity === undefined ? self : options.identity,
               relay:options.relay || "wss://fixture.example/",
               catalog:{state:catalogState, category:catalogState === "partial" ? "room_catalog_partial" : null,
-                rooms:catalogState === "partial" ? [{id:room,name:"Synthetic Room",description:""}] : []},
+                rooms:catalogState === "partial" ? [{id:room,name:"Synthetic Room",description:"",kind:"stream",participants:[],hidden:false}] : []},
               history:{state:active === "authenticated" && catalogState === "partial" ? "snapshot" : "unavailable",
                 roomId:active === "authenticated" && catalogState === "partial" ? room : null,
                 rows:active === "authenticated" && catalogState === "partial" ? rows : [],

@@ -4,7 +4,10 @@ use crate::query::{query, QueryRequest};
 use nostr::{Event, Keys, PublicKey, Timestamp};
 use reqwest::{redirect::Policy, Client};
 use serde::Serialize;
-use std::{collections::BTreeMap, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    time::Duration,
+};
 use uuid::Uuid;
 
 // Hosted Buzz can include inline community icons larger than 32 KiB.
@@ -18,6 +21,12 @@ pub struct Room {
     pub id: String,
     pub name: String,
     pub description: String,
+    /// `"stream"` or `"dm"`.
+    pub kind: &'static str,
+    /// DM participant keys (sorted lowercase hex, self included); empty for streams.
+    pub participants: Vec<String>,
+    /// Viewer-hidden DM per a relay-signed NIP-DV snapshot. Never set for streams.
+    pub hidden: bool,
 }
 #[derive(Clone, Debug)]
 pub struct Catalog {
@@ -117,6 +126,17 @@ fn one_tag<'a>(event: &'a Event, name: &str) -> Result<Option<&'a str>, &'static
     }
     Ok(value.flatten())
 }
+fn clean(text: &str, cap: usize) -> String {
+    let mut value = String::new();
+    for ch in text.chars() {
+        let ch = if ch.is_control() { ' ' } else { ch };
+        if value.len() + ch.len_utf8() > cap {
+            break;
+        }
+        value.push(ch);
+    }
+    value
+}
 fn room_id(event: &Event) -> Result<Uuid, &'static str> {
     let value = one_tag(event, "d")?.ok_or("catalog_invalid_shape")?;
     let id = Uuid::parse_str(value).map_err(|_| "catalog_invalid_shape")?;
@@ -151,6 +171,168 @@ fn insert<'a>(
         return Err("catalog_conflicting_snapshot");
     }
     map.insert(id, event);
+    Ok(())
+}
+
+/// DM participants from kind 39000 `p` tags (side_effects.rs:1220-1225).
+/// Upstream bounds a DM to 2-9 participants including its creator (buzz-db
+/// store/dm.rs:109-118; relay open command command_executor.rs:315-319,491-495).
+/// A DM outside those bounds, with a non-canonical or repeated key, or without the
+/// viewer is not something pinned Buzz produces, so it rejects the whole catalog.
+fn participants(event: &Event, member: PublicKey) -> Result<Vec<String>, &'static str> {
+    let mut keys = BTreeSet::new();
+    for tag in event
+        .tags
+        .iter()
+        .filter(|t| t.as_slice().first().is_some_and(|v| v == "p"))
+    {
+        let value = tag.as_slice().get(1).ok_or("catalog_invalid_shape")?;
+        let key = PublicKey::from_hex(value).map_err(|_| "catalog_invalid_shape")?;
+        if key.to_hex() != *value || !keys.insert(value.clone()) {
+            return Err("catalog_invalid_shape");
+        }
+    }
+    if !(2..=9).contains(&keys.len()) || !keys.contains(&member.to_hex()) {
+        return Err("catalog_invalid_shape");
+    }
+    Ok(keys.into_iter().collect())
+}
+
+/// Display name from the other participants' profile names, in key order.
+/// Missing or blank names fall back to a 12-hex key prefix; at most three names
+/// are shown, then `+N`. Profile names are self-asserted hints, never identity.
+fn dm_name(member: PublicKey, participants: &[String], names: &BTreeMap<String, String>) -> String {
+    let own = member.to_hex();
+    let others: Vec<&String> = participants.iter().filter(|p| **p != own).collect();
+    let mut parts: Vec<String> = others
+        .iter()
+        .take(3)
+        .map(
+            |key| match names.get(*key).filter(|n| !n.trim().is_empty()) {
+                Some(name) => name.clone(),
+                None => format!("{}…", &key[..12]),
+            },
+        )
+        .collect();
+    if others.len() > 3 {
+        parts.push(format!("+{}", others.len() - 3));
+    }
+    // Profile names are already sanitized (recipients.rs); this bounds the total.
+    clean(&parts.join(", "), 128)
+}
+
+/// Other participants of every DM, the keys whose profiles name DMs. At most
+/// 20 rooms x 8 others, since `reconcile` bounds both.
+fn dm_others(catalog: &Catalog, member: PublicKey) -> BTreeSet<String> {
+    let own = member.to_hex();
+    catalog
+        .rooms
+        .iter()
+        .filter(|r| r.kind == "dm")
+        .flat_map(|r| r.participants.iter().filter(|p| **p != own).cloned())
+        .collect()
+}
+
+/// Names from one author-scoped kind 0 response. Any bad signature, kind,
+/// unrequested author or future timestamp discards the whole batch, and a
+/// same-second conflict discards that author, matching recipients.rs.
+pub fn profile_names(
+    wanted: &BTreeSet<String>,
+    profiles: &[Event],
+    now: u64,
+) -> BTreeMap<String, String> {
+    if profiles.len() > 200
+        || profiles.iter().any(|e| {
+            e.verify().is_err()
+                || e.kind.as_u16() != 0
+                || e.created_at.as_secs() > now.saturating_add(60)
+                || !wanted.contains(&e.pubkey.to_hex())
+        })
+    {
+        return BTreeMap::new();
+    }
+    let mut latest: BTreeMap<String, (&Event, bool)> = BTreeMap::new();
+    for event in profiles {
+        let key = event.pubkey.to_hex();
+        match latest.get_mut(&key) {
+            Some((old, conflict)) if old.created_at == event.created_at => {
+                if old.id != event.id {
+                    *conflict = true;
+                }
+            }
+            Some((old, _)) if old.created_at > event.created_at => {}
+            _ => {
+                latest.insert(key, (event, false));
+            }
+        }
+    }
+    latest
+        .into_iter()
+        .filter(|(_, (_, conflict))| !conflict)
+        .map(|(key, (event, _))| (key, crate::recipients::name(event)))
+        .filter(|(_, name)| !name.is_empty())
+        .collect()
+}
+
+/// Renames every DM from participant profile names (missing ones use key prefixes).
+pub fn apply_names(catalog: &mut Catalog, member: PublicKey, names: &BTreeMap<String, String>) {
+    for room in catalog.rooms.iter_mut().filter(|r| r.kind == "dm") {
+        room.name = dm_name(member, &room.participants, names);
+    }
+}
+
+/// Marks viewer-hidden DMs from the NIP-DV snapshot response (`kinds:[30622],
+/// #p:[self], limit:1`). No snapshot means nothing is hidden (NIP-DV.md:110).
+/// A present snapshot must be signed by the relay identity (NIP-DV.md:43,120) and
+/// have exactly the shape of NIP-DV.md:64-85 as published by pinned Buzz
+/// (side_effects.rs:3585-3643): empty content, one `["d", self]`, one `["p", self]`,
+/// and only `["h", <channel uuid>]` otherwise. Anything else rejects the catalog
+/// rather than guessing which DMs the viewer hid. Streams are never affected.
+pub fn apply_visibility(
+    catalog: &mut Catalog,
+    member: PublicKey,
+    snapshots: &[Event],
+    now: u64,
+) -> Result<(), &'static str> {
+    let Some(event) = snapshots.first() else {
+        return Ok(());
+    };
+    if snapshots.len() > 1
+        || event.verify().is_err()
+        || event.pubkey != catalog.signer
+        || event.kind.as_u16() != 30622
+        || !event.content.is_empty()
+        || event.created_at.as_secs() > now.saturating_add(60)
+    {
+        return Err("catalog_invalid_shape");
+    }
+    let own = member.to_hex();
+    let (mut d, mut p) = (0, 0);
+    let mut hidden = BTreeSet::new();
+    for tag in event.tags.iter().map(|t| t.as_slice()) {
+        let [name, value] = tag else {
+            return Err("catalog_invalid_shape");
+        };
+        match name.as_str() {
+            "d" if *value == own => d += 1,
+            "p" if *value == own => p += 1,
+            "h" => {
+                let id = Uuid::parse_str(value).map_err(|_| "catalog_invalid_shape")?;
+                if id.to_string() != *value {
+                    return Err("catalog_invalid_shape");
+                }
+                // A set: repeated ids are harmless (NIP-DV.md:85).
+                hidden.insert(value.clone());
+            }
+            _ => return Err("catalog_invalid_shape"),
+        }
+    }
+    if d != 1 || p != 1 {
+        return Err("catalog_invalid_shape");
+    }
+    for room in catalog.rooms.iter_mut().filter(|r| r.kind == "dm") {
+        room.hidden = hidden.contains(&room.id);
+    }
     Ok(())
 }
 
@@ -216,21 +398,31 @@ pub fn reconcile(
                 .iter()
                 .any(|t| t.as_slice().first().is_some_and(|v| v == n))
         };
-        if kind != "stream" || flag("hidden") || flag("archived") {
+        // Pinned Buzz emits the NIP-29 `hidden` tag only for DMs, as a hint not to
+        // list them in public group lists (buzz-relay handlers/side_effects.rs:1215-1219).
+        // It is always present on DMs and says nothing about the viewer's hide state
+        // (that is NIP-DV, applied in `apply_visibility`). A stream carrying it is not
+        // produced upstream and stays excluded, as before.
+        let dm = match kind {
+            "stream" if !flag("hidden") => false,
+            "dm" => true,
+            _ => continue,
+        };
+        if flag("archived") {
             continue;
         }
-        let clean = |text: &str, cap: usize| {
-            let mut value = String::new();
-            for ch in text.chars() {
-                let ch = if ch.is_control() { ' ' } else { ch };
-                if value.len() + ch.len_utf8() > cap {
-                    break;
-                }
-                value.push(ch);
-            }
-            value
+        let participants = if dm {
+            participants(event, member)?
+        } else {
+            Vec::new()
         };
-        let name = clean(name, 128);
+        // Upstream DM names are literally "DM"/"Group DM (N)" (buzz-db store/dm.rs:160-164);
+        // they are never projected. Until profiles are applied, DMs use key prefixes.
+        let name = if dm {
+            dm_name(member, &participants, &BTreeMap::new())
+        } else {
+            clean(name, 128)
+        };
         if name.trim().is_empty() {
             return Err("catalog_invalid_shape");
         }
@@ -239,6 +431,9 @@ pub fn reconcile(
             id: id.to_string(),
             name,
             description,
+            kind: if dm { "dm" } else { "stream" },
+            participants,
+            hidden: false,
         });
     }
     // Query limits and no pagination/completeness marker prevent a complete claim,
@@ -289,12 +484,61 @@ pub async fn discover(
         &metadata,
         Timestamp::now().as_secs(),
     )?;
+    if result.rooms.iter().any(|r| r.kind == "dm") {
+        let snapshots = query(relay, keys, &QueryRequest::DmVisibility).await?;
+        apply_visibility(
+            &mut result,
+            keys.public_key(),
+            &snapshots,
+            Timestamp::now().as_secs(),
+        )?;
+        let names = dm_profile_names(relay, keys, dm_others(&result, keys.public_key())).await;
+        apply_names(&mut result, keys.public_key(), &names);
+    }
     result.trust = if relay.starts_with("ws:") {
         "loopback_development"
     } else {
         "tls_origin"
     };
     Ok(result)
+}
+
+/// Best-effort profile lookup for DM names, in author batches of 20 within a
+/// short budget so the catalog refresh stays inside its caller's timeout. A busy
+/// read slot is retried briefly; any other failure leaves key prefixes.
+async fn dm_profile_names(
+    relay: &str,
+    keys: &Keys,
+    wanted: BTreeSet<String>,
+) -> BTreeMap<String, String> {
+    let mut names = BTreeMap::new();
+    let authors: Vec<PublicKey> = wanted
+        .iter()
+        .filter_map(|k| PublicKey::from_hex(k).ok())
+        .collect();
+    let lookup = async {
+        for batch in authors.chunks(20) {
+            let request = QueryRequest::Profiles {
+                authors: batch.to_vec(),
+            };
+            let mut attempts = 0;
+            let events = loop {
+                match query(relay, keys, &request).await {
+                    Err("query_busy") if attempts < 3 => {
+                        attempts += 1;
+                        tokio::time::sleep(Duration::from_millis(250)).await;
+                    }
+                    other => break other,
+                }
+            };
+            if let Ok(events) = events {
+                let scope = batch.iter().map(PublicKey::to_hex).collect();
+                names.extend(profile_names(&scope, &events, Timestamp::now().as_secs()));
+            }
+        }
+    };
+    let _ = tokio::time::timeout(Duration::from_secs(4), lookup).await;
+    names
 }
 
 #[cfg(test)]

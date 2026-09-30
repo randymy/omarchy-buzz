@@ -169,6 +169,9 @@ async fn real_relay_messaging_conformance() {
                 id: r.id.clone(),
                 name: r.name.clone(),
                 description: r.description.clone(),
+                kind: r.kind.into(),
+                participants: r.participants.clone(),
+                hidden: r.hidden,
             })
             .collect();
         status.recipients = protocol::RecipientsView {

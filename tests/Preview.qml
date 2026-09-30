@@ -121,8 +121,8 @@ ShellRoot {
           value.status.catalog = catalog
           return JSON.stringify(value)
         }
-        var roomA = {id: "00000000-0000-4000-8000-000000000001", name: "General", description: "Synthetic catalog"}
-        var roomB = {id: "00000000-0000-4000-8000-000000000002", name: "Development", description: "Synthetic catalog"}
+        var roomA = {id: "00000000-0000-4000-8000-000000000001", name: "General", description: "Synthetic catalog", kind: "stream", participants: [], hidden: false}
+        var roomB = {id: "00000000-0000-4000-8000-000000000002", name: "Development", description: "Synthetic catalog", kind: "stream", participants: [], hidden: false}
         var partialCatalog = {state: "partial", rooms: [roomA, roomB], category: "room_catalog_partial"}
         protocolService.beginSession()
         if (!protocolService.acceptFrame(catalogFrame("hello", 1, partialCatalog))
@@ -143,11 +143,41 @@ ShellRoot {
         if (protocolService.acceptFrame(catalogFrame("status", 3, {state:"partial",rooms:[roomA,roomA],category:null}))
             || protocolService.rooms.length !== 0) throw new Error("Duplicate rooms accepted or failure retained rooms")
         protocolService.beginSession()
-        if (protocolService.acceptFrame(catalogFrame("hello", 1, {state:"ready",rooms:[{id:"not-uuid",name:"bad",description:""}],category:null})))
+        if (protocolService.acceptFrame(catalogFrame("hello", 1, {state:"ready",rooms:[{id:"not-uuid",name:"bad",description:"",kind:"stream",participants:[],hidden:false}],category:null})))
           throw new Error("Malformed room accepted")
         protocolService.beginSession()
         if (protocolService.acceptFrame(catalogFrame("hello", 1, {state:"partial",rooms:Array(21).fill(roomA),category:null})))
           throw new Error("Oversized catalog accepted")
+        var dmA = {id: "00000000-0000-4000-8000-00000000000d", name: "Ada, Bob", description: "", kind: "dm", participants: ["a".repeat(64), "b".repeat(64), "c".repeat(64)], hidden: false}
+        var dmHidden = Object.assign({}, dmA, {id: "00000000-0000-4000-8000-00000000000e", name: "Hidden", participants: ["a".repeat(64), "d".repeat(64)], hidden: true})
+        protocolService.beginSession()
+        if (!protocolService.acceptFrame(catalogFrame("hello", 1, {state:"partial",rooms:[dmA, roomA, dmHidden],category:"room_catalog_partial"}))
+            || protocolService.rooms.length !== 3 || protocolService.streamRooms.length !== 1 || protocolService.streamRooms[0].id !== roomA.id
+            || protocolService.dmRooms.length !== 1 || protocolService.dmRooms[0].id !== dmA.id
+            || protocolService.dmRooms[0].participants.length !== 3 || protocolService.selectedRoomId !== roomA.id
+            || protocolService.roomTitle(protocolService.dmRooms[0]) !== "Ada, Bob" || protocolService.roomTitle(roomA) !== "# General")
+          throw new Error("DM rooms misclassified, hidden DM listed or first visible room not selected")
+        protocolService.selectRoom(dmA.id)
+        if (protocolService.selectedRoomId !== dmA.id || protocolService.roomTitle(protocolService.selectedRoom) !== "Ada, Bob")
+          throw new Error("DM selection or title incorrect")
+        var badDms = [
+          Object.assign({}, dmA, {participants: ["a".repeat(64), "A".repeat(64)]}),
+          Object.assign({}, dmA, {participants: ["a".repeat(64), "a".repeat(64)]}),
+          Object.assign({}, dmA, {participants: ["a".repeat(64)]}),
+          Object.assign({}, dmA, {participants: "a".repeat(64)}),
+          Object.assign({}, dmA, {participants: Array(10).fill(0).map(function(_, i) { return String(i).repeat(64) })}),
+          Object.assign({}, dmA, {hidden: "false"}),
+          Object.assign({}, dmA, {kind: "forum"}),
+          Object.assign({}, roomA, {participants: ["a".repeat(64), "b".repeat(64)]}),
+          Object.assign({}, roomA, {hidden: true}),
+          {id: roomA.id, name: roomA.name, description: roomA.description},
+          Object.assign({}, roomA, {extra: 1})
+        ]
+        for (var d = 0; d < badDms.length; d++) {
+          protocolService.beginSession()
+          if (protocolService.acceptFrame(catalogFrame("hello", 1, {state:"partial",rooms:[badDms[d]],category:null})))
+            throw new Error("Malformed room kind fields accepted: case " + d)
+        }
         protocolService.beginSession()
         protocolService.acceptFrame(catalogFrame("hello", 1, partialCatalog))
         if (!protocolService.acceptFrame(frame("status", "catalog-fixture", 1, "disconnected"))

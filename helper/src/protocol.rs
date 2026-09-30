@@ -249,6 +249,12 @@ pub struct Room {
     pub id: String,
     pub name: String,
     pub description: String,
+    /// `"stream"` or `"dm"`; always serialized so the panel validates exactly.
+    pub kind: String,
+    /// DM participant keys including self; always serialized, empty for streams.
+    pub participants: Vec<String>,
+    /// Viewer-hidden DM (NIP-DV). The panel decides whether to list it.
+    pub hidden: bool,
 }
 #[derive(Clone, Serialize)]
 pub struct Catalog {
@@ -542,6 +548,9 @@ mod state_tests {
                 id: "00000000-0000-4000-8000-000000000001".into(),
                 name: "\\".repeat(128),
                 description: "\\".repeat(256),
+                kind: "stream".into(),
+                participants: (0..9).map(|_| "e".repeat(64)).collect(),
+                hidden: true,
             })
             .collect();
         status.history.rows = (0..20)

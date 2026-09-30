@@ -27,6 +27,7 @@ pub enum QueryRequest {
     RoomMembers { room: Uuid },
     Profiles { authors: Vec<nostr::PublicKey> },
     AgentProfiles { authors: Vec<nostr::PublicKey> },
+    DmVisibility,
 }
 impl QueryRequest {
     fn body(&self, keys: &Keys) -> Result<Vec<u8>, &'static str> {
@@ -39,6 +40,10 @@ impl QueryRequest {
             }
             Self::AgentProfiles { authors } if !authors.is_empty() && authors.len() <= 20 => {
                 serde_json::json!({"kinds":[10100],"authors":authors.iter().map(|p|p.to_hex()).collect::<Vec<_>>(),"limit":authors.len()})
+            }
+            // NIP-DV per-viewer hidden-DM snapshot (docs/nips/NIP-DV.md:104-110).
+            Self::DmVisibility => {
+                serde_json::json!({"kinds":[30622],"#p":[keys.public_key().to_hex()],"limit":1})
             }
             Self::JoinedRooms { limit } if (1..=50).contains(limit) => {
                 serde_json::json!({"kinds":[39002],"#p":[keys.public_key().to_hex()],"limit":limit})
@@ -111,6 +116,13 @@ impl QueryRequest {
                                     .get(1)
                                     .is_some_and(|id| *id == room.to_string())
                         }))
+            }
+            Self::DmVisibility => {
+                event.kind.as_u16() == 30622
+                    && event.tags.iter().any(|t| {
+                        t.as_slice().first().map(String::as_str) == Some("p")
+                            && t.as_slice().get(1) == Some(&keys.public_key().to_hex())
+                    })
             }
             Self::JoinedRooms { .. } => {
                 event.kind.as_u16() == 39002

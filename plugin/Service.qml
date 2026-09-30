@@ -204,7 +204,7 @@ Item {
   readonly property bool deliveryScopeMismatch: submissionId !== "" && submissionDraftKey !== composerKey
   readonly property string submissionScopeLabel: {
     var room = rooms.find(function(entry) { return entry.id === submissionRoom })
-    var label = "#" + (room ? room.name : submissionRoom)
+    var label = room && room.kind === "dm" ? room.name : "#" + (room ? room.name : submissionRoom)
     return submissionRoot ? label + " · thread " + submissionRoot.slice(0, 8) + "…" : label
   }
   readonly property string deliveryBaseLabel: deliveryCategory === "send_request_reused" ? "Submission ID cannot be reused. Start a new submission explicitly." : deliveryCategory === "send_ledger_unavailable" ? "Local send ledger unavailable. Check state directory permissions and free space, then retry." : ({idle:"",sending:"Sending…",acknowledged:"Acknowledged by relay",rejected:"Message rejected. Start a new submission explicitly to retry; this receipt will not send again.",failed:"Send failed · draft retained",unknown:"Outcome unknown. Sending again may create a duplicate. Discard the uncertain draft explicitly to continue."})[deliveryState] || ""
@@ -217,6 +217,12 @@ Item {
   property string catalogCategory: ""
   readonly property string catalogLabel: sampleMode ? "Sample rooms" : ({unavailable: "Rooms unavailable", loading: "Loading rooms", partial: "Partial list · " + catalogRooms.length + " shown (limit 20)", ready: catalogRooms.length ? "Joined rooms · " + catalogRooms.length : "No joined rooms"})[catalogState]
   readonly property var rooms: sample ? sample.rooms : catalogRooms
+  // Sample rooms predate room kinds and count as streams; validated frames always carry kind.
+  readonly property var streamRooms: rooms.filter(function(room) { return room.kind !== "dm" })
+  // Hidden DMs stay selectable in the catalog but are not listed.
+  readonly property var dmRooms: rooms.filter(function(room) { return room.kind === "dm" && room.hidden !== true })
+  readonly property var visibleRooms: streamRooms.concat(dmRooms)
+  function roomTitle(room) { return room ? (room.kind === "dm" ? room.name : "# " + room.name) : "" }
   property string selectedRoomId: sampleMode ? "sample-general" : ""
   readonly property var selectedRoom: rooms.find(function(room) { return room.id === root.selectedRoomId }) || null
   property var historyRows: []
@@ -685,6 +691,20 @@ Item {
         return ["connection_status", "room_catalog", "room_history", "message_send", "room_recipients", "history_auto_refresh", "room_activity", "agent_profiles", "thread_replies", "thread_send", "thread_summaries"].indexOf(cap) !== -1 && capabilities.indexOf(cap) === index
       })
   }
+  // Streams carry no participants and are never hidden. A DM lists 2-9 distinct
+  // participant keys (pinned Buzz bounds, self included); hidden is the viewer's
+  // NIP-DV state, verified by the helper. Presentation data only, never authority.
+  function validRoomKind(room) {
+    if (typeof room.hidden !== "boolean" || !Array.isArray(room.participants) || room.participants.length > 9) return false
+    var seen = ({})
+    for (var i = 0; i < room.participants.length; i++) {
+      var key = room.participants[i]
+      if (typeof key !== "string" || !/^[a-f0-9]{64}$/.test(key) || seen[key]) return false
+      seen[key] = true
+    }
+    if (room.kind === "stream") return room.participants.length === 0 && room.hidden === false
+    return room.kind === "dm" && room.participants.length >= 2
+  }
   function validatedCatalog(catalog) {
     if (!catalog || ["unavailable", "loading", "partial", "ready"].indexOf(catalog.state) === -1
         || !Array.isArray(catalog.rooms) || catalog.rooms.length > 20
@@ -693,11 +713,13 @@ Item {
     var ids = ({})
     for (var i = 0; i < catalog.rooms.length; i++) {
       var room = catalog.rooms[i]
-      if (!room || typeof room.id !== "string" || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(room.id)
+      if (!room || typeof room !== "object" || Array.isArray(room)
+          || Object.keys(room).sort().join(",") !== "description,hidden,id,kind,name,participants"
+          || typeof room.id !== "string" || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(room.id)
           || ids[room.id] || !boundedString(room.name, 128) || !room.name.trim()
-          || !boundedString(room.description, 512)) return null
+          || !boundedString(room.description, 512) || !validRoomKind(room)) return null
       ids[room.id] = true
-      clean.push({id: room.id, name: room.name, description: room.description})
+      clean.push({id: room.id, name: room.name, description: room.description, kind: room.kind, participants: room.participants.slice(), hidden: room.hidden})
     }
     if (["unavailable", "loading"].indexOf(catalog.state) !== -1 && clean.length !== 0) return null
     return {state: catalog.state, rooms: clean, category: catalog.category || ""}
@@ -900,8 +922,8 @@ Item {
         && !catalogRooms.some(function(room) { return room.id === root.selectedRoomId })) {
       clearHistory()
       clearRecipients()
-      var remembered = rememberedScope === incomingScope && catalogRooms.some(function(room) { return room.id === root.rememberedRoom })
-      selectedRoomId = remembered ? rememberedRoom : catalogRooms.length ? catalogRooms[0].id : ""
+      var remembered = rememberedScope === incomingScope && visibleRooms.some(function(room) { return room.id === root.rememberedRoom })
+      selectedRoomId = remembered ? rememberedRoom : visibleRooms.length ? visibleRooms[0].id : ""
     }
     historySupported = supportsHistory
     if (state.connection !== "authenticated" || !supportsHistory || ["loading", "unavailable"].indexOf(catalogState) !== -1) clearHistory()
