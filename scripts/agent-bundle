@@ -1,0 +1,403 @@
+#!/usr/bin/python3
+"""Assemble or check a self-contained harness bundle for the agent manager.
+
+  agent-bundle <harness> [--output DIR] [--buzz-bin DIR] [--node FILE]
+               [--adapter DIR | --npm-ci --npm-cli FILE] [--claude-cli FILE]
+  agent-bundle <harness> --check [--output DIR]
+
+Assembly copies pinned, verified inputs into a new directory (default
+~/.local/share/omarchy-buzz/agent-<harness>) and records bundle.json with
+versions and a SHA-256 for every file. Nothing is downloaded unless --npm-ci
+is given. An existing bundle is never modified or replaced.
+
+--check prints `ready` (exit 0) or `missing` (exit 1, category on stderr).
+It detects changed, missing or extra files; bundle.json is self-recorded and
+is not proof of origin.
+"""
+import argparse
+import datetime
+import hashlib
+import json
+import os
+from pathlib import Path
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+
+sys.dont_write_bytecode = True
+ROOT = Path(__file__).resolve().parents[1]
+SCRIPTS = Path(__file__).resolve().parent
+HOME = Path.home()
+HARNESSES = ('codex', 'claude-code')
+SCHEMA = 1
+
+BUZZ = {  # official upstream, unchanged, ARM64 run 36639519388 (docs/evidence/stock-codex-room-2026-09-29.json)
+    'revision': '781d39510cf23cfe224e8f521ae06a23377e06de',
+    'run': '36639519388',
+    'sha256': {'buzz-acp': '9323cea933acf782a6976c1f4aa6484948de9876a70b1b3a11720e533daec4f4',
+               'buzz': '54aa3ad0bd672d36ca03747390fc1f41df5cb454545d5424d2d20329588433c3',
+               'buzz-admin': '7fc7ef31dfdbdfe425cbca1280e406e4dce96c44baba28b67536557f72804c80'},
+}
+NODE_VERSION = 'v22.23.3'
+CLAUDE_CLI = {'version': '2.1.280',  # byte-identical to @anthropic-ai/claude-agent-sdk-linux-arm64 0.3.280
+              'sha256': '92f2b4fd05d0bdcf7b9a0d4e0ecef4a1e4b368b290cd8fd07cff9a50013f45a2'}
+CODEX_NATIVE = 'node_modules/@openai/codex-linux-arm64/vendor/aarch64-unknown-linux-musl/bin/codex'
+ADAPTERS = {
+    'codex': {
+        'packages': {
+            'node_modules/@agentclientprotocol/codex-acp': ('2.0.0', 'sha512-dho7RRXP+7Ur813qKgPVoAKjr4x3A8IcOoBOTYJRkcCNgcGraP5x3/5lPcZ0QgcVm0ErdYXRPYjwdSzvZHaKqw=='),
+            'node_modules/@openai/codex': ('0.158.0', 'sha512-GBhcKpQmVLsCtEP5mUf6WFye6QQgTKotwsXrYPM0GFmEsoOSahik6hkf2FHabX9kZBl0Y0/PQowLu7uYMKT8dg=='),
+            'node_modules/@openai/codex-linux-arm64': ('0.158.0-linux-arm64', 'sha512-T9AgGcoU7HNsxJ4prT/R9YvztyEmz9kWP/VlT2cbCop4PVwiqfG9YMJtLo4j2ScewvSaTl4sQFwla+fwGpoRZg=='),
+        },
+        'native': {CODEX_NATIVE: '0059c73b149a1433b634e26ad8a715e02717a9920665a9cc5676941db03c45cd'},
+        'entry': 'node_modules/@agentclientprotocol/codex-acp/dist/index.js',
+        'exclude': (),
+        'wrappers': {'codex-acp': 'room-codex-acp', 'codex': 'room-codex'},
+    },
+    'claude-code': {
+        'packages': {
+            'node_modules/@agentclientprotocol/claude-agent-acp': ('0.82.0', 'sha512-XTde3JIOPaTHdcLXFXSL0zZImHDR3NnmpbUkqsVJwBYX+qZNviwvKmn6yxhsp4ssRFKqOc3kcKMqFuU81QZJxQ=='),
+            'node_modules/@anthropic-ai/claude-agent-sdk': ('0.3.280', 'sha512-aIQSTKcCJcOgi125GAGQaNZUYgxbEBQwV2Ac+Utp0+gGUjIEWjTqz4B8kXr9XjkcCTYiRUMTDsXPAUfIcBDjnw=='),
+        },
+        'native': {},
+        'entry': 'node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js',
+        # The SDK's own native CLI copies are never used: room-claude-acp sets
+        # CLAUDE_CODE_EXECUTABLE to the pinned CLI in claude/.
+        'exclude': ('node_modules/@anthropic-ai/claude-agent-sdk-',),
+        'wrappers': {'claude-agent-acp': 'room-claude-acp', 'claude': 'room-claude'},
+    },
+}
+SUBSCRIPTION_SETTINGS = b'{"forceLoginMethod": "claudeai"}\n'
+LAUNCHER = ('room-agent', 'room-sandbox', 'agent-login', 'agent-bundle')
+
+
+class Refused(Exception):
+    pass
+
+
+def default_bundle(harness):
+    return HOME / '.local/share/omarchy-buzz' / ('agent-' + harness)
+
+
+def digest(path):
+    with path.open('rb') as stream:
+        return hashlib.file_digest(stream, 'sha256').hexdigest()
+
+
+def regular(path, category):
+    if path.is_symlink() or not path.is_file():
+        raise Refused(category)
+    return path
+
+
+def elf_arm64(path, category):
+    with path.open('rb') as stream:
+        head = stream.read(20)
+    if len(head) < 20 or head[:5] != b'\x7fELF\x02' or int.from_bytes(head[18:20], 'little') != 183:
+        raise Refused(category)
+
+
+def entrypoints(harness):
+    names = {'buzzAcp': 'bin/buzz-acp', 'entry': 'bin/room-agent-entry', 'node': 'bin/node',
+             'adapter': 'adapter/' + ADAPTERS[harness]['entry'],
+             'roomAgent': 'launcher/room-agent', 'roomSandbox': 'launcher/room-sandbox',
+             'agentLogin': 'launcher/agent-login'}
+    for command in ADAPTERS[harness]['wrappers']:
+        names['bin:' + command] = 'bin/' + command
+    if harness == 'codex':
+        names['nativeCli'] = 'adapter/' + CODEX_NATIVE
+    else:
+        names['nativeCli'] = 'claude/claude'
+        names['subscriptionSettings'] = 'claude/subscription-settings.json'
+    return names
+
+
+def buzz_binaries(directory):
+    """Verify official Buzz binaries: CI build.json next to bin/, else the pinned run."""
+    directory = directory.resolve()
+    build = directory.parent / 'build.json'
+    expected = BUZZ['sha256']
+    provenance = {'revision': BUZZ['revision'], 'run': BUZZ['run'], 'source': 'pinned-hashes'}
+    if build.is_file() and not build.is_symlink():
+        report = json.loads(build.read_text())
+        if report.get('sourceRevision') != BUZZ['revision'] or report.get('patchesApplied') != []:
+            raise Refused('buzz_revision_mismatch')
+        expected = {name: report.get('files', {}).get('bin/' + name) for name in expected}
+        provenance = {'revision': BUZZ['revision'], 'run': str(report.get('runId')),
+                      'workflowRevision': report.get('workflowRevision'), 'source': 'ci-build-json'}
+    files = {}
+    for name, sha in expected.items():
+        path = regular(directory / name, 'buzz_binary_missing')
+        elf_arm64(path, 'buzz_binary_not_arm64')
+        if not sha or digest(path) != sha:
+            raise Refused('buzz_binary_hash_mismatch')
+        files[name] = path
+    license_file = directory.parent / 'LICENSE'
+    return files, provenance, (license_file if license_file.is_file() and not license_file.is_symlink() else None)
+
+
+def node_binary(path):
+    regular(path, 'node_missing')
+    elf_arm64(path, 'node_not_arm64')
+    result = subprocess.run([str(path), '--version'], capture_output=True, text=True, timeout=30,
+                            env={'PATH': '/usr/bin:/bin'}, stdin=subprocess.DEVNULL)
+    if result.returncode or result.stdout.strip() != NODE_VERSION:
+        raise Refused('node_version_mismatch')
+    return path
+
+
+def claude_cli(path):
+    path = path.resolve()
+    regular(path, 'claude_cli_missing')
+    elf_arm64(path, 'claude_cli_not_arm64')
+    if digest(path) != CLAUDE_CLI['sha256']:
+        raise Refused('claude_cli_unpinned')
+    return path
+
+
+def adapter_tree(directory, harness):
+    """Verify pinned adapter packages against npm's installed-package record."""
+    spec = ADAPTERS[harness]
+    for name in ('package.json', 'package-lock.json'):
+        regular(directory / name, 'adapter_manifest_missing')
+    try:
+        installed = json.loads((directory / 'node_modules/.package-lock.json').read_text())['packages']
+    except (OSError, ValueError, KeyError) as exc:
+        raise Refused('adapter_install_record_missing') from exc
+    for package, (version, integrity) in spec['packages'].items():
+        try:
+            metadata = json.loads(regular(directory / package / 'package.json', 'adapter_package_missing').read_text())
+        except ValueError as exc:
+            raise Refused('adapter_package_missing') from exc
+        record = installed.get(package, {})
+        if metadata.get('version') != version or record.get('version') != version:
+            raise Refused('adapter_version_mismatch')
+        if record.get('integrity') != integrity:
+            raise Refused('adapter_integrity_mismatch')
+    for name, sha in spec['native'].items():
+        if digest(regular(directory / name, 'adapter_native_missing')) != sha:
+            raise Refused('adapter_native_hash_mismatch')
+    regular(directory / spec['entry'], 'adapter_entry_missing')
+    return directory
+
+
+def npm_ci(harness, node, npm_cli, scratch):
+    """Opt-in network step: locked npm ci of packaging/agent-<harness>, scripts disabled."""
+    regular(npm_cli, 'npm_cli_missing')
+    target = scratch / 'adapter'
+    target.mkdir()
+    for name in ('package.json', 'package-lock.json'):
+        shutil.copyfile(ROOT / 'packaging' / ('agent-' + harness) / name, target / name)
+    for name in ('user.npmrc', 'global.npmrc'):
+        (scratch / name).touch(mode=0o600)
+    command = [str(node), str(npm_cli), 'ci', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund',
+               '--registry=https://registry.npmjs.org/', '--userconfig=' + str(scratch / 'user.npmrc'),
+               '--globalconfig=' + str(scratch / 'global.npmrc'), '--cache=' + str(scratch / 'npm-cache')]
+    if harness == 'claude-code':
+        command.append('--omit=optional')  # only the SDK's unused native CLI copies
+    env = {'HOME': str(scratch), 'PATH': str(node.parent) + ':/usr/bin:/bin', 'LANG': 'C.UTF-8'}
+    result = subprocess.run(command, cwd=target, env=env, stdin=subprocess.DEVNULL,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=900)
+    if result.returncode:
+        raise Refused('adapter_install_failed')
+    return target
+
+
+def copy_file(source, target, mode):
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source, target, follow_symlinks=False)
+    target.chmod(mode)
+
+
+def copy_adapter(source, target, harness):
+    excluded = ADAPTERS[harness]['exclude']
+    for current, dirs, files in os.walk(source, followlinks=False):
+        here = Path(current)
+        relative_dir = here.relative_to(source)
+        dirs[:] = sorted(d for d in dirs if d not in ('.bin', '__pycache__') and
+                         not any((relative_dir / d).as_posix().startswith(p) for p in excluded))
+        for name in sorted(files):
+            item = here / name
+            relative = item.relative_to(source)
+            if any(relative.as_posix().startswith(p) for p in excluded):
+                continue
+            if item.is_symlink() or not item.is_file():
+                raise Refused('adapter_tree_unsafe')
+            executable = item.stat().st_mode & 0o111
+            copy_file(item, target / relative, 0o755 if executable else 0o644)
+        for name in dirs:
+            if (here / name).is_symlink():
+                raise Refused('adapter_tree_unsafe')
+
+
+def walk_bundle(bundle):
+    """Yield (relative path, Path) for every file; refuse links and special files."""
+    for current, dirs, files in os.walk(bundle, followlinks=False):
+        here = Path(current)
+        dirs[:] = sorted(d for d in dirs if d != '__pycache__')
+        for name in dirs:
+            if (here / name).is_symlink():
+                raise Refused('bundle_link_refused')
+        for name in sorted(files):
+            item = here / name
+            if item.is_symlink() or not item.is_file():
+                raise Refused('bundle_link_refused')
+            yield item.relative_to(bundle).as_posix(), item
+
+
+def plugin_revision():
+    try:
+        revision = subprocess.run(['git', '-C', str(ROOT), 'rev-parse', 'HEAD'], capture_output=True,
+                                  text=True, timeout=10).stdout.strip()
+        dirty = bool(subprocess.run(['git', '-C', str(ROOT), 'status', '--porcelain', '--', 'scripts', 'packaging'],
+                                    capture_output=True, text=True, timeout=10).stdout.strip())
+    except OSError:
+        return {'revision': 'unknown', 'dirty': None}
+    return {'revision': revision or 'unknown', 'dirty': dirty}
+
+
+def assemble(args):
+    harness = args.harness
+    output = args.output
+    if not output.is_absolute() or '..' in output.parts:
+        raise Refused('absolute_output_required')
+    if any(p.is_symlink() for p in output.parents):
+        raise Refused('linked_output_path')
+    if output.exists() or output.is_symlink():
+        raise Refused('bundle_output_exists')
+    if not output.parent.is_dir():
+        raise Refused('output_parent_missing')
+    buzz, provenance, buzz_license = buzz_binaries(args.buzz_bin)
+    node = node_binary(args.node if args.node else args.buzz_bin / 'node')
+    cli = claude_cli(args.claude_cli) if harness == 'claude-code' else None
+    staging = Path(tempfile.mkdtemp(prefix='.agent-' + harness + '.partial-', dir=output.parent))
+    scratch = None
+    try:
+        if args.npm_ci:
+            scratch = Path(tempfile.mkdtemp(prefix='.agent-bundle-npm-', dir=output.parent))
+            adapter = npm_ci(harness, node, args.npm_cli, scratch)
+        elif args.adapter is not None:
+            adapter = args.adapter
+        elif harness == 'codex':
+            adapter = HOME / '.local/share/omarchy-buzz/stock-agent-codex/adapter'
+        else:
+            raise Refused('adapter_source_required')
+        adapter_tree(adapter, harness)
+        for name, path in buzz.items():
+            copy_file(path, staging / 'bin' / name, 0o755)
+        copy_file(node, staging / 'bin/node', 0o755)
+        copy_file(SCRIPTS / 'room-agent-entry', staging / 'bin/room-agent-entry', 0o755)
+        for command, script in ADAPTERS[harness]['wrappers'].items():
+            copy_file(SCRIPTS / script, staging / 'bin' / command, 0o755)
+        for script in LAUNCHER:
+            copy_file(SCRIPTS / script, staging / 'launcher' / script, 0o755)
+        copy_adapter(adapter, staging / 'adapter', harness)
+        if cli is not None:
+            copy_file(cli, staging / 'claude/claude', 0o755)
+            (staging / 'claude/subscription-settings.json').write_bytes(SUBSCRIPTION_SETTINGS)
+            (staging / 'claude/subscription-settings.json').chmod(0o644)
+        copy_file(ROOT / 'LICENSE', staging / 'licenses/omarchy-buzz-LICENSE', 0o644)
+        if buzz_license is not None:
+            copy_file(buzz_license, staging / 'licenses/Buzz-LICENSE', 0o644)
+        versions = {'node': NODE_VERSION}
+        for package, (version, _) in ADAPTERS[harness]['packages'].items():
+            versions[package.removeprefix('node_modules/')] = version
+        if cli is not None:
+            versions['claude'] = CLAUDE_CLI['version']
+        files = {}
+        for relative, item in walk_bundle(staging):
+            files[relative] = {'sha256': digest(item), 'bytes': item.stat().st_size,
+                               'mode': format(stat.S_IMODE(item.stat().st_mode), '04o')}
+        record = {'schemaVersion': SCHEMA, 'harness': harness,
+                  'assembledAt': datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds'),
+                  'plugin': plugin_revision(), 'buzz': provenance, 'versions': versions,
+                  'adapterSource': 'npm-ci' if args.npm_ci else 'prepared-tree',
+                  'entrypoints': entrypoints(harness), 'files': files}
+        missing = set(record['entrypoints'].values()) - set(files)
+        if missing:
+            raise Refused('entrypoint_missing')
+        (staging / 'bundle.json').write_text(json.dumps(record, indent=2, sort_keys=True) + '\n')
+        (staging / 'bundle.json').chmod(0o644)
+        staging.chmod(0o755)
+        os.rename(staging, output)
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging)
+        if scratch is not None and scratch.exists():
+            shutil.rmtree(scratch)
+    return output
+
+
+def check(bundle, harness):
+    if bundle.is_symlink() or any(p.is_symlink() for p in bundle.parents) or not bundle.is_dir():
+        raise Refused('bundle_missing')
+    manifest = bundle / 'bundle.json'
+    try:
+        regular(manifest, 'bundle_manifest_invalid')
+        if manifest.stat().st_size > 64 * 1024 * 1024:
+            raise Refused('bundle_manifest_invalid')
+        record = json.loads(manifest.read_text())
+        files = record['files']
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise Refused('bundle_manifest_invalid') from exc
+    if record.get('schemaVersion') != SCHEMA or not isinstance(files, dict) or not files:
+        raise Refused('bundle_manifest_invalid')
+    if record.get('harness') != harness or record.get('entrypoints') != entrypoints(harness):
+        raise Refused('bundle_harness_mismatch')
+    present = dict(walk_bundle(bundle))
+    present.pop('bundle.json')
+    for relative, expected in files.items():
+        item = present.pop(relative, None)
+        if item is None:
+            raise Refused('bundle_file_missing')
+        info = item.stat()
+        if (not isinstance(expected, dict) or info.st_size != expected.get('bytes') or
+                format(stat.S_IMODE(info.st_mode), '04o') != expected.get('mode') or
+                digest(item) != expected.get('sha256')):
+            raise Refused('bundle_hash_mismatch')
+    if present:
+        raise Refused('bundle_unexpected_file')
+    return record
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument('harness')
+    p.add_argument('--check', action='store_true')
+    p.add_argument('--output', type=Path, help='bundle directory (default ~/.local/share/omarchy-buzz/agent-<harness>)')
+    p.add_argument('--buzz-bin', type=Path, default=HOME / '.local/share/omarchy-buzz/stock-agent-codex/bin',
+                   help='directory with official buzz-acp, buzz and buzz-admin (stock bundle bin/ or CI artifact bin/)')
+    p.add_argument('--node', type=Path, help=f'Node {NODE_VERSION} ARM64 binary (default: <buzz-bin>/node)')
+    p.add_argument('--adapter', type=Path, help='prepared npm tree: package.json, package-lock.json, node_modules/')
+    p.add_argument('--npm-ci', action='store_true', help='download the pinned adapter lock (network)')
+    p.add_argument('--npm-cli', type=Path, help='npm-cli.js used with --npm-ci')
+    p.add_argument('--claude-cli', type=Path, default=HOME / '.local/share/mise/installs/claude/latest/claude',
+                   help='pinned claude CLI to copy (claude-code only)')
+    args = p.parse_args()
+    os.umask(0o022)
+    if args.harness not in HARNESSES:
+        print(json.dumps({'error': 'harness_unknown'}), file=sys.stderr)
+        return 2
+    if args.output is None:
+        args.output = default_bundle(args.harness)
+    try:
+        if args.check:
+            check(args.output, args.harness)
+            print('ready')
+            return 0
+        if args.npm_ci and (args.adapter is not None or args.npm_cli is None):
+            raise Refused('npm_ci_arguments_invalid')
+        print(assemble(args))
+        return 0
+    except (Refused, OSError, subprocess.SubprocessError) as error:
+        category = str(error) if isinstance(error, Refused) else 'bundle_io_failed'
+        if args.check:
+            print('missing')
+        print(json.dumps({'error': category}), file=sys.stderr)
+        return 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())
