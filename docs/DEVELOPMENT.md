@@ -281,7 +281,8 @@ rendered QML check against synthetic frames or a stdio fixture:
 pasted avatar art), `--ansi-art` (ANSI art avatars, the profile card and
 "Set my avatar" from a synthetic `.ans` fixture; set `BUZZ_ANSI_CAPTURE` to an
 `.ans` path and `BUZZ_ANSI_CAPTURE_DIR` to a directory to also save
-`ansi-thumb.png` and `ansi-card.png` rendered with that art), `--activity`, `--room-activity`,
+`ansi-thumb.png`, `ansi-card-bright.png` (brightness 1.5) and `ansi-card.png`
+(colors as stored) rendered with that art), `--activity`, `--room-activity`,
 `--notification-preference`, `--agents` (the Agents section against a fake agent
 service), `--presentation` (needs Wayland) and `--bridge` (needs
 `BUZZ_TEST_HELPER` set to a built helper).
