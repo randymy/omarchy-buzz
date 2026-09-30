@@ -7,82 +7,65 @@ import qs.Commons
 FocusScope {
   id: root
   property var service: null
+  property bool presentationSwitchEnabled: false
+  property bool windowMode: false
+  property alias recipientPickerExpanded: roomComposer.pickerExpanded
+  readonly property bool connected: !!service && (service.sampleMode || service.connection === "authenticated")
+  readonly property bool threadOpen: !!service && service.threadRootId !== "" && service.threadRoot !== null
+  // An open thread sits beside the room. Narrow windows give up the room list
+  // first, then the room itself, so the thread always has a readable column.
+  readonly property bool showRooms: !threadOpen || width >= Style.space(1100)
+  readonly property bool showTimeline: !threadOpen || width >= Style.space(640)
+  readonly property var activeComposer: threadOpen && service.replyRootId !== "" ? threadComposer : roomComposer
+  readonly property var mentionMatches: activeComposer.mentionMatches
+  readonly property bool mentionOpen: activeComposer.mentionOpen
+  function chooseMention(index) { return activeComposer.chooseMention(index) }
+
   // Keep delegates alive across snapshots; only changed rows are updated.
   readonly property var incomingMessages: service ? service.messages : []
-  onIncomingMessagesChanged: syncMessages()
+  readonly property var incomingReplies: service ? service.threadRows : []
+  onIncomingMessagesChanged: syncRows(messageModel, incomingMessages, null)
+  onIncomingRepliesChanged: syncRows(replyModel, incomingReplies, service ? service.threadRoot : null)
   ListModel { id: messageModel; dynamicRoles: true }
-  function syncMessages() {
-    var rows = incomingMessages || []
+  ListModel { id: replyModel; dynamicRoles: true }
+  function syncRows(model, rows, before) {
+    rows = rows || []
     for (var i = 0; i < rows.length; i++) {
       var key = rows[i].id || ("sample-" + i)
       var found = -1
-      for (var j = i; j < messageModel.count; j++) {
-        if (messageModel.get(j).eventKey === key) { found = j; break }
+      for (var j = i; j < model.count; j++) {
+        if (model.get(j).eventKey === key) { found = j; break }
       }
-      var serialized = JSON.stringify(rows[i])
-      if (found === -1) messageModel.insert(i, {eventKey: key, payload: serialized})
+      var previous = i > 0 ? rows[i - 1] : before
+      var timed = typeof rows[i].time === "number" && (!previous || typeof previous.time === "number")
+      var dayBreak = timed && (!previous || service.dayKey(previous.time) !== service.dayKey(rows[i].time))
+      // Consecutive messages from one author within five minutes share a header.
+      var grouped = timed && !!previous && previous !== before && !dayBreak && previous.author === rows[i].author
+        && rows[i].time >= previous.time && rows[i].time - previous.time < 300
+      var serialized = JSON.stringify(Object.assign({}, rows[i], {dayBreak: dayBreak, grouped: grouped}))
+      if (found === -1) model.insert(i, {eventKey: key, payload: serialized})
       else {
-        if (found !== i) messageModel.move(found, i, 1)
-        if (messageModel.get(i).payload !== serialized) messageModel.setProperty(i, "payload", serialized)
+        if (found !== i) model.move(found, i, 1)
+        if (model.get(i).payload !== serialized) model.setProperty(i, "payload", serialized)
       }
     }
-    if (messageModel.count > rows.length) messageModel.remove(rows.length, messageModel.count - rows.length)
+    if (model.count > rows.length) model.remove(rows.length, model.count - rows.length)
   }
-  property bool recipientPickerExpanded: false
-  property bool presentationSwitchEnabled: false
-  property bool windowMode: false
-  property var pendingRevealRow: null
-  property var pendingRevealDetails: null
-  property int mentionIndex: 0
-  property bool mentionDismissed: false
-  readonly property var mentionQuery: {
-    if (!service || !composer.visible || composer.readOnly || service.recipientsState !== "snapshot"
-        || service.recipientsRoomId !== service.selectedRoomId || service.recipientPickerLocked) return null
-    var before = composer.text.slice(0, composer.cursorPosition)
-    var match = /(^|[\s([{,;:])@([^\s@]*)$/.exec(before)
-    if (!match) return null
-    return {start: before.length - match[2].length - 1, end: before.length, prefix: match[2].toLocaleLowerCase()}
-  }
-  readonly property var mentionMatches: {
-    if (!mentionQuery || !service) return []
-    var prefix = mentionQuery.prefix
-    return service.recipientEntries.filter(function(entry) {
-      if (!entry.name || !entry.name.trim()) return false
-      return (entry.name || "").toLocaleLowerCase().indexOf(prefix) === 0
-        || entry.key.toLowerCase().indexOf(prefix) === 0
-    }).slice(0, 8)
-  }
-  readonly property bool mentionOpen: !mentionDismissed && mentionMatches.length > 0
-  onMentionMatchesChanged: mentionIndex = 0
-  function chooseMention(index) {
-    if (!mentionOpen || !mentionQuery || index < 0 || index >= mentionMatches.length || !service) return false
-    var query = mentionQuery
-    var nextCursor = service.insertMention(mentionMatches[index].key, query.start, query.end)
-    if (nextCursor < 0) return false
-    if (composer.text !== service.draftText) composer.text = service.draftText
-    composer.cursorPosition = nextCursor
-    composer.forceActiveFocus()
-    return true
-  }
-  function revealThread(row, details) {
-    pendingRevealRow = row
-    pendingRevealDetails = details
-    revealThreadTimer.restart()
-  }
-  Timer {
-    id: revealThreadTimer
-    interval: 50
-    onTriggered: {
-      var row = root.pendingRevealRow
-      var details = root.pendingRevealDetails
-      root.pendingRevealRow = null
-      root.pendingRevealDetails = null
-      if (!row || !details || !service || service.threadRootId !== row.modelData.id || !details.visible) return
-      var viewport = historyScroll.contentItem
-      if (!viewport || typeof viewport.contentY === "undefined") return
-      var top = row.y + details.y - Style.space(12)
-      viewport.contentY = Math.max(0, Math.min(top, viewport.contentHeight - historyScroll.availableHeight))
+  function toggleThread(id) {
+    if (!service) return
+    if (service.threadRootId === id) closeThread()
+    else {
+      service.openThread(id)
+      threadScroll.follow = true
     }
+  }
+  function closeThread() {
+    if (!service) return
+    var composing = service.replyRootId !== ""
+    service.closeThread()
+    // The reply draft stays with its thread; the room composer takes over.
+    if (composing) service.composeRoom()
+    roomComposer.field.forceActiveFocus()
   }
   signal closeRequested()
   signal presentationRequested()
@@ -98,59 +81,63 @@ FocusScope {
 
   ColumnLayout {
     anchors.fill: parent
-    anchors.margins: Style.space(22)
-    spacing: Style.space(16)
+    anchors.margins: Style.space(14)
+    spacing: Style.space(10)
 
     RowLayout {
       Layout.fillWidth: true
-      ColumnLayout {
-        spacing: Style.space(4)
-        Text {
-          text: "Buzz"
-          textFormat: Text.PlainText
-          color: Color.foreground
-          font.family: Style.font.family
-          font.pixelSize: Style.font.body * 1.7
-          font.bold: true
-        }
-        Text {
-          text: "People and agents, together"
-          textFormat: Text.PlainText
-          color: Color.foreground
-          opacity: 0.7
-          font.family: Style.font.family
-          font.pixelSize: Style.font.body
-        }
+      spacing: Style.space(10)
+      Text {
+        text: "Buzz"
+        textFormat: Text.PlainText
+        color: Color.foreground
+        font.family: Style.font.family
+        font.pixelSize: Style.font.body * 1.3
+        font.bold: true
       }
-      Item { Layout.fillWidth: true }
+      Text {
+        Layout.fillWidth: true
+        text: !root.service ? "Service unavailable" : root.service.sampleMode ? "Sample data"
+          : (root.service.sendSupported || root.service.connection !== "authenticated" ? "" : "Read-only · ") + root.service.statusLabel
+        textFormat: Text.PlainText
+        elide: Text.ElideRight
+        color: Color.foreground
+        opacity: 0.6
+        font.family: Style.font.family
+        font.pixelSize: Style.font.caption
+      }
       Ui.Button {
         visible: root.presentationSwitchEnabled
         text: root.windowMode ? "Overlay" : "Window"
+        fontSize: Style.font.caption
         focusable: true
         onClicked: root.presentationRequested()
       }
       Ui.Button {
         text: root.service && root.service.notificationsEnabled ? "Alerts: on" : "Alerts: off"
+        fontSize: Style.font.caption
         focusable: true
         onClicked: if (root.service) root.service.notificationsEnabled = !root.service.notificationsEnabled
       }
       Ui.Button {
         text: "Close · Esc"
+        fontSize: Style.font.caption
         focusable: true
         onClicked: root.closeRequested()
       }
     }
 
     Rectangle {
+      visible: !!root.service && root.service.sampleMode
       Layout.fillWidth: true
-      implicitHeight: previewLabel.implicitHeight + Style.space(20)
-      color: Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.1)
+      implicitHeight: previewLabel.implicitHeight + Style.space(16)
+      color: Util.alpha(Color.accent, 0.1)
       radius: Style.cornerRadius
       Text {
         id: previewLabel
         anchors.fill: parent
-        anchors.margins: Style.space(10)
-        text: root.service && root.service.sampleMode ? "TEST FIXTURE · Sample data only\nNo relay connected. Messages below are examples." : (root.service && root.service.sendSupported ? "Messaging preview · " : "Read-only preview · ") + (root.service ? root.service.statusLabel : "Service unavailable")
+        anchors.margins: Style.space(8)
+        text: "TEST FIXTURE · Sample data only\nNo relay connected. Messages below are examples."
         textFormat: Text.PlainText
         wrapMode: Text.WordWrap
         color: Color.foreground
@@ -162,55 +149,41 @@ FocusScope {
     RowLayout {
       Layout.fillWidth: true
       Layout.fillHeight: true
-      spacing: Style.space(22)
+      spacing: Style.space(14)
 
       ColumnLayout {
-        Layout.preferredWidth: Style.space(170)
+        visible: root.showRooms
+        Layout.preferredWidth: Style.space(190)
         Layout.maximumWidth: root.width * 0.3
         Layout.fillHeight: true
-        spacing: Style.space(6)
+        spacing: Style.space(4)
         Text {
           Layout.fillWidth: true
-          text: root.service ? (root.service.relay || root.service.viewModel.community) + "\n" + root.service.catalogLabel : "Service unavailable"
+          text: root.service ? (root.service.relay ? root.service.relay.replace(/^wss?:\/\//, "").replace(/\/$/, "") : root.service.viewModel.community) : ""
           textFormat: Text.PlainText
-          wrapMode: Text.WordWrap
+          elide: Text.ElideMiddle
           color: Color.foreground
-          opacity: 0.7
+          opacity: 0.6
           font.family: Style.font.family
-          font.pixelSize: Style.font.body
+          font.pixelSize: Style.font.caption
+          Controls.ToolTip.visible: relayHover.containsMouse && text !== ""
+          Controls.ToolTip.text: root.service ? (root.service.relay || root.service.viewModel.community) + " · " + root.service.catalogLabel : ""
+          MouseArea {
+            id: relayHover
+            anchors.fill: parent
+            hoverEnabled: true
+            acceptedButtons: Qt.NoButton
+          }
         }
-        ColumnLayout {
-          visible: root.service && root.service.agentProfiles.length > 0
+        Text {
           Layout.fillWidth: true
-          Text {
-            text: "Agents in this room · execution unknown"
-            color: Color.foreground
-            font.family: Style.font.family
-            font.pixelSize: Style.font.caption
-          }
-          Controls.ScrollView {
-            Layout.fillWidth: true
-            Layout.preferredHeight: Math.min(Style.space(80), agentList.implicitHeight)
-            contentWidth: availableWidth
-            clip: true
-            Column {
-              id: agentList
-              width: parent.width
-              Repeater {
-                model: root.service ? root.service.agentProfiles : []
-                delegate: Text {
-                  required property var modelData
-                  width: agentList.width
-                  text: (modelData.name || "Agent") + " · " + modelData.key.slice(0, 12) + "…"
-                  textFormat: Text.PlainText
-                  elide: Text.ElideRight
-                  color: Color.foreground
-                  font.family: Style.font.family
-                  font.pixelSize: Style.font.caption
-                }
-              }
-            }
-          }
+          text: root.service ? root.service.catalogLabel : "Service unavailable"
+          textFormat: Text.PlainText
+          elide: Text.ElideRight
+          color: Color.foreground
+          opacity: 0.6
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
         }
         Controls.ScrollView {
           Layout.fillWidth: true
@@ -219,13 +192,15 @@ FocusScope {
           clip: true
           ColumnLayout {
             width: parent.width
-            spacing: Style.space(6)
+            spacing: Style.space(2)
             Repeater {
               model: root.service ? root.service.rooms : []
               delegate: Ui.Button {
                 required property var modelData
                 Layout.fillWidth: true
+                clip: true
                 text: "# " + modelData.name + (root.service && root.service.roomActivityCount(modelData.id) > 0 ? " · " + root.service.roomActivityCount(modelData.id) + "+" : "")
+                tooltipText: modelData.name + (root.service && root.service.roomActivityCount(modelData.id) > 0 ? " · new activity seen on this device, not synced unread" : "")
                 leftAlign: true
                 focusable: true
                 selected: root.service && root.service.selectedRoomId === modelData.id
@@ -234,514 +209,328 @@ FocusScope {
             }
           }
         }
-        Text {
+        ColumnLayout {
+          visible: root.service && root.service.agentProfiles.length > 0
           Layout.fillWidth: true
-          text: "Connection\n" + (root.service ? root.service.statusLabel : "Unavailable")
-            + "\nActivity is local, sampled, and not synced unread state."
-          textFormat: Text.PlainText
-          wrapMode: Text.WordWrap
-          color: Color.foreground
-          opacity: 0.7
-          font.family: Style.font.family
-          font.pixelSize: Style.font.body
+          spacing: Style.space(2)
+          Text {
+            Layout.fillWidth: true
+            text: "Agents here · activity unknown"
+            textFormat: Text.PlainText
+            elide: Text.ElideRight
+            color: Color.foreground
+            opacity: 0.6
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+          }
+          Repeater {
+            model: root.service ? root.service.agentProfiles.slice(0, 4) : []
+            delegate: Text {
+              required property var modelData
+              Layout.fillWidth: true
+              text: modelData.name || modelData.key.slice(0, 12) + "…"
+              textFormat: Text.PlainText
+              elide: Text.ElideRight
+              color: Color.foreground
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+            }
+          }
         }
       }
 
       Rectangle {
+        visible: root.showRooms
         Layout.fillHeight: true
         implicitWidth: 1
-        color: Qt.rgba(Color.foreground.r, Color.foreground.g, Color.foreground.b, 0.14)
+        color: Util.alpha(Color.foreground, 0.14)
       }
 
       ColumnLayout {
+        visible: root.showTimeline
         Layout.fillWidth: true
         Layout.fillHeight: true
-        spacing: Style.space(10)
-        Text {
-          Layout.fillWidth: true
-          text: root.service && root.service.selectedRoom ? "# " + root.service.selectedRoom.name : "Connect Buzz"
-          textFormat: Text.PlainText
-          elide: Text.ElideRight
-          color: Color.foreground
-          font.family: Style.font.family
-          font.pixelSize: Style.font.body * 1.2
-          font.bold: true
-        }
+        Layout.preferredWidth: Style.space(400)
+        spacing: Style.space(8)
         RowLayout {
-          visible: root.service && !root.service.sampleMode && root.service.connection !== "authenticated"
+          Layout.fillWidth: true
           spacing: Style.space(8)
-          Ui.Button {
-            text: "Buzz hosted"
-            selected: root.service && root.service.setupProvider === "hosted"
-            focusable: true
-            onClicked: if (root.service) root.service.chooseSetupProvider("hosted")
+          Text {
+            text: root.service && root.service.selectedRoom ? "# " + root.service.selectedRoom.name : "Connect Buzz"
+            textFormat: Text.PlainText
+            elide: Text.ElideRight
+            Layout.maximumWidth: Style.space(260)
+            color: Color.foreground
+            font.family: Style.font.family
+            font.pixelSize: Style.font.body * 1.15
+            font.bold: true
           }
+          Text {
+            Layout.fillWidth: true
+            visible: root.connected && !!root.service.selectedRoom
+            text: root.service ? (root.service.sampleMode && root.service.selectedRoom ? root.service.selectedRoom.description : root.service.historyLabel) : ""
+            textFormat: Text.PlainText
+            elide: Text.ElideRight
+            color: Color.foreground
+            opacity: 0.6
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+            Controls.ToolTip.visible: historyHover.containsMouse && truncated
+            Controls.ToolTip.text: text
+            MouseArea {
+              id: historyHover
+              anchors.fill: parent
+              hoverEnabled: true
+              acceptedButtons: Qt.NoButton
+            }
+          }
+          Item { Layout.fillWidth: true; visible: !root.connected || !root.service.selectedRoom }
           Ui.Button {
-            text: "Custom relay"
-            selected: root.service && root.service.setupProvider === "custom"
+            objectName: "buzzRefreshRoom"
+            text: "↻"
+            tooltipText: "Refresh this room"
+            horizontalPadding: Style.space(6)
+            verticalPadding: Style.space(2)
             focusable: true
-            onClicked: if (root.service) root.service.chooseSetupProvider("custom")
+            visible: root.service && !root.service.sampleMode && root.service.connection === "authenticated" && root.service.historySupported && root.service.selectedRoom !== null
+            onClicked: if (root.service) { root.service.refreshHistory(); root.service.refreshRecipients() }
           }
         }
-        Ui.Button {
-          visible: root.service && !root.service.sampleMode && root.service.setupProvider === "hosted" && root.service.connection !== "authenticated"
-          text: "Open Buzz hosted setup"
-          focusable: true
-          // Fixed upstream URL, opened only by this explicit user action.
-          onClicked: Qt.openUrlExternally("https://buzz.xyz")
+        ColumnLayout {
+          visible: !root.connected
+          Layout.fillWidth: true
+          spacing: Style.space(8)
+          RowLayout {
+            spacing: Style.space(8)
+            Ui.Button {
+              text: "Buzz hosted"
+              selected: root.service && root.service.setupProvider === "hosted"
+              focusable: true
+              onClicked: if (root.service) root.service.chooseSetupProvider("hosted")
+            }
+            Ui.Button {
+              text: "Custom relay"
+              selected: root.service && root.service.setupProvider === "custom"
+              focusable: true
+              onClicked: if (root.service) root.service.chooseSetupProvider("custom")
+            }
+          }
+          Ui.Button {
+            visible: root.service && root.service.setupProvider === "hosted"
+            text: "Open Buzz hosted setup"
+            focusable: true
+            // Fixed upstream URL, opened only by this explicit user action.
+            onClicked: Qt.openUrlExternally("https://buzz.xyz")
+          }
+          Text {
+            Layout.fillWidth: true
+            text: root.service ? root.service.setupInstructions : "Enable the plugin and reopen this panel."
+            textFormat: Text.PlainText
+            wrapMode: Text.WordWrap
+            color: Color.foreground
+            opacity: 0.7
+            font.family: Style.font.family
+            font.pixelSize: Style.font.body
+          }
+          Ui.Button {
+            text: "Retry connection"
+            focusable: true
+            visible: !!root.service
+            onClicked: if (root.service) root.service.retry()
+          }
+        }
+        BuzzScroll {
+          id: historyScroll
+          objectName: "buzzHistoryScroll"
+          Layout.fillWidth: true
+          Layout.fillHeight: true
+          // The viewport takes the space left over; its content never sizes the panel.
+          Layout.preferredHeight: Style.space(80)
+          contentHeight: historyList.height
+          restOnEnd: true
+          Column {
+            id: historyList
+            width: parent.width
+            height: childrenRect.height
+            Repeater {
+              model: messageModel
+              delegate: BuzzMessage {
+                required property string payload
+                width: historyList.width
+                topPadding: row.grouped ? Style.space(3) : Style.space(10)
+                service: root.service
+                row: JSON.parse(payload)
+                threadLink: true
+                threadSelected: !!root.service && root.service.threadRootId === row.id
+                onThreadRequested: root.toggleThread(row.id)
+              }
+            }
+          }
         }
         Text {
           Layout.fillWidth: true
-          text: root.service && root.service.selectedRoom ? (root.service.sampleMode ? root.service.selectedRoom.description : root.service.historyLabel) : (root.service ? root.service.setupInstructions : "Enable the plugin and reopen this panel.")
+          visible: root.connected && !!root.service && !root.service.sampleMode && root.service.selectedRoom !== null
+            && root.service.historyState === "snapshot" && messageModel.count === 0
+          text: "No messages in this recent snapshot."
+          textFormat: Text.PlainText
+          color: Color.foreground
+          opacity: 0.6
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+        }
+        BuzzComposer {
+          id: roomComposer
+          Layout.fillWidth: true
+          visible: !!root.service && !root.service.sampleMode && root.service.selectedRoom !== null
+            && root.service.connection === "authenticated" && (root.service.sendSupported || root.service.deliveryState === "unknown")
+          service: root.service
+          placeholder: root.service && root.service.selectedRoom ? "Message #" + root.service.selectedRoom.name : ""
+          showDelivery: !threadComposer.showDelivery
+        }
+        Text {
+          visible: !!root.service && root.service.sampleMode
+          Layout.fillWidth: true
+          text: "Messaging is not connected. This preview cannot send messages or start agents."
           textFormat: Text.PlainText
           wrapMode: Text.WordWrap
           color: Color.foreground
           opacity: 0.7
           font.family: Style.font.family
-          font.pixelSize: Style.font.body
+          font.pixelSize: Style.font.caption
         }
+      }
 
+      Rectangle {
+        visible: root.threadOpen && root.showTimeline
+        Layout.fillHeight: true
+        implicitWidth: 1
+        color: Util.alpha(Color.foreground, 0.14)
+      }
+
+      ColumnLayout {
+        id: threadPanel
+        objectName: "buzzThreadPanel"
+        visible: root.threadOpen
+        Layout.fillWidth: true
+        Layout.fillHeight: true
+        Layout.preferredWidth: Style.space(340)
+        spacing: Style.space(8)
         RowLayout {
-          visible: root.service && !root.service.sampleMode
-            && (root.service.connection !== "authenticated" || (root.service.historySupported && root.service.selectedRoom !== null))
+          Layout.fillWidth: true
           spacing: Style.space(8)
           Ui.Button {
-            text: "Retry connection"
+            visible: !root.showTimeline
+            text: "‹"
+            tooltipText: "Back to the room"
+            horizontalPadding: Style.space(6)
+            verticalPadding: Style.space(2)
             focusable: true
-            visible: root.service && root.service.connection !== "authenticated"
-            onClicked: if (root.service) root.service.retry()
+            onClicked: root.closeThread()
           }
-          Ui.Button {
-            text: "Refresh room"
-            focusable: true
-            visible: root.service && root.service.connection === "authenticated" && root.service.historySupported && root.service.selectedRoom !== null
-            onClicked: if (root.service) { root.service.refreshHistory(); root.service.refreshRecipients() }
-          }
-        }
-        ColumnLayout {
-          Layout.fillWidth: true
-          visible: root.service && !root.service.sampleMode && (root.service.recipientsSupported || root.service.selectedRecipients.length > 0) && root.service.selectedRoom !== null
-          spacing: Style.space(4)
-          Ui.Button {
-            text: root.service ? root.service.recipientsLabel + " · " + root.service.selectedRecipients.length + " selected" + (root.recipientPickerExpanded ? " · Hide" : " · Choose") : ""
-            focusable: true
-            onClicked: root.recipientPickerExpanded = !root.recipientPickerExpanded
-          }
-          Controls.ScrollView {
-            visible: root.recipientPickerExpanded
-            Layout.fillWidth: true
-            Layout.preferredHeight: Math.min(Style.space(72), people.implicitHeight)
-            clip: true
-            contentWidth: availableWidth
-            Column {
-              id: people
-              width: parent.width
-              Repeater {
-                model: root.service ? root.service.recipientEntries : []
-                delegate: Controls.CheckBox {
-                  required property var modelData
-                  width: people.width
-                  text: (modelData.name || "Unnamed") + " · " + modelData.key.slice(0, 12) + "…" + modelData.key.slice(-8) + " · " + root.service.participantLabel(modelData.key)
-                  hoverEnabled: true
-                  Controls.ToolTip.visible: hovered
-                  Controls.ToolTip.text: modelData.key
-                  contentItem: Text {
-                    text: parent.text
-                    textFormat: Text.PlainText
-                    leftPadding: parent.indicator ? parent.indicator.width + Style.space(6) : 0
-                    color: Color.foreground
-                    font.family: Style.font.family
-                    font.pixelSize: Style.font.caption
-                    elide: Text.ElideRight
-                  }
-                  checked: root.service && root.service.selectedRecipients.indexOf(modelData.key) !== -1
-                  enabled: root.service && !root.service.recipientPickerLocked && root.service.recipientsState === "snapshot"
-                  onClicked: root.service.toggleRecipient(modelData.key)
-                }
-              }
-            }
-          }
-          Controls.ScrollView {
-            visible: root.service && root.service.unavailableRecipients.length > 0
-            Layout.fillWidth: true
-            Layout.preferredHeight: Math.min(Style.space(72), missingPeople.implicitHeight)
-            clip: true
-            contentWidth: availableWidth
-            Column {
-              id: missingPeople
-              width: parent.width
-              Repeater {
-                model: root.service ? root.service.unavailableRecipients : []
-                delegate: RowLayout {
-                  required property string modelData
-                  width: missingPeople.width
-                  Text {
-                    Layout.fillWidth: true
-                    text: "Selected " + modelData.slice(0, 12) + "…" + modelData.slice(-8) + " · unavailable in current roster"
-                    textFormat: Text.PlainText
-                    wrapMode: Text.WordWrap
-                    color: Color.foreground
-                    font.family: Style.font.family
-                    font.pixelSize: Style.font.caption
-                  }
-                  Ui.Button {
-                    text: "Deselect"
-                    focusable: true
-                    enabled: root.service && !root.service.recipientPickerLocked
-                    onClicked: root.service.toggleRecipient(modelData)
-                  }
-                }
-              }
-            }
+          Text {
+            text: "Thread"
+            textFormat: Text.PlainText
+            color: Color.foreground
+            font.family: Style.font.family
+            font.pixelSize: Style.font.body * 1.15
+            font.bold: true
           }
           Text {
             Layout.fillWidth: true
-            visible: root.recipientPickerExpanded
-            text: "Names self-asserted. Select recipients to create exact mentions; agent execution configured separately."
+            text: root.service && root.service.selectedRoom ? "# " + root.service.selectedRoom.name : ""
             textFormat: Text.PlainText
-            wrapMode: Text.WordWrap
+            elide: Text.ElideRight
             color: Color.foreground
-            opacity: 0.7
+            opacity: 0.6
             font.family: Style.font.family
             font.pixelSize: Style.font.caption
           }
+          Ui.Button {
+            objectName: "buzzRefreshThread"
+            text: "↻"
+            tooltipText: "Refresh replies"
+            horizontalPadding: Style.space(6)
+            verticalPadding: Style.space(2)
+            focusable: true
+            enabled: !!root.service && root.service.threadState !== "loading"
+            opacity: enabled ? 1 : 0.5
+            onClicked: root.service.refreshThread()
+          }
+          Ui.Button {
+            objectName: "buzzCloseThread"
+            text: "✕"
+            tooltipText: "Close thread"
+            horizontalPadding: Style.space(6)
+            verticalPadding: Style.space(2)
+            focusable: true
+            onClicked: root.closeThread()
+          }
         }
-        Controls.ScrollView {
-          id: historyScroll
-          objectName: "buzzHistoryScroll"
+        BuzzScroll {
+          id: threadScroll
+          objectName: "buzzThreadScroll"
           Layout.fillWidth: true
           Layout.fillHeight: true
-          clip: true
-          contentWidth: availableWidth
-          contentHeight: historyList.childrenRect.height
+          Layout.preferredHeight: Style.space(80)
+          contentHeight: threadList.childrenRect.height
           Column {
-            id: historyList
+            id: threadList
             width: parent.width
             height: childrenRect.height
-            spacing: Style.space(root.service && root.service.sampleMode ? 22 : 10)
+            BuzzMessage {
+              objectName: "buzzThreadRoot"
+              width: threadList.width
+              service: root.service
+              row: root.threadOpen ? root.service.threadRoot : ({})
+              showDate: true
+            }
+            Item {
+              objectName: "buzzThreadDetails"
+              width: threadList.width
+              height: Style.space(26)
+              Text {
+                id: replyCount
+                anchors.verticalCenter: parent.verticalCenter
+                text: root.service ? root.service.threadCountLabel : ""
+                textFormat: Text.PlainText
+                color: Color.foreground
+                opacity: 0.7
+                font.family: Style.font.family
+                font.pixelSize: Style.font.caption
+              }
+              Rectangle {
+                anchors.verticalCenter: parent.verticalCenter
+                anchors.left: replyCount.right
+                anchors.leftMargin: Style.space(8)
+                anchors.right: parent.right
+                height: 1
+                color: Util.alpha(Color.foreground, 0.14)
+              }
+            }
             Repeater {
-              model: messageModel
-              delegate: Column {
-                id: messageRow
+              model: replyModel
+              delegate: BuzzMessage {
                 required property string payload
-                readonly property var modelData: JSON.parse(payload)
-                width: parent.width
-                height: childrenRect.height
-                spacing: Style.space(6)
-                Text {
-                  width: parent.width
-                  text: root.service && root.service.sampleMode ? modelData.author + " · " + modelData.role + " · " + modelData.time
-                    : root.service.messageAuthorLabel(modelData.author) + " · " + root.service.formatTimestamp(modelData.time)
-                  textFormat: Text.PlainText
-                  wrapMode: Text.WordWrap
-                  color: Color.accent
-                  font.family: Style.font.family
-                  font.pixelSize: Style.font.body
-                  font.bold: true
-                  Controls.ToolTip.visible: messageAuthorHover.containsMouse && !root.service.sampleMode
-                  Controls.ToolTip.text: messageRow.modelData.author
-                  MouseArea {
-                    id: messageAuthorHover
-                    anchors.fill: parent
-                    hoverEnabled: true
-                    acceptedButtons: Qt.NoButton
-                  }
-                }
-                Text {
-                  width: parent.width
-                  text: root.service && root.service.sampleMode ? modelData.text : (modelData.unavailable ? "Content unavailable" : modelData.text)
-                    + (modelData.edited ? "\n[edited]" : "") + (modelData.truncated ? "\n[truncated]" : "")
-                  textFormat: Text.PlainText
-                  wrapMode: Text.WordWrap
-                  color: Color.foreground
-                  font.family: Style.font.family
-                  font.pixelSize: Style.font.body
-                }
-                Row {
-                  objectName: "buzzMessageReactions"
-                  visible: !!modelData.reactions && (modelData.reactions.seen > 0 || modelData.reactions.working > 0)
-                  spacing: Style.space(10)
-                  Text {
-                    visible: !!modelData.reactions && modelData.reactions.seen > 0
-                    text: "👀 " + (modelData.reactions ? modelData.reactions.seen : 0)
-                    textFormat: Text.PlainText
-                    color: Color.foreground
-                    font.family: Style.font.family
-                    font.pixelSize: Style.font.caption
-                    Controls.ToolTip.visible: seenReactionHover.containsMouse
-                    Controls.ToolTip.text: "Queued reaction (snapshot)"
-                    MouseArea {
-                      id: seenReactionHover
-                      anchors.fill: parent
-                      hoverEnabled: true
-                      acceptedButtons: Qt.NoButton
-                    }
-                  }
-                  Text {
-                    visible: !!modelData.reactions && modelData.reactions.working > 0
-                    text: "💬 " + (modelData.reactions ? modelData.reactions.working : 0)
-                    textFormat: Text.PlainText
-                    color: Color.foreground
-                    font.family: Style.font.family
-                    font.pixelSize: Style.font.caption
-                    Controls.ToolTip.visible: workingReactionHover.containsMouse
-                    Controls.ToolTip.text: "Working reaction (snapshot)"
-                    MouseArea {
-                      id: workingReactionHover
-                      anchors.fill: parent
-                      hoverEnabled: true
-                      acceptedButtons: Qt.NoButton
-                    }
-                  }
-                }
-                Ui.Button {
-                  objectName: "buzzThreadToggle"
-                  focusable: true
-                  visible: root.service && root.service.canOpenThread(messageRow.modelData.id)
-                  text: root.service && root.service.threadRootId === messageRow.modelData.id ? "💬 Hide replies" : "💬 View replies"
-                  onClicked: {
-                    if (root.service.threadRootId === messageRow.modelData.id) root.service.closeThread()
-                    else {
-                      root.service.openThread(messageRow.modelData.id)
-                      root.revealThread(messageRow, threadDetails)
-                    }
-                  }
-                }
-                Rectangle {
-                  id: threadDetails
-                  objectName: "buzzThreadDetails"
-                  visible: root.service && root.service.threadRootId === messageRow.modelData.id
-                  width: parent.width
-                  implicitHeight: threadBody.height + Style.space(16)
-                  height: visible ? implicitHeight : 0
-                  color: Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.07)
-                  border.color: Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.25)
-                  radius: Style.cornerRadius
-                  Column {
-                    id: threadBody
-                    anchors.left: parent.left
-                    anchors.right: parent.right
-                    anchors.top: parent.top
-                    anchors.margins: Style.space(8)
-                    height: childrenRect.height
-                    spacing: Style.space(8)
-                    Text {
-                      width: parent.width
-                      text: root.service ? root.service.threadLabel : ""
-                      textFormat: Text.PlainText
-                      wrapMode: Text.WordWrap
-                      color: Color.foreground
-                      font.family: Style.font.family
-                      font.pixelSize: Style.font.caption
-                    }
-                    Ui.Button {
-                      text: "Reply in thread"
-                      focusable: true
-                      visible: root.service && root.service.threadSendSupported
-                      enabled: root.service && !root.service.recipientPickerLocked && root.service.canReplyTo(messageRow.modelData.id)
-                      onClicked: if (root.service.composeReply(messageRow.modelData.id)) composer.forceActiveFocus()
-                    }
-                    Repeater {
-                      model: threadDetails.visible && root.service ? root.service.threadRows : []
-                      delegate: Column {
-                        required property var modelData
-                        width: parent.width
-                        height: childrenRect.height
-                        spacing: Style.space(4)
-                        Text {
-                          width: parent.width
-                          text: root.service.messageAuthorLabel(modelData.author) + " · " + root.service.formatTimestamp(modelData.time)
-                          Controls.ToolTip.visible: replyAuthorHover.containsMouse
-                          Controls.ToolTip.text: modelData.author
-                          MouseArea {
-                            id: replyAuthorHover
-                            anchors.fill: parent
-                            hoverEnabled: true
-                            acceptedButtons: Qt.NoButton
-                          }
-                          textFormat: Text.PlainText
-                          wrapMode: Text.WordWrap
-                          color: Color.accent
-                          font.family: Style.font.family
-                          font.pixelSize: Style.font.caption
-                        }
-                        Text {
-                          width: parent.width
-                          text: modelData.unavailable ? "Content unavailable" : modelData.text + (modelData.edited ? "\n[edited]" : "") + (modelData.truncated ? "\n[truncated]" : "")
-                          textFormat: Text.PlainText
-                          wrapMode: Text.WordWrap
-                          color: Color.foreground
-                          font.family: Style.font.family
-                          font.pixelSize: Style.font.body
-                        }
-                      }
-                    }
-                    Ui.Button {
-                      focusable: true
-                      text: "Refresh replies"
-                      enabled: root.service && root.service.threadState !== "loading"
-                      onClicked: root.service.refreshThread()
-                    }
-                  }
-                }
+                objectName: "buzzThreadReply"
+                width: threadList.width
+                topPadding: row.grouped ? Style.space(3) : Style.space(8)
+                service: root.service
+                row: JSON.parse(payload)
               }
             }
           }
         }
-
-        ColumnLayout {
+        BuzzComposer {
+          id: threadComposer
           Layout.fillWidth: true
-          visible: root.service && !root.service.sampleMode && (root.service.sendSupported || root.service.deliveryState === "unknown")
-          spacing: Style.space(6)
-          Text {
-            Layout.fillWidth: true
-            visible: root.service && root.service.deliveryState !== "idle"
-            text: root.service ? root.service.deliveryLabel : ""
-            textFormat: Text.PlainText
-            wrapMode: Text.WordWrap
-            color: Color.foreground
-            font.family: Style.font.family
-            font.pixelSize: Style.font.body
-          }
-          RowLayout {
-            Layout.fillWidth: true
-            Text {
-              Layout.fillWidth: true
-              text: root.service ? root.service.composerLabel : ""
-              textFormat: Text.PlainText
-              wrapMode: Text.WordWrap
-              color: Color.accent
-              font.family: Style.font.family
-              font.pixelSize: Style.font.caption
-            }
-            Ui.Button {
-              text: "Back to room"
-              focusable: true
-              visible: root.service && root.service.replyRootId !== ""
-              enabled: root.service && !root.service.recipientPickerLocked
-              onClicked: root.service.composeRoom()
-            }
-          }
-          ColumnLayout {
-            id: mentionSuggestions
-            objectName: "buzzMentionSuggestions"
-            Layout.fillWidth: true
-            visible: root.mentionOpen
-            spacing: Style.space(2)
-            Text {
-              text: "Mention someone in this room"
-              textFormat: Text.PlainText
-              color: Color.foreground
-              opacity: 0.7
-              font.family: Style.font.family
-              font.pixelSize: Style.font.caption
-            }
-            Repeater {
-              model: root.mentionOpen ? root.mentionMatches : []
-              delegate: Ui.Button {
-                required property var modelData
-                required property int index
-                Layout.fillWidth: true
-                objectName: "buzzMentionOption"
-                text: "@" + (modelData.name || "Unnamed") + " · " + modelData.key.slice(0, 12) + "…" + modelData.key.slice(-8)
-                  + " · " + (root.service ? root.service.participantLabel(modelData.key) : "")
-                tooltipText: modelData.key
-                leftAlign: true
-                focusable: false
-                selected: root.mentionIndex === index
-                onClicked: root.chooseMention(index)
-              }
-            }
-          }
-          Controls.TextArea {
-            id: composer
-            objectName: "buzzComposer"
-            Layout.fillWidth: true
-            Layout.preferredHeight: Style.space(70)
-            visible: root.service && root.service.selectedRoom !== null && root.service.connection === "authenticated"
-            placeholderText: "Plain text · type @ to mention someone in this room"
-            textFormat: TextEdit.PlainText
-            wrapMode: TextEdit.Wrap
-            text: root.service ? root.service.draftText : ""
-            readOnly: !root.service || root.service.deliveryState === "sending" || root.service.deliveryState === "unknown" || root.service.deliveryState === "rejected" || root.service.deliveryCategory === "send_request_reused"
-            color: Color.foreground
-            font.family: Style.font.family
-            font.pixelSize: Style.font.body
-            background: Rectangle { color: Color.popups.background; border.color: Color.popups.border; radius: Style.cornerRadius }
-            onTextChanged: {
-              if (text.length > 4096) text = text.slice(0, 4096)
-              if (root.service) root.service.updateDraft(text)
-              root.mentionDismissed = false
-            }
-            onCursorPositionChanged: root.mentionDismissed = false
-            Keys.onPressed: function(event) {
-              if (!root.mentionOpen) return
-              if (event.key === Qt.Key_Down) {
-                root.mentionIndex = (root.mentionIndex + 1) % root.mentionMatches.length
-                event.accepted = true
-              } else if (event.key === Qt.Key_Up) {
-                root.mentionIndex = (root.mentionIndex + root.mentionMatches.length - 1) % root.mentionMatches.length
-                event.accepted = true
-              } else if (event.key === Qt.Key_Tab || event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
-                event.accepted = root.chooseMention(root.mentionIndex)
-              } else if (event.key === Qt.Key_Escape) {
-                root.mentionDismissed = true
-                event.accepted = true
-              }
-            }
-          }
-          Connections {
-            target: root.service
-            function onDraftTextChanged() {
-              if (composer.text !== root.service.draftText) composer.text = root.service.draftText
-            }
-          }
-          RowLayout {
-            visible: root.service && root.service.selectedRoom !== null && root.service.connection === "authenticated"
-            Ui.Button {
-              text: root.service && root.service.replyRootId ? "Send reply" : "Send message"
-              focusable: true
-              enabled: root.service && root.service.canSend
-              onClicked: if (root.service) root.service.submitDraft()
-            }
-            Ui.Button {
-              text: !root.service ? "" : root.service.deliveryState === "unknown"
-                ? "Discard uncertain draft" + (root.service.deliveryScopeMismatch ? " from " + root.service.submissionScopeLabel : "")
-                : "Start new submission" + (root.service.deliveryScopeMismatch ? " for " + root.service.submissionScopeLabel : "")
-              focusable: true
-              visible: root.service && (root.service.deliveryState === "unknown" || root.service.deliveryState === "rejected" || root.service.deliveryCategory === "send_request_reused")
-              onClicked: if (root.service) root.service.newDraft(root.service.deliveryState === "rejected" || root.service.deliveryCategory === "send_request_reused")
-            }
-            Text {
-              visible: root.service && root.service.deliveryState !== "unknown"
-              text: "4096 bytes maximum"
-              color: Color.foreground
-              opacity: 0.7
-              font.family: Style.font.family
-              font.pixelSize: Style.font.caption
-            }
-          }
-        }
-
-        Rectangle {
-          visible: root.service && root.service.sampleMode
-          Layout.fillWidth: true
-          implicitHeight: composerLabel.implicitHeight + Style.space(22)
-          color: Qt.rgba(Color.foreground.r, Color.foreground.g, Color.foreground.b, 0.04)
-          border.color: Qt.rgba(Color.foreground.r, Color.foreground.g, Color.foreground.b, 0.2)
-          radius: Style.cornerRadius
-          Text {
-            id: composerLabel
-            anchors.fill: parent
-            anchors.margins: Style.space(11)
-            text: "Messaging is not connected yet.\nThis preview cannot send messages or start agents."
-            textFormat: Text.PlainText
-            wrapMode: Text.WordWrap
-            color: Color.foreground
-            opacity: 0.7
-            font.family: Style.font.family
-            font.pixelSize: Style.font.body
-          }
+          visible: !!root.service && root.service.threadSendSupported
+          service: root.service
+          rootId: root.threadOpen ? root.service.threadRootId : ""
+          fieldName: "buzzThreadComposer"
+          placeholder: "Reply…"
+          showDelivery: root.threadOpen && root.service.deliveryState !== "idle"
+            && root.service.submissionDraftKey === root.service.selectedRoomId + ":" + root.service.threadRootId
+          onEscaped: root.closeThread()
         }
       }
     }

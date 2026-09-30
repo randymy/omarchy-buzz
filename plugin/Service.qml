@@ -144,6 +144,32 @@ Item {
   readonly property bool canSend: sendSupported && !sampleMode && !sessionFailed && connection === "authenticated"
     && selectedRoom !== null && deliveryState !== "sending" && deliveryState !== "unknown" && deliveryState !== "rejected" && deliveryCategory !== "send_request_reused"
     && replyReady && recipientIntentValid && draftText.trim().length > 0 && draftText.indexOf("\u0000") === -1 && utf8Size(draftText) <= 4096
+  // The room and the open thread each have a composer. Editing or submitting one
+  // makes it the single active destination; drafts never move between them.
+  readonly property string roomDraftText: drafts[selectedRoomId] || ""
+  readonly property string threadDraftText: threadRootId ? drafts[selectedRoomId + ":" + threadRootId] || "" : ""
+  function composeScope(rootId) {
+    if (replyRootId === rootId) return true
+    return rootId ? composeReply(rootId) : composeRoom()
+  }
+  function updateDraftFor(rootId, text) {
+    if ((drafts[selectedRoomId + (rootId ? ":" + rootId : "")] || "") === text) return true
+    if (!composeScope(rootId)) return false
+    updateDraft(text)
+    return draftText === text
+  }
+  function canSendFor(rootId) {
+    if (replyRootId === rootId) return canSend
+    var key = selectedRoomId + (rootId ? ":" + rootId : "")
+    var text = drafts[key] || ""
+    var chosen = recipientDrafts[key] || []
+    return sendSupported && !sampleMode && !sessionFailed && connection === "authenticated" && selectedRoom !== null
+      && !recipientPickerLocked && (!rootId || canReplyTo(rootId))
+      && (chosen.length === 0 || (recipientsSupported && recipientsState === "snapshot"
+        && chosen.every(function(key) { return recipientEntries.some(function(entry) { return entry.key === key }) })))
+      && text.trim().length > 0 && text.indexOf("\u0000") === -1 && utf8Size(text) <= 4096
+  }
+  function submitFor(rootId) { return composeScope(rootId) && submitDraft() }
   readonly property bool deliveryScopeMismatch: submissionId !== "" && submissionDraftKey !== composerKey
   readonly property string submissionScopeLabel: {
     var room = rooms.find(function(entry) { return entry.id === submissionRoom })
@@ -512,6 +538,22 @@ Item {
     return checked
   }
   function formatTimestamp(seconds) { return Qt.formatDateTime(new Date(seconds * 1000), "yyyy-MM-dd HH:mm:ss t") }
+  function formatTime(seconds) { return Qt.formatDateTime(new Date(seconds * 1000), "h:mm AP") }
+  function dayKey(seconds) { return Qt.formatDateTime(new Date(seconds * 1000), "yyyy-MM-dd") }
+  function formatDay(seconds) {
+    var now = new Date()
+    var yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1)
+    var day = new Date(seconds * 1000)
+    if (dayKey(seconds) === Qt.formatDateTime(now, "yyyy-MM-dd")) return "Today"
+    if (dayKey(seconds) === Qt.formatDateTime(yesterday, "yyyy-MM-dd")) return "Yesterday"
+    return Qt.formatDateTime(day, day.getFullYear() === now.getFullYear() ? "dddd, MMMM d" : "dddd, MMMM d, yyyy")
+  }
+  readonly property var threadRoot: threadRootId ? historyRows.find(function(row) { return row.id === root.threadRootId }) || null : null
+  readonly property string threadCountLabel: threadState === "loading" ? "Loading replies" : threadState !== "snapshot"
+    ? (threadCategory === "thread_access_denied" ? "Replies unavailable for this room" : "Replies unavailable")
+    : threadRows.length === 0 ? "No replies yet"
+    : threadHasMore ? "Latest " + threadRows.length + " replies · older not shown"
+    : threadRows.length + (threadRows.length === 1 ? " reply" : " replies")
   function clearRecipients() {
     recipientsRetry.stop()
     pendingRecipientsRequestId = ""

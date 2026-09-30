@@ -25,20 +25,34 @@ ShellRoot {
               thread:{state:"snapshot",roomId:room,rootId:rootId,rows:[],hasMore:false,category:"thread_completeness_unknown"}}}
         }
         function accept(f) { if (!service.acceptFrame(JSON.stringify(f))) throw new Error("Valid frame rejected") }
-        function composer(item) {
-          if (item.objectName === "buzzComposer") return item
-          for (var i=0; i<item.children.length; ++i) { var found=composer(item.children[i]); if (found) return found }
+        function named(item, name) {
+          if (item.objectName === name) return item
+          for (var i=0; i<item.children.length; ++i) { var found=named(item.children[i], name); if (found) return found }
           return null
         }
+        function composer(item) { return named(item, "buzzComposer") }
+        function replyComposer(item) { return named(item, "buzzThreadComposer") }
         function check(ok, message) { if (!ok) throw new Error(message) }
         service.beginSession(); accept(frame())
         service.updateDraft("Room draft")
         service.openThread(rootId); accept(frame())
         check(service.composeReply(rootId), "Reply target rejected")
-        check(service.draftText === "" && composer(view).text === "", "Room text leaked into reply")
+        check(service.draftText === "" && replyComposer(view).text === "" && composer(view).text === "Room draft", "Room text leaked into reply")
         service.updateDraft("Thread draft")
+        check(replyComposer(view).text === "Thread draft" && composer(view).text === "Room draft", "Composers do not show their own drafts")
         check(service.composeRoom() && service.draftText === "Room draft" && composer(view).text === "Room draft", "Room draft not preserved")
         check(service.composeReply(rootId) && service.draftText === "Thread draft", "Thread draft not preserved")
+        // Typing in either composer makes it the destination without moving text.
+        composer(view).text = "Room draft typed"
+        check(service.replyRootId === "" && service.drafts[room] === "Room draft typed"
+          && service.drafts[room + ":" + rootId] === "Thread draft", "Typing in the room composer changed the thread draft")
+        replyComposer(view).text = "Thread draft typed"
+        check(service.replyRootId === rootId && service.drafts[room + ":" + rootId] === "Thread draft typed"
+          && service.drafts[room] === "Room draft typed", "Typing in the thread composer changed the room draft")
+        check(service.canSendFor("") && service.canSendFor(rootId), "A composer with a valid draft cannot send")
+        composer(view).text = "Room draft"
+        replyComposer(view).text = "Thread draft"
+        check(service.composeReply(rootId) && service.draftText === "Thread draft", "Thread draft not restored")
         var request=service.prepareSubmission()
         check(request && request.rootId === rootId && request.roomId === room && request.text === "Thread draft", "Wrong reply request")
         check(!service.composeRoom() && !service.prepareSubmission(), "In-flight destination changed or duplicate sent")

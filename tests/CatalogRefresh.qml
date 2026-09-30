@@ -66,7 +66,8 @@ ShellRoot {
           throw new Error("Joined-room check rebuilt the conversation")
         if (Math.abs(scroll.contentItem.contentY - test.retainedScroll) > 1)
           throw new Error("Joined-room check moved the reader's scroll position")
-        if (!test.findNamed(view, "buzzThreadDetails", []).some(function(item) { return item.visible && item.height > 0 }))
+        if (!test.findNamed(view, "buzzThreadPanel", [])[0].visible
+            || test.findNamed(view, "buzzThreadReply", []).filter(function(item) { return item.visible && item.height > 0 }).length !== 1)
           throw new Error("Joined-room check hid the open thread")
         console.log("PASS: periodic joined-room check keeps rooms, conversation, names, scroll and open thread; failures still clear")
         Qt.quit()
@@ -79,10 +80,12 @@ ShellRoot {
     onTriggered: {
       try {
         var scroll = test.findNamed(view, "buzzHistoryScroll", [])[0]
-        scroll.contentItem.contentY = scroll.contentItem.contentHeight - scroll.contentItem.height
+        // A reader who scrolled up to older messages must stay there.
+        scroll.contentItem.contentY = Math.floor((scroll.contentItem.contentHeight - scroll.contentItem.height) / 2)
         test.retainedScroll = scroll.contentItem.contentY
+        if (test.retainedScroll <= 0) throw new Error("Baseline conversation is not scrollable")
         test.retainedToggle = test.findNamed(view, "buzzThreadToggle", []).filter(function(item) {
-          return item.parent.modelData.id === test.rootId
+          return item.messageId === test.rootId
         })[0]
         if (!test.retainedToggle) throw new Error("Baseline conversation not rendered")
         var kept = {rooms:service.catalogRooms, history:service.historyRows, replies:service.threadRows, people:service.recipientEntries}

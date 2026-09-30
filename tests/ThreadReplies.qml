@@ -16,28 +16,65 @@ ShellRoot {
   property string openedRoot: ""
   property var retainedToggle: null
   property real retainedScroll: 0
-  Timer {
-    id: checkQuietUpdate
-    interval: 100
-    onTriggered: {
-      try {
-        var scroll = test.findNamed(view, "buzzHistoryScroll", [])[0]
-        var toggles = test.findNamed(view, "buzzThreadToggle", [])
-        if (toggles.indexOf(test.retainedToggle) === -1)
-          throw new Error("Incoming message rebuilt existing delegates")
-        if (Math.abs(scroll.contentItem.contentY - test.retainedScroll) > 1)
-          throw new Error("Incoming message moved the reader's scroll position")
-        if (service.threadRootId !== test.openedRoot || service.threadState !== "snapshot")
-          throw new Error("Incoming message interrupted the open thread")
-        console.log("PASS: replies visible; quiet snapshots and incoming messages preserve delegates, scroll, and open thread")
-        Qt.quit()
-      } catch (error) { console.error(error); Qt.exit(1) }
-    }
-  }
   function findNamed(item, name, found) {
     if (item.objectName === name) found.push(item)
     for (var i = 0; i < item.children.length; i++) findNamed(item.children[i], name, found)
     return found
+  }
+  function shown(name) { return test.findNamed(view, name, []).filter(function(item) { return item.visible && item.height > 0 }) }
+  function atNewest(scroll) {
+    return Math.abs(scroll.contentItem.contentY - (scroll.contentItem.contentHeight - scroll.contentItem.height)) <= 1
+  }
+  function incoming(id, text) {
+    test.crowdedFrame.status.history.rows.push({id:id.repeat(32),author:"a".repeat(64),time:102,
+      text:text,edited:false,truncated:false,unavailable:false})
+    if (!service.acceptFrame(JSON.stringify(test.crowdedFrame))) throw new Error("New message snapshot rejected")
+  }
+  Timer {
+    id: checkClosed
+    interval: 100
+    onTriggered: {
+      try {
+        if (test.shown("buzzThreadPanel").length || test.shown("buzzThreadReply").length)
+          throw new Error("Closed thread stayed on screen")
+        console.log("PASS: thread opens beside the room with its replies; snapshots keep delegates and the open thread; the view follows the newest message only for a reader at the end")
+        Qt.quit()
+      } catch (error) { console.error(error); Qt.exit(1) }
+    }
+  }
+  Timer {
+    id: checkReaderPosition
+    interval: 100
+    onTriggered: {
+      try {
+        var scroll = test.findNamed(view, "buzzHistoryScroll", [])[0]
+        if (Math.abs(scroll.contentItem.contentY - test.retainedScroll) > 1)
+          throw new Error("Incoming message moved a reader who had scrolled up")
+        if (test.findNamed(view, "buzzThreadToggle", []).indexOf(test.retainedToggle) === -1)
+          throw new Error("Incoming message rebuilt existing delegates")
+        if (service.threadRootId !== test.openedRoot || service.threadState !== "snapshot" || test.shown("buzzThreadReply").length !== 1)
+          throw new Error("Incoming message interrupted the open thread")
+        test.findNamed(view, "buzzCloseThread", [])[0].clicked()
+        if (service.threadRootId !== "") throw new Error("Close did not close the thread")
+        checkClosed.start()
+      } catch (error) { console.error(error); Qt.exit(1) }
+    }
+  }
+  Timer {
+    id: checkFollow
+    interval: 100
+    onTriggered: {
+      try {
+        var scroll = test.findNamed(view, "buzzHistoryScroll", [])[0]
+        if (!test.atNewest(scroll)) throw new Error("Reader at the end did not follow the newest message")
+        if (test.findNamed(view, "buzzThreadToggle", []).indexOf(test.retainedToggle) === -1)
+          throw new Error("Incoming message rebuilt existing delegates")
+        scroll.contentItem.contentY = 0
+        test.retainedScroll = 0
+        test.incoming("9a", "Second incoming message")
+        checkReaderPosition.start()
+      } catch (error) { console.error(error); Qt.exit(1) }
+    }
   }
   Timer {
     id: openLastThread
@@ -49,13 +86,12 @@ ShellRoot {
         if (!scroll || toggles.length !== 15 || scroll.contentItem.contentHeight <= scroll.contentItem.height)
           throw new Error("Crowded history did not render in a scrollable viewport: toggles=" + toggles.length
             + " content=" + (scroll ? scroll.contentItem.contentHeight : "missing")
-            + " viewport=" + (scroll ? scroll.contentItem.height : "missing")
-            + " row=" + (toggles.length ? toggles[0].parent.height : "missing")
-            + " button=" + (toggles.length ? toggles[0].height : "missing"))
-        var reactions = test.findNamed(view, "buzzMessageReactions", [])
+            + " viewport=" + (scroll ? scroll.contentItem.height : "missing"))
+        if (!test.atNewest(scroll)) throw new Error("Conversation did not open at its newest message")
+        var reactions = test.findNamed(scroll, "buzzMessageReactions", [])
         if (reactions.length !== 15 || !reactions[reactions.length - 1].visible)
           throw new Error("Snapshot reactions were not rendered on their message")
-        scroll.contentItem.contentY = scroll.contentItem.contentHeight - scroll.contentItem.height
+        if (test.shown("buzzThreadPanel").length) throw new Error("Thread panel shown without an open thread")
         toggles[toggles.length - 1].clicked()
         if (service.threadRootId !== test.openedRoot || service.threadState !== "loading")
           throw new Error("Thread toggle did not open the selected root")
@@ -65,35 +101,31 @@ ShellRoot {
           hasMore:false,category:"thread_completeness_unknown"}
         test.crowdedFrame.type="status"
         if (!service.acceptFrame(JSON.stringify(test.crowdedFrame))) throw new Error("Reply snapshot rejected")
-        checkThreadViewport.start()
+        checkThreadPanel.start()
       } catch (error) { console.error(error); Qt.exit(1) }
     }
   }
   Timer {
-    id: checkThreadViewport
+    id: checkThreadPanel
     interval: 100
     onTriggered: {
       try {
         var scroll = test.findNamed(view, "buzzHistoryScroll", [])[0]
-        var details = test.findNamed(view, "buzzThreadDetails", []).filter(function(item) { return item.visible })[0]
-        if (!details || details.height <= 0 || service.threadRows.length !== 1)
-          throw new Error("Open thread has no visible reply block")
-        var y = details.mapToItem(scroll, 0, 0).y
-        if (y < -20 || y >= scroll.height)
-          throw new Error("Open thread remained outside the visible scroll viewport: " + y
-            + " scroll=" + scroll.height + " contentY=" + scroll.contentItem.contentY
-            + " contentHeight=" + scroll.contentItem.contentHeight
-            + " available=" + scroll.availableHeight + " viewport=" + scroll.contentItem.height
-            + " rowY=" + details.parent.y + " detailsY=" + details.y)
+        var panel = test.shown("buzzThreadPanel")[0]
+        if (!panel || test.shown("buzzThreadRoot").length !== 1 || test.shown("buzzThreadReply").length !== 1
+            || service.threadRows.length !== 1 || service.threadCountLabel !== "1 reply")
+          throw new Error("Open thread did not show its root and reply")
+        if (!scroll.visible || scroll.width <= 0 || panel.mapToItem(view, 0, 0).x <= scroll.mapToItem(view, 0, 0).x)
+          throw new Error("Thread did not open to the right of a visible room")
+        if (test.shown("buzzThreadToggle").length !== 15) throw new Error("Opening a thread changed the room's messages")
         test.retainedToggle = test.findNamed(view, "buzzThreadToggle", []).filter(function(item) {
-          return item.parent.modelData.id === test.openedRoot
+          return item.messageId === test.openedRoot
         })[0]
-        test.retainedScroll = scroll.contentItem.contentY
+        if (!test.retainedToggle || !test.retainedToggle.selected) throw new Error("Open thread is not marked on its message")
         if (!service.acceptFrame(JSON.stringify(test.crowdedFrame))) throw new Error("Repeated snapshot rejected")
-        test.crowdedFrame.status.history.rows.push({id:"0".repeat(64),author:"a".repeat(64),time:102,
-          text:"New incoming message",edited:false,truncated:false,unavailable:false})
-        if (!service.acceptFrame(JSON.stringify(test.crowdedFrame))) throw new Error("New message snapshot rejected")
-        checkQuietUpdate.start()
+        scroll.toNewest()
+        test.incoming("0a", "New incoming message")
+        checkFollow.start()
       } catch (error) { console.error(error); Qt.exit(1) }
     }
   }
