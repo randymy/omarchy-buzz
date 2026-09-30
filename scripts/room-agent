@@ -1,56 +1,168 @@
 #!/usr/bin/python3
-"""Launch one explicitly configured, filesystem-isolated stock Buzz Codex agent.
+"""Launch one explicitly configured, filesystem-isolated stock Buzz room agent.
 
-Use a systemd user unit for resource bounds and whole-cgroup cleanup. This is
-not a QML command interface. Enrollment is a separate owner operation.
+Harnesses: `codex` (default, unchanged) and `claude-code`. Use a systemd user
+unit for resource bounds and whole-cgroup cleanup. This is not a QML command
+interface. Enrollment is a separate owner operation.
 """
 import argparse
 import importlib.machinery
 import importlib.util
+import json
 import os
 from pathlib import Path
 import re
 import resource
+import stat
 import subprocess
+import sys
 import uuid
 
+sys.dont_write_bytecode = True
 loader = importlib.machinery.SourceFileLoader('room_sandbox', str(Path(__file__).with_name('room-sandbox')))
 spec = importlib.util.spec_from_loader(loader.name, loader)
 sandbox = importlib.util.module_from_spec(spec)
 loader.exec_module(sandbox)
 
-def main():
-    p=argparse.ArgumentParser(description=__doc__)
-    for name in ('profile','workspace','bundle'):
-        p.add_argument('--'+name,type=Path,required=True)
-    for name in ('relay','room','owner','identity'):
-        p.add_argument('--'+name,required=True)
-    a=p.parse_args()
-    resource.setrlimit(resource.RLIMIT_CORE,(0,0))
-    sandbox.validate(a.profile,a.workspace,a.bundle)
-    sandbox.relay_url(a.relay)
-    if any(not re.fullmatch('[0-9a-f]{64}', x) for x in (a.owner,a.identity)) or a.owner==a.identity:
-        p.error('separate_agent_and_owner_required')
-    if str(uuid.UUID(a.room))!=a.room:
-        p.error('canonical_room_required')
-    result=subprocess.run(['/usr/bin/secret-tool','lookup','service','omarchy-buzz.room-agent.v1','account',a.identity],capture_output=True,timeout=15)
-    key=result.stdout.strip()
-    if result.returncode or not re.fullmatch(rb'[0-9a-f]{64}',key):
-        p.error('agent_identity_unavailable')
-    fd=os.memfd_create('buzz-agent-identity',0)
-    os.write(fd,b"--setenv\0BUZZ_PRIVATE_KEY\0"+key+b"\0")
-    os.lseek(fd,0,os.SEEK_SET)
-    if fd!=3:
-        os.dup2(fd,3);os.close(fd)
-    os.set_inheritable(3,True)
-    command=['/opt/agent/bin/room-agent-entry','--agent-command','codex-acp',
-             '--agent-owner',a.owner,'--channels',a.room,'--subscribe','mentions',
-             '--respond-to','owner-only','--permission-mode','default','--agents','1',
-             '--heartbeat-interval','0','--max-turn-duration','180','--idle-timeout','60']
-    argv=sandbox.build_command(a.profile,a.workspace,a.bundle,command,a.relay)
-    position=argv.index('--chdir')
-    argv[position:position]=['--args','3']
-    os.execv(argv[0],argv)
+MAX_ROOMS = 8
+MODEL = re.compile('[A-Za-z0-9._:-]{1,64}')
+# buzz-acp resolves these names through PATH=/opt/agent/bin and recognizes both
+# as its standard adapters (crates/buzz-acp/src/acp.rs, standard_adapter).
+AGENT_COMMANDS = {'codex': 'codex-acp', 'claude-code': 'claude-agent-acp'}
+# Persona respondTo -> buzz-acp --respond-to (crates/buzz-acp/src/config.rs,
+# RespondTo: owner-only|allowlist|anyone|nobody). The subscription stays
+# `mentions`, so `anyone` means any member's mention in the configured rooms.
+RESPOND_TO = {'owner-only': 'owner-only', 'mentions': 'anyone'}
+# Claude settings keys that could route around the subscription login.
+CLAUDE_SETTINGS_REFUSED = ('apiKeyHelper', 'env', 'awsAuthRefresh', 'awsCredentialExport',
+                           'gcpAuthRefresh', 'modelOverrides')
 
-if __name__=='__main__':
+
+def parser():
+    p = argparse.ArgumentParser(description=__doc__)
+    for name in ('profile', 'workspace', 'bundle'):
+        p.add_argument('--' + name, type=Path, required=True)
+    for name in ('relay', 'owner', 'identity'):
+        p.add_argument('--' + name, required=True)
+    p.add_argument('--room', action='append', required=True,
+                   help='canonical channel UUID; repeat for up to 8 rooms')
+    p.add_argument('--harness', choices=sandbox.HARNESSES, default='codex')
+    p.add_argument('--respond-to', choices=tuple(RESPOND_TO), default='owner-only')
+    p.add_argument('--instructions', type=Path,
+                   help='0600 persona instructions file written by the agent service')
+    p.add_argument('--model', help='harness model ID; empty or absent keeps the harness default')
+    return p
+
+
+def check_arguments(p, a):
+    """Validate everything that does not need the filesystem. Exits via p.error."""
+    if any(not re.fullmatch('[0-9a-f]{64}', x) for x in (a.owner, a.identity)) or a.owner == a.identity:
+        p.error('separate_agent_and_owner_required')
+    if not 1 <= len(a.room) <= MAX_ROOMS:
+        p.error('room_count_invalid')
+    for room in a.room:
+        try:
+            canonical = str(uuid.UUID(room))
+        except ValueError:
+            canonical = None
+        if canonical != room:
+            p.error('canonical_room_required')
+    if len(set(a.room)) != len(a.room):
+        p.error('duplicate_room')
+    if a.model == '':
+        a.model = None
+    if a.model is not None and not MODEL.fullmatch(a.model):
+        p.error('model_invalid')
+
+
+def check_bundle_harness(bundle, harness):
+    entry = bundle / 'bin' / AGENT_COMMANDS[harness]
+    if entry.is_symlink() or not entry.is_file():
+        raise sandbox.Refused('bundle_harness_mismatch')
+
+
+def check_claude_settings(profile):
+    """Refuse user settings that could select API or third-party routing.
+
+    The flag settings in the bundle force the Claude subscription login; these
+    lower-precedence keys are refused rather than trusted to lose.
+    """
+    path = profile / 'provider' / 'settings.json'
+    if path.is_symlink():
+        raise sandbox.Refused('provider_settings_review_required')
+    if not path.exists():
+        return
+    info = path.stat()
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_size > 1024 * 1024:
+        raise sandbox.Refused('provider_settings_review_required')
+    try:
+        value = json.loads(path.read_text())
+    except (OSError, ValueError) as exc:
+        raise sandbox.Refused('provider_settings_review_required') from exc
+    if (not isinstance(value, dict) or any(key in value for key in CLAUDE_SETTINGS_REFUSED) or
+            value.get('forceLoginMethod', 'claudeai') != 'claudeai'):
+        raise sandbox.Refused('provider_settings_review_required')
+
+
+def agent_command(a):
+    """The exact buzz-acp argv run inside the sandbox."""
+    command = ['/opt/agent/bin/room-agent-entry', '--agent-command', AGENT_COMMANDS[a.harness],
+               '--agent-owner', a.owner, '--channels', ','.join(a.room), '--subscribe', 'mentions',
+               '--respond-to', RESPOND_TO[a.respond_to], '--permission-mode', 'default', '--agents', '1',
+               '--heartbeat-interval', '0', '--max-turn-duration', '180', '--idle-timeout', '60']
+    if a.instructions is not None:
+        # Same buzz-acp system prompt Desktop sets through BUZZ_ACP_SYSTEM_PROMPT;
+        # the file form keeps up to 16 KiB of text out of process arguments.
+        command += ['--system-prompt-file', sandbox.INSTRUCTIONS_TARGET]
+    if a.model is not None and a.harness == 'codex':
+        # Desktop: BUZZ_ACP_MODEL (same clap argument as --model).
+        command += ['--model', a.model]
+    return command
+
+
+def launch_argv(a):
+    """Validate paths and return the bwrap argv; fd 3 carries the identity options."""
+    sandbox.validate(a.profile, a.workspace, a.bundle)
+    sandbox.relay_url(a.relay)
+    check_bundle_harness(a.bundle, a.harness)
+    instructions = None
+    if a.instructions is not None:
+        instructions = sandbox.instructions_file(a.instructions, a.profile, a.workspace, a.bundle)
+    extra_env = {}
+    if a.harness == 'claude-code':
+        check_claude_settings(a.profile)
+        if a.model is not None:
+            # Desktop's single startup model authority for local Claude agents.
+            extra_env['ANTHROPIC_MODEL'] = a.model
+    argv = sandbox.build_command(a.profile, a.workspace, a.bundle, agent_command(a), a.relay,
+                                 harness=a.harness, instructions=instructions, extra_env=extra_env)
+    position = argv.index('--chdir')
+    argv[position:position] = ['--args', '3']
+    return argv
+
+
+def main():
+    p = parser()
+    a = p.parse_args()
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    check_arguments(p, a)
+    try:
+        argv = launch_argv(a)
+    except sandbox.Refused as exc:
+        p.error(str(exc))
+    result = subprocess.run(['/usr/bin/secret-tool', 'lookup', 'service', 'omarchy-buzz.room-agent.v1',
+                             'account', a.identity], capture_output=True, timeout=15)
+    key = result.stdout.strip()
+    if result.returncode or not re.fullmatch(rb'[0-9a-f]{64}', key):
+        p.error('agent_identity_unavailable')
+    fd = os.memfd_create('buzz-agent-identity', 0)
+    os.write(fd, b"--setenv\0BUZZ_PRIVATE_KEY\0" + key + b"\0")
+    os.lseek(fd, 0, os.SEEK_SET)
+    if fd != 3:
+        os.dup2(fd, 3); os.close(fd)
+    os.set_inheritable(3, True)
+    os.execv(argv[0], argv)
+
+
+if __name__ == '__main__':
     main()

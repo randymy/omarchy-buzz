@@ -1,0 +1,3 @@
+#!/bin/sh
+export CLAUDE_CODE_EXECUTABLE=/opt/agent/bin/claude
+exec /opt/agent/bin/node /opt/agent/adapter/node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js "$@"

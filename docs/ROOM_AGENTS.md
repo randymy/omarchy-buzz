@@ -54,6 +54,10 @@ independently certify a plan tier or billing receipt.
   integrated. A profile or presence indication is not proof of current work.
 
 Claude's subscription smoke test is separate; no Claude room service is installed.
-Future setup needs reviewed packaging, explicit workspace selection and native
-start/stop controls. This implementation remains generic; a downstream integration
-can supply an intentionally chosen workspace later without changing the plugin.
+Reviewed packaging now exists: `scripts/agent-bundle` assembles pinned Codex
+and Claude Code bundles and `scripts/agent-login` handles the shared provider
+sign-in (see [Bundles and sign-in](AGENTS_SERVICE.md#bundles-and-sign-in)).
+Explicit workspace selection and native start/stop controls come with the
+agent service and panel; none of this is installed yet. This implementation
+remains generic; a downstream integration can supply an intentionally chosen
+workspace later without changing the plugin.

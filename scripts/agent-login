@@ -1,0 +1,204 @@
+#!/usr/bin/python3
+"""Provider sign-in for a harness's shared profile, outside any agent sandbox.
+
+  agent-login <harness>            open a terminal running the vendor's own login
+  agent-login --status <harness>   print signed-in, signed-out or unknown
+
+The login runs the bundle's pinned vendor CLI with HOME and the vendor config
+directory pointed at ~/.local/state/omarchy-buzz-agent-preview/<harness>/.
+Codex uses `codex -c forced_login_method="chatgpt" login`; Claude Code uses
+`claude --settings <forceLoginMethod=claudeai> auth login --claudeai`. Vendor
+output stays in that terminal; this tool never reads or prints credentials.
+
+--status only inspects file metadata (lstat) of the vendor credential file in
+the shared profile: provider/auth.json for Codex, provider/.credentials.json
+for Claude Code. A regular, user-owned, non-empty file is `signed-in`; an
+absent file or profile is `signed-out`; anything else is `unknown`. The file is
+never opened, so expiry or revocation is not detected.
+
+Errors print {"error": category} on stderr: harness_unknown (exit 2),
+harness_missing, profile_unsafe, terminal_unavailable, login_requires_terminal.
+"""
+import argparse
+import json
+import os
+from pathlib import Path
+import shlex
+import shutil
+import stat
+import sys
+
+sys.dont_write_bytecode = True
+HOME = Path.home()
+HARNESSES = ('codex', 'claude-code')
+PROFILE_DIRS = ('home', 'provider', 'config', 'data', 'cache', 'state')
+CREDENTIAL = {'codex': 'auth.json', 'claude-code': '.credentials.json'}
+CONFIG_ENV = {'codex': 'CODEX_HOME', 'claude-code': 'CLAUDE_CONFIG_DIR'}
+NATIVE = {'codex': 'adapter/node_modules/@openai/codex-linux-arm64/vendor/aarch64-unknown-linux-musl/bin/codex',
+          'claude-code': 'claude/claude'}
+FLOATING = 'omarchy-launch-floating-terminal-with-presentation'
+
+
+class Refused(Exception):
+    pass
+
+
+def default_profile(harness):
+    return HOME / '.local/state/omarchy-buzz-agent-preview' / harness
+
+
+def default_bundle(harness):
+    return HOME / '.local/share/omarchy-buzz' / ('agent-' + harness)
+
+
+def status(profile, harness):
+    """Metadata-only credential presence check. Never opens the file."""
+    try:
+        if any(p.is_symlink() for p in (profile, *profile.parents)):
+            return 'unknown'
+        info = os.lstat(profile)
+    except FileNotFoundError:
+        return 'signed-out'
+    except OSError:
+        return 'unknown'
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+        return 'unknown'
+    try:
+        provider = os.lstat(profile / 'provider')
+        if not stat.S_ISDIR(provider.st_mode) or provider.st_uid != os.getuid():
+            return 'unknown'
+        credential = os.lstat(profile / 'provider' / CREDENTIAL[harness])
+    except FileNotFoundError:
+        return 'signed-out'
+    except OSError:
+        return 'unknown'
+    if not stat.S_ISREG(credential.st_mode) or credential.st_uid != os.getuid():
+        return 'unknown'
+    return 'signed-in' if credential.st_size > 0 else 'signed-out'
+
+
+def private_dir(path):
+    if path.is_symlink():
+        raise Refused('profile_unsafe')
+    path.mkdir(mode=0o700, exist_ok=True)
+    info = path.stat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+        raise Refused('profile_unsafe')
+    return path
+
+
+def prepare_profile(profile):
+    if not profile.is_absolute() or '..' in profile.parts or any(p.is_symlink() for p in profile.parents):
+        raise Refused('profile_unsafe')
+    if not profile.parent.exists():
+        profile.parent.mkdir(mode=0o700, parents=True)
+    private_dir(profile)
+    for name in PROFILE_DIRS:
+        private_dir(profile / name)
+    return profile
+
+
+def native_cli(bundle, harness):
+    if not bundle.is_absolute() or any(p.is_symlink() for p in (bundle, *bundle.parents)):
+        raise Refused('harness_missing')
+    path = bundle / NATIVE[harness]
+    if path.is_symlink() or not path.is_file() or not os.access(path, os.X_OK):
+        raise Refused('harness_missing')
+    if harness == 'claude-code':
+        settings = bundle / 'claude/subscription-settings.json'
+        if settings.is_symlink() or not settings.is_file():
+            raise Refused('harness_missing')
+    return path
+
+
+def login_command(bundle, harness):
+    native = native_cli(bundle, harness)
+    if harness == 'codex':
+        return [str(native), '-c', 'forced_login_method="chatgpt"', 'login']
+    return [str(native), '--settings', str(bundle / 'claude/subscription-settings.json'),
+            'auth', 'login', '--claudeai']
+
+
+def login_environment(profile, harness, ambient):
+    env = {'HOME': str(profile / 'home'), 'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8',
+           'TERM': ambient.get('TERM', 'xterm-256color'),
+           'XDG_CONFIG_HOME': str(profile / 'config'), 'XDG_DATA_HOME': str(profile / 'data'),
+           'XDG_CACHE_HOME': str(profile / 'cache'), 'XDG_STATE_HOME': str(profile / 'state'),
+           CONFIG_ENV[harness]: str(profile / 'provider')}
+    if harness == 'claude-code':
+        env['DISABLE_AUTOUPDATER'] = '1'
+    # Desktop handles only, so the vendor CLI can open the sign-in page. No
+    # provider keys, tokens, proxies, Node options or Buzz credentials.
+    for key in ('DISPLAY', 'WAYLAND_DISPLAY', 'DBUS_SESSION_BUS_ADDRESS', 'XDG_RUNTIME_DIR'):
+        if key in ambient:
+            env[key] = ambient[key]
+    return env
+
+
+def terminal_argv(inner, ambient_path):
+    """Argv that opens a terminal running `inner`; never waits for the login."""
+    candidates = [shutil.which(FLOATING, path=ambient_path),
+                  str(HOME / '.local/share/omarchy/bin' / FLOATING)]
+    for candidate in candidates:
+        if candidate and os.access(candidate, os.X_OK):
+            # The Omarchy wrapper runs its arguments through `bash -c`; the
+            # command is fixed paths plus a validated harness, quoted here.
+            return [candidate, shlex.join(inner)]
+    exec_terminal = shutil.which('xdg-terminal-exec', path=ambient_path)
+    if exec_terminal:
+        return [exec_terminal, '--title=Buzz agent sign-in', '-e', *inner]
+    raise Refused('terminal_unavailable')
+
+
+def fail(category, code=1):
+    print(json.dumps({'error': category}), file=sys.stderr)
+    return code
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument('harness')
+    p.add_argument('--status', action='store_true', help='print signed-in, signed-out or unknown')
+    p.add_argument('--in-terminal', action='store_true', help=argparse.SUPPRESS)
+    p.add_argument('--dry-run', action='store_true', help='print the terminal argv instead of opening it')
+    p.add_argument('--bundle', type=Path)
+    p.add_argument('--profile', type=Path)
+    args = p.parse_args()
+    if args.harness not in HARNESSES:
+        return fail('harness_unknown', 2)
+    profile = args.profile or default_profile(args.harness)
+    bundle = args.bundle or default_bundle(args.harness)
+    if args.status:
+        print(status(profile, args.harness))
+        return 0
+    os.umask(0o077)
+    try:
+        if args.in_terminal:
+            if not all(os.isatty(fd) for fd in (0, 1, 2)):
+                raise Refused('login_requires_terminal')
+            command = login_command(bundle, args.harness)
+            prepare_profile(profile)
+            env = login_environment(profile, args.harness, os.environ)
+            os.chdir(profile / 'home')
+            os.execve(command[0], command, env)
+        login_command(bundle, args.harness)  # refuse early when the bundle is missing
+        prepare_profile(profile)
+        inner = ['/usr/bin/python3', str(Path(__file__).resolve()), '--in-terminal', args.harness,
+                 '--bundle', str(bundle), '--profile', str(profile)]
+        argv = terminal_argv(inner, os.environ.get('PATH', '/usr/bin:/bin'))
+        if args.dry_run:
+            print(json.dumps(argv))
+            return 0
+        import subprocess
+        subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True)
+        print('launched')
+        return 0
+    except Refused as error:
+        return fail(str(error))
+    except OSError:
+        return fail('login_launch_failed')
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

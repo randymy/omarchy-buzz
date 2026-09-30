@@ -1813,3 +1813,40 @@ backoff, room change and Retry, the 30 s primed cadence, thread refetch on `e` t
 the periodic thread refresh), `tests/helper_smoke.py`, and every `scripts/preview`
 mode including the new `--live-updates`. Not verified: live delivery timing and
 `CLOSED` reasons of a real relay, and behaviour under a real burst.
+
+## Harness bundles and provider sign-in — September 30, 2026
+
+Branch `agentbundle`; not merged, installed or run as an agent. Implements the
+bundle and sign-in part of [AGENTS_SERVICE.md](AGENTS_SERVICE.md#bundles-and-sign-in).
+
+`room-agent` accepts `--harness claude-code|codex`, 1–8 `--room`, `--respond-to
+owner-only|mentions` (upstream `owner-only`/`anyone`), `--instructions <0600
+file>` (bound read-only, `buzz-acp --system-prompt-file`) and `--model`
+(`buzz-acp --model` for Codex, `ANTHROPIC_MODEL` for Claude Code, as Desktop).
+The defaults render the September 29 Codex command byte for byte; a golden test
+compares them. New `room-claude`/`room-claude-acp` wrappers point the stock
+Claude adapter at the pinned CLI with `{"forceLoginMethod": "claudeai"}` flag
+settings. `agent-bundle` assembles and checks `agent-<harness>` bundles;
+`agent-login` opens the vendor login and reports `--status` from credential
+file metadata.
+
+Evidence: 45 synthetic unit tests pass (`python3 -B -m unittest
+tests.test_room_sandbox tests.test_agent_bundle tests.test_agent_preview
+tests.test_package_agent_preview`), including a real bubblewrap run proving the
+instructions file is readable and not writable inside. A real Codex bundle
+was assembled into an untracked directory from the installed stock bundle
+(read-only source; pinned hashes matched, 1333 files, 608 MB, `--check` ready
+in 0.5 s). A real Claude Code bundle was assembled with the opt-in locked
+`npm ci` (public npm registry, scripts disabled) and the mise CLI 2.1.280,
+whose hash equals the SDK 0.3.280 native CLI (6566 files, 490 MB, ready).
+Inside the sandbox, with the network unshared and an empty synthetic
+profile, the bundled CLI reported `2.1.280`, `auth status` reported logged out
+with `forcedLoginMethod: "claudeai"` and `configDirectory: /profile/provider`,
+and `buzz-acp auth-methods` initialized both stock adapters through the
+wrappers. Both trial bundles were deleted. `scripts/preview` default passed.
+
+Not verified: a real sign-in, a model turn, a relay connection, agent
+execution, the browser hand-off from the login terminal, the Omarchy floating
+terminal launch, and whether the Claude CLI refuses a Console login under the
+forced setting. No installed bundle, profile, unit, keyring entry or login was
+created or changed.

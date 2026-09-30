@@ -1,0 +1,4 @@
+#!/bin/sh
+# Flag settings force the Claude subscription login (forceLoginMethod=claudeai)
+# for every invocation, including those made by the ACP adapter's SDK.
+exec /opt/agent/claude/claude --settings /opt/agent/claude/subscription-settings.json "$@"
