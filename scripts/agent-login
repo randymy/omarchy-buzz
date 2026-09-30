@@ -1,7 +1,8 @@
 #!/usr/bin/python3
 """Provider sign-in for a harness's shared profile, outside any agent sandbox.
 
-  agent-login <harness>            open a terminal running the vendor's own login
+  agent-login <harness>            open a terminal running the vendor's own login,
+                                   detached into its own user scope
   agent-login --status <harness>   print signed-in, signed-out or unknown
 
 The login runs the bundle's pinned vendor CLI with HOME and the vendor config
@@ -150,6 +151,26 @@ def terminal_argv(inner, ambient_path):
     raise Refused('terminal_unavailable')
 
 
+def detached_argv(argv, ambient_path):
+    """Run the terminal outside the caller's cgroup and session.
+
+    The agent service is socket-activated and idles out; a terminal left in its
+    cgroup would be killed with it (KillMode=control-group). `systemd-run
+    --user --scope` moves the terminal into its own transient user scope
+    (`--collect` removes it even if it fails); without systemd-run, `setsid -f`
+    at least leaves the session. The Omarchy wrapper's own `setsid uwsm-app`
+    only reaches an app scope when uwsm's app daemon is running, and
+    `xdg-terminal-exec` never does, so this is applied to both.
+    """
+    systemd_run = shutil.which('systemd-run', path=ambient_path)
+    if systemd_run:
+        return [systemd_run, '--user', '--scope', '--collect', '--quiet', '--', *argv]
+    setsid = shutil.which('setsid', path=ambient_path)
+    if setsid:
+        return [setsid, '-f', *argv]
+    return argv
+
+
 def fail(category, code=1):
     print(json.dumps({'error': category}), file=sys.stderr)
     return code
@@ -185,7 +206,8 @@ def main():
         prepare_profile(profile)
         inner = ['/usr/bin/python3', str(Path(__file__).resolve()), '--in-terminal', args.harness,
                  '--bundle', str(bundle), '--profile', str(profile)]
-        argv = terminal_argv(inner, os.environ.get('PATH', '/usr/bin:/bin'))
+        ambient_path = os.environ.get('PATH', '/usr/bin:/bin')
+        argv = detached_argv(terminal_argv(inner, ambient_path), ambient_path)
         if args.dry_run:
             print(json.dumps(argv))
             return 0

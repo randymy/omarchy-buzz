@@ -19,6 +19,15 @@ MemoryMax=256M
 TasksMax=64
 LimitNOFILE=256
 LimitCORE=0
+# Session variables for `sign_in` (the login terminal) and the session bus.
+# A user unit already inherits the user manager's environment, which the
+# session fills with `systemctl --user import-environment` or
+# `dbus-update-activation-environment --systemd` (uwsm does this on Omarchy);
+# these lines name what the service needs. Unset names are ignored. The
+# service passes only PATH, HOME, these and XDG_* on to `agent-login`.
+PassEnvironment=XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS
+PassEnvironment=WAYLAND_DISPLAY DISPLAY HYPRLAND_INSTANCE_SIGNATURE
+PassEnvironment=XDG_CURRENT_DESKTOP XDG_SESSION_TYPE XDG_DATA_DIRS XDG_CONFIG_DIRS
 
 # Socket-activated; the daemon exits 30 s after its last client unless a
 # request is still running. It needs the session D-Bus (Secret Service and

@@ -726,12 +726,13 @@ impl Service {
         }
         let script = harness::login_script(&self.paths);
         let argv = harness::login_argv(&self.paths, harness);
+        let env = harness::login_environment(std::env::vars_os());
         let spawner = self.deps.spawner.clone();
         blocking(move || {
             if !spawner.present(&script) {
                 return Err("harness_missing");
             }
-            spawner.spawn(&argv).map_err(|_| "harness_missing")
+            spawner.spawn(&argv, &env).map_err(|_| "harness_missing")
         })
         .await
     }

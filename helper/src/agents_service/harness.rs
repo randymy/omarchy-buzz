@@ -7,7 +7,9 @@
 //!   `signed-out` or `unknown`; `unknown`, any other output, a failure to run
 //!   or a timeout is reported as `null`.
 //! - `<scripts>/agent-login <harness>` opens the vendor login in a terminal;
-//!   the service only starts it and never reads its output.
+//!   the service only starts it and never reads its output. It runs with a
+//!   minimal environment ([`login_environment`]); the script detaches the
+//!   terminal into its own user scope so it outlives this service.
 //!
 //! `<bundle>` is `~/.local/share/omarchy-buzz/agent-<harness>` and `<scripts>`
 //! is `~/.local/share/omarchy-buzz/scripts` (XDG data directory), where a
@@ -15,6 +17,7 @@
 use super::store::{Paths, HARNESSES};
 use serde::Serialize;
 use std::{
+    ffi::OsString,
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
     sync::Mutex,
@@ -37,8 +40,38 @@ pub trait Spawner: Send + Sync {
     /// Runs to completion (bounded) and returns its exit status (`None` when
     /// killed or timed out) and at most 64 KiB of standard output.
     fn output(&self, argv: &[String]) -> Result<(Option<i32>, String), &'static str>;
-    /// Starts a detached process and returns without waiting for it.
-    fn spawn(&self, argv: &[String]) -> Result<(), &'static str>;
+    /// Starts a process with exactly `env` and returns without waiting for it.
+    fn spawn(&self, argv: &[String], env: &[(OsString, OsString)]) -> Result<(), &'static str>;
+}
+
+/// Session variables `agent-login` needs to open a terminal on this desktop:
+/// these names and every `XDG_*` variable, nothing else (no provider keys,
+/// tokens, proxies or Buzz credentials reach the login from the service).
+pub const LOGIN_ENV: [&str; 7] = [
+    "PATH",
+    "HOME",
+    "XDG_RUNTIME_DIR",
+    "WAYLAND_DISPLAY",
+    "DISPLAY",
+    "DBUS_SESSION_BUS_ADDRESS",
+    "HYPRLAND_INSTANCE_SIGNATURE",
+];
+
+/// The environment passed to `agent-login`, filtered from `ambient` (the
+/// service's own environment) and sorted by name.
+pub fn login_environment(
+    ambient: impl IntoIterator<Item = (OsString, OsString)>,
+) -> Vec<(OsString, OsString)> {
+    let mut env: Vec<(OsString, OsString)> = ambient
+        .into_iter()
+        .filter(|(key, _)| {
+            key.to_str()
+                .is_some_and(|k| LOGIN_ENV.contains(&k) || k.starts_with("XDG_"))
+        })
+        .collect();
+    env.sort();
+    env.dedup_by(|a, b| a.0 == b.0);
+    env
 }
 
 pub fn bundle_script(paths: &Paths, harness: &str) -> PathBuf {
@@ -106,10 +139,12 @@ impl Spawner for Processes {
         super::unit::run_bounded(argv, CHECK_DEADLINE, true)
             .map(|(code, out)| (code, String::from_utf8_lossy(&out).into_owned()))
     }
-    fn spawn(&self, argv: &[String]) -> Result<(), &'static str> {
+    fn spawn(&self, argv: &[String], env: &[(OsString, OsString)]) -> Result<(), &'static str> {
         let (program, args) = argv.split_first().ok_or("spawn_failed")?;
         let mut child = std::process::Command::new(program)
             .args(args)
+            .env_clear()
+            .envs(env.iter().map(|(k, v)| (k, v)))
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -131,6 +166,7 @@ pub struct FakeSpawner {
     pub outputs: Mutex<std::collections::BTreeMap<String, String>>,
     pub calls: Mutex<Vec<Vec<String>>>,
     pub spawned: Mutex<Vec<Vec<String>>>,
+    pub spawned_env: Mutex<Vec<Vec<(OsString, OsString)>>>,
 }
 impl Spawner for FakeSpawner {
     fn present(&self, _script: &Path) -> bool {
@@ -143,8 +179,92 @@ impl Spawner for FakeSpawner {
             None => Ok((Some(1), String::new())),
         }
     }
-    fn spawn(&self, argv: &[String]) -> Result<(), &'static str> {
+    fn spawn(&self, argv: &[String], env: &[(OsString, OsString)]) -> Result<(), &'static str> {
         self.spawned.lock().unwrap().push(argv.to_vec());
+        self.spawned_env.lock().unwrap().push(env.to_vec());
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pairs(values: &[(&str, &str)]) -> Vec<(OsString, OsString)> {
+        values
+            .iter()
+            .map(|(k, v)| (OsString::from(k), OsString::from(v)))
+            .collect()
+    }
+
+    #[test]
+    fn login_environment_keeps_only_session_variables() {
+        let ambient = pairs(&[
+            ("WAYLAND_DISPLAY", "wayland-1"),
+            ("OPENAI_API_KEY", "synthetic"),
+            ("ANTHROPIC_API_KEY", "synthetic"),
+            ("BUZZ_PRIVATE_KEY", "synthetic"),
+            ("HTTPS_PROXY", "http://proxy.invalid"),
+            ("LD_PRELOAD", "/tmp/x.so"),
+            ("XDG_CURRENT_DESKTOP", "Hyprland"),
+            ("XDG_RUNTIME_DIR", "/run/user/1000"),
+            ("PATH", "/usr/bin"),
+            ("HOME", "/home/example"),
+            ("DISPLAY", ":1"),
+            ("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1000/bus"),
+            ("HYPRLAND_INSTANCE_SIGNATURE", "sig"),
+            ("TERM", "xterm"),
+            ("XDGX", "no"),
+        ]);
+        assert_eq!(
+            login_environment(ambient),
+            pairs(&[
+                ("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1000/bus"),
+                ("DISPLAY", ":1"),
+                ("HOME", "/home/example"),
+                ("HYPRLAND_INSTANCE_SIGNATURE", "sig"),
+                ("PATH", "/usr/bin"),
+                ("WAYLAND_DISPLAY", "wayland-1"),
+                ("XDG_CURRENT_DESKTOP", "Hyprland"),
+                ("XDG_RUNTIME_DIR", "/run/user/1000"),
+            ])
+        );
+    }
+
+    #[test]
+    fn spawned_processes_get_exactly_the_given_environment() {
+        let dir = std::env::temp_dir().join(format!("omarchy-buzz-env-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        let out = dir.join("env.json");
+        let partial = dir.join("env.tmp");
+        let script = "import json, os, sys; open(sys.argv[1], 'w').write(json.dumps(dict(os.environ))); os.rename(sys.argv[1], sys.argv[2])";
+        Processes
+            .spawn(
+                &[
+                    "/usr/bin/python3".into(),
+                    "-c".into(),
+                    script.into(),
+                    partial.to_str().unwrap().into(),
+                    out.to_str().unwrap().into(),
+                ],
+                &pairs(&[("PATH", "/usr/bin"), ("WAYLAND_DISPLAY", "wayland-9")]),
+            )
+            .unwrap();
+        let until = std::time::Instant::now() + Duration::from_secs(10);
+        while !out.exists() && std::time::Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let mut seen: std::collections::BTreeMap<String, String> =
+            serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        // Python may add its own C-locale coercion variable.
+        seen.remove("LC_CTYPE");
+        assert_eq!(
+            seen,
+            [("PATH", "/usr/bin"), ("WAYLAND_DISPLAY", "wayland-9")]
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect()
+        );
     }
 }

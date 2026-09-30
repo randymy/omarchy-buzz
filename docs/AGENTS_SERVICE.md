@@ -213,7 +213,17 @@ reissued and rooms are added again.
 else `missing`), `~/.local/share/omarchy-buzz/scripts/agent-login --status
 <harness>` (`signed-in`/`signed-out`, anything else → `null`) and
 `~/.local/share/omarchy-buzz/scripts/agent-login <harness>` for `sign_in`
-(started detached, never read). A script must be an unlinked regular file owned
+(started without waiting, never read). `sign_in` gives the script a cleared
+environment holding only `PATH`, `HOME`, `XDG_RUNTIME_DIR`, `WAYLAND_DISPLAY`,
+`DISPLAY`, `DBUS_SESSION_BUS_ADDRESS`, `HYPRLAND_INSTANCE_SIGNATURE` and
+`XDG_*` from the service's own environment. The socket-activated unit gets
+those from the user manager, which the session fills through `systemctl --user
+import-environment` / `dbus-update-activation-environment --systemd` (uwsm
+does this on Omarchy); `omarchy-buzz-agents.service` names the ones it needs
+with `PassEnvironment=` (`XDG_RUNTIME_DIR`, `DBUS_SESSION_BUS_ADDRESS`,
+`WAYLAND_DISPLAY`, `DISPLAY`, `HYPRLAND_INSTANCE_SIGNATURE`,
+`XDG_CURRENT_DESKTOP`, `XDG_SESSION_TYPE`, `XDG_DATA_DIRS`,
+`XDG_CONFIG_DIRS`; `PATH` and `HOME` are always set for user units). A script must be an unlinked regular file owned
 by the user, executable and not group/other-writable; otherwise `missing`/`null`
 and `sign_in` answers `harness_missing`. `start_agent` rechecks both and refuses
 with `harness_missing`/`not_signed_in`.
@@ -269,10 +279,11 @@ limited to 108 bytes).
 - `ExecStart` passes `--auth-tag <agent dir>/auth-tag.json`; the launcher
   hands it to `buzz-acp` as `BUZZ_AUTH_TAG` (see Bundles and sign-in). A real
   `buzz-acp` run with it is unverified.
-- `sign_in` starts `agent-login` in the service's cgroup: the script must
-  detach the terminal into its own scope, or it ends when the service exits or
-  stops. Whether the service's environment carries the display variables is
-  unverified.
+- `agent-login` detaches the terminal into its own transient user scope
+  (see Sign-in and status), so it outlives the service. A real
+  `systemd-run --user --scope` launch from the socket-activated service, and
+  whether the user manager's environment carries the display variables on a
+  given login, are unverified.
 - The relay's acceptance of kind 30175/30177/9000 over WebSocket with these
   exact contents, the owner's permission to add members to each room, and the
   kind-0 publication through an owner attestation were checked against the
@@ -432,7 +443,14 @@ requires the bundle's native CLI (`harness_missing`), creates the profile
 directories (`profile_unsafe` if they are links or not 0700), and opens a
 terminal: `omarchy-launch-floating-terminal-with-presentation` from `PATH` or
 `~/.local/share/omarchy/bin`, else `xdg-terminal-exec` (`terminal_unavailable`
-otherwise). It prints `launched` and does not wait. The terminal runs
+otherwise). The terminal argv is run as `systemd-run --user --scope --collect
+--quiet -- <terminal argv>` when `systemd-run` is on `PATH` (its own transient
+user scope, outside the agent service's cgroup, so it survives the service's
+idle exit or stop), else as `setsid -f <terminal argv>`. The Omarchy wrapper
+itself execs `setsid uwsm-app -- xdg-terminal-exec …`, which reaches an app
+scope only through uwsm's app daemon, and `xdg-terminal-exec` alone never
+leaves the caller's cgroup, so the scope is always added. `--dry-run` prints
+the final argv. It prints `launched` and does not wait. The terminal runs
 `agent-login --in-terminal`, which requires a TTY and execs, outside any
 sandbox, `codex -c forced_login_method="chatgpt" login` or `claude --settings
 <subscription-settings.json> auth login --claudeai`, with `HOME`, `XDG_*_HOME`

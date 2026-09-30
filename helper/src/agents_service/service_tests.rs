@@ -2,7 +2,7 @@
 //! spawner and room source, a temporary home and a loopback relay.
 use super::*;
 use crate::agents_service::{
-    harness::FakeSpawner,
+    harness::{self, FakeSpawner},
     keys::FakeKeyring,
     request,
     rooms::FixedRooms,
@@ -622,6 +622,13 @@ async fn sign_in_only_starts_the_reviewed_script_for_known_harnesses() {
             "claude-code".into()
         ]]
     );
+    // Only the session variables reach the login script.
+    let env = f.spawner.spawned_env.lock().unwrap()[0].clone();
+    assert_eq!(env, harness::login_environment(std::env::vars_os()));
+    assert!(env.iter().all(|(key, _)| {
+        let key = key.to_str().unwrap();
+        harness::LOGIN_ENV.contains(&key) || key.starts_with("XDG_")
+    }));
 }
 
 #[tokio::test]
