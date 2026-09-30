@@ -4,6 +4,7 @@ import QtQuick.Controls as Controls
 import qs.Ui as Ui
 import qs.Commons
 import "Identicon.js" as Identicon
+import "AnsiArt.js" as AnsiArt
 
 // Editor for one agent persona in the middle column. It edits a local draft and
 // sends only structured, locally validated requests through the agent service.
@@ -53,7 +54,8 @@ ColumnLayout {
   onDraftInstructionsChanged: if (instructions.text !== draftInstructions) instructions.text = draftInstructions
   onDraftModelChanged: if (modelField.text !== draftModel) modelField.text = draftModel
   onDraftWorkspaceChanged: if (workspaceField.text !== draftWorkspace) workspaceField.text = draftWorkspace
-  onDraftArtChanged: if (artField.text !== draftArt) artField.text = draftArt
+  // Colored art loaded from a file is not typed: the field keeps plain art only.
+  onDraftArtChanged: if (!AnsiArt.isAnsi(draftArt) && artField.text !== draftArt) artField.text = draftArt
   Component.onCompleted: load()
 
   readonly property var draftFields: ({name: draftName, description: draftDescription, instructions: draftInstructions,
@@ -76,7 +78,7 @@ ColumnLayout {
   }
   readonly property string problem: agents ? agents.fieldsProblem(saveFields, creating) : ""
   readonly property bool serviceChanged: Object.keys(changedFields).length > 0
-  readonly property bool artChanged: !creating && !!entry && Identicon.normalizeArt(draftArt) !== agents.avatarArtFor(agentId)
+  readonly property bool artChanged: !creating && !!entry && AnsiArt.storedArt(draftArt) !== agents.avatarArtFor(agentId)
   readonly property bool dirty: creating || serviceChanged || artChanged
   // Art alone is saved locally and needs no agent service request.
   readonly property bool canSave: !!agents && (creating || !!entry)
@@ -86,7 +88,7 @@ ColumnLayout {
   function save() {
     if (!canSave) return false
     if (creating) {
-      pendingCreateArt = Identicon.normalizeArt(draftArt)
+      pendingCreateArt = AnsiArt.storedArt(draftArt)
       return agents.createAgent(saveFields)
     }
     if (artChanged && !agents.setAvatarArt(agentId, draftArt)) return false
@@ -231,6 +233,7 @@ ColumnLayout {
         Controls.TextArea {
           id: artField
           objectName: "buzzAgentAvatarArt"
+          visible: !AnsiArt.isAnsi(root.draftArt)
           Layout.preferredWidth: artMetrics.advanceWidth + leftPadding + rightPadding
           Layout.preferredHeight: artMetrics.height * 6 + topPadding + bottomPadding
           textFormat: TextEdit.PlainText
@@ -272,8 +275,28 @@ ColumnLayout {
         }
         Caption {
           Layout.alignment: Qt.AlignTop
-          text: "Kept on this machine only"
+          text: AnsiArt.isAnsi(root.draftArt) ? "Colored art from a file · kept on this machine only" : "Kept on this machine only"
         }
+      }
+      Ui.Button {
+        objectName: "buzzAgentAvatarLoad"
+        text: artLoader.visible ? "Hide file loader" : "Load from file…"
+        tooltipText: "Use a .ans or .txt file as this agent's avatar"
+        fontSize: Style.font.caption
+        focusable: true
+        onClicked: artLoader.visible = !artLoader.visible
+      }
+      AvatarFileLoader {
+        id: artLoader
+        visible: false
+        Layout.maximumWidth: Style.space(360)
+        Layout.fillWidth: true
+        fieldName: "buzzAgentAvatarPath"
+        showClear: true
+        canClear: AnsiArt.isAnsi(root.draftArt)
+        // Loaded art is a draft like typed art: Save keeps it.
+        onArtLoaded: function(art) { root.draftArt = art }
+        onClearRequested: root.draftArt = ""
       }
       Caption { text: "Harness" }
       RowLayout {

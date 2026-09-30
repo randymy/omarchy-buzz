@@ -62,6 +62,11 @@ FocusScope {
   }
   // Sidebar rows use a smaller avatar so each stays close to one button high.
   readonly property int sidebarAvatarSize: Math.max(6, Math.round(Style.font.caption * 0.8))
+  // This user's own avatar art, keyed by their public key in the local avatar
+  // store. Local only until profile avatars are published to the relay.
+  readonly property bool myAvatarAvailable: !!service && !service.sampleMode && !!agentService
+    && /^[a-f0-9]{64}$/.test(service.identity)
+  readonly property string myAvatarArt: myAvatarAvailable ? agentService.avatarArtForKey(service.identity) : ""
   function openAvatarCard(key, name, art) {
     avatarCard.show(key, name, art)
     return true
@@ -305,6 +310,48 @@ FocusScope {
           opacity: 0.6
           font.family: Style.font.family
           font.pixelSize: Style.font.caption
+        }
+        // My avatar: art from a local .ans or .txt file. Local only until profile
+        // avatars are published to the relay; others still see the identicon.
+        ColumnLayout {
+          objectName: "buzzMyAvatar"
+          visible: root.myAvatarAvailable
+          Layout.fillWidth: true
+          spacing: Style.space(2)
+          RowLayout {
+            Layout.fillWidth: true
+            spacing: Style.space(4)
+            BuzzAvatar {
+              objectName: "buzzMyAvatarPreview"
+              key: root.myAvatarAvailable ? root.service.identity : ""
+              name: "You"
+              art: root.myAvatarArt
+              pixelSize: root.sidebarAvatarSize
+            }
+            Ui.Button {
+              objectName: "buzzSetMyAvatar"
+              Layout.fillWidth: true
+              text: myAvatarLoader.visible ? "Hide my avatar" : "Set my avatar"
+              tooltipText: "Use a .ans or .txt file as your avatar on this machine"
+              fontSize: Style.font.caption
+              leftAlign: true
+              focusable: true
+              onClicked: myAvatarLoader.visible = !myAvatarLoader.visible
+            }
+          }
+          AvatarFileLoader {
+            id: myAvatarLoader
+            visible: false
+            Layout.fillWidth: true
+            fieldName: "buzzMyAvatarPath"
+            showClear: true
+            canClear: root.myAvatarArt !== ""
+            onArtLoaded: function(art) {
+              if (!root.myAvatarAvailable || !root.agentService.setOwnAvatarArt(root.service.identity, art))
+                fail("The avatar could not be kept.")
+            }
+            onClearRequested: if (root.myAvatarAvailable) root.agentService.setOwnAvatarArt(root.service.identity, "")
+          }
         }
         Controls.ScrollView {
           Layout.fillWidth: true

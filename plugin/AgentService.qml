@@ -2,6 +2,7 @@ import QtQuick
 import Quickshell
 import Quickshell.Io
 import "Identicon.js" as Identicon
+import "AnsiArt.js" as AnsiArt
 
 // Client of the separate agent service (docs/AGENTS_SERVICE.md). It sends only
 // the structured requests of that interface and renders validated status; it
@@ -51,14 +52,19 @@ Item {
   // directory beside the last-room memory, keyed by persona id. The service's
   // persona record has no avatar field yet; this moves into the persona record
   // (and the service contract) when the service gains one. Nothing here is sent.
+  // The same file keeps this user's own avatar keyed by their 64-hex public key.
+  // That is local only until profile avatars are published to the relay: other
+  // people keep seeing this user's identicon. Art is plain pasted text (6 × 12)
+  // or sanitized ANSI grid art from a file (AnsiArt.js), never a file path.
   readonly property string avatarStateDir: (Quickshell.env("XDG_STATE_HOME").startsWith("/")
     ? Quickshell.env("XDG_STATE_HOME") : Quickshell.env("HOME") + "/.local/state") + "/omarchy-buzz"
   readonly property string avatarsPath: avatarStateDir + "/avatars.json"
   property var avatarArt: ({})
   property bool avatarWritePending: false
   function avatarArtFor(id) { return typeof id === "string" && avatarArt.hasOwnProperty(id) ? avatarArt[id] : "" }
-  // Art for a message author: only this machine's enrolled agents have any.
+  // Art for a message author: this user's own art, or this machine's enrolled agents'.
   function avatarArtForKey(key) {
+    if (/^[a-f0-9]{64}$/.test(key) && avatarArt.hasOwnProperty(key)) return avatarArt[key]
     var entry = agents.find(function(candidate) { return candidate.enrolled && candidate.identity === key })
     return entry ? avatarArtFor(entry.id) : ""
   }
@@ -69,22 +75,36 @@ Item {
     if (!exactKeys(parsed, "avatars,version") || parsed.version !== 1 || !parsed.avatars
         || typeof parsed.avatars !== "object" || Array.isArray(parsed.avatars)) return {}
     var ids = Object.keys(parsed.avatars)
-    if (ids.length > 16) return {}
+    // Up to 16 agents plus a few of this user's own identities.
+    if (ids.length > 32) return {}
     var result = {}
     for (var i = 0; i < ids.length; i++) {
       var art = parsed.avatars[ids[i]]
-      if (!uuidV4(ids[i]) || typeof art !== "string" || art === "" || Identicon.normalizeArt(art) !== art) return {}
+      if (!(uuidV4(ids[i]) || /^[a-f0-9]{64}$/.test(ids[i])) || typeof art !== "string" || art === ""
+          || art.length > 262144 || AnsiArt.storedArt(art) !== art) return {}
       result[ids[i]] = art
     }
     return result
   }
   function setAvatarArt(id, text) {
     if (!agent(id) || typeof text !== "string") return false
-    var art = Identicon.normalizeArt(text)
+    return storeAvatarArt(id, text, true)
+  }
+  // This user's own avatar, keyed by their public key (see above: local only).
+  function setOwnAvatarArt(key, text) {
+    if (typeof key !== "string" || !/^[a-f0-9]{64}$/.test(key) || typeof text !== "string") return false
+    return storeAvatarArt(key, text, false)
+  }
+  function storeAvatarArt(id, text, prune) {
+    var art = AnsiArt.storedArt(text)
     if (avatarArtFor(id) === art) return true
-    // Keep only agents the service still lists, so deleted agents' art is dropped.
+    // Keep own-key art, and only agents the service still lists, so deleted
+    // agents' art is dropped. Own art is set without pruning: the agent list
+    // may be empty while the agent service is away.
     var next = {}
-    Object.keys(avatarArt).forEach(function(key) { if (key !== id && root.agent(key)) next[key] = root.avatarArt[key] })
+    Object.keys(avatarArt).forEach(function(key) {
+      if (key !== id && (!prune || !uuidV4(key) || root.agent(key))) next[key] = root.avatarArt[key]
+    })
     if (art !== "") next[id] = art
     avatarArt = next
     avatarWritePending = true
@@ -105,6 +125,8 @@ Item {
     path: root.avatarsPath
     watchChanges: false
     atomicWrites: true
+    // Written before setAvatarArt returns, so a fresh reader sees the new art.
+    blockWrites: true
     printErrors: false
     blockLoading: true
     onLoaded: root.loadAvatars()
