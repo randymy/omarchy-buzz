@@ -20,6 +20,8 @@ Column {
   readonly property int depth: Number.isInteger(row.depth) ? row.depth : 1
   readonly property real indent: Math.min(Math.max(depth - 1, 0), 3) * Style.space(14)
   signal threadRequested()
+  // The author's avatar was clicked: the panel shows a profile card.
+  signal avatarRequested(string key, string name, string art)
   spacing: Style.space(2)
   leftPadding: indent
 
@@ -64,8 +66,10 @@ Column {
         visible: root.lead && root.ready
         key: root.ready ? root.row.author : ""
         name: !root.ready ? "" : root.sample ? root.row.author : root.service.messageAuthorName(root.row.author)
-        // Pasted art of this machine's own enrolled agents; everyone else has an identicon.
+        // Art kept on this machine: its enrolled agents' and this user's own; everyone else has an identicon.
         art: root.ready && !root.sample && root.service.agents ? root.service.agents.avatarArtForKey(root.row.author) : ""
+        clickable: visible
+        onActivated: root.avatarRequested(key, name, art)
       }
     }
     Column {

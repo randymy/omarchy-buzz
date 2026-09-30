@@ -62,6 +62,10 @@ FocusScope {
   }
   // Sidebar rows use a smaller avatar so each stays close to one button high.
   readonly property int sidebarAvatarSize: Math.max(6, Math.round(Style.font.caption * 0.8))
+  function openAvatarCard(key, name, art) {
+    avatarCard.show(key, name, art)
+    return true
+  }
   // A direct message shows the first participant other than this identity.
   function dmPartner(room) {
     if (!room || !Array.isArray(room.participants) || !service) return ""
@@ -186,7 +190,7 @@ FocusScope {
   }
   signal closeRequested()
   signal presentationRequested()
-  Keys.onEscapePressed: closeRequested()
+  Keys.onEscapePressed: avatarCard.opened ? avatarCard.close() : closeRequested()
 
   Rectangle {
     anchors.fill: parent
@@ -798,6 +802,7 @@ FocusScope {
                 threadLink: true
                 threadSelected: !!root.service && root.service.threadRootId === row.id
                 onThreadRequested: root.toggleThread(row.id)
+                onAvatarRequested: function(key, name, art) { root.openAvatarCard(key, name, art) }
               }
             }
           }
@@ -918,6 +923,7 @@ FocusScope {
               service: root.service
               row: root.threadOpen ? root.service.threadRoot : ({})
               showDate: true
+              onAvatarRequested: function(key, name, art) { root.openAvatarCard(key, name, art) }
             }
             Item {
               objectName: "buzzThreadDetails"
@@ -951,6 +957,7 @@ FocusScope {
                 topPadding: row.grouped ? Style.space(3) : Style.space(8)
                 service: root.service
                 row: JSON.parse(payload)
+                onAvatarRequested: function(key, name, art) { root.openAvatarCard(key, name, art) }
               }
             }
           }
@@ -969,5 +976,12 @@ FocusScope {
         }
       }
     }
+  }
+
+  // Profile card over the whole panel; closing it returns to the composer.
+  AvatarCard {
+    id: avatarCard
+    anchors.fill: parent
+    onClosed: root.activeComposer.field.forceActiveFocus()
   }
 }
