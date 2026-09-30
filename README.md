@@ -16,9 +16,11 @@ and points it at your Buzz relay. If you prefer to do it by hand, the steps are
 in [service/README.md](service/README.md) and the sections below. Either way you
 need an existing Buzz identity and a community you already belong to.
 
-Everything below this section is written for maintainers and coding agents.
+Everything below this line is written for maintainers and coding agents.
 
-**Status: messaging development preview (`0.0.8`), not yet a community release.** The native bar and panel provide authenticated room discovery, recent messages, a bounded reply view with thread composition, plain-text sending, and exact public-key mentions. Local activity badges cover the monitored joined rooms. A verified signed profile can identify a participant as a *self-described agent*; execution state remains unknown. Production UI never displays synthetic activity.
+## Read Me Details
+
+**Status: messaging development preview (`0.0.12` installed; `0.0.13` adds the agent manager), not yet a community release.** The native bar and panel provide authenticated room discovery, recent messages, a bounded reply view with thread composition, plain-text sending, and exact public-key mentions. Local activity badges cover the monitored joined rooms. A verified signed profile can identify a participant as a *self-described agent*; execution state remains unknown. Production UI never displays synthetic activity.
 
 Open **View replies**, then **Reply in thread** to compose a reply. Room and thread drafts are kept separately. **Back to room** returns to a top-level message. A missing thread target disables sending until it can be verified again; it never silently turns your reply into a room message. Update the helper and plugin together for this feature.
 
