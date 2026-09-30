@@ -18,6 +18,10 @@ use tokio::{
 };
 const IO_DEADLINE: Duration = Duration::from_secs(10);
 pub fn socket_path() -> Result<PathBuf, &'static str> {
+    runtime_socket("control.sock")
+}
+/// `$XDG_RUNTIME_DIR/omarchy-buzz/<name>` after checking the runtime directory.
+pub(crate) fn runtime_socket(name: &str) -> Result<PathBuf, &'static str> {
     let d = PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR").ok_or("runtime_unavailable")?);
     let m = std::fs::symlink_metadata(&d).map_err(|_| "runtime_unavailable")?;
     if !d.is_absolute()
@@ -27,9 +31,9 @@ pub fn socket_path() -> Result<PathBuf, &'static str> {
     {
         return Err("runtime_insecure");
     }
-    Ok(d.join("omarchy-buzz/control.sock"))
+    Ok(d.join("omarchy-buzz").join(name))
 }
-fn private_dir(path: &std::path::Path) -> Result<(), &'static str> {
+pub(crate) fn private_dir(path: &std::path::Path) -> Result<(), &'static str> {
     let parent = path.parent().ok_or("runtime_unavailable")?;
     match std::fs::create_dir(parent) {
         Ok(()) => {}
@@ -43,7 +47,7 @@ fn private_dir(path: &std::path::Path) -> Result<(), &'static str> {
     std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
         .map_err(|_| "runtime_unavailable")
 }
-fn socket_permissions(path: &std::path::Path) -> Result<(), &'static str> {
+pub(crate) fn socket_permissions(path: &std::path::Path) -> Result<(), &'static str> {
     use std::os::unix::fs::FileTypeExt;
     let m = std::fs::symlink_metadata(path).map_err(|_| "runtime_unavailable")?;
     if !m.file_type().is_socket()
@@ -54,7 +58,7 @@ fn socket_permissions(path: &std::path::Path) -> Result<(), &'static str> {
     }
     Ok(())
 }
-async fn write<W: tokio::io::AsyncWrite + Unpin>(
+pub(crate) async fn write<W: tokio::io::AsyncWrite + Unpin>(
     w: &mut W,
     v: &serde_json::Value,
 ) -> Result<(), &'static str> {
@@ -85,9 +89,7 @@ async fn client(
     retry: mpsc::Sender<protocol::Command>,
     instance: String,
 ) -> Result<(), &'static str> {
-    if s.peer_cred().map_err(|_| "peer_unavailable")?.uid() != rustix::process::getuid().as_raw() {
-        return Err("peer_denied");
-    }
+    peer_allowed(&s)?;
     let (read, mut out) = s.into_split();
     let mut read = BufReader::new(read);
     let snapshot = status.borrow().clone();
@@ -149,10 +151,28 @@ async fn client(
         }
     }
 }
-pub async fn daemon(keep: bool) -> Result<(), &'static str> {
-    let c = config::load()?;
-    let path = socket_path()?;
-    private_dir(&path)?;
+/// Only the same user may talk to a daemon, in either direction.
+pub(crate) fn peer_allowed(s: &UnixStream) -> Result<(), &'static str> {
+    if s.peer_cred().map_err(|_| "peer_unavailable")?.uid() != rustix::process::getuid().as_raw() {
+        return Err("peer_denied");
+    }
+    Ok(())
+}
+/// A per-process instance identifier for status envelopes.
+pub(crate) fn instance_id() -> Result<String, &'static str> {
+    Ok(format!(
+        "{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| "clock_unavailable")?
+            .as_nanos()
+    ))
+}
+/// The listening socket: inherited from socket activation (checked against
+/// `path`) or bound here. The boolean is true when bound here (standalone).
+pub(crate) fn listen(path: &std::path::Path) -> Result<(UnixListener, bool), &'static str> {
+    private_dir(path)?;
     let mut inherited = listenfd::ListenFd::from_env();
     let inherited_listener = inherited
         .take_unix_listener(0)
@@ -162,32 +182,31 @@ pub async fn daemon(keep: bool) -> Result<(), &'static str> {
         if l.local_addr()
             .map_err(|_| "activation_invalid")?
             .as_pathname()
-            != Some(path.as_path())
+            != Some(path)
         {
             return Err("activation_invalid");
         }
-        socket_permissions(&path)?;
+        socket_permissions(path)?;
         l.set_nonblocking(true).map_err(|_| "activation_invalid")?;
         UnixListener::from_std(l).map_err(|_| "activation_invalid")?
     } else {
         // Never unlink an existing socket: its daemon may still be alive.
-        let l = UnixListener::bind(&path).map_err(|_| "daemon_already_running")?;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+        let l = UnixListener::bind(path).map_err(|_| "daemon_already_running")?;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
             .map_err(|_| "runtime_unavailable")?;
         l
     };
+    Ok((listener, standalone))
+}
+pub async fn daemon(keep: bool) -> Result<(), &'static str> {
+    let c = config::load()?;
+    let path = socket_path()?;
+    let (listener, standalone) = listen(&path)?;
     let (tx, rx) = watch::channel(Status::new(&c));
     let (retry_tx, retry_rx) = mpsc::channel(1);
     let auth = tokio::spawn(crate::auth::run(c, tx, retry_rx));
     let count = Arc::new(AtomicUsize::new(0));
-    let instance = format!(
-        "{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|_| "clock_unavailable")?
-            .as_nanos()
-    );
+    let instance = instance_id()?;
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
         .map_err(|_| "signal_unavailable")?;
     let mut tick = tokio::time::interval(Duration::from_secs(1));
@@ -213,20 +232,25 @@ pub async fn daemon(keep: bool) -> Result<(), &'static str> {
     Ok(())
 }
 pub async fn bridge() -> Result<(), &'static str> {
-    let path = socket_path()?;
-    socket_permissions(&path)?;
+    bridge_to(&socket_path()?, |line| protocol::request(line).map(|_| ())).await
+}
+/// Relays stdin requests to a daemon socket and its frames to stdout. Every
+/// request is checked by `check` before it is forwarded.
+pub(crate) async fn bridge_to(
+    path: &std::path::Path,
+    check: fn(&[u8]) -> Result<(), &'static str>,
+) -> Result<(), &'static str> {
+    socket_permissions(path)?;
     let s = timeout(IO_DEADLINE, UnixStream::connect(path))
         .await
         .map_err(|_| "daemon_unavailable")?
         .map_err(|_| "daemon_unavailable")?;
-    if s.peer_cred().map_err(|_| "peer_unavailable")?.uid() != rustix::process::getuid().as_raw() {
-        return Err("peer_denied");
-    }
+    peer_allowed(&s)?;
     let (incoming, mut outgoing) = s.into_split();
     let send = async {
         let mut input = BufReader::new(tokio::io::stdin());
         while let Some(line) = protocol::read_line(&mut input).await? {
-            protocol::request(&line)?;
+            check(&line)?;
             timeout(IO_DEADLINE, outgoing.write_all(&line))
                 .await
                 .map_err(|_| "io_timeout")?
