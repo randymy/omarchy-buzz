@@ -17,7 +17,7 @@ This is a native chat client for [Buzz](https://github.com/block/buzz) (a chat n
 5. Enroll your identity: `omarchy-buzz setup identity enroll`.
 6. Open the panel (click **Buzz** in the bar) and click **Retry connection** if it shows unavailable.
 
-**Rough or missing:** no in-plugin account creation, no approval UI for agent actions, manual agent setup with only one Codex agent tested, no Claude room agent yet. Treat this as a preview. Problems: open an issue on [the GitHub repo](https://github.com/randymy/omarchy-buzz).
+**Rough or missing:** no in-plugin account creation, no approval UI for agent actions, manual agent setup with only one Codex agent tested, no Claude room agent yet, and no keyboard shortcut unless you run `scripts/desktop-shortcut install` yourself (it adds Super+B after checking for conflicts). Treat this as a preview. Problems: open an issue on [the GitHub repo](https://github.com/randymy/omarchy-buzz).
 
 Everything below this section is written for maintainers and coding agents.
 
