@@ -52,7 +52,11 @@ pub fn dir() -> Result<PathBuf, &'static str> {
     Ok(base.join("omarchy-buzz"))
 }
 pub fn load() -> Result<Config, &'static str> {
-    let path = dir()?.join("config.toml");
+    load_from(&dir()?)
+}
+/// `load` from an explicit configuration directory.
+pub fn load_from(dir: &std::path::Path) -> Result<Config, &'static str> {
+    let path = dir.join("config.toml");
     let m = match fs::symlink_metadata(&path) {
         Ok(m) => m,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Config::default()),
@@ -72,7 +76,11 @@ pub fn load() -> Result<Config, &'static str> {
     Ok(c)
 }
 pub fn save(c: &Config) -> Result<(), &'static str> {
-    let d = dir()?;
+    save_to(&dir()?, c)
+}
+/// `save` into an explicit configuration directory.
+pub fn save_to(d: &std::path::Path, c: &Config) -> Result<(), &'static str> {
+    let d = d.to_path_buf();
     fs::create_dir_all(&d).map_err(|_| "config_unavailable")?;
     let m = fs::symlink_metadata(&d).map_err(|_| "config_unavailable")?;
     if !m.is_dir() || m.uid() != rustix::process::getuid().as_raw() {
@@ -92,6 +100,15 @@ pub fn save(c: &Config) -> Result<(), &'static str> {
         .map_err(|_| "config_unavailable")?;
     fs::rename(&temp, d.join("config.toml")).map_err(|_| "config_unavailable")?;
     Ok(())
+}
+/// The configuration after choosing `relay` (already canonical): a different
+/// relay clears the identity, because an identity is scoped to its relay.
+pub fn with_relay(mut c: Config, relay: String) -> Config {
+    if c.relay.as_deref() != Some(relay.as_str()) {
+        c.identity = None;
+    }
+    c.relay = Some(relay);
+    c
 }
 pub fn account(c: &Config) -> Result<String, &'static str> {
     Ok(format!(
@@ -120,11 +137,37 @@ mod tests {
             assert!(canonical_relay(s).is_err(), "{s}");
         }
         assert!(canonical_relay("ws://localhost:3000").is_ok());
+        assert!(canonical_relay(&format!("wss://{}.example", "a".repeat(2048))).is_err());
         // Hosted communities use the same transport as independently operated
         // relays; the helper must not require self-hosting or an operator mode.
         assert_eq!(
             canonical_relay("wss://example-team.communities.buzz.xyz").unwrap(),
             "wss://example-team.communities.buzz.xyz/"
         );
+    }
+    #[test]
+    fn relay_change_clears_identity_and_round_trips() {
+        let dir =
+            std::env::temp_dir().join(format!("omarchy-buzz-config-{}", uuid::Uuid::new_v4()));
+        let identity = nostr::Keys::generate().public_key().to_hex();
+        let c = Config {
+            relay: Some("wss://a.example/".into()),
+            identity: Some(identity.clone()),
+        };
+        let same = with_relay(c.clone(), "wss://a.example/".into());
+        assert_eq!(same.identity.as_deref(), Some(identity.as_str()));
+        let other = with_relay(c.clone(), "wss://b.example/".into());
+        assert!(other.identity.is_none());
+        assert_eq!(other.relay.as_deref(), Some("wss://b.example/"));
+        assert!(load_from(&dir).unwrap().relay.is_none());
+        save_to(&dir, &c).unwrap();
+        let loaded = load_from(&dir).unwrap();
+        assert_eq!((loaded.relay, loaded.identity), (c.relay, c.identity));
+        let mode = fs::metadata(dir.join("config.toml"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+        fs::remove_dir_all(dir).unwrap();
     }
 }

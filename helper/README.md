@@ -15,7 +15,8 @@ Commands:
 - `omarchy-buzz setup identity enroll`: explicit interactive terminal only;
   hidden input, no key arguments/environment/files. Stores the submitted key
   in Secret Service `omarchy-buzz.identity.v1`, keyed by origin and public key.
-  It never reads Buzz Desktop's namespace or creates a new identity.
+  It never reads Buzz Desktop's namespace or creates a new identity (the
+  panel's `create_identity` request does that, see below).
   Before saving, HTTPS discovery must succeed and the submitted key must differ
   from the relay's signing identity. `identity_is_relay_signer` means a server key
   was supplied; use a personal identity. Discovery failure leaves enrollment unchanged.
@@ -33,7 +34,14 @@ an explicit retry. Retry reloads configuration after setup. A pending keyring op
 
 Protocol version 1 requests are JSON lines with `version`, `id`, `type`;
 allowed types are `get_snapshot`, `subscribe`, `retry_connection`, and
-`fetch_recent`, `fetch_thread`, `close_thread`, `fetch_recipients`, and `send_message`. Room requests require a canonical UUID
+`fetch_recent`, `fetch_thread`, `close_thread`, `fetch_recipients`, `send_message`, `open_dm`, and the
+setup-assist requests `set_relay` (`url`: 1–2048 bytes, no control characters, then the
+same canonical check as `setup relay`) and `create_identity` (no other fields). Setup
+requests are accepted only while the connection is `unconfigured`, `disconnected` or
+`unavailable` (not while a Secret Service unlock is pending); they answer with a status
+frame carrying the saved relay or new public `identity`, or an error with one of
+`setup_invalid_relay`, `identity_exists`, `identity_unavailable`, `relay_unavailable`,
+`setup_busy`, `setup_not_allowed`, `config_unavailable`. Room requests require a canonical UUID
 `roomId` from the current discovered catalog. Sending also requires a canonical
 request UUID, current helper `instanceId`/`generation`, text of at most 4096 UTF-8
 bytes, and at most 20 distinct canonical mention public keys. An optional `rootId`
@@ -47,7 +55,7 @@ are capped at 64 KiB. Eight clients maximum; output writes time out after ten
 seconds. Invalid requests receive a category-only error and the connection closes.
 Hello/status responses expose public identity/origin, helper instance/generation,
 connection category, and capabilities `connection_status`, `room_catalog`,
-`room_history`, `message_send`, `thread_send`, `thread_replies`, `room_recipients`, `history_auto_refresh`, `room_activity`, `agent_profiles`. At most twenty rooms and twenty projected message rows are
+`room_history`, `message_send`, `thread_send`, `thread_replies`, `room_recipients`, `history_auto_refresh`, `room_activity`, `agent_profiles`, `thread_summaries`, `dm_open`, `older_history`, `live_updates`, `setup_assist`. At most twenty rooms and twenty projected message rows are
 returned. Message previews are plain text capped at 768 UTF-8 bytes, with
 explicit truncation. No raw events, backend errors or credential material is forwarded. UI EOF closes the bridge connection.
 

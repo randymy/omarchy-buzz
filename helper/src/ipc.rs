@@ -116,12 +116,26 @@ async fn client(
                         else {None}};
                     if let Some(category)=refused {write(&mut out,&serde_json::json!({"version":1,"type":"error","id":r.id,"category":category,"instanceId":instance})).await?;continue;}
                 }
+                if r.kind=="set_relay" || r.kind=="create_identity" {
+                    let refused={let current=status.borrow();
+                        // Only a helper that is not authenticated takes setup, so a
+                        // working session is never replaced by accident.
+                        if !matches!(current.connection.as_str(),"unconfigured"|"disconnected"|"unavailable") {
+                            Some(if current.connection=="connecting" {"setup_busy"} else {"setup_not_allowed"})
+                        } else if current.category.as_deref()==Some("identity_access_pending") {Some("setup_busy")}
+                        else if r.kind=="set_relay" && config::canonical_relay(r.url.as_deref().unwrap_or_default()).is_err() {Some("setup_invalid_relay")}
+                        else {None}};
+                    if let Some(category)=refused {write(&mut out,&serde_json::json!({"version":1,"type":"error","id":r.id,"category":category,"instanceId":instance})).await?;continue;}
+                }
                 if r.kind=="send_message" {
                     let busy={let pending=status.borrow();pending.delivery.state=="sending" && pending.delivery.request_id.as_deref()!=Some(r.id.as_str())};
                     if busy {write(&mut out,&serde_json::json!({"version":1,"type":"error","id":r.id,"category":"send_busy","instanceId":instance})).await?;continue;}
                 }
                 let mut send_reply=None;
-                let unknown=if r.kind=="open_dm" {"dm_open_unknown"} else {"delivery_unknown"};
+                let setup=r.kind=="set_relay" || r.kind=="create_identity";
+                // A setup reply that never arrives is not a refusal; the next
+                // status frame shows whether the change was saved.
+                let unknown=if r.kind=="open_dm" {"dm_open_unknown"} else if setup {"setup_busy"} else {"delivery_unknown"};
                 let command=match r.kind.as_str() {
                     "retry_connection"=>Some(protocol::Command::Retry),
                     "fetch_recent"=>Some(protocol::Command::FetchRecent(r.room_id.clone().unwrap())),
@@ -136,11 +150,14 @@ async fn client(
                     "open_dm"=>{let (reply,receiver)=tokio::sync::oneshot::channel();send_reply=Some(receiver);Some(protocol::Command::OpenDm(protocol::DmOpenIntent {
                         request_id:r.id.clone(),participants:r.participants.clone().unwrap(),generation:r.generation.unwrap(),
                     },reply))},
+                    "set_relay"=>{let (reply,receiver)=tokio::sync::oneshot::channel();send_reply=Some(receiver);Some(protocol::Command::SetRelay(r.url.clone().unwrap(),reply))},
+                    "create_identity"=>{let (reply,receiver)=tokio::sync::oneshot::channel();send_reply=Some(receiver);Some(protocol::Command::CreateIdentity(reply))},
                     _=>None,
                 };
-                if let Some(command)=command {if retry.try_send(command).is_err() {write(&mut out,&serde_json::json!({"version":1,"type":"error","id":r.id,"category":"request_busy","instanceId":instance})).await?;continue;}}
+                if let Some(command)=command {if retry.try_send(command).is_err() {write(&mut out,&serde_json::json!({"version":1,"type":"error","id":r.id,"category":if setup {"setup_busy"} else {"request_busy"},"instanceId":instance})).await?;continue;}}
                 if let Some(reply)=send_reply {
-                    let category=send_result(reply,Duration::from_secs(5),unknown).await;
+                    // Relay discovery (up to 13 s) and a Secret Service write take longer than a send.
+                    let category=send_result(reply,Duration::from_secs(if setup {60} else {5}),unknown).await;
                     if let Some(category)=category {write(&mut out,&serde_json::json!({"version":1,"type":"error","id":r.id,"category":category,"instanceId":instance})).await?;continue;}
                 }
                 if r.kind=="subscribe" { subscribed=true; }
@@ -310,5 +327,184 @@ mod send_reply_tests {
             send_result(reply, Duration::from_millis(5), "dm_open_unknown").await,
             Some("dm_open_unknown")
         );
+    }
+}
+
+#[cfg(test)]
+mod setup_tests {
+    use super::*;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+    type Lines = tokio::io::Lines<BufReader<tokio::net::unix::OwnedReadHalf>>;
+    async fn next(lines: &mut Lines, seen: &mut String) -> serde_json::Value {
+        let line = timeout(Duration::from_secs(30), lines.next_line())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        seen.push_str(&line);
+        serde_json::from_str(&line).unwrap()
+    }
+    async fn answer(lines: &mut Lines, seen: &mut String, id: &str) -> serde_json::Value {
+        loop {
+            let frame = next(lines, seen).await;
+            if frame["id"] == id {
+                return frame;
+            }
+        }
+    }
+    fn connect(
+        rx: watch::Receiver<Status>,
+        commands: mpsc::Sender<protocol::Command>,
+    ) -> (Lines, tokio::net::unix::OwnedWriteHalf) {
+        let (server, test) = UnixStream::pair().unwrap();
+        tokio::spawn(client(server, rx, commands, "setup-fixture".into()));
+        let (read, write) = test.into_split();
+        (BufReader::new(read).lines(), write)
+    }
+
+    #[tokio::test]
+    async fn setup_is_refused_while_authenticated_or_connecting() {
+        let mut status = Status::new(&config::Config::default());
+        status.connection = "authenticated".into();
+        let (tx, rx) = watch::channel(status);
+        let (commands, mut received) = mpsc::channel(1);
+        let (mut lines, mut write) = connect(rx, commands);
+        let mut seen = String::new();
+        assert_eq!(next(&mut lines, &mut seen).await["type"], "hello");
+        let relay = br#"{"version":1,"id":"ui-1","type":"set_relay","url":"wss://example.com"}"#;
+        let create = br#"{"version":1,"id":"ui-2","type":"create_identity"}"#;
+        for (connection, category) in [
+            ("authenticated", "setup_not_allowed"),
+            ("connecting", "setup_busy"),
+        ] {
+            tx.send_modify(|s| s.connection = connection.into());
+            for (request, id) in [(&relay[..], "ui-1"), (&create[..], "ui-2")] {
+                write.write_all(request).await.unwrap();
+                write.write_all(b"\n").await.unwrap();
+                let frame = answer(&mut lines, &mut seen, id).await;
+                assert_eq!(
+                    (frame["type"].as_str(), frame["category"].as_str()),
+                    (Some("error"), Some(category)),
+                    "{connection}"
+                );
+            }
+        }
+        tx.send_modify(|s| {
+            s.connection = "unavailable".into();
+            s.category = Some("identity_access_pending".into());
+        });
+        write.write_all(create).await.unwrap();
+        write.write_all(b"\n").await.unwrap();
+        assert_eq!(
+            answer(&mut lines, &mut seen, "ui-2").await["category"],
+            "setup_busy"
+        );
+        // A non-canonical relay is refused by category; the connection stays open.
+        tx.send_modify(|s| {
+            s.connection = "unconfigured".into();
+            s.category = None;
+        });
+        for url in [
+            "http://example.com",
+            "ws://example.com",
+            "wss://u@example.com",
+        ] {
+            let request = serde_json::json!({"version":1,"id":"ui-3","type":"set_relay","url":url});
+            write
+                .write_all(&serde_json::to_vec(&request).unwrap())
+                .await
+                .unwrap();
+            write.write_all(b"\n").await.unwrap();
+            assert_eq!(
+                answer(&mut lines, &mut seen, "ui-3").await["category"],
+                "setup_invalid_relay"
+            );
+        }
+        write
+            .write_all(b"{\"version\":1,\"id\":\"ui-4\",\"type\":\"get_snapshot\"}\n")
+            .await
+            .unwrap();
+        assert_eq!(
+            answer(&mut lines, &mut seen, "ui-4").await["type"],
+            "status"
+        );
+        assert!(
+            received.try_recv().is_err(),
+            "a refused setup reached the actor"
+        );
+    }
+
+    #[tokio::test]
+    async fn created_identity_reaches_status_but_its_secret_never_does() {
+        let _network_fixture = crate::NETWORK_TEST_LOCK.lock().await;
+        let (setup, secrets, dir) = crate::setup::tests::fixture();
+        let signer = nostr::Keys::generate().public_key();
+        let (origin, server) = crate::setup::tests::info_server(
+            200,
+            serde_json::json!({"self": signer.to_hex()}).to_string(),
+            1,
+        )
+        .await;
+        let configured = config::Config {
+            relay: Some(origin.clone()),
+            identity: None,
+        };
+        config::save_to(&dir, &configured).unwrap();
+        let (tx, rx) = watch::channel(Status::new(&configured));
+        let (commands, mut received) = mpsc::channel(1);
+        let actor_setup = setup.clone();
+        let actor = tokio::spawn(async move {
+            let mut retries = 0;
+            while let Some(command) = received.recv().await {
+                if crate::auth::offline_command(command, &tx, &actor_setup).await {
+                    retries += 1;
+                }
+            }
+            retries
+        });
+        let (mut lines, mut write) = connect(rx, commands);
+        let mut seen = String::new();
+        assert!(next(&mut lines, &mut seen).await["status"]["identity"].is_null());
+        write
+            .write_all(b"{\"version\":1,\"id\":\"ui-1\",\"type\":\"create_identity\"}\n")
+            .await
+            .unwrap();
+        let frame = answer(&mut lines, &mut seen, "ui-1").await;
+        server.await.unwrap();
+        assert_eq!(frame["type"], "status", "{frame}");
+        let identity = frame["status"]["identity"].as_str().unwrap().to_owned();
+        assert_eq!(identity.len(), 64);
+        assert_eq!(frame["status"]["relay"], origin.as_str());
+        assert_eq!(frame["generation"], 2);
+        // A second creation is refused; the relay can be changed, clearing it.
+        write
+            .write_all(b"{\"version\":1,\"id\":\"ui-2\",\"type\":\"create_identity\"}\n")
+            .await
+            .unwrap();
+        assert_eq!(
+            answer(&mut lines, &mut seen, "ui-2").await["category"],
+            "identity_exists"
+        );
+        write
+            .write_all(b"{\"version\":1,\"id\":\"ui-3\",\"type\":\"set_relay\",\"url\":\"wss://Other.example\"}\n")
+            .await
+            .unwrap();
+        let changed = answer(&mut lines, &mut seen, "ui-3").await;
+        assert_eq!(changed["status"]["relay"], "wss://other.example/");
+        assert!(changed["status"]["identity"].is_null());
+        let items = secrets.items.lock().unwrap();
+        let secret = items.get(&format!("{origin}|{identity}")).unwrap();
+        assert!(
+            !seen.contains(secret.as_str()),
+            "secret crossed the IPC boundary"
+        );
+        let key = nostr::Keys::parse(secret.as_str()).unwrap();
+        let bech32 = nostr::ToBech32::to_bech32(key.secret_key()).unwrap();
+        assert!(!seen.contains(&bech32));
+        drop(items);
+        drop(write);
+        drop(lines);
+        assert_eq!(actor.await.unwrap(), 2);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

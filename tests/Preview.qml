@@ -19,6 +19,64 @@ ShellRoot {
     }
   }
 
+  // Setup states with and without the helper's `setup_assist` capability.
+  Buzz.Service { id: setupService; autoConnect: false }
+  FloatingWindow {
+    visible: true
+    implicitWidth: 820
+    implicitHeight: 570
+    Buzz.PanelContent { id: setupView; anchors.fill: parent; service: setupService }
+  }
+  function findNamed(item, name, found) {
+    if (item.objectName === name) found.push(item)
+    for (var i = 0; i < item.children.length; i++) findNamed(item.children[i], name, found)
+    return found
+  }
+  function shown(name) { return findNamed(setupView, name, []).filter(function(entry) { return entry.visible }).length }
+  function setupFrame(kind, generation, capabilities, connection, category, relay, identity) {
+    return JSON.stringify({version: 1, type: kind, instanceId: "setup-fixture", generation: generation,
+      capabilities: capabilities, status: {generation: generation, connection: connection, category: category,
+        identity: identity, relay: relay}})
+  }
+  function checkSetupStates() {
+    var assist = ["connection_status", "setup_assist"]
+    var key = "e".repeat(64)
+    setupService.beginSession()
+    if (!setupService.acceptFrame(setupFrame("hello", 1, ["connection_status"], "unconfigured", null, null, null))
+        || shown("buzzSetupRelay") || shown("buzzSetupRelayUrl") || shown("buzzCreateIdentity") || shown("buzzExistingIdentityNote")
+        || setupService.setupInstructions.indexOf("omarchy-buzz setup relay") === -1)
+      throw new Error("Helper without setup_assist lost terminal setup or showed setup controls")
+    setupService.beginSession()
+    if (!setupService.acceptFrame(setupFrame("hello", 1, assist, "unconfigured", null, null, null))
+        || shown("buzzSetupRelay") !== 1 || shown("buzzSetupRelayUrl") !== 1 || shown("buzzCreateIdentity") || shown("buzzExistingIdentityNote")
+        || setupService.setupInstructions.indexOf("Use this relay") === -1)
+      throw new Error("Setup assist relay entry incorrect")
+    if (!setupService.acceptFrame(setupFrame("status", 2, assist, "unconfigured", null, "wss://fixture.example/", null))
+        || shown("buzzCreateIdentity") !== 1 || shown("buzzExistingIdentityNote") !== 1 || shown("buzzNewIdentityNote") !== 1
+        || shown("buzzPublicKey") || findNamed(setupView, "buzzSetupRelayUrl", [])[0].text !== "wss://fixture.example/")
+      throw new Error("Identity choices not offered for a configured relay")
+    if (!setupService.acceptFrame(setupFrame("status", 3, assist, "unconfigured", "identity_missing", "wss://fixture.example/", key))
+        || shown("buzzCreateIdentity") || shown("buzzExistingIdentityNote") !== 1 || shown("buzzPublicKey") !== 1
+        || findNamed(setupView, "buzzPublicKey", [])[0].text !== "Public key " + key.slice(0, 12) + "…")
+      throw new Error("Missing secret offered a replacement identity or hid the public key")
+    if (!setupService.acceptFrame(setupFrame("status", 3, assist, "disconnected", "relay_unavailable", "wss://fixture.example/", key))
+        || shown("buzzSetupRelay") !== 1 || shown("buzzCreateIdentity") || shown("buzzExistingIdentityNote"))
+      throw new Error("Disconnected setup controls incorrect")
+    if (!setupService.acceptFrame(setupFrame("status", 3, assist, "unavailable", "identity_access_pending", "wss://fixture.example/", key))
+        || shown("buzzSetupRelay") || setupService.setupRelay("wss://other.example") || setupService.createIdentity())
+      throw new Error("Setup offered while the secret store is unlocking")
+    if (!setupService.acceptFrame(setupFrame("status", 3, assist, "authenticated", null, "wss://fixture.example/", key))
+        || shown("buzzSetupRelay") || shown("buzzCreateIdentity") || shown("buzzCreatedIdentity")
+        || setupService.setupRelay("wss://other.example") || setupService.createIdentity())
+      throw new Error("Setup offered while authenticated")
+    // A setup refusal for another request never ends the session.
+    if (!setupService.acceptFrame(JSON.stringify({version: 1, type: "error", id: "00000000-0000-4000-8000-000000000009",
+          category: "setup_not_allowed", instanceId: "setup-fixture"})) || setupService.sessionFailed)
+      throw new Error("Setup error category ended the session")
+    if (setupService.acceptFrame(setupFrame("status", 3, assist.concat(["setup_assist"]), "authenticated", null, null, null)))
+      throw new Error("Duplicate capability accepted")
+  }
+
   QtObject {
     id: shellFacade
     property int toggleCount: 0
@@ -59,6 +117,7 @@ ShellRoot {
         sampleService.selectRoom("sample-general")
         if (protocolService.rooms.length !== 0 || protocolService.messages.length !== 0)
           throw new Error("Production state exposed sample data")
+        checkSetupStates()
         if (protocolService.setupProvider !== "hosted") throw new Error("Hosted setup is not the default")
         var beforeProvider = [protocolService.relay, protocolService.instanceId, protocolService.generation,
           protocolService.requestSequence, protocolService.connection, protocolService.category].join("|")

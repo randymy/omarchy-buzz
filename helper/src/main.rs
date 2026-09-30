@@ -20,6 +20,7 @@ mod query;
 mod real_relay_tests;
 mod recipients;
 mod sending;
+mod setup;
 mod thread;
 // Network fixtures share the production concurrency budgets. Serialize fixtures,
 // while individual tests still exercise multiple simultaneous requests explicitly.
@@ -36,7 +37,7 @@ async fn run() -> Result<(), &'static str> {
         ["agents-bridge"]=>agents_service::bridge().await,
         ["--version"]=>{println!("{}",serde_json::json!({"helperVersion":env!("CARGO_PKG_VERSION"),"protocolVersion":1,"backendRevision":compatibility::BUZZ_REVISION}));Ok(())},
         ["inspect"]=>config::load().map(|c|println!("{}",serde_json::json!({"relay":c.relay,"identity":c.identity,"configured":c.relay.is_some()&&c.identity.is_some(),"helperVersion":env!("CARGO_PKG_VERSION"),"protocolVersion":1,"backendRevision":compatibility::BUZZ_REVISION}))),
-        ["setup","relay",url]=>config::canonical_relay(url).and_then(|relay|{let mut c=config::load()?;if c.relay.as_deref()!=Some(&relay){c.identity=None;}c.relay=Some(relay);config::save(&c)}),
+        ["setup","relay",url]=>config::canonical_relay(url).and_then(|relay|config::save(&config::with_relay(config::load()?,relay))),
         ["setup","identity","enroll"]=>enrollment::enroll().await,
         _=>Err("usage: omarchy-buzz daemon [--keep-running] | ui-bridge | agents-daemon [--keep-running] | agents-bridge | inspect | --version | setup relay URL | setup identity enroll")
     }

@@ -22,6 +22,8 @@ pub struct Request {
     pub instance_id: Option<String>,
     /// `open_dm` only: the other participants' keys, never the viewer's.
     pub participants: Option<Vec<String>>,
+    /// `set_relay` only: the relay address to use. The helper canonicalizes it.
+    pub url: Option<String>,
 }
 fn canonical_key(value: &str) -> bool {
     nostr::PublicKey::from_hex(value).is_ok_and(|key| key.to_hex() == value)
@@ -58,6 +60,8 @@ pub fn request(bytes: &[u8]) -> Result<Request, &'static str> {
             | "fetch_recipients"
             | "send_message"
             | "open_dm"
+            | "set_relay"
+            | "create_identity"
     ) {
         return Err("unsupported_request");
     }
@@ -139,6 +143,15 @@ pub fn request(bytes: &[u8]) -> Result<Request, &'static str> {
     } else if r.participants.is_some() {
         return Err("invalid_request");
     }
+    if r.kind == "set_relay" {
+        // Shape only; `ipc` refuses a non-canonical relay with a category.
+        let url = r.url.as_deref().ok_or("invalid_request")?;
+        if url.is_empty() || url.len() > 2048 || url.chars().any(char::is_control) {
+            return Err("invalid_request");
+        }
+    } else if r.url.is_some() {
+        return Err("invalid_request");
+    }
     Ok(r)
 }
 #[derive(Clone)]
@@ -176,6 +189,10 @@ pub enum Command {
         DmOpenIntent,
         tokio::sync::oneshot::Sender<Option<&'static str>>,
     ),
+    /// Setup assist, honoured only while not authenticated. The reply is
+    /// `None` once the configuration is saved and published.
+    SetRelay(String, tokio::sync::oneshot::Sender<Option<&'static str>>),
+    CreateIdentity(tokio::sync::oneshot::Sender<Option<&'static str>>),
 }
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -413,7 +430,7 @@ impl Status {
     }
 }
 pub fn envelope(kind: &str, id: Option<&str>, instance: &str, s: &Status) -> serde_json::Value {
-    serde_json::json!({"version":1,"type":kind,"id":id,"instanceId":instance,"generation":s.generation,"capabilities":["connection_status","room_catalog","room_history","message_send","thread_send","room_recipients","history_auto_refresh","room_activity","agent_profiles","thread_replies","thread_summaries","dm_open","older_history","live_updates"],"backendRevision":crate::compatibility::BUZZ_REVISION,"status":s})
+    serde_json::json!({"version":1,"type":kind,"id":id,"instanceId":instance,"generation":s.generation,"capabilities":["connection_status","room_catalog","room_history","message_send","thread_send","room_recipients","history_auto_refresh","room_activity","agent_profiles","thread_replies","thread_summaries","dm_open","older_history","live_updates","setup_assist"],"backendRevision":crate::compatibility::BUZZ_REVISION,"status":s})
 }
 pub async fn read_line<R: tokio::io::AsyncBufRead + Unpin>(
     r: &mut R,
@@ -519,7 +536,8 @@ mod state_tests {
                 "thread_summaries",
                 "dm_open",
                 "older_history",
-                "live_updates"
+                "live_updates",
+                "setup_assist"
             ])
         );
         assert_eq!(v["status"]["catalog"]["state"], "unavailable");
@@ -741,6 +759,64 @@ mod state_tests {
         assert!(request(
             &serde_json::to_vec(&serde_json::json!({"version":1,"id":"a","type":"subscribe","participants":[key('1')]}))
                 .unwrap()
+        )
+        .is_err());
+    }
+    #[test]
+    fn setup_requests_carry_only_their_own_fields() {
+        let relay = serde_json::json!({"version":1,"id":"ui-3","type":"set_relay","url":"wss://example.com"});
+        let parsed = request(&serde_json::to_vec(&relay).unwrap()).unwrap();
+        assert_eq!(parsed.url.as_deref(), Some("wss://example.com"));
+        // Shape is checked here; canonical scope is refused by ipc with a category.
+        let mut unchecked = relay.clone();
+        unchecked["url"] = serde_json::json!("http://example.com");
+        assert!(request(&serde_json::to_vec(&unchecked).unwrap()).is_ok());
+        for (field, value) in [
+            ("url", serde_json::json!("")),
+            ("url", serde_json::json!("wss://a\n.example")),
+            (
+                "url",
+                serde_json::json!(format!("wss://{}", "a".repeat(2048))),
+            ),
+            ("url", serde_json::json!(7)),
+            ("url", serde_json::Value::Null),
+            (
+                "roomId",
+                serde_json::json!("00000000-0000-4000-8000-000000000001"),
+            ),
+            ("text", serde_json::json!("x")),
+            ("identity", serde_json::json!("a".repeat(64))),
+            ("privateKey", serde_json::json!("a".repeat(64))),
+            ("generation", serde_json::json!(1)),
+        ] {
+            let mut bad = relay.clone();
+            bad[field] = value;
+            assert!(
+                request(&serde_json::to_vec(&bad).unwrap()).is_err(),
+                "{field}"
+            );
+        }
+        let mut missing = relay.clone();
+        missing.as_object_mut().unwrap().remove("url");
+        assert!(request(&serde_json::to_vec(&missing).unwrap()).is_err());
+        let create = serde_json::json!({"version":1,"id":"ui-4","type":"create_identity"});
+        assert!(request(&serde_json::to_vec(&create).unwrap()).is_ok());
+        for (field, value) in [
+            ("url", serde_json::json!("wss://example.com")),
+            ("secret", serde_json::json!("a".repeat(64))),
+            ("identity", serde_json::json!("a".repeat(64))),
+            ("participants", serde_json::json!([])),
+        ] {
+            let mut bad = create.clone();
+            bad[field] = value;
+            assert!(
+                request(&serde_json::to_vec(&bad).unwrap()).is_err(),
+                "{field}"
+            );
+        }
+        // No other request may carry a relay address.
+        assert!(request(
+            br#"{"version":1,"id":"a","type":"retry_connection","url":"wss://example.com"}"#
         )
         .is_err());
     }
