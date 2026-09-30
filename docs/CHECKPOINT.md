@@ -2232,3 +2232,46 @@ and the helper authenticated at once. 0.0.16 (helper SHA256
 refreshed in place with `agent-bundle --refresh-launcher`. Follow-up: the helper
 should detect a clock offset (compare the relay's HTTP `Date` header or NIP-11
 against local time) and report `clock_skew` instead of `auth_rejected`.
+
+## Invite people from Settings — September 30
+
+Branch `invite-people` (not merged or installed; no real relay contacted).
+Upstream references are to the pinned Buzz `781d3951`.
+
+- Relay contract (`crates/buzz-relay/src/api/invites.rs:48-83,278-412`,
+  `router.rs:337`; Desktop `desktop/src/shared/api/invites.ts` `mintInvite`):
+  `POST /api/invites`, NIP-98 with a payload hash, callable only by the
+  tenant's `owner` or `admin` (403 `only relay owners and admins can create
+  invites`). Body `{ttl_secs?, max_uses?}` (60 s–30 days, 1–10 000); there is
+  no role field and every claim grants `member`. Answer `{code, expires_at,
+  max_uses, uses_remaining, url}` with a `v2.` code and
+  `url = http(s)://<tenant host>/invite/<code>`. No list or revoke route
+  exists at this revision, so the helper has none.
+- Helper (`helper/src/invites.rs`, capability `invite_mint`): `mint_invite
+  {maxUses 1–100, expiresInHours 1–720}` with a UUID id, only while
+  authenticated (`relay_unavailable` otherwise, `setup_busy` while one is
+  running). It sends exactly `{"max_uses":n,"ttl_secs":h*3600}` and accepts
+  only the five documented keys, a canonical v2 code, the requested
+  `max_uses` and `uses_remaining`, an expiry within 15 minutes of the one
+  requested and the landing URL on the configured host.
+  `status.invites = {state: idle|minting|minted|failed, code, expiresAt,
+  maxUses, role, category}`; categories `invite_forbidden` (403),
+  `invite_rejected` (400/401), `invite_rate_limited` (429),
+  `relay_unavailable`, `setup_busy`. The code is never logged; a relay or
+  identity change clears the view.
+- Panel: Settings → **Invite people** (`buzzInviteSection`, only with the
+  capability): 1/5/25 people, 1/7/30 days, **Create invite**
+  (`buzzMintInvite`), then the `buzz://join?relay=<wss://host>&code=<code>`
+  link (the form Buzz's web invite page opens, `web/src/features/invite/ui/InvitePage.tsx:248`),
+  the `https://<host>/invite/<code>` link and a message for newcomers
+  (`buzzInviteBlurb`), each with **Copy**. `invite_forbidden` reads "Only the
+  relay's owner or admins can create invites."
+- Evidence (synthetic): Rust loopback tests for the signed request and exact
+  body, 403/429/400/401/404/5xx/302 and malformed answers, strict parsing and
+  IPC gating; `scripts/preview --invites` (refusal sentence, both links, the
+  message with code and host, the three copies, exact requests); `--settings`
+  checks the section is hidden without the capability.
+- Not verified: minting on a real relay (owner and non-owner), the relay's
+  `url` host behind a proxy (a different host is refused as malformed), and
+  opening the `buzz://` link in Buzz Desktop. A panel older than this one
+  refuses a helper announcing 17 capabilities: update both together.

@@ -175,6 +175,8 @@ ShellRoot {
           check(one("buzzSettingsView").mapToItem(view, 0, 0).x > one("buzzAccount").mapToItem(view, 0, 0).x + one("buzzAccount").width,
             "Settings view is not beside the sidebar")
           test.headerClean()
+          // Invite people needs the helper's invite_mint capability.
+          check(shown("buzzInviteSection").length === 0 && shown("buzzMintInvite").length === 0, "Invite people shown without invite_mint")
           one("buzzMyAvatarPath")
           one("buzzMyAvatarPathApply")
           check(one("buzzMyAvatarPreview").usesColor && one("buzzMyAvatarBrightness").text === "Brightness 1.5", "Avatar section wrong")

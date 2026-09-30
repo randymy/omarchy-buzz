@@ -191,7 +191,7 @@ pub(crate) fn http_url(relay: &str, path: &str) -> Result<url::Url, &'static str
     Ok(url)
 }
 
-fn client() -> Result<Client, &'static str> {
+pub(crate) fn client() -> Result<Client, &'static str> {
     Client::builder()
         .no_proxy()
         .no_gzip()
@@ -206,7 +206,10 @@ fn client() -> Result<Client, &'static str> {
         .map_err(|_| "relay_unavailable")
 }
 
-async fn body(mut response: reqwest::Response, limit: usize) -> Result<Vec<u8>, &'static str> {
+pub(crate) async fn body(
+    mut response: reqwest::Response,
+    limit: usize,
+) -> Result<Vec<u8>, &'static str> {
     if response.content_length().is_some_and(|n| n > limit as u64) {
         return Err("relay_unavailable");
     }

@@ -11,6 +11,7 @@ mod config;
 mod dm_open;
 mod enrollment;
 mod history;
+mod invites;
 mod ipc;
 mod join;
 mod ledger;

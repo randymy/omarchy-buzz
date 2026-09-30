@@ -12,7 +12,9 @@ can enroll an identity you already have in a terminal). Joining now happens in
 the panel too: paste an invitation link or code, read and accept the
 community's terms, and you are in; once connected, the panel lists the open
 rooms you can join with one click, no approval needed, and each room has a
-Leave button. An agent can also be set to answer your direct messages.
+Leave button. An agent can also be set to answer your direct messages. If you
+run the relay (or are one of its admins), Settings → Invite people makes an
+invite link and a ready-to-paste message for anyone you want to bring in.
 
 The easiest way to install it is to ask the coding agent on your Omarchy
 machine (Claude Code or Codex) to install this repository, giving it the URL.

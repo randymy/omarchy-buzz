@@ -256,6 +256,53 @@ FocusScope {
     font.pixelSize: Style.font.caption
     font.bold: true
   }
+  // Invite people: one invite link with its Copy button.
+  component InviteLinkRow: ColumnLayout {
+    id: linkRow
+    property string caption: ""
+    property string link: ""
+    property string linkName: ""
+    property string copyName: ""
+    property bool copied: false
+    signal copyRequested()
+    Layout.fillWidth: true
+    spacing: Style.space(2)
+    Text {
+      Layout.fillWidth: true
+      text: linkRow.caption
+      textFormat: Text.PlainText
+      elide: Text.ElideRight
+      color: Color.foreground
+      opacity: 0.6
+      font.family: Style.font.family
+      font.pixelSize: Style.font.caption
+    }
+    RowLayout {
+      Layout.fillWidth: true
+      spacing: Style.space(6)
+      Text {
+        objectName: linkRow.linkName
+        Layout.fillWidth: true
+        text: linkRow.link
+        textFormat: Text.PlainText
+        elide: Text.ElideMiddle
+        color: Color.foreground
+        font.family: Style.font.family
+        font.pixelSize: Style.font.caption
+        Controls.ToolTip.visible: linkHover.containsMouse
+        Controls.ToolTip.text: linkRow.link
+        MouseArea { id: linkHover; anchors.fill: parent; hoverEnabled: true; acceptedButtons: Qt.NoButton }
+      }
+      Ui.Button {
+        objectName: linkRow.copyName
+        text: linkRow.copied ? "Copied" : "Copy"
+        tooltipText: "Copy to the clipboard"
+        fontSize: Style.font.caption
+        focusable: true
+        onClicked: linkRow.copyRequested()
+      }
+    }
+  }
   component SettingsNote: Text {
     Layout.fillWidth: true
     textFormat: Text.PlainText
@@ -298,6 +345,9 @@ FocusScope {
   property var manifest: null
   property bool settingsOpen: false
   property bool accountMenuOpen: false
+  // Invite people: the chosen limits (the panel offers 1/5/25 uses, 1/7/30 days).
+  property int inviteUses: 1
+  property int inviteHours: 168
   // Fixed issue-tracker URL, opened only when Send feedback is chosen. Tests
   // may set feedbackOpener to record the call instead of opening a browser.
   readonly property string feedbackUrl: "https://github.com/randymy/omarchy-buzz/issues/new"
@@ -1051,6 +1101,132 @@ FocusScope {
               visible: !root.myAvatarAvailable
               text: root.service && root.service.sampleMode ? "Not available with sample data."
                 : "Available once this device has a Buzz identity and the agent service is reachable."
+            }
+
+            SettingsCaption { visible: inviteSection.visible; text: "Invite people" }
+            ColumnLayout {
+              id: inviteSection
+              objectName: "buzzInviteSection"
+              visible: !!root.service && root.service.inviteMintSupported
+              Layout.fillWidth: true
+              spacing: Style.space(4)
+              SettingsNote {
+                text: "Create an invite for people who already use Buzz and for people who have never used it. Only the relay's owner or admins can create invites."
+              }
+              SettingsNote {
+                objectName: "buzzInviteOffline"
+                visible: !!root.service && !root.service.inviteMintAvailable
+                text: "Connect to your relay to create invites."
+              }
+              RowLayout {
+                visible: !!root.service && root.service.inviteMintAvailable
+                Layout.fillWidth: true
+                spacing: Style.space(4)
+                SettingsNote { Layout.fillWidth: false; Layout.preferredWidth: Style.space(60); text: "Uses" }
+                Repeater {
+                  model: [1, 5, 25]
+                  Ui.Button {
+                    required property int modelData
+                    objectName: "buzzInviteUses" + modelData
+                    text: modelData === 1 ? "1 person" : modelData + " people"
+                    tooltipText: "How many people can join with this invite"
+                    fontSize: Style.font.caption
+                    focusable: true
+                    selected: root.inviteUses === modelData
+                    onClicked: root.inviteUses = modelData
+                  }
+                }
+                Item { Layout.fillWidth: true }
+              }
+              RowLayout {
+                visible: !!root.service && root.service.inviteMintAvailable
+                Layout.fillWidth: true
+                spacing: Style.space(4)
+                SettingsNote { Layout.fillWidth: false; Layout.preferredWidth: Style.space(60); text: "Expires" }
+                Repeater {
+                  model: [24, 168, 720]
+                  Ui.Button {
+                    required property int modelData
+                    objectName: "buzzInviteHours" + modelData
+                    text: ({24: "1 day", 168: "7 days", 720: "30 days"})[modelData]
+                    tooltipText: "When this invite stops working"
+                    fontSize: Style.font.caption
+                    focusable: true
+                    selected: root.inviteHours === modelData
+                    onClicked: root.inviteHours = modelData
+                  }
+                }
+                Item { Layout.fillWidth: true }
+              }
+              Ui.Button {
+                objectName: "buzzMintInvite"
+                visible: !!root.service && root.service.inviteMintAvailable
+                text: "Create invite"
+                tooltipText: "Ask the relay for a new invite"
+                fontSize: Style.font.caption
+                focusable: true
+                enabled: !!root.service && root.service.canMintInvite
+                opacity: enabled ? 1 : 0.5
+                onClicked: if (root.service) root.service.mintInvite(root.inviteUses, root.inviteHours)
+              }
+              SettingsNote {
+                objectName: "buzzInviteMintStatus"
+                visible: text !== ""
+                text: root.service ? root.service.mintLabel : ""
+              }
+              ColumnLayout {
+                objectName: "buzzInviteResult"
+                visible: !!root.service && root.service.inviteShown
+                Layout.fillWidth: true
+                spacing: Style.space(6)
+                SettingsNote {
+                  objectName: "buzzInviteDetails"
+                  text: root.service ? root.service.inviteDetails : ""
+                }
+                InviteLinkRow {
+                  caption: "Link for Buzz Desktop"
+                  link: root.service ? root.service.inviteAppLink : ""
+                  linkName: "buzzInviteAppLink"
+                  copyName: "buzzCopyInviteApp"
+                  copied: !!root.service && root.service.inviteCopied === "app"
+                  onCopyRequested: if (root.service) root.service.copyInvite("app")
+                }
+                InviteLinkRow {
+                  caption: "Web link (also pastes into Buzz for Omarchy)"
+                  link: root.service ? root.service.inviteWebLink : ""
+                  linkName: "buzzInviteWebLink"
+                  copyName: "buzzCopyInviteWeb"
+                  copied: !!root.service && root.service.inviteCopied === "web"
+                  onCopyRequested: if (root.service) root.service.copyInvite("web")
+                }
+                Text {
+                  Layout.fillWidth: true
+                  text: "Message for newcomers"
+                  textFormat: Text.PlainText
+                  color: Color.foreground
+                  opacity: 0.6
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.caption
+                }
+                Text {
+                  objectName: "buzzInviteBlurb"
+                  Layout.fillWidth: true
+                  text: root.service ? root.service.inviteBlurb : ""
+                  textFormat: Text.PlainText
+                  wrapMode: Text.Wrap
+                  color: Color.foreground
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.caption
+                }
+                Ui.Button {
+                  objectName: "buzzCopyInviteBlurb"
+                  text: root.service && root.service.inviteCopied === "blurb" ? "Copied" : "Copy message"
+                  tooltipText: "Copy the message with the invite link"
+                  fontSize: Style.font.caption
+                  focusable: true
+                  onClicked: if (root.service) root.service.copyInvite("blurb")
+                }
+              }
             }
 
             SettingsCaption { text: "Notifications" }

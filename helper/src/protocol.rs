@@ -32,6 +32,12 @@ pub struct Request {
     /// relay has none. Presence is checked on the raw frame.
     #[serde(rename = "policyVersion")]
     pub policy_version: Option<String>,
+    /// `mint_invite` only: how many people may use the invite (1-100).
+    #[serde(rename = "maxUses")]
+    pub max_uses: Option<u32>,
+    /// `mint_invite` only: hours until the invite expires (1-720).
+    #[serde(rename = "expiresInHours")]
+    pub expires_in_hours: Option<u32>,
 }
 fn canonical_key(value: &str) -> bool {
     nostr::PublicKey::from_hex(value).is_ok_and(|key| key.to_hex() == value)
@@ -75,6 +81,7 @@ pub fn request(bytes: &[u8]) -> Result<Request, &'static str> {
             | "open_rooms"
             | "join_room"
             | "leave_room"
+            | "mint_invite"
     ) {
         return Err("unsupported_request");
     }
@@ -194,8 +201,17 @@ pub fn request(bytes: &[u8]) -> Result<Request, &'static str> {
     } else if raw.get("code").is_some() || raw.get("policyVersion").is_some() {
         return Err("invalid_request");
     }
-    // Room actions are correlated like other publishing requests.
-    if matches!(r.kind.as_str(), "join_room" | "leave_room") {
+    if r.kind == "mint_invite" {
+        let uses = r.max_uses.ok_or("invalid_request")?;
+        let hours = r.expires_in_hours.ok_or("invalid_request")?;
+        if !crate::invites::MAX_USES.contains(&uses) || !crate::invites::HOURS.contains(&hours) {
+            return Err("invalid_request");
+        }
+    } else if r.max_uses.is_some() || r.expires_in_hours.is_some() {
+        return Err("invalid_request");
+    }
+    // Room actions and mints are correlated like other publishing requests.
+    if matches!(r.kind.as_str(), "join_room" | "leave_room" | "mint_invite") {
         let id = uuid::Uuid::parse_str(&r.id).map_err(|_| "invalid_request")?;
         if id.to_string() != r.id {
             return Err("invalid_request");
@@ -260,6 +276,9 @@ pub enum Command {
         String,
         tokio::sync::oneshot::Sender<Option<&'static str>>,
     ),
+    /// `invite_mint`: mint an invite (max uses, hours). Honoured only while
+    /// authenticated.
+    MintInvite(u32, u32, tokio::sync::oneshot::Sender<Option<&'static str>>),
 }
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -401,6 +420,36 @@ impl Default for RoomAction {
             action: None,
             request_id: None,
             room_id: None,
+            category: None,
+        }
+    }
+}
+/// The last invite minted here (`invite_mint`). The code is a credential for
+/// joining: shown to the owner only, never logged.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Invites {
+    /// `idle`, `minting`, `minted` or `failed`.
+    pub state: String,
+    /// Present only in `minted`: a canonical v2 code.
+    pub code: Option<String>,
+    /// Unix seconds; present only in `minted`.
+    pub expires_at: Option<u64>,
+    pub max_uses: Option<u32>,
+    /// Always `member` in `minted`: every claimed invite grants it.
+    pub role: Option<String>,
+    /// Present only in `failed`: `invite_forbidden`, `invite_rejected`,
+    /// `invite_rate_limited`, `relay_unavailable` or `setup_busy`.
+    pub category: Option<String>,
+}
+impl Default for Invites {
+    fn default() -> Self {
+        Self {
+            state: "idle".into(),
+            code: None,
+            expires_at: None,
+            max_uses: None,
+            role: None,
             category: None,
         }
     }
@@ -579,6 +628,7 @@ pub struct Status {
     pub setup: JoinSetup,
     pub open_rooms: OpenRooms,
     pub room_action: RoomAction,
+    pub invites: Invites,
 }
 impl Status {
     pub fn new(c: &crate::config::Config) -> Self {
@@ -598,11 +648,12 @@ impl Status {
             setup: JoinSetup::default(),
             open_rooms: OpenRooms::unavailable(None),
             room_action: RoomAction::default(),
+            invites: Invites::default(),
         }
     }
 }
 pub fn envelope(kind: &str, id: Option<&str>, instance: &str, s: &Status) -> serde_json::Value {
-    serde_json::json!({"version":1,"type":kind,"id":id,"instanceId":instance,"generation":s.generation,"capabilities":["connection_status","room_catalog","room_history","message_send","thread_send","room_recipients","history_auto_refresh","room_activity","agent_profiles","thread_replies","thread_summaries","dm_open","older_history","live_updates","setup_assist","community_join"],"backendRevision":crate::compatibility::BUZZ_REVISION,"status":s})
+    serde_json::json!({"version":1,"type":kind,"id":id,"instanceId":instance,"generation":s.generation,"capabilities":["connection_status","room_catalog","room_history","message_send","thread_send","room_recipients","history_auto_refresh","room_activity","agent_profiles","thread_replies","thread_summaries","dm_open","older_history","live_updates","setup_assist","community_join","invite_mint"],"backendRevision":crate::compatibility::BUZZ_REVISION,"status":s})
 }
 pub async fn read_line<R: tokio::io::AsyncBufRead + Unpin>(
     r: &mut R,
@@ -666,6 +717,28 @@ mod tests {
         .is_err());
         assert!(request(&vec![b'a'; LIMIT + 1]).is_err());
     }
+    #[test]
+    fn mint_requests_are_bounded() {
+        let id = "11111111-1111-4111-8111-111111111111";
+        let ok = serde_json::json!({"version":1,"id":id,"type":"mint_invite","maxUses":5,"expiresInHours":168});
+        let r = request(ok.to_string().as_bytes()).unwrap();
+        assert_eq!((r.max_uses, r.expires_in_hours), (Some(5), Some(168)));
+        for bad in [
+            serde_json::json!({"version":1,"id":"ui-1","type":"mint_invite","maxUses":5,"expiresInHours":168}),
+            serde_json::json!({"version":1,"id":id,"type":"mint_invite","maxUses":0,"expiresInHours":168}),
+            serde_json::json!({"version":1,"id":id,"type":"mint_invite","maxUses":101,"expiresInHours":168}),
+            serde_json::json!({"version":1,"id":id,"type":"mint_invite","maxUses":5,"expiresInHours":0}),
+            serde_json::json!({"version":1,"id":id,"type":"mint_invite","maxUses":5,"expiresInHours":721}),
+            serde_json::json!({"version":1,"id":id,"type":"mint_invite","maxUses":5.5,"expiresInHours":24}),
+            serde_json::json!({"version":1,"id":id,"type":"mint_invite","maxUses":-1,"expiresInHours":24}),
+            serde_json::json!({"version":1,"id":id,"type":"mint_invite","maxUses":5}),
+            serde_json::json!({"version":1,"id":id,"type":"mint_invite","expiresInHours":24}),
+            serde_json::json!({"version":1,"id":id,"type":"mint_invite","maxUses":5,"expiresInHours":24,"role":"admin"}),
+            serde_json::json!({"version":1,"id":id,"type":"get_snapshot","maxUses":5}),
+        ] {
+            assert!(request(bad.to_string().as_bytes()).is_err(), "{bad}");
+        }
+    }
     #[tokio::test]
     async fn oversized_frame() {
         let data = vec![b'a'; LIMIT + 1];
@@ -710,7 +783,8 @@ mod state_tests {
                 "older_history",
                 "live_updates",
                 "setup_assist",
-                "community_join"
+                "community_join",
+                "invite_mint"
             ])
         );
         assert_eq!(v["status"]["catalog"]["state"], "unavailable");

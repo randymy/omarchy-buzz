@@ -139,6 +139,14 @@ async fn client(
                         else {Some("setup_not_allowed")}};
                     if let Some(category)=refused {write(&mut out,&serde_json::json!({"version":1,"type":"error","id":r.id,"category":category,"instanceId":instance})).await?;continue;}
                 }
+                if r.kind=="mint_invite" {
+                    // Minting needs a working session: the relay checks the owner or admin role.
+                    let refused={let current=status.borrow();
+                        if current.invites.state=="minting" {Some("setup_busy")}
+                        else if current.connection!="authenticated" {Some("relay_unavailable")}
+                        else {None}};
+                    if let Some(category)=refused {write(&mut out,&serde_json::json!({"version":1,"type":"error","id":r.id,"category":category,"instanceId":instance})).await?;continue;}
+                }
                 if r.kind=="join_room" || r.kind=="leave_room" {
                     let busy={let current=status.borrow();current.room_action.state=="sending" && current.room_action.request_id.as_deref()!=Some(r.id.as_str())};
                     if busy {write(&mut out,&serde_json::json!({"version":1,"type":"error","id":r.id,"category":"setup_busy","instanceId":instance})).await?;continue;}
@@ -148,7 +156,7 @@ async fn client(
                     if busy {write(&mut out,&serde_json::json!({"version":1,"type":"error","id":r.id,"category":"send_busy","instanceId":instance})).await?;continue;}
                 }
                 let mut send_reply=None;
-                let setup=matches!(r.kind.as_str(),"set_relay"|"create_identity"|"claim_invite"|"accept_invite");
+                let setup=matches!(r.kind.as_str(),"set_relay"|"create_identity"|"claim_invite"|"accept_invite"|"mint_invite");
                 let room_action=r.kind=="join_room" || r.kind=="leave_room";
                 // A setup reply that never arrives is not a refusal; the next
                 // status frame shows whether the change was saved.
@@ -172,6 +180,7 @@ async fn client(
                     "claim_invite"=>{let (reply,receiver)=tokio::sync::oneshot::channel();send_reply=Some(receiver);Some(protocol::Command::ClaimInvite(r.input.clone().unwrap(),reply))},
                     "accept_invite"=>{let (reply,receiver)=tokio::sync::oneshot::channel();send_reply=Some(receiver);Some(protocol::Command::AcceptInvite(r.code.clone().unwrap(),r.policy_version.clone(),reply))},
                     "open_rooms"=>Some(protocol::Command::FetchOpenRooms),
+                    "mint_invite"=>{let (reply,receiver)=tokio::sync::oneshot::channel();send_reply=Some(receiver);Some(protocol::Command::MintInvite(r.max_uses.unwrap(),r.expires_in_hours.unwrap(),reply))},
                     "join_room"|"leave_room"=>{let (reply,receiver)=tokio::sync::oneshot::channel();send_reply=Some(receiver);
                         let action=if r.kind=="join_room" {crate::join::Action::Join} else {crate::join::Action::Leave};
                         Some(protocol::Command::RoomAction(action,r.id.clone(),r.room_id.clone().unwrap(),reply))},
@@ -530,6 +539,53 @@ mod setup_tests {
         drop(lines);
         assert_eq!(actor.await.unwrap(), 2);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn mints_need_an_authenticated_idle_session() {
+        let mut status = Status::new(&config::Config::default());
+        status.connection = "unconfigured".into();
+        let (tx, rx) = watch::channel(status);
+        let (commands, mut received) = mpsc::channel(1);
+        let (mut lines, mut write) = connect(rx, commands);
+        let mut seen = String::new();
+        assert_eq!(next(&mut lines, &mut seen).await["type"], "hello");
+        let id = "22222222-2222-4222-8222-222222222222";
+        let mint = serde_json::json!({"version":1,"id":id,"type":"mint_invite","maxUses":5,"expiresInHours":168}).to_string();
+        for (connection, state, category) in [
+            ("unconfigured", "idle", "relay_unavailable"),
+            ("disconnected", "idle", "relay_unavailable"),
+            ("connecting", "idle", "relay_unavailable"),
+            ("authenticated", "minting", "setup_busy"),
+        ] {
+            tx.send_modify(|s| {
+                s.connection = connection.into();
+                s.invites.state = state.into();
+            });
+            write.write_all(mint.as_bytes()).await.unwrap();
+            write.write_all(b"\n").await.unwrap();
+            let frame = answer(&mut lines, &mut seen, id).await;
+            assert_eq!(
+                (frame["type"].as_str(), frame["category"].as_str()),
+                (Some("error"), Some(category)),
+                "{connection} {state}"
+            );
+        }
+        assert!(
+            received.try_recv().is_err(),
+            "a refused mint reached the actor"
+        );
+        tx.send_modify(|s| {
+            s.connection = "authenticated".into();
+            s.invites.state = "failed".into();
+        });
+        write.write_all(mint.as_bytes()).await.unwrap();
+        write.write_all(b"\n").await.unwrap();
+        let command = timeout(Duration::from_secs(5), received.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(command, protocol::Command::MintInvite(5, 168, _)));
     }
 
     #[tokio::test]
