@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
-"""Install, upgrade, or remove a locally packaged Buzz helper and user units."""
+"""Install, upgrade, or remove a packaged Buzz helper and user units; `fetch`
+downloads this machine's package from the project's GitHub Releases first."""
 import argparse
 import hashlib
+import http.client
 import io
 import json
 import os
@@ -12,7 +14,11 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
+import time
 import tomllib
+import urllib.error
+import urllib.parse
+import urllib.request
 from datetime import datetime, timezone
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -43,6 +49,15 @@ RECORD = ".local/share/omarchy-buzz/installed.json"
 MAX_RECORD = 64 * 1024
 MAX_ARCHIVE = 32 * 1024 * 1024
 MAX_BINARY = 24 * 1024 * 1024
+MAX_SIDECAR = 64 * 1024
+# Release downloads: only the project's GitHub Releases, over HTTPS, and only
+# redirects to GitHub's own asset hosts (release-assets is where GitHub sends
+# release downloads today; objects is the older host).
+RELEASES = "https://github.com/randymy/omarchy-buzz/releases/download/"
+DOWNLOAD_HOSTS = ("github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com")
+DOWNLOAD_TIMEOUT = 60
+VERSION_PATTERN = r"[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?"
+MACHINES = {"aarch64": "aarch64", "arm64": "aarch64", "x86_64": "x86_64"}
 # The two Buzz crates and where each may come from (as scripts/package-helper
 # checks them; kept in step by tests/helper_install.py). `buzz-sdk` is the
 # official upstream pin; `buzz-ws-client` is the reviewed bounded-connection
@@ -138,9 +153,11 @@ def architecture(data):
     return {62: "x86_64", 183: "aarch64"}[machine]
 
 
-def read_package(archive, sidecar):
+def read_package(archive, sidecar, machine=None):
+    """Validate a package against its sidecar and this checkout. `machine` is
+    the architecture the package must be for (default: this machine's)."""
     if (not regular(archive) or not regular(sidecar) or archive.stat().st_size > MAX_ARCHIVE
-            or sidecar.stat().st_size > 65536):
+            or sidecar.stat().st_size > MAX_SIDECAR):
         raise ValueError("package and checksum must be regular, bounded files")
     payload = archive.read_bytes()
     checksum = json.loads(sidecar.read_text())
@@ -191,7 +208,7 @@ def read_package(archive, sidecar):
             or not re.fullmatch(r"[0-9a-f]{40}", str(metadata.get("backendRevision")))
             or stem != f"omarchy-buzz-{metadata.get('helperVersion')}-linux-{arch}"):
         raise ValueError("package binary metadata mismatch")
-    if arch != {"aarch64": "aarch64", "arm64": "aarch64", "x86_64": "x86_64"}.get(platform.machine()):
+    if arch != MACHINES.get(machine or platform.machine()):
         raise ValueError("package architecture differs from this machine")
     manifest = json.loads((ROOT / "manifest.json").read_text())
     cargo = tomllib.loads((ROOT / "helper/Cargo.toml").read_text())
@@ -357,6 +374,74 @@ def install(home, archive, sidecar, dry_run=False):
     print(("Upgraded" if existing else "Installed") + f" helper; rollback: {saved or 'not needed'}")
 
 
+def allowed_url(url):
+    parts = urllib.parse.urlsplit(url)
+    return (parts.scheme == "https" and parts.hostname in DOWNLOAD_HOSTS and parts.port in (None, 443)
+            and not parts.username and not parts.password)
+
+
+class GitHubRedirects(urllib.request.HTTPRedirectHandler):
+    """Follow a redirect only to GitHub's own HTTPS asset hosts."""
+    max_redirections = 5
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not allowed_url(newurl):
+            raise ValueError("release download redirected off GitHub: "
+                             + str(urllib.parse.urlsplit(newurl).hostname))
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def download(opener, url, limit, deadline):
+    """At most `limit` bytes from `url`, within the shared deadline."""
+    if not allowed_url(url):
+        raise ValueError("refusing a download outside GitHub Releases")
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise ValueError("release download timed out")
+    with opener.open(urllib.request.Request(url, headers={"User-Agent": "omarchy-buzz-helper-install"}),
+                     timeout=min(DOWNLOAD_TIMEOUT, remaining)) as response:
+        if getattr(response, "status", 200) != 200 or not allowed_url(response.geturl()):
+            raise ValueError("unexpected release download response")
+        declared = response.headers.get("Content-Length")
+        if declared is not None and (not declared.isdigit() or int(declared) > limit):
+            raise ValueError("release download is too large")
+        chunks = []
+        size = 0
+        while True:
+            if time.monotonic() > deadline:
+                raise ValueError("release download timed out")
+            chunk = response.read(min(65536, limit + 1 - size))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            size += len(chunk)
+            if size > limit:
+                raise ValueError("release download is too large")
+    return b"".join(chunks)
+
+
+def fetch(home, version, dry_run=False):
+    """Download this machine's release package and sidecar, verify, install."""
+    if not re.fullmatch(VERSION_PATTERN, version):
+        raise ValueError("release version must look like 0.0.21")
+    arch = MACHINES.get(platform.machine())
+    if arch is None:
+        raise ValueError("no release package for this machine's architecture")
+    destinations(home)
+    stem = f"omarchy-buzz-{version}-linux-{arch}"
+    directory = home / ".cache/omarchy-buzz/helper/releases" / version
+    safe_directory(directory)
+    opener = urllib.request.build_opener(GitHubRedirects)
+    deadline = time.monotonic() + DOWNLOAD_TIMEOUT
+    base = f"{RELEASES}v{version}/"
+    archive, sidecar = directory / (stem + ".tar.gz"), directory / (stem + ".sha256.json")
+    for path, limit in ((sidecar, MAX_SIDECAR), (archive, MAX_ARCHIVE)):
+        # Saved owner-readable only; nothing downloaded is ever made executable.
+        put(path, download(opener, base + path.name, limit, deadline), 0o600)
+    print(f"Downloaded {archive.name} and its checksum to {directory}")
+    install(home, archive, sidecar, dry_run)
+
+
 def uninstall(home, dry_run=False):
     paths = destinations(home)
     if not inspect_existing(paths, create=not dry_run, record=read_record(home)):
@@ -398,6 +483,9 @@ def main():
     add.add_argument("archive", type=Path)
     add.add_argument("--checksum", type=Path, help="matching .sha256.json (default: beside archive)")
     add.add_argument("--dry-run", action="store_true", help="validate and preview without changing files or units")
+    get = sub.add_parser("fetch", help="download this machine's package from GitHub Releases, verify and install it")
+    get.add_argument("version", help="release version, e.g. 0.0.21 (must match this checkout)")
+    get.add_argument("--dry-run", action="store_true", help="download and validate; preview without changing files or units")
     remove = sub.add_parser("uninstall", help="remove only installed helper files and units")
     remove.add_argument("--dry-run", action="store_true", help="preview without changing files or units")
     args = parser.parse_args()
@@ -406,10 +494,12 @@ def main():
         if args.command == "install":
             sidecar = args.checksum or args.archive.with_name(args.archive.name.removesuffix(".tar.gz") + ".sha256.json")
             install(home, args.archive, sidecar, args.dry_run)
+        elif args.command == "fetch":
+            fetch(home, args.version, args.dry_run)
         else:
             uninstall(home, args.dry_run)
     except (ValueError, OSError, RuntimeError, KeyError, json.JSONDecodeError,
-            tarfile.TarError, subprocess.SubprocessError) as error:
+            tarfile.TarError, subprocess.SubprocessError, http.client.HTTPException) as error:
         parser.exit(1, f"helper installation failed: {error}\n")
 
 
