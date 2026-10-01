@@ -15,6 +15,8 @@ use tokio_tungstenite::{accept_async, tungstenite::Message};
 pub const ROOM_A: &str = "00000000-0000-4000-8000-0000000000b1";
 pub const ROOM_B: &str = "00000000-0000-4000-8000-0000000000b2";
 pub const ROOM_C: &str = "00000000-0000-4000-8000-0000000000b3";
+/// The community of `persona`'s default record.
+pub const RELAY: &str = "wss://relay.example/";
 
 pub struct TempHome {
     pub base: PathBuf,
@@ -77,6 +79,7 @@ pub fn persona(id: &str, workspace: &str) -> Persona {
         identity: None,
         start_at_login: false,
         answers_dms: false,
+        relay: RELAY.into(),
         auth_tag: None,
         published: false,
         member_rooms: Vec::new(),

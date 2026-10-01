@@ -23,7 +23,9 @@ ROOM = "00000000-0000-4000-8000-0000000000b1"
 # Public key of the synthetic secret 1 (NIP-OA test vector); never a real identity.
 OWNER = "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
 AGENT_KEYS = ["id", "name", "description", "instructions", "harness", "model", "acpCommand", "rooms",
-              "respondTo", "workspace", "identity", "enrolled", "unit", "startAtLogin", "answersDms", "published", "lastError"]
+              "respondTo", "workspace", "identity", "enrolled", "unit", "startAtLogin", "answersDms", "published", "lastError",
+              "relay", "community"]
+RELAY = "ws://127.0.0.1:9/"
 
 
 class Frames:
@@ -61,7 +63,8 @@ def check_status(frame, kind, instance=None):
     if instance is not None:
         assert frame["instanceId"] == instance, frame
     status = frame["status"]
-    assert set(status) == {"harnesses", "agents", "pending", "modelProbe"}, status
+    assert set(status) == {"activeRelay", "harnesses", "agents", "pending", "modelProbe"}, status
+    assert status["activeRelay"] == RELAY, status
     assert status["modelProbe"] == {"agentId": None, "state": "idle", "model": "", "detail": None}, status
     assert [h["id"] for h in status["harnesses"]] == ["claude-code", "codex"], status
     for harness in status["harnesses"]:
@@ -157,6 +160,10 @@ def main():
                 [agent] = status["agents"]
                 assert agent["name"] == "Smoke" and agent["enrolled"] is False and agent["identity"] is None
                 assert agent["unit"] == "inactive" and agent["published"] is False and agent["lastError"] is None
+                # Bound to the active community, named from the configuration.
+                assert agent["relay"] == RELAY and agent["community"] == "Smoke", agent
+                record = json.loads(store.read_text())["agents"][0]
+                assert record["relay"] == RELAY, record
                 workspace = Path(agent["workspace"])
                 assert workspace == base / "state/omarchy-buzz-room-workspaces" / agent["id"], agent
                 assert stat.S_IMODE(workspace.stat().st_mode) == 0o700
@@ -166,6 +173,7 @@ def main():
                 status = check_status(frames.answer(uuid(3)), "status", instance)
                 assert status["pending"]["state"] == "done" and status["agents"][0]["name"] == "Renamed", status
                 assert json.loads(store.read_text())["agents"][0]["name"] == "Renamed"
+                assert json.loads(store.read_text())["agents"][0]["relay"] == RELAY
 
                 # Refused requests: a bad field, an unknown room, an unknown harness.
                 for n, kind, extra in (
@@ -261,8 +269,50 @@ def main():
             assert not endpoint.exists(), "standalone daemon left its socket behind"
             written = sorted(str(p.relative_to(base)) for p in (base / "config").rglob("*"))
             assert written == ["config/omarchy-buzz", "config/omarchy-buzz/config.toml"], written
+
+            # A store written before personas had a relay: one persona whose
+            # generated unit names another relay keeps that one, the other
+            # takes the configuration's first community. Migrated once on load.
+            older = []
+            for n in (1, 2):
+                persona = dict(record, id="00000000-0000-4000-8000-0000000000a%d" % n, name="Old %d" % n,
+                               workspace=str(base / ("home/old%d" % n)))
+                del persona["relay"]
+                older.append(persona)
+            store.write_text(json.dumps({"version": 1, "agents": older}))
+            store.chmod(0o600)
+            units = base / "config/systemd/user"
+            units.mkdir(parents=True, mode=0o700)
+            unit = units / ("omarchy-buzz-agent-%s.service" % older[0]["id"])
+            unit.write_text('[Service]\nExecStart="/x/room-agent" "--harness" "codex" "--relay" "ws://127.0.0.1:7/" '
+                            '"--room" "%s"\n' % ROOM)
+            unit.chmod(0o600)
+            unit_text = unit.read_text()
+            daemon = subprocess.Popen(
+                [str(binary), "agents-daemon", "--keep-running"], env=env,
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+            processes.append(daemon)
+            deadline = time.monotonic() + 5
+            while not endpoint.exists():
+                assert daemon.poll() is None, "daemon refused the older store"
+                assert time.monotonic() < deadline, "daemon socket timed out"
+                time.sleep(0.02)
+            with socket.socket(socket.AF_UNIX) as client:
+                client.settimeout(5)
+                client.connect(str(endpoint))
+                agents = check_status(Frames(client.fileno()).read(), "hello")["agents"]
+                assert [(a["name"], a["relay"], a["community"]) for a in agents] == [
+                    ("Old 1", "ws://127.0.0.1:7/", "127.0.0.1:7"), ("Old 2", RELAY, "Smoke")], agents
+            migrated = json.loads(store.read_text())
+            assert [a["relay"] for a in migrated["agents"]] == ["ws://127.0.0.1:7/", RELAY], migrated
+            assert stat.S_IMODE(store.stat().st_mode) == 0o600
+            assert unit.read_text() == unit_text, "the unit file was changed"
+            daemon.send_signal(signal.SIGTERM)
+            assert daemon.wait(timeout=5) == 0
             assert not list((base / "data").rglob("*")), "fake mode wrote into the data directory"
-            print("PASS: agents hello/status, create/update/delete round trip, refused requests, "
+            print("PASS: agents hello/status, create/update/delete round trip with the agent's community, "
+                  "older store migrated from the unit file and the first community, refused requests, "
                   "harness model check and probe gating, "
                   "malformed and oversized frames, bridge EOF, SIGTERM socket cleanup")
         finally:

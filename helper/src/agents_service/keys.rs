@@ -73,9 +73,16 @@ pub struct FakeKeyring {
     pub owner: Mutex<Option<Keys>>,
     pub agents: Mutex<BTreeMap<String, Zeroizing<String>>>,
     pub fail_store: Mutex<bool>,
+    /// The relay of every owner-key lookup (the Secret Service account is
+    /// `relay|identity`, one per community).
+    pub owner_relays: Mutex<Vec<String>>,
 }
 impl Keyring for FakeKeyring {
     fn owner_keys(&self, config: &Config) -> Result<Keys, &'static str> {
+        self.owner_relays
+            .lock()
+            .unwrap()
+            .push(config.relay.clone().unwrap_or_default());
         let keys = self
             .owner
             .lock()

@@ -26,13 +26,14 @@ fn text(path: &Path) -> Result<String, &'static str> {
     Ok(value.to_owned())
 }
 
-/// The exact `ExecStart` argv for an enrolled persona.
+/// The exact `ExecStart` argv for an enrolled persona. `--relay` is always
+/// the persona's own community, never the active one.
 pub fn exec_argv(
     paths: &Paths,
     persona: &Persona,
-    relay: &str,
     owner: &str,
 ) -> Result<Vec<String>, &'static str> {
+    let relay = persona.relay.as_str();
     let identity = persona.identity.as_deref().ok_or("unit_failed")?;
     // The attestation must be this owner's for this agent: the launcher
     // refuses a tag that does not name `--owner`.
@@ -117,13 +118,8 @@ fn quote(word: &str) -> Result<String, &'static str> {
     Ok(out)
 }
 
-pub fn render(
-    paths: &Paths,
-    persona: &Persona,
-    relay: &str,
-    owner: &str,
-) -> Result<String, &'static str> {
-    let argv = exec_argv(paths, persona, relay, owner)?;
+pub fn render(paths: &Paths, persona: &Persona, owner: &str) -> Result<String, &'static str> {
+    let argv = exec_argv(paths, persona, owner)?;
     let exec = argv
         .iter()
         .map(|w| quote(w))
