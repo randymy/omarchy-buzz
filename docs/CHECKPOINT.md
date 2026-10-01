@@ -3528,3 +3528,20 @@ marked **Decided**.
   against two relays, and the installed shell. Update the helper and plugin
   together: an older panel refuses `instances`; an older helper refuses a
   version 2 store (restore `personas.v1.json` before downgrading).
+
+## Release 0.0.27 — October 1
+
+- Merges `agent-instances` (`5f5a642`): one agent in several communities
+  (store version 2 with `personas.v1.json` backup, per-instance units and
+  workspaces, `enroll_agent_in`, `leave_agent_community`, the editor's
+  Communities list and **Add to <community>**), plus `docs/AGENTS_QUICKSTART.md`
+  for a different person's fresh machine. Findings for that path: harness
+  bundles are ARM64-only today (`agent-bundle` refuses other architectures;
+  the Codex pin is linux-arm64), and admitting an agent to a room needs the
+  person to be that room's owner or admin (kind 9000 signed by the owner).
+- Verified on the merged tree: Rust 363 passed (`RUST_TEST_THREADS=1`), fmt
+  clean; Python 108; helper and agents smoke; packaging; default plus all 28
+  named previews (`--agents` timed out once inside the sweep at its 15 s
+  budget and passed 3/3 alone). Helper and plugin install together: an older
+  panel refuses `instances`, an older helper refuses a version-2 store
+  (downgrade = restore `personas.v1.json` first).
