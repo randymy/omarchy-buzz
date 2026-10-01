@@ -28,7 +28,7 @@ installer = load("helper_install", ROOT / "scripts/helper-install")
 packager = load("package_helper_installer_test", ROOT / "scripts/package-helper")
 
 
-class HelperInstall(unittest.TestCase):
+class PackageFixture(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
@@ -63,6 +63,8 @@ class HelperInstall(unittest.TestCase):
     def paths(self):
         return installer.destinations(self.home)
 
+
+class HelperInstall(PackageFixture):
     def test_install_upgrade_uninstall_and_preserved_backup(self):
         installer.install(self.home, self.archive, self.sidecar, dry_run=True)
         self.assertFalse((self.home / ".local").exists())
@@ -275,6 +277,142 @@ class HelperInstall(unittest.TestCase):
                 self.sidecar.write_bytes(invalid)
                 with self.assertRaises(ValueError):
                     installer.read_package(self.archive, self.sidecar)
+
+
+class FakeResponse:
+    def __init__(self, url, body, length=True, final=None):
+        self.url, self.body, self.final, self.status = url, io.BytesIO(body), final or url, 200
+        self.headers = {"Content-Length": str(len(body))} if length else {}
+        self.reads = 0
+
+    def read(self, size):
+        self.reads += 1
+        return self.body.read(size)
+
+    def geturl(self):
+        return self.final
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+
+class FakeOpener:
+    """Serves release files by name; no network is touched."""
+    def __init__(self, files, **options):
+        self.files, self.options, self.requests = files, options, []
+
+    def open(self, request, timeout):
+        self.requests.append((request.full_url, timeout))
+        name = request.full_url.rsplit("/", 1)[1]
+        if name not in self.files:
+            raise installer.urllib.error.HTTPError(request.full_url, 404, "Not Found", {}, io.BytesIO())
+        return FakeResponse(request.full_url, self.files[name], **self.options)
+
+
+class HelperFetch(PackageFixture):
+    def setUp(self):
+        super().setUp()
+        self.version = json.loads((ROOT / "manifest.json").read_text())["version"]
+        self.files = {self.archive.name: self.archive.read_bytes(), self.sidecar.name: self.sidecar.read_bytes()}
+        self.cache = self.home / ".cache/omarchy-buzz/helper/releases" / self.version
+
+    def serve(self, files=None, **options):
+        opener = FakeOpener(self.files if files is None else files, **options)
+        patcher = patch.object(installer.urllib.request, "build_opener", return_value=opener)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return opener
+
+    def assert_nothing_installed(self):
+        self.assertEqual(self.calls, [])
+        self.assertFalse((self.home / ".local").exists())
+        self.assertFalse((self.home / ".config").exists())
+
+    def test_fetch_downloads_this_architecture_verifies_and_installs(self):
+        opener = self.serve()
+        installer.fetch(self.home, self.version)
+        base = f"https://github.com/randymy/omarchy-buzz/releases/download/v{self.version}/"
+        self.assertEqual([url for url, _ in opener.requests],
+                         [base + self.sidecar.name, base + self.archive.name])
+        self.assertTrue(all(0 < timeout <= 60 for _, timeout in opener.requests))
+        for name in self.files:
+            downloaded = self.cache / name
+            self.assertEqual(downloaded.read_bytes(), self.files[name])
+            self.assertEqual(downloaded.stat().st_mode & 0o777, 0o600)
+        self.assertTrue(all(p.is_file() for p in self.paths().values()))
+        self.assertIn(("enable", "--now", "omarchy-buzz.socket"), self.calls)
+
+    def test_fetch_checksum_mismatch_installs_nothing(self):
+        sidecar = json.loads(self.files[self.sidecar.name])
+        sidecar["artifacts"][0]["sha256"] = "0" * 64
+        self.files[self.sidecar.name] = json.dumps(sidecar).encode()
+        self.serve()
+        with self.assertRaisesRegex(ValueError, "checksum"):
+            installer.fetch(self.home, self.version)
+        self.assert_nothing_installed()
+        self.version_run.assert_not_called()
+
+    def test_fetch_oversized_body_rejected_while_reading(self):
+        self.serve(length=False)
+        with patch.object(installer, "MAX_ARCHIVE", len(self.files[self.archive.name]) - 1):
+            with self.assertRaisesRegex(ValueError, "too large"):
+                installer.fetch(self.home, self.version)
+        self.assertFalse((self.cache / self.archive.name).exists())
+        self.assert_nothing_installed()
+        self.serve()
+        with patch.object(installer, "MAX_SIDECAR", 10):
+            with self.assertRaisesRegex(ValueError, "too large"):
+                installer.fetch(self.home, self.version)
+        self.assert_nothing_installed()
+
+    def test_fetch_wrong_or_unsupported_architecture(self):
+        opener = self.serve()
+        with patch.object(installer.platform, "machine", return_value="riscv64"):
+            with self.assertRaisesRegex(ValueError, "architecture"):
+                installer.fetch(self.home, self.version)
+        self.assertEqual(opener.requests, [])
+        other = "x86_64" if self.archive.name.endswith("aarch64.tar.gz") else "aarch64"
+        # The release serves this machine's package under the other
+        # architecture's name; the name/sidecar/ELF checks refuse it.
+        renamed = {name.replace(self.archive.name.removesuffix(".tar.gz").rsplit("-", 1)[1], other): data
+                   for name, data in self.files.items()}
+        self.serve(renamed)
+        with patch.object(installer.platform, "machine", return_value=other):
+            with self.assertRaises(ValueError):
+                installer.fetch(self.home, self.version)
+        self.assert_nothing_installed()
+
+    def test_fetch_refuses_redirects_off_github(self):
+        guard = installer.GitHubRedirects()
+        request = installer.urllib.request.Request("https://github.com/randymy/omarchy-buzz/releases/download/v1/x")
+        for foreign in ("https://example.com/x", "http://objects.githubusercontent.com/x",
+                        "https://objects.githubusercontent.com.evil.example/x", "file:///etc/passwd",
+                        "https://user@objects.githubusercontent.com/x"):
+            with self.subTest(url=foreign):
+                with self.assertRaisesRegex(ValueError, "redirected off GitHub"):
+                    guard.redirect_request(request, None, 302, "Found", {}, foreign)
+        for allowed in ("https://objects.githubusercontent.com/x", "https://release-assets.githubusercontent.com/x"):
+            self.assertIsNotNone(guard.redirect_request(request, None, 302, "Found", {}, allowed))
+        # A response that nonetheless ended up elsewhere is refused too.
+        self.serve(final="https://example.com/elsewhere")
+        with self.assertRaisesRegex(ValueError, "unexpected release download"):
+            installer.fetch(self.home, self.version)
+        self.assert_nothing_installed()
+
+    def test_fetch_rejects_unsafe_version_and_missing_release(self):
+        opener = self.serve({})
+        for version in ("../0.0.1", "v0.0.21", "0.0.21/../../x", ""):
+            with self.subTest(version=version):
+                with self.assertRaisesRegex(ValueError, "release version"):
+                    installer.fetch(self.home, version)
+        self.assertEqual(opener.requests, [])
+        with self.assertRaises(installer.urllib.error.HTTPError) as missing:
+            installer.fetch(self.home, self.version)
+        missing.exception.close()
+        self.assert_nothing_installed()
 
 
 if __name__ == "__main__":

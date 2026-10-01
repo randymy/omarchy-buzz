@@ -34,6 +34,7 @@ jobs:
           python3 tests/desktop_shortcut.py
           python3 tests/package_helper.py
           python3 tests/helper_install.py
+          python3 tests/verify_package.py
           python3 tests/helper_notices.py
           python3 tests/pick_file.py
           python3 tests/relay_conformance_runner.py

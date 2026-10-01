@@ -1,0 +1,119 @@
+#!/usr/bin/env python3
+"""Print draft release notes for a helper release from this checkout.
+
+Names the version, the two Buzz pins (helper/Cargo.toml, checked against
+compatibility.rs), the install and verification commands, and the
+docs/CHECKPOINT.md sections added since the previous `v*` tag (when there is
+one). Reads the checkout and local git history only."""
+import argparse
+import importlib.machinery
+import importlib.util
+import json
+from pathlib import Path
+import re
+import subprocess
+import tomllib
+
+ROOT = Path(__file__).resolve().parents[1]
+REPOSITORY = "https://github.com/randymy/omarchy-buzz"
+
+
+def load(name, path):
+    loader = importlib.machinery.SourceFileLoader(name, str(path))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+def git(root, *args):
+    result = subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, timeout=30)
+    return result.stdout if result.returncode == 0 else None
+
+
+def previous_tag(root, version):
+    tags = git(root, "tag", "--list", "v*", "--sort=-v:refname", "--merged", "HEAD") or ""
+    return next((tag for tag in tags.split() if tag != "v" + version), None)
+
+
+def checkpoint_sections(root, tag):
+    """Headings of docs/CHECKPOINT.md sections added since `tag`, oldest first."""
+    diff = git(root, "diff", "--unified=0", tag, "HEAD", "--", "docs/CHECKPOINT.md")
+    if diff is None:
+        return None
+    return [line[4:].strip() for line in diff.splitlines() if line.startswith("+## ")]
+
+
+def notes(version, root=ROOT, tag=None, run_url=None):
+    manifest = json.loads((root / "manifest.json").read_text())
+    cargo = tomllib.loads((root / "helper/Cargo.toml").read_text())
+    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?", version):
+        raise ValueError("unsafe version")
+    if manifest["version"] != version or cargo["package"]["version"] != version:
+        raise ValueError("version differs from manifest.json or helper/Cargo.toml")
+    packager = load("package_helper_notes", root / "scripts/package-helper")
+    sdk, ws = packager.check_buzz_pins(root, cargo)
+    ws_source = cargo["dependencies"]["buzz-ws-client"]["git"]
+    lines = [
+        f"# Buzz for Omarchy {version} (development preview)",
+        "",
+        "Prebuilt helper packages for Linux ARM64 (`aarch64`) and x86-64 (`x86_64`),"
+        " each built and tested natively" + (f" by {run_url}." if run_url else "."),
+        "",
+        "## Install",
+        "",
+        "The easiest path is to ask the coding agent on your Omarchy machine to install",
+        f"{REPOSITORY}. By hand, from a checkout of tag `v{version}`:",
+        "",
+        "```bash",
+        f"python3 scripts/helper-install fetch {version}",
+        "```",
+        "",
+        "It downloads only this machine's package and its `.sha256.json` sidecar,",
+        "checks them against the checkout, and installs the helper and its user units.",
+        "",
+        "## Verify by hand",
+        "",
+        "```bash",
+        f"sha256sum -c omarchy-buzz-{version}-checksums.txt",
+        "```",
+        "",
+        "Checksums detect corruption; they do not prove who built a file. The",
+        "assets are not signed. `build-<arch>.json` names the source commit and",
+        "workflow run of each binary.",
+        "",
+        "## Buzz pins",
+        "",
+        f"- `buzz-sdk`: https://github.com/block/buzz at `{sdk}`",
+        f"- `buzz-ws-client`: {ws_source} at `{ws}` (see `helper/WS_UPSTREAM.md`)",
+        "",
+        "## Changes",
+        "",
+    ]
+    sections = checkpoint_sections(root, tag) if tag else None
+    if sections:
+        lines.append(f"Sections added to `docs/CHECKPOINT.md` since `{tag}`:")
+        lines.append("")
+        lines.extend(f"- {section}" for section in sections)
+    elif tag:
+        lines.append(f"No new `docs/CHECKPOINT.md` sections since `{tag}`.")
+    else:
+        lines.append("First tagged release. See `docs/CHECKPOINT.md` for the full history.")
+    lines += ["", "Third-party notices for each architecture are in `notices-<arch>.tar.gz`;",
+              "packages flagged for review are listed in its `inventory.json`."]
+    return "\n".join(lines) + "\n"
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("version")
+    parser.add_argument("--run-url", help="workflow run that built the assets")
+    args = parser.parse_args()
+    try:
+        print(notes(args.version, tag=previous_tag(ROOT, args.version), run_url=args.run_url), end="")
+    except (ValueError, OSError, KeyError, subprocess.SubprocessError) as error:
+        parser.exit(1, f"release notes failed: {error}\n")
+
+
+if __name__ == "__main__":
+    main()

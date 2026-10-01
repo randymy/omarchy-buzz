@@ -22,7 +22,9 @@ The easiest way to install it is to ask the coding agent on your Omarchy
 machine (Claude Code or Codex) to install this repository, giving it the URL.
 It runs `omarchy plugin add https://github.com/randymy/omarchy-buzz.git --enable`,
 builds the small background helper, installs it with `scripts/helper-install`,
-and points it at your Buzz relay. If you prefer to do it by hand, the steps are
+and points it at your Buzz relay. Published releases carry prebuilt helpers
+for ARM64 and x86-64 (`scripts/helper-install fetch <version>`), so the helper
+need not be built on your machine. If you prefer to do it by hand, the steps are
 in [service/README.md](service/README.md) and the sections below. Either way you
 need a community's relay address, and to take part, an invitation or an open
 room in that community.

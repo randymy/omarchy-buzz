@@ -1,0 +1,113 @@
+#!/usr/bin/env python3
+"""Verify one built helper artifact directory before it is released.
+
+The directory is what the helper build workflow uploads: the package archive,
+its .sha256.json sidecar, build.json, LICENSE, the binary and notices/. The
+archive is checked with scripts/helper-install's read_package (sidecar digest,
+members, version metadata, ELF architecture, checkout version and Buzz pins,
+reviewed units and scripts) for the named architecture; build.json, the loose
+binary, LICENSE and the notices directory must describe the same binary and
+inventory. Nothing is executed or installed."""
+import argparse
+import hashlib
+import importlib.machinery
+import importlib.util
+import json
+from pathlib import Path
+import re
+import sys
+import tarfile
+
+ROOT = Path(__file__).resolve().parents[1]
+ARCHITECTURES = ("aarch64", "x86_64")
+MAX_BUILD = 64 * 1024
+
+
+def load(name, path):
+    loader = importlib.machinery.SourceFileLoader(name, str(path))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+installer = load("helper_install_verify", ROOT / "scripts/helper-install")
+packager = load("package_helper_verify", ROOT / "scripts/package-helper")
+
+
+def regular(path):
+    return not path.is_symlink() and path.is_file()
+
+
+def verify(directory, arch, source_revision=None, root=ROOT):
+    """Return a short summary of a verified artifact directory, or raise ValueError."""
+    if arch not in ARCHITECTURES:
+        raise ValueError("architecture must be aarch64 or x86_64")
+    directory = Path(directory)
+    if directory.is_symlink() or not directory.is_dir():
+        raise ValueError("artifact must be a regular directory")
+    version = json.loads((root / "manifest.json").read_text())["version"]
+    stem = f"omarchy-buzz-{version}-linux-{arch}"
+    archive, sidecar = directory / (stem + ".tar.gz"), directory / (stem + ".sha256.json")
+    content, metadata = installer.read_package(archive, sidecar, machine=arch)
+    binary = content["bin/omarchy-buzz"]
+    binary_sha = hashlib.sha256(binary).hexdigest()
+
+    build_path = directory / "build.json"
+    if not regular(build_path) or build_path.stat().st_size > MAX_BUILD:
+        raise ValueError("build.json must be a regular, bounded file")
+    build = json.loads(build_path.read_text())
+    if not isinstance(build, dict) or not isinstance(build.get("metadata"), dict):
+        raise ValueError("invalid build.json")
+    if build.get("architecture") != arch or build.get("sha256") != binary_sha:
+        raise ValueError("build.json does not describe the packaged binary")
+    for key in ("helperVersion", "protocolVersion", "backendRevision"):
+        if build["metadata"].get(key) != metadata.get(key):
+            raise ValueError("build.json version metadata differs from the package")
+    revision = build.get("sourceRevision")
+    if not isinstance(revision, str) or not re.fullmatch(r"[0-9a-f]{40}", revision):
+        raise ValueError("build.json lacks a source revision")
+    if source_revision is not None and revision != source_revision:
+        raise ValueError("build.json was built from a different source revision")
+
+    loose = directory / "omarchy-buzz"
+    if loose.exists() or loose.is_symlink():
+        if (not regular(loose) or loose.stat().st_size > installer.MAX_BINARY
+                or hashlib.sha256(loose.read_bytes()).hexdigest() != binary_sha):
+            raise ValueError("artifact binary differs from the packaged binary")
+    license_path = directory / "LICENSE"
+    if not regular(license_path) or license_path.read_bytes() != (root / "LICENSE").read_bytes():
+        raise ValueError("artifact LICENSE differs from the checkout")
+
+    notices = metadata.get("thirdPartyNotices")
+    if not isinstance(notices, dict) or notices.get("included") is not True:
+        raise ValueError("a release package must include third-party notices")
+    members, report = packager.notice_members(directory / "notices", root, arch)
+    if report != notices:
+        raise ValueError("notices directory differs from the packaged inventory")
+    with tarfile.open(archive, mode="r:gz") as tar:
+        packaged = {member.name.split("/", 1)[1]: tar.extractfile(member).read()
+                    for member in tar.getmembers() if "/third-party/" in member.name}
+    if packaged != members:
+        raise ValueError("notices directory differs from the packaged notice texts")
+    return {"archive": archive.name, "architecture": arch, "version": version,
+            "binarySha256": binary_sha, "sourceRevision": revision,
+            "noticePackages": notices.get("packages"), "flaggedPackages": notices.get("flaggedPackages")}
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("directory", type=Path)
+    parser.add_argument("--arch", required=True, choices=ARCHITECTURES)
+    parser.add_argument("--source-revision", help="40-hex commit the build.json must name")
+    args = parser.parse_args()
+    try:
+        summary = verify(args.directory, args.arch, args.source_revision)
+    except (ValueError, OSError, KeyError, TypeError, tarfile.TarError) as error:
+        parser.exit(1, f"package verification failed: {error}\n")
+    json.dump(summary, sys.stdout, indent=2)
+    print()
+
+
+if __name__ == "__main__":
+    main()

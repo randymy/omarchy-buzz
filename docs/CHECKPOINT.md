@@ -2632,3 +2632,62 @@ unavailable model failed silently on the agent's first turn. Contract in
 - Installed 0.0.21 on the maintainer's machine (helper SHA256
   `a4017c4b…`, run 36798105802); the panel authenticated through the bounded
   client at once, bundles `ready`, one shell restart.
+
+## Release workflow and x86-64 builds — October 1
+
+Built on the `distribution` branch; **none of the new or changed workflows has
+run yet**, and no release, tag or x86-64 binary exists.
+
+- `.github/workflows/helper-build.yml` is a reusable workflow (`workflow_call`:
+  `runner`, `arch`, `target`, `artifact`) holding every step of the former ARM64
+  preview: toolchain 1.95.0, `fmt --check` and `test --locked --release`, the
+  smoke/send/activation tests, the keyring test under `dbus-run-session` with
+  `gnome-keyring`, the D-Bus linkage check, the notices inventory (for the
+  `target` input) with `tests/helper_notices.py`, provenance `build.json` (its
+  `architecture` from the input, asserted against `uname -m` and
+  `platform.machine()`), `scripts/package-helper` and the upload. The cache key
+  stays per architecture; the ARM64 key is unchanged, so existing caches apply.
+- `helper-arm64.yml` is now a thin manual caller that keeps the
+  `helper-arm64-preview` artifact name; `helper-x86_64.yml` is the same on
+  `ubuntu-24.04` with artifact `helper-x86_64-preview`.
+- `release.yml` (manual, `main` only, input `version`): a read-only preflight
+  checks the version against `manifest.json` and `helper/Cargo.toml` and that
+  tag `v<version>` does not exist; both architectures build through the
+  reusable workflow (`contents: read`); the release job (`contents: write`,
+  plus `actions: read` to download this run's artifacts with `gh run download`)
+  verifies each artifact with the new `scripts/verify-package` against the
+  dispatched commit, writes `omarchy-buzz-<version>-checksums.txt`, renders
+  notes with the new `scripts/release-notes` (version, both Buzz pins, the
+  install and `sha256sum -c` commands, and the `docs/CHECKPOINT.md` headings
+  added since the previous `v*` tag, or "first tagged release"), re-checks the
+  tag and existing releases, and runs `gh release create --draft`. It never
+  publishes; a maintainer reviews and publishes the draft by hand.
+- Draft assets: `omarchy-buzz-<v>-linux-aarch64.tar.gz`,
+  `omarchy-buzz-<v>-linux-x86_64.tar.gz`, their two `.sha256.json` sidecars,
+  `build-aarch64.json`, `build-x86_64.json`, `notices-aarch64.tar.gz`,
+  `notices-x86_64.tar.gz`, `LICENSE` and `omarchy-buzz-<v>-checksums.txt`.
+- `scripts/verify-package` reuses `scripts/helper-install`'s `read_package`
+  (which gained an optional architecture argument so one host can check both
+  packages) and checks `build.json`, the loose binary, `LICENSE` and the notices
+  directory against the package; `tests/verify_package.py` covers it and the
+  notes script, and `validate.yml` runs it.
+- `scripts/helper-install fetch <version>` downloads this machine's package and
+  sidecar from `https://github.com/randymy/omarchy-buzz/releases/download/v<version>/`
+  into `~/.cache/omarchy-buzz/helper/releases/<version>/` (urllib over HTTPS,
+  redirects only to `github.com`, `objects.githubusercontent.com` and
+  `release-assets.githubusercontent.com`, archive bounded by `MAX_ARCHIVE` and
+  sidecar by 64 KiB, one 60-second deadline, files saved `0600`), then runs the
+  unchanged checks and installation. `install <tar.gz>` is unchanged. Offline
+  tests mock urllib (happy path, checksum mismatch, oversized body, wrong and
+  unsupported architecture, redirects off GitHub, unsafe versions).
+
+Verified here: `tests/helper_install.py` (18), `tests/verify_package.py` (7),
+`tests/package_helper.py`, `tests/helper_notices.py`, `scripts/validate`, every
+workflow parsed as YAML, the shell and embedded Python of the new workflows
+syntax-checked, and the release job's verify/assemble/notes steps run locally on
+synthetic artifacts for both architectures (`sha256sum -c` passes). Not verified:
+any workflow run (actionlint was unavailable); the x86-64 build, tests,
+keyring check and notices inventory on a real x86-64 runner;
+`gh run download` of artifacts from the same, still-running workflow run;
+`gh release create --draft`; and `fetch` against real GitHub downloads (the
+asset redirect host is assumed from GitHub's current behavior).

@@ -1,0 +1,23 @@
+name: Manual x86-64 helper preview
+
+# Thin caller of the reusable helper build on a native x86-64 runner.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: helper-x86_64-preview
+  cancel-in-progress: false
+
+jobs:
+  helper:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/helper-build.yml
+    with:
+      runner: ubuntu-24.04
+      arch: x86_64
+      target: x86_64-unknown-linux-gnu
+      artifact: helper-x86_64-preview
