@@ -113,7 +113,7 @@ impl Fixture {
             .unwrap()
     }
     fn stored(&self, id: &str) -> Persona {
-        self.service.store.lock().unwrap().get(id).unwrap().clone()
+        self.service.store.lock().unwrap().get(id).unwrap().first()
     }
     fn ready(&self, harness: &str) {
         *self.spawner.present.lock().unwrap() = true;
@@ -1057,6 +1057,7 @@ async fn status_frames_have_exactly_the_contract_shape_and_fit_the_bound() {
             "harness",
             "id",
             "identity",
+            "instances",
             "instructions",
             "lastError",
             "model",
@@ -1068,6 +1069,19 @@ async fn status_frames_have_exactly_the_contract_shape_and_fit_the_bound() {
             "startAtLogin",
             "unit",
             "workspace"
+        ]
+    );
+    assert_eq!(
+        keys(&frame["status"]["agents"][0]["instances"][0]),
+        [
+            "community",
+            "lastError",
+            "published",
+            "relay",
+            "rooms",
+            "startAtLogin",
+            "state",
+            "unit"
         ]
     );
     assert_eq!(
@@ -1088,6 +1102,17 @@ async fn status_frames_have_exactly_the_contract_shape_and_fit_the_bound() {
     agent.workspace = format!("/{}", "w".repeat(1023));
     agent.relay = format!("wss://{}/", "r".repeat(2030));
     agent.community = "\u{10FFFF}".repeat(16);
+    let instance = InstanceView {
+        relay: agent.relay.clone(),
+        community: "\u{10FFFF}".repeat(64),
+        rooms: vec![ROOM_A.into(); 8],
+        unit: format!("omarchy-buzz-agent-{}-{}.service", agent.id, "f".repeat(12)),
+        start_at_login: true,
+        published: true,
+        last_error: Some("relay_unavailable".into()),
+        state: "unknown",
+    };
+    agent.instances = vec![instance; store::MAX_INSTANCES];
     worst.agents = vec![agent; 16];
     worst.active_relay = Some(format!("wss://{}/", "r".repeat(2030)));
     let bytes =
@@ -1674,10 +1699,10 @@ async fn create_needs_a_listed_active_community_and_an_identity() {
 async fn opening_the_service_migrates_personas_to_the_first_community() {
     let f = fixture(UNREACHABLE);
     let id = f.create(serde_json::json!({})).await.unwrap();
-    // As written before personas had a relay.
-    let mut value: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(f.home.paths.store_file()).unwrap()).unwrap();
-    value["agents"][0].as_object_mut().unwrap().remove("relay");
+    // A version 1 store, as written before personas had a relay.
+    let mut persona = serde_json::to_value(f.stored(&id)).unwrap();
+    persona.as_object_mut().unwrap().remove("relay");
+    let value = serde_json::json!({"version": 1, "agents": [persona]});
     std::fs::write(
         f.home.paths.store_file(),
         serde_json::to_vec(&value).unwrap(),
@@ -1709,7 +1734,9 @@ async fn opening_the_service_migrates_personas_to_the_first_community() {
         Some("wss://second.example/")
     );
     assert_eq!(
-        store::Store::open(&f.home.paths).unwrap().agents[0].relay,
+        store::Store::open(&f.home.paths).unwrap().agents[0]
+            .first()
+            .relay,
         "wss://first.example/"
     );
     // Without any community the old store is refused, not guessed at.
@@ -1729,4 +1756,486 @@ async fn opening_the_service_migrates_personas_to_the_first_community() {
         Box::new(|| Ok(Config::default())),
     );
     assert_eq!(opened.err(), Some("store_invalid"));
+}
+
+/// The kind and `h`/`p` tags of every event a relay saw.
+fn events(relay: &crate::agents_service::test_support::Relay) -> Vec<(u16, String, String)> {
+    relay
+        .seen
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|s| {
+            let tag = |name: &str| {
+                s.event
+                    .tags
+                    .iter()
+                    .find(|t| t.as_slice()[0] == name)
+                    .map(|t| t.as_slice()[1].clone())
+                    .unwrap_or_default()
+            };
+            (s.event.kind.as_u16(), tag("h"), tag("p"))
+        })
+        .collect()
+}
+fn unit_calls(f: &Fixture, verb: &str) -> Vec<String> {
+    f.control
+        .calls
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|argv| argv.get(2).map(String::as_str) == Some(verb))
+        .map(|argv| argv[3].clone())
+        .collect()
+}
+
+#[tokio::test]
+async fn an_enrolled_agent_joins_a_second_community_as_its_own_instance() {
+    let _network_fixture = crate::NETWORK_TEST_LOCK.lock().await;
+    let alpha = relay(|_| Answer::Accept, false).await;
+    let beta = relay(|_| Answer::Accept, false).await;
+    let f = fixture(&alpha.url);
+    two_communities(&f, &alpha.url, &beta.url);
+    let id = f.create(serde_json::json!({})).await.unwrap();
+    f.run(serde_json::json!({"type":"enroll_agent","agentId":id}))
+        .await
+        .unwrap();
+    let identity = f.stored(&id).identity.unwrap();
+    let h = store::relay_hash(&beta.url);
+    let second_unit = format!("omarchy-buzz-agent-{id}-{h}.service");
+    let first_unit = format!("omarchy-buzz-agent-{id}.service");
+
+    // Refusals. Only the active community: nothing is asked of a catalog.
+    f.rooms.1.lock().unwrap().clear();
+    let join = |agent: &str, relay: &str, rooms: serde_json::Value| serde_json::json!({"type":"enroll_agent_in","agentId":agent,"relay":relay,"rooms":rooms});
+    assert_eq!(
+        f.run(join(&id, &beta.url, serde_json::json!([ROOM_B])))
+            .await,
+        Err("relay_unavailable")
+    );
+    assert!(f.rooms.1.lock().unwrap().is_empty());
+    // Already there.
+    assert_eq!(
+        f.run(join(&id, &alpha.url, serde_json::json!([ROOM_B])))
+            .await,
+        Err("agent_invalid")
+    );
+    // An unknown agent, and one never enrolled.
+    switch_to(&f, &beta.url);
+    assert_eq!(
+        f.run(join(
+            "00000000-0000-4000-8000-00000000dead",
+            &beta.url,
+            serde_json::json!([ROOM_B])
+        ))
+        .await,
+        Err("agent_invalid")
+    );
+    switch_to(&f, &alpha.url);
+    let unenrolled = f.create(serde_json::json!({})).await.unwrap();
+    switch_to(&f, &beta.url);
+    assert_eq!(
+        f.run(join(&unenrolled, &beta.url, serde_json::json!([ROOM_B])))
+            .await,
+        Err("agent_invalid")
+    );
+    // Rooms not in that community's verified catalog, or no catalog.
+    assert_eq!(
+        f.run(join(
+            &id,
+            &beta.url,
+            serde_json::json!(["00000000-0000-4000-8000-0000000000b9"])
+        ))
+        .await,
+        Err("agent_invalid")
+    );
+    *f.rooms.0.lock().unwrap() = Err("relay_unavailable");
+    assert_eq!(
+        f.run(join(&id, &beta.url, serde_json::json!([ROOM_B])))
+            .await,
+        Err("relay_unavailable")
+    );
+    *f.rooms.0.lock().unwrap() = Ok(vec![ROOM_A.into(), ROOM_B.into(), ROOM_C.into()]);
+    // A community the configuration does not list is never joined.
+    f.config.lock().unwrap().relay = Some("wss://unlisted.example/".into());
+    assert_eq!(
+        f.run(join(
+            &id,
+            "wss://unlisted.example/",
+            serde_json::json!([ROOM_B])
+        ))
+        .await,
+        Err("relay_unavailable")
+    );
+    switch_to(&f, &beta.url);
+    assert!(kinds(&beta).is_empty());
+    assert_eq!(f.agent(&id).instances.len(), 1);
+    f.keyring.owner_relays.lock().unwrap().clear();
+
+    // Joined: the same identity and attestation, admitted with the owner's
+    // key for that community, published there and nowhere else.
+    let before = kinds(&alpha).len();
+    f.run(join(&id, &beta.url, serde_json::json!([ROOM_B])))
+        .await
+        .unwrap();
+    assert_eq!(
+        events(&beta),
+        [
+            (30175, String::new(), String::new()),
+            (30177, String::new(), String::new()),
+            (9000, ROOM_B.to_string(), identity.clone()),
+            (0, String::new(), String::new()),
+        ]
+    );
+    let profile = beta.seen.lock().unwrap()[3].clone();
+    assert_eq!(profile.author.to_hex(), identity);
+    assert_eq!(kinds(&alpha).len(), before);
+    assert_eq!(*f.keyring.owner_relays.lock().unwrap(), [beta.url.clone()]);
+    assert_eq!(f.keyring.agents.lock().unwrap().len(), 1);
+    let view = f.agent(&id);
+    assert_eq!(
+        (view.relay.as_str(), view.rooms.clone()),
+        (alpha.url.as_str(), vec![ROOM_A.to_string()])
+    );
+    assert_eq!(
+        view.instances,
+        [
+            InstanceView {
+                relay: alpha.url.clone(),
+                community: "Alpha".into(),
+                rooms: vec![ROOM_A.into()],
+                unit: first_unit.clone(),
+                start_at_login: false,
+                published: true,
+                last_error: None,
+                state: "unknown",
+            },
+            InstanceView {
+                relay: beta.url.clone(),
+                community: "Beta".into(),
+                rooms: vec![ROOM_B.into()],
+                unit: second_unit.clone(),
+                start_at_login: false,
+                published: true,
+                last_error: None,
+                state: "unknown",
+            }
+        ]
+    );
+    let second = f
+        .service
+        .store
+        .lock()
+        .unwrap()
+        .get(&id)
+        .unwrap()
+        .persona(&beta.url)
+        .unwrap();
+    assert!(!second.primary);
+    assert_eq!(
+        std::path::Path::new(&second.workspace),
+        f.home.paths.default_workspace(&format!("{id}-{h}"))
+    );
+    assert!(std::path::Path::new(&second.workspace).is_dir());
+    assert_eq!(second.member_rooms, [ROOM_B]);
+    // Already there now.
+    assert_eq!(
+        f.run(join(&id, &beta.url, serde_json::json!([ROOM_C])))
+            .await,
+        Err("agent_invalid")
+    );
+
+    // Start each instance: its own unit, relay, rooms and workspace; the
+    // identity, attestation and instructions are shared.
+    f.ready("codex");
+    f.run(serde_json::json!({"type":"start_agent","agentId":id,"relay":beta.url}))
+        .await
+        .unwrap();
+    let text = std::fs::read_to_string(f.home.paths.unit_file(&format!("{id}-{h}"))).unwrap();
+    for word in [
+        format!("\"--relay\" \"{}\"", beta.url),
+        format!("\"--room\" \"{ROOM_B}\""),
+        format!("\"--workspace\" \"{}\"", second.workspace),
+        format!("\"--identity\" \"{identity}\""),
+    ] {
+        assert!(text.contains(&word), "{word}\n{text}");
+    }
+    assert!(!text.contains(&alpha.url) && !text.contains(ROOM_A));
+    assert!(!f.home.paths.unit_file(&id).exists());
+    assert_eq!(unit_calls(&f, "start"), [second_unit.clone()]);
+    f.run(serde_json::json!({"type":"start_agent","agentId":id}))
+        .await
+        .unwrap();
+    assert!(std::fs::read_to_string(f.home.paths.unit_file(&id))
+        .unwrap()
+        .contains(&format!("\"--relay\" \"{}\"", alpha.url)));
+    assert_eq!(
+        unit_calls(&f, "start"),
+        [second_unit.clone(), first_unit.clone()]
+    );
+    let states: Vec<_> = f.agent(&id).instances.iter().map(|i| i.state).collect();
+    assert_eq!(states, ["active", "active"]);
+    assert_eq!(f.agent(&id).unit, "active");
+    // Start at login and stop, per instance.
+    f.run(serde_json::json!({"type":"set_start_at_login","agentId":id,"enabled":true,"relay":beta.url}))
+        .await
+        .unwrap();
+    assert_eq!(unit_calls(&f, "enable"), [second_unit.clone()]);
+    let logins: Vec<_> = f
+        .agent(&id)
+        .instances
+        .iter()
+        .map(|i| i.start_at_login)
+        .collect();
+    assert_eq!(logins, [false, true]);
+    assert!(!f.agent(&id).start_at_login);
+    f.run(serde_json::json!({"type":"stop_agent","agentId":id,"relay":beta.url}))
+        .await
+        .unwrap();
+    assert_eq!(unit_calls(&f, "stop"), [second_unit.clone()]);
+    let states: Vec<_> = f.agent(&id).instances.iter().map(|i| i.state).collect();
+    assert_eq!(states, ["active", "inactive"]);
+    // A relay the agent is not enrolled in is refused.
+    assert_eq!(
+        f.run(
+            serde_json::json!({"type":"stop_agent","agentId":id,"relay":"wss://unlisted.example/"})
+        )
+        .await,
+        Err("agent_invalid")
+    );
+
+    // Rooms change per instance, in the active community only.
+    f.run(
+        serde_json::json!({"type":"update_agent","agentId":id,"relay":beta.url,
+        "fields":{"rooms":[ROOM_B, ROOM_C]}}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        &events(&beta)[4..],
+        [
+            (30175, String::new(), String::new()),
+            (30177, String::new(), String::new()),
+            (9000, ROOM_C.to_string(), identity.clone()),
+            (0, String::new(), String::new()),
+        ]
+    );
+    assert_eq!(kinds(&alpha).len(), before);
+    assert_eq!(f.stored(&id).rooms, [ROOM_A]);
+    assert_eq!(f.agent(&id).instances[1].rooms, [ROOM_B, ROOM_C]);
+    // The first instance's rooms are the other community's: refused here.
+    assert_eq!(
+        f.run(serde_json::json!({"type":"update_agent","agentId":id,"fields":{"rooms":[ROOM_C]}}))
+            .await,
+        Err("relay_unavailable")
+    );
+    // A definition edit republishes in every community and stops every
+    // running instance only when it changes how the agent runs.
+    f.run(serde_json::json!({"type":"update_agent","agentId":id,"relay":beta.url,"fields":{"name":"Renamed"}}))
+        .await
+        .unwrap();
+    assert_eq!(&kinds(&alpha)[before..], [30175, 30177, 0]);
+    assert_eq!(&kinds(&beta)[8..], [30175, 30177, 0]);
+    assert!(f.agent(&id).instances.iter().all(|i| i.published));
+    assert_eq!(f.agent(&id).instances[0].state, "active");
+    f.run(
+        serde_json::json!({"type":"update_agent","agentId":id,"fields":{"respondTo":"mentions"}}),
+    )
+    .await
+    .unwrap();
+    let states: Vec<_> = f.agent(&id).instances.iter().map(|i| i.state).collect();
+    assert_eq!(states, ["inactive", "inactive"]);
+
+    // Leaving the first community (from the second): its rooms are left,
+    // its unit removed, the instance dropped; the other keeps its names.
+    f.control.calls.lock().unwrap().clear();
+    let alpha_before = kinds(&alpha).len();
+    f.run(serde_json::json!({"type":"leave_agent_community","agentId":id,"relay":alpha.url}))
+        .await
+        .unwrap();
+    assert_eq!(
+        &events(&alpha)[alpha_before..],
+        [(9001, ROOM_A.to_string(), identity.clone())]
+    );
+    assert!(!f.home.paths.unit_file(&id).exists());
+    assert_eq!(unit_calls(&f, "disable"), [first_unit.clone()]);
+    let view = f.agent(&id);
+    assert_eq!(view.instances.len(), 1);
+    assert_eq!(
+        (view.relay.as_str(), view.community.as_str()),
+        (beta.url.as_str(), "Beta")
+    );
+    assert_eq!(view.instances[0].unit, second_unit);
+    assert!(f.home.paths.unit_file(&format!("{id}-{h}")).exists());
+    // The last community cannot be left: delete the agent instead.
+    assert_eq!(
+        f.run(serde_json::json!({"type":"leave_agent_community","agentId":id,"relay":beta.url}))
+            .await,
+        Err("agent_invalid")
+    );
+    assert_eq!(f.agent(&id).instances.len(), 1);
+
+    // Back in the first community: a new instance there gets a suffixed name.
+    switch_to(&f, &alpha.url);
+    f.run(join(&id, &alpha.url, serde_json::json!([ROOM_A])))
+        .await
+        .unwrap();
+    let ha = store::relay_hash(&alpha.url);
+    assert_eq!(
+        f.agent(&id).instances[1].unit,
+        format!("omarchy-buzz-agent-{id}-{ha}.service")
+    );
+
+    // Delete leaves every community's rooms, removes every unit, keeps the
+    // identity unless asked to forget it.
+    f.control.calls.lock().unwrap().clear();
+    let (a0, b0) = (kinds(&alpha).len(), kinds(&beta).len());
+    f.run(serde_json::json!({"type":"delete_agent","agentId":id,"forget":true}))
+        .await
+        .unwrap();
+    assert_eq!(
+        &events(&beta)[b0..],
+        [
+            (9001, ROOM_B.to_string(), identity.clone()),
+            (9001, ROOM_C.to_string(), identity.clone())
+        ]
+    );
+    assert_eq!(
+        &events(&alpha)[a0..],
+        [(9001, ROOM_A.to_string(), identity.clone())]
+    );
+    assert!(!f.home.paths.unit_file(&format!("{id}-{h}")).exists());
+    assert_eq!(unit_calls(&f, "disable"), [second_unit.clone()]);
+    assert!(f.service.store.lock().unwrap().get(&id).is_none());
+    assert!(!f.keyring.agents.lock().unwrap().contains_key(&identity));
+    assert!(f.service.snapshot().agents.iter().all(|a| a.id != id));
+}
+
+static REJECT_ADDS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+#[tokio::test]
+async fn a_failed_join_keeps_the_instance_for_a_retry() {
+    let _network_fixture = crate::NETWORK_TEST_LOCK.lock().await;
+    let alpha = relay(|_| Answer::Accept, false).await;
+    let beta = relay(
+        |kind| {
+            if kind == 9000 && REJECT_ADDS.load(std::sync::atomic::Ordering::SeqCst) {
+                Answer::Reject
+            } else {
+                Answer::Accept
+            }
+        },
+        false,
+    )
+    .await;
+    let f = fixture(&alpha.url);
+    two_communities(&f, &alpha.url, &beta.url);
+    let id = f.create(serde_json::json!({})).await.unwrap();
+    f.run(serde_json::json!({"type":"enroll_agent","agentId":id}))
+        .await
+        .unwrap();
+    switch_to(&f, &beta.url);
+    REJECT_ADDS.store(true, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(
+        f.run(serde_json::json!({"type":"enroll_agent_in","agentId":id,"relay":beta.url,"rooms":[ROOM_B]}))
+            .await,
+        Err("enroll_failed")
+    );
+    let instance = f.agent(&id).instances[1].clone();
+    assert_eq!(
+        (instance.published, instance.last_error.as_deref()),
+        (false, Some("enroll_failed"))
+    );
+    // Not published: it cannot start.
+    f.ready("codex");
+    assert_eq!(
+        f.run(serde_json::json!({"type":"start_agent","agentId":id,"relay":beta.url}))
+            .await,
+        Err("agent_invalid")
+    );
+    REJECT_ADDS.store(false, std::sync::atomic::Ordering::SeqCst);
+    f.run(serde_json::json!({"type":"enroll_agent","agentId":id,"relay":beta.url}))
+        .await
+        .unwrap();
+    let instance = f.agent(&id).instances[1].clone();
+    assert_eq!((instance.published, instance.last_error), (true, None));
+    assert_eq!(kinds(&beta), [30175, 30177, 9000, 30175, 30177, 9000, 0]);
+    // The first instance was not touched.
+    assert!(f.agent(&id).instances[0].published);
+}
+
+/// The maintainer's machine through the service: a version 1 store with a
+/// running agent opens as version 2 and keeps managing the same unit.
+#[tokio::test]
+async fn the_service_keeps_managing_a_version_1_agents_running_unit() {
+    let _network_fixture = crate::NETWORK_TEST_LOCK.lock().await;
+    let alpha = relay(|_| Answer::Accept, false).await;
+    let f = fixture(&alpha.url);
+    let id = f
+        .create(serde_json::json!({"answersDms":true}))
+        .await
+        .unwrap();
+    f.run(serde_json::json!({"type":"enroll_agent","agentId":id}))
+        .await
+        .unwrap();
+    f.ready("codex");
+    f.run(serde_json::json!({"type":"start_agent","agentId":id}))
+        .await
+        .unwrap();
+    let unit_path = f.home.paths.unit_file(&id);
+    let unit_text = std::fs::read_to_string(&unit_path).unwrap();
+    let legacy = f.stored(&id);
+    // Rewrite the store as version 1, as 0.0.26 wrote it.
+    let v1 = serde_json::json!({"version": 1, "agents": [serde_json::to_value(&legacy).unwrap()]});
+    std::fs::write(
+        f.home.paths.store_file(),
+        serde_json::to_vec_pretty(&v1).unwrap(),
+    )
+    .unwrap();
+    let config = f.config.clone();
+    let service = Service::open(
+        f.home.paths.clone(),
+        Deps {
+            control: f.control.clone(),
+            keyring: f.keyring.clone(),
+            spawner: f.spawner.clone(),
+            rooms: f.rooms.clone(),
+        },
+        Box::new(move || Ok(config.lock().unwrap().clone())),
+    )
+    .unwrap();
+    f.control.calls.lock().unwrap().clear();
+    service.inspect_units().await;
+    let view = service.snapshot().agents[0].clone();
+    let name = format!("omarchy-buzz-agent-{id}.service");
+    assert_eq!(view.unit, "active");
+    assert_eq!(view.instances.len(), 1);
+    assert_eq!(
+        (view.instances[0].unit.as_str(), view.instances[0].state),
+        (name.as_str(), "active")
+    );
+    assert_eq!(view.workspace, legacy.workspace);
+    assert!(view
+        .workspace
+        .ends_with(&format!("/omarchy-buzz-room-workspaces/{id}")));
+    assert_eq!(view.rooms, legacy.rooms);
+    assert_eq!(
+        *f.control.calls.lock().unwrap(),
+        [vec![
+            "/usr/bin/systemctl".to_string(),
+            "--user".into(),
+            "show".into(),
+            "--property=ActiveState".into(),
+            name.clone()
+        ]]
+    );
+    // Restarting it writes the same unit file, byte for byte.
+    let slot = service.begin().unwrap();
+    let stop = f.request(serde_json::json!({"type":"stop_agent","agentId":id}));
+    service.execute(&stop, slot).await.unwrap();
+    let slot = service.begin().unwrap();
+    let start = f.request(serde_json::json!({"type":"start_agent","agentId":id}));
+    service.execute(&start, slot).await.unwrap();
+    assert_eq!(std::fs::read_to_string(&unit_path).unwrap(), unit_text);
+    assert_eq!(unit_calls(&f, "start"), [name]);
 }

@@ -162,7 +162,7 @@ fn store_round_trips_at_0600_and_refuses_invalid_files() {
     let mut store = Store::open(&t.paths).unwrap();
     assert!(store.agents.is_empty());
     assert_eq!(mode(&t.paths.store_dir()), 0o700);
-    store.agents.push(persona(ID, "/w"));
+    store.agents.push(Agent::from_persona(persona(ID, "/w")));
     store.save().unwrap();
     assert_eq!(mode(&t.paths.store_file()), 0o600);
     assert_eq!(Store::open(&t.paths).unwrap().agents, store.agents);
@@ -179,27 +179,36 @@ fn store_round_trips_at_0600_and_refuses_invalid_files() {
     assert_eq!(Store::open(&t.paths).err(), Some("store_invalid"));
     std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
     let text = String::from_utf8(good.clone()).unwrap();
-    // A store written before `answersDms` existed loads with it off; a
-    // non-boolean value is refused.
-    assert!(text.contains("\"answersDms\": false"));
-    std::fs::write(&file, text.replace("\"answersDms\": false,", "")).unwrap();
+    assert!(text.contains("\"version\": 2"));
+    // A version 1 store written before `answersDms` existed loads with it
+    // off; a non-boolean value is refused. Version 2 requires the field.
+    let v1 = String::from_utf8(v1_bytes(&[persona(ID, "/w")])).unwrap();
+    assert!(v1.contains("\"answersDms\": false"));
+    std::fs::write(&file, v1.replace("\"answersDms\": false,", "")).unwrap();
     assert_eq!(Store::open(&t.paths).unwrap().agents, store.agents);
     std::fs::write(
         &file,
-        text.replace("\"answersDms\": false", "\"answersDms\": true"),
+        v1.replace("\"answersDms\": false", "\"answersDms\": true"),
     )
     .unwrap();
     assert!(Store::open(&t.paths).unwrap().agents[0].answers_dms);
     std::fs::write(
         &file,
-        text.replace("\"answersDms\": false", "\"answersDms\": \"yes\""),
+        v1.replace("\"answersDms\": false", "\"answersDms\": \"yes\""),
     )
     .unwrap();
     assert_eq!(Store::open(&t.paths).err(), Some("store_invalid"));
     std::fs::write(&file, &good).unwrap();
     for bad in [
         "not json".to_string(),
-        text.replace("\"version\": 1", "\"version\": 2"),
+        text.replace("\"version\": 2", "\"version\": 3"),
+        text.replace("\"version\": 2", "\"version\": 0"),
+        text.replace("\"answersDms\": false,", ""),
+        // A version 2 record in a version 1 file, and the reverse.
+        text.replace("\"version\": 2", "\"version\": 1"),
+        v1.replace("\"version\": 1", "\"version\": 2"),
+        text.replace("\"primary\": true", "\"primary\": 1"),
+        text.replace("\"instances\": [", "\"instances\": [], \"x\": ["),
         text.replace(
             "\"name\": \"Scout\"",
             "\"name\": \"Scout\", \"privateKey\": \"x\"",
@@ -215,11 +224,11 @@ fn store_round_trips_at_0600_and_refuses_invalid_files() {
         t.paths.clone()
     })
     .unwrap();
-    dup.agents.push(persona(ID, "/x"));
+    dup.agents.push(Agent::from_persona(persona(ID, "/x")));
     assert!(dup.save().is_err());
     let mut many = Store::open(&t.paths).unwrap();
     many.agents = (0..17)
-        .map(|n| persona(&format!("00000000-0000-4000-8000-{n:012}"), "/w"))
+        .map(|n| Agent::from_persona(persona(&format!("00000000-0000-4000-8000-{n:012}"), "/w")))
         .collect();
     assert!(many.save().is_err());
     many.agents.truncate(16);
@@ -310,11 +319,23 @@ fn default_workspace_parent_must_be_safe_and_is_never_loosened() {
     assert_eq!(mode(&parent), 0o755);
 }
 
+/// A version 1 store file holding `personas`.
+fn v1_bytes(personas: &[Persona]) -> Vec<u8> {
+    serde_json::to_vec_pretty(&FileV1 {
+        version: 1,
+        agents: personas.to_vec(),
+    })
+    .unwrap()
+}
+fn write_v1(t: &TempHome, personas: &[Persona]) -> Vec<u8> {
+    ensure_private_directory(&t.paths.store_dir()).unwrap();
+    let bytes = v1_bytes(personas);
+    write_private(&t.paths.store_file(), &bytes).unwrap();
+    bytes
+}
 /// A store file as written before `relay` existed: the persona JSON without it.
 fn write_old_store(t: &TempHome, personas: &[Persona]) -> Vec<u8> {
-    let mut store = Store::open(&t.paths).unwrap();
-    store.agents = personas.to_vec();
-    store.save().unwrap();
+    write_v1(t, personas);
     let mut value: serde_json::Value =
         serde_json::from_slice(&std::fs::read(t.paths.store_file()).unwrap()).unwrap();
     for agent in value["agents"].as_array_mut().unwrap() {
@@ -361,8 +382,8 @@ fn personas_without_a_relay_take_their_unit_files_relay() {
     .unwrap();
     // The configuration is asked once, only for the persona without a unit.
     assert_eq!(asked, 1);
-    assert_eq!(store.agents[0].relay, unit_relay_url);
-    assert_eq!(store.agents[1].relay, "wss://second.example/");
+    assert_eq!(store.agents[0].first().relay, unit_relay_url);
+    assert_eq!(store.agents[1].first().relay, "wss://second.example/");
     // Written back once, atomically, at 0600; the unit file is only read.
     assert_eq!(mode(&t.paths.store_file()), 0o600);
     let written = std::fs::read(t.paths.store_file()).unwrap();
@@ -372,7 +393,16 @@ fn personas_without_a_relay_take_their_unit_files_relay() {
         .unwrap()
         .map(|e| e.unwrap().file_name())
         .collect();
-    assert_eq!(names, vec![std::ffi::OsString::from("personas.json")]);
+    let mut names: Vec<_> = names.into_iter().collect();
+    names.sort();
+    assert_eq!(
+        names,
+        ["personas.json", "personas.v1.json"].map(std::ffi::OsString::from)
+    );
+    assert_eq!(
+        std::fs::read(t.paths.store_dir().join("personas.v1.json")).unwrap(),
+        old
+    );
     // Idempotent: a migrated store is not rewritten and never asks again.
     let again = Store::open_with(&t.paths, || panic!("asked again")).unwrap();
     assert_eq!(again.agents, store.agents);
@@ -381,14 +411,12 @@ fn personas_without_a_relay_take_their_unit_files_relay() {
     let t = TempHome::new();
     let mut kept = enrolled_with_unit(&t, ID, "wss://first.example/");
     kept.relay = "wss://other.example/".into();
-    let mut store = Store::open(&t.paths).unwrap();
-    store.agents = vec![kept.clone()];
-    store.save().unwrap();
+    write_v1(&t, &[kept.clone()]);
     assert_eq!(
         Store::open_with(&t.paths, || panic!("asked"))
             .unwrap()
             .agents,
-        vec![kept]
+        vec![Agent::from_persona(kept)]
     );
 }
 
@@ -412,7 +440,7 @@ fn personas_without_a_relay_or_unit_take_the_first_community() {
     assert!(store
         .agents
         .iter()
-        .all(|a| a.relay == "wss://first.example/"));
+        .all(|a| a.first().relay == "wss://first.example/"));
     assert_eq!(Store::open(&t.paths).unwrap().agents, store.agents);
 }
 
@@ -486,4 +514,245 @@ fn unreadable_or_ambiguous_unit_files_refuse_the_migration() {
     ] {
         assert!(unquote_words(bad).is_none(), "{bad}");
     }
+}
+
+#[test]
+fn the_largest_valid_store_fits_its_bound() {
+    let t = TempHome::new();
+    let owner = nostr::Keys::generate();
+    let room = |n: usize| format!("00000000-0000-4000-8000-{n:012}");
+    let mut store = Store::open(&t.paths).unwrap();
+    store.agents = (0..MAX_AGENTS)
+        .map(|n| {
+            let agent = nostr::Keys::generate();
+            let mut p = persona(&format!("00000000-0000-4000-8000-{n:012}"), "/w");
+            p.name = "\u{10FFFF}".repeat(64);
+            p.description = "\u{10FFFF}".repeat(256);
+            // Every character escaped in JSON.
+            p.instructions = "\"".repeat(INSTRUCTIONS_BYTES);
+            p.model = "m".repeat(64);
+            p.identity = Some(agent.public_key().to_hex());
+            p.auth_tag =
+                Some(buzz_sdk::nip_oa::compute_auth_tag(&owner, &agent.public_key(), "").unwrap());
+            p.last_error = Some("x".repeat(32));
+            p.published_at = u64::MAX;
+            let mut a = Agent::from_persona(p.clone());
+            for i in 1..MAX_INSTANCES {
+                let mut other = p.clone();
+                other.relay = format!("wss://{i}{}/", "r".repeat(2030));
+                other.primary = false;
+                a.absorb(other);
+            }
+            for (i, instance) in a.instances.iter_mut().enumerate() {
+                if i == 0 {
+                    instance.relay = format!("wss://0{}/", "r".repeat(2030));
+                }
+                instance.rooms = (0..8).map(room).collect();
+                instance.member_rooms = (0..MAX_MEMBER_ROOMS).map(room).collect();
+                instance.workspace = format!("/{}", "w".repeat(PATH_BYTES - 1));
+            }
+            assert!(a.valid());
+            a
+        })
+        .collect();
+    store.save().unwrap();
+    let size = std::fs::metadata(t.paths.store_file()).unwrap().len();
+    assert!(size <= STORE_BYTES, "{size}");
+    assert_eq!(Store::open(&t.paths).unwrap().agents, store.agents);
+}
+
+/// The maintainer's machine: one enrolled, published, running agent written
+/// by 0.0.26 (version 1, with `relay`) or earlier (without), its generated
+/// unit file and its default workspace. Wrapping must keep its unit name,
+/// workspace, rooms and memberships, and render the same unit file.
+#[test]
+fn a_running_version_1_agent_keeps_its_unit_and_workspace() {
+    for with_relay in [true, false] {
+        let t = TempHome::new();
+        let id = "5b2c8f4e-3d1a-4e6b-9c7d-0a1b2c3d4e5f";
+        let relay_url = "wss://relay.example.org/";
+        let owner = nostr::Keys::generate();
+        let agent = nostr::Keys::generate();
+        let workspace = create_default_workspace(&t.paths, id).unwrap();
+        let workspace = workspace.to_str().unwrap().to_owned();
+        assert!(workspace.ends_with(&format!("/omarchy-buzz-room-workspaces/{id}")));
+        let mut legacy = persona(id, &workspace);
+        legacy.name = "vClaude".into();
+        legacy.harness = "claude-code".into();
+        legacy.model = "opus".into();
+        legacy.answers_dms = true;
+        legacy.rooms = vec![ROOM_A.into(), ROOM_B.into()];
+        legacy.member_rooms = vec![ROOM_A.into(), ROOM_B.into()];
+        legacy.relay = relay_url.into();
+        legacy.identity = Some(agent.public_key().to_hex());
+        legacy.auth_tag =
+            Some(buzz_sdk::nip_oa::compute_auth_tag(&owner, &agent.public_key(), "").unwrap());
+        legacy.published = true;
+        legacy.published_at = 1_790_000_000;
+        legacy.start_at_login = true;
+        let owner_hex = owner.public_key().to_hex();
+        let unit_text = super::super::unit::render(&t.paths, &legacy, &owner_hex).unwrap();
+        std::fs::create_dir_all(t.paths.units_dir()).unwrap();
+        let unit_path = t
+            .paths
+            .units_dir()
+            .join(format!("omarchy-buzz-agent-{id}.service"));
+        std::fs::write(&unit_path, &unit_text).unwrap();
+        let old = if with_relay {
+            write_v1(&t, &[legacy.clone()])
+        } else {
+            write_old_store(&t, &[legacy.clone()])
+        };
+
+        let store = Store::open_with(&t.paths, || panic!("the unit file names the relay")).unwrap();
+        assert_eq!(store.agents.len(), 1);
+        let wrapped = &store.agents[0];
+        assert_eq!(wrapped.instances.len(), 1);
+        let instance = wrapped.first();
+        assert!(instance.primary && wrapped.instances[0].primary);
+        assert_eq!(instance.key(), id);
+        assert_eq!(
+            unit_name(&instance.key()),
+            format!("omarchy-buzz-agent-{id}.service")
+        );
+        assert_eq!(t.paths.unit_file(&instance.key()), unit_path);
+        assert_eq!(instance.workspace, workspace);
+        assert_eq!(
+            t.paths.default_workspace(&instance.key()).to_str(),
+            Some(workspace.as_str())
+        );
+        // Every field the record had is kept as it was.
+        assert_eq!(instance, legacy);
+        // The unit the service would write for it is the running one, byte
+        // for byte; the file itself was only read.
+        assert_eq!(
+            super::super::unit::render(&t.paths, &instance, &owner_hex).unwrap(),
+            unit_text
+        );
+        assert_eq!(std::fs::read_to_string(&unit_path).unwrap(), unit_text);
+        // Written as version 2 once, the version 1 bytes kept beside it.
+        let written: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(t.paths.store_file()).unwrap()).unwrap();
+        assert_eq!(written["version"], 2);
+        assert_eq!(written["agents"][0]["instances"][0]["primary"], true);
+        assert_eq!(
+            std::fs::read(t.paths.store_dir().join("personas.v1.json")).unwrap(),
+            old
+        );
+        let again = Store::open_with(&t.paths, || panic!("asked again")).unwrap();
+        assert_eq!(again.agents, store.agents);
+    }
+}
+
+#[test]
+fn a_failed_wrap_changes_nothing() {
+    let t = TempHome::new();
+    let old = write_v1(&t, &[persona(ID, "/w")]);
+    // The backup cannot be written (a directory is in the way): refused.
+    std::fs::create_dir(t.paths.store_dir().join("personas.v1.json")).unwrap();
+    assert_eq!(Store::open(&t.paths).err(), Some("store_unavailable"));
+    assert_eq!(std::fs::read(t.paths.store_file()).unwrap(), old);
+    std::fs::remove_dir(t.paths.store_dir().join("personas.v1.json")).unwrap();
+    // An invalid version 1 record is refused before anything is written.
+    let mut bad = persona(ID, "/w");
+    bad.rooms.clear();
+    let old = write_v1(&t, &[bad]);
+    assert_eq!(Store::open(&t.paths).err(), Some("store_invalid"));
+    assert_eq!(std::fs::read(t.paths.store_file()).unwrap(), old);
+    assert!(!t.paths.store_dir().join("personas.v1.json").exists());
+}
+
+#[test]
+fn instances_have_their_own_unit_names_and_workspaces() {
+    let t = TempHome::new();
+    let owner = nostr::Keys::generate();
+    let agent = nostr::Keys::generate();
+    let mut first = persona(ID, "/w");
+    first.identity = Some(agent.public_key().to_hex());
+    first.auth_tag =
+        Some(buzz_sdk::nip_oa::compute_auth_tag(&owner, &agent.public_key(), "").unwrap());
+    let mut second = first.clone();
+    second.relay = "wss://second.example/".into();
+    second.primary = false;
+    second.rooms = vec![ROOM_B.into()];
+    second.workspace = "/v".into();
+    // The suffix is the first 12 hex digits of SHA-256 of the canonical relay.
+    let h = relay_hash("wss://second.example/");
+    assert_eq!(h.len(), 12);
+    assert!(h
+        .bytes()
+        .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()));
+    // `printf 'wss://second.example/' | sha256sum`
+    assert_eq!(h, "00b6bbbc333b");
+    assert_eq!(second.key(), format!("{ID}-{h}"));
+    assert_eq!(
+        unit_name(&second.key()),
+        format!("omarchy-buzz-agent-{ID}-{h}.service")
+    );
+    assert_eq!(
+        t.paths.default_workspace(&second.key()),
+        t.paths.workspaces().join(format!("{ID}-{h}"))
+    );
+    let mut a = Agent::from_persona(first.clone());
+    a.absorb(second.clone());
+    assert!(a.valid());
+    assert_eq!(a.personas(), vec![first.clone(), second.clone()]);
+    assert_eq!(a.persona("wss://second.example/"), Some(second.clone()));
+    // Distinct communities, at most one primary, at most four instances; an
+    // agent without an identity has only one.
+    let mut twice = a.clone();
+    twice.instances.push(twice.instances[1].clone());
+    assert!(!twice.valid());
+    let mut primaries = a.clone();
+    primaries.instances[1].primary = true;
+    assert!(!primaries.valid());
+    let mut many = a.clone();
+    for n in 2..=MAX_INSTANCES {
+        let mut i = many.instances[1].clone();
+        i.relay = format!("wss://c{n}.example/");
+        many.instances.push(i);
+    }
+    assert!(!many.valid());
+    many.instances.pop();
+    assert!(many.valid());
+    let mut anonymous = a.clone();
+    anonymous.identity = None;
+    anonymous.auth_tag = None;
+    assert!(!anonymous.valid());
+    anonymous.instances.truncate(1);
+    assert!(anonymous.valid());
+    let mut empty = a.clone();
+    empty.instances.clear();
+    assert!(!empty.valid());
+    // Every instance passes the persona rules.
+    let mut bad = a.clone();
+    bad.instances[1].rooms.clear();
+    assert!(!bad.valid());
+    // A primary that was left: the remaining instance keeps its suffixed name.
+    let mut left = a.clone();
+    left.instances.remove(0);
+    assert!(left.valid());
+    assert_eq!(left.first().key(), format!("{ID}-{h}"));
+
+    // Workspace rules treat instances as separate agents: an instance's own
+    // default workspace is allowed, another instance's (of the same agent) is not.
+    let own = create_default_workspace(&t.paths, &second.key()).unwrap();
+    let own = own.to_str().unwrap();
+    let primary_ws = create_default_workspace(&t.paths, ID).unwrap();
+    let mut first_at_default = first.clone();
+    first_at_default.workspace = primary_ws.to_str().unwrap().into();
+    check_workspace(&t.paths, own, &second.key(), &[&first_at_default]).unwrap();
+    assert_eq!(
+        check_workspace(&t.paths, own, ID, &[]),
+        Err("workspace_refused")
+    );
+    assert_eq!(
+        check_workspace(
+            &t.paths,
+            primary_ws.to_str().unwrap(),
+            &second.key(),
+            &[&first_at_default]
+        ),
+        Err("workspace_refused")
+    );
 }
