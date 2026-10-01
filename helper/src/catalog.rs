@@ -118,10 +118,60 @@ pub async fn relay_info(
     (info_body(response, pin).await, skew)
 }
 
+/// What `communities` reads from a relay's NIP-11 document besides its
+/// signer: the self-asserted `name` (an untrusted label, sanitized and bounded
+/// like a profile name; display hint only) and whether `supported_nips` lists
+/// 43 (relay membership, so leaving needs a NIP-43 leave request). Icons are
+/// never read.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RelayProfile {
+    pub signer: PublicKey,
+    pub name: Option<String>,
+    pub membership: bool,
+}
+pub(crate) fn info_profile(
+    bytes: &[u8],
+    pin: Option<PublicKey>,
+) -> Result<RelayProfile, &'static str> {
+    let signer = info_signer(bytes, pin)?;
+    let doc: serde_json::Value =
+        serde_json::from_slice(bytes).map_err(|_| "discovery_invalid_info")?;
+    let name = doc
+        .get("name")
+        .and_then(|v| v.as_str())
+        .map(crate::config::label)
+        .filter(|n| !n.is_empty());
+    let membership = doc
+        .get("supported_nips")
+        .and_then(|v| v.as_array())
+        .is_some_and(|nips| nips.iter().any(|n| n.as_u64() == Some(43)));
+    Ok(RelayProfile {
+        signer,
+        name,
+        membership,
+    })
+}
+/// `relay_signer` with the profile fields `communities` shows and needs.
+pub async fn relay_profile(relay: &str) -> Result<RelayProfile, &'static str> {
+    let url = info_url(relay)?;
+    let response = info_client()?
+        .get(url)
+        .header("Accept", "application/nostr+json")
+        .send()
+        .await
+        .map_err(|_| "discovery_unavailable")?;
+    let bytes = info_bytes(response).await?;
+    info_profile(&bytes, None)
+}
+
 async fn info_body(
-    mut response: reqwest::Response,
+    response: reqwest::Response,
     pin: Option<PublicKey>,
 ) -> Result<PublicKey, &'static str> {
+    info_signer(&info_bytes(response).await?, pin)
+}
+
+async fn info_bytes(mut response: reqwest::Response) -> Result<Vec<u8>, &'static str> {
     if response.status().is_redirection() {
         return Err("discovery_redirect_rejected");
     }
@@ -145,7 +195,7 @@ async fn info_body(
         }
         bytes.extend_from_slice(&chunk);
     }
-    info_signer(&bytes, pin)
+    Ok(bytes)
 }
 
 fn one_tag<'a>(event: &'a Event, name: &str) -> Result<Option<&'a str>, &'static str> {

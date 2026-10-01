@@ -617,6 +617,7 @@ impl Service {
         let config = Config {
             relay: Some(relay.clone()),
             identity: Some(owner_hex),
+            communities: Vec::new(),
         };
         let owner = blocking(move || keyring.owner_keys(&config)).await;
         let Ok(owner) = owner else {
@@ -724,6 +725,7 @@ impl Service {
         let config = Config {
             relay: Some(relay.clone()),
             identity: Some(owner_hex.clone()),
+            communities: Vec::new(),
         };
         let owner = blocking(move || keyring.owner_keys(&config))
             .await
@@ -781,6 +783,7 @@ impl Service {
         let config = Config {
             relay: Some(relay.clone()),
             identity: Some(owner_hex),
+            communities: Vec::new(),
         };
         let keys = blocking(move || {
             Ok::<_, &'static str>((keyring.owner_keys(&config)?, keyring.agent_keys(&identity)?))

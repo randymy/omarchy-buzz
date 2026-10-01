@@ -52,6 +52,11 @@ pub struct Request {
     pub mode: Option<String>,
     /// `set_presence` only: the panel's idle hint (input within the threshold).
     pub active: Option<bool>,
+    /// `switch_community`/`rename_community`/`leave_community`: a configured
+    /// community's relay (canonicalized and checked by the helper).
+    pub relay: Option<String>,
+    /// `rename_community` only: the new local label (sanitized by the helper).
+    pub name: Option<String>,
 }
 fn is_hash(value: &str) -> bool {
     crate::attachments::is_hash(value)
@@ -117,6 +122,10 @@ pub fn request(bytes: &[u8]) -> Result<Request, &'static str> {
             | "set_status"
             | "clear_status"
             | "set_presence"
+            | "join_community"
+            | "switch_community"
+            | "rename_community"
+            | "leave_community"
     ) {
         return Err("unsupported_request");
     }
@@ -153,8 +162,12 @@ pub fn request(bytes: &[u8]) -> Result<Request, &'static str> {
     } else if root_present {
         return Err("invalid_request");
     }
-    // Publishing requests carry a correlation UUID and the scope they were made in.
-    if matches!(r.kind.as_str(), "send_message" | "open_dm") {
+    // Publishing requests carry a correlation UUID and the scope they were made
+    // in; so do community changes that replace or leave the session's relay.
+    if matches!(
+        r.kind.as_str(),
+        "send_message" | "open_dm" | "join_community" | "switch_community" | "leave_community"
+    ) {
         let id = uuid::Uuid::parse_str(&r.id).map_err(|_| "invalid_request")?;
         if id.to_string() != r.id {
             return Err("invalid_request");
@@ -217,7 +230,28 @@ pub fn request(bytes: &[u8]) -> Result<Request, &'static str> {
     } else if r.url.is_some() {
         return Err("invalid_request");
     }
-    if r.kind == "claim_invite" {
+    if matches!(
+        r.kind.as_str(),
+        "switch_community" | "rename_community" | "leave_community"
+    ) {
+        // Shape only; the helper answers `community_unknown` for anything else.
+        let relay = r.relay.as_deref().ok_or("invalid_request")?;
+        if relay.is_empty() || relay.len() > 2048 || relay.chars().any(char::is_control) {
+            return Err("invalid_request");
+        }
+    } else if raw.get("relay").is_some() {
+        return Err("invalid_request");
+    }
+    if r.kind == "rename_community" {
+        // Shape only; the helper sanitizes and bounds it (`config::label`).
+        let name = r.name.as_deref().ok_or("invalid_request")?;
+        if name.trim().is_empty() || name.len() > 1024 || name.contains('\0') {
+            return Err("invalid_request");
+        }
+    } else if raw.get("name").is_some() {
+        return Err("invalid_request");
+    }
+    if r.kind == "claim_invite" || r.kind == "join_community" {
         // Shape only; the helper parses the invite and answers with a category.
         let input = r.input.as_deref().ok_or("invalid_request")?;
         if input.trim().is_empty() || input.len() > 4096 || input.contains('\0') {
@@ -311,7 +345,13 @@ pub fn request(bytes: &[u8]) -> Result<Request, &'static str> {
     // Room actions and mints are correlated like other publishing requests.
     if matches!(
         r.kind.as_str(),
-        "join_room" | "leave_room" | "mint_invite" | "set_status" | "clear_status" | "set_presence"
+        "join_room"
+            | "leave_room"
+            | "mint_invite"
+            | "set_status"
+            | "clear_status"
+            | "set_presence"
+            | "rename_community"
     ) {
         let id = uuid::Uuid::parse_str(&r.id).map_err(|_| "invalid_request")?;
         if id.to_string() != r.id {
@@ -428,6 +468,13 @@ pub enum Command {
     ),
     /// The last panel bridge left: publish `offline` once, then stop.
     PresenceDetach,
+    /// `communities`: join, switch, rename or leave. The generation is the
+    /// scope the request was made in (none for a rename).
+    Community(
+        crate::communities::Request,
+        Option<u64>,
+        tokio::sync::oneshot::Sender<Option<&'static str>>,
+    ),
     /// The helper is stopping: publish `offline` (best effort); the reply
     /// comes once the relay answered or nothing was sent.
     PresenceShutdown(tokio::sync::oneshot::Sender<()>),
@@ -913,6 +960,34 @@ impl Catalog {
         }
     }
 }
+/// One configured community as the panel shows it. `name` is the local label;
+/// `hint` the relay's own NIP-11 `name` (untrusted, sanitized, display only).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct CommunityEntry {
+    pub relay: String,
+    pub name: String,
+    pub host: String,
+    pub active: bool,
+    pub hint: Option<String>,
+}
+/// The configured communities (`communities`).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommunitiesView {
+    /// `ready`, `joining`, `switching`, `renaming`, `leaving` or `failed`.
+    pub state: String,
+    /// The active relay, also the entry marked `active`.
+    pub active: Option<String>,
+    /// At most `config::COMMUNITIES`, in the configured order.
+    pub entries: Vec<CommunityEntry>,
+    /// Present only in `failed`: one of `communities::CATEGORIES`.
+    pub category: Option<String>,
+    /// First setup saved a community from an invite link; the panel redeems it
+    /// once the identity exists.
+    pub pending_invite: bool,
+    /// `already_absent` after a leave the relay answered with "not a member".
+    pub notice: Option<String>,
+}
 /// Every `status.category` the helper publishes. The panel's `acceptFrame`
 /// refuses a frame with any other one, so a new entry needs a panel update.
 /// `clock_skew` is a rejected authentication with a clock offset of at least
@@ -964,6 +1039,7 @@ pub struct Status {
     pub upload: Upload,
     pub user_status: UserStatusView,
     pub presence: PresenceView,
+    pub communities: CommunitiesView,
 }
 impl Status {
     pub fn new(c: &crate::config::Config) -> Self {
@@ -991,11 +1067,12 @@ impl Status {
             upload: Upload::default(),
             user_status: UserStatusView::unavailable(None),
             presence: PresenceView::unavailable(),
+            communities: crate::communities::view(c),
         }
     }
 }
 pub fn envelope(kind: &str, id: Option<&str>, instance: &str, s: &Status) -> serde_json::Value {
-    serde_json::json!({"version":1,"type":kind,"id":id,"instanceId":instance,"generation":s.generation,"capabilities":["connection_status","room_catalog","room_history","message_send","thread_send","room_recipients","history_auto_refresh","room_activity","agent_profiles","thread_replies","thread_summaries","dm_open","older_history","live_updates","setup_assist","community_join","invite_mint","attachments","user_status","presence"],"backendRevision":crate::compatibility::BUZZ_REVISION,"status":s})
+    serde_json::json!({"version":1,"type":kind,"id":id,"instanceId":instance,"generation":s.generation,"capabilities":["connection_status","room_catalog","room_history","message_send","thread_send","room_recipients","history_auto_refresh","room_activity","agent_profiles","thread_replies","thread_summaries","dm_open","older_history","live_updates","setup_assist","community_join","invite_mint","attachments","user_status","presence","communities"],"backendRevision":crate::compatibility::BUZZ_REVISION,"status":s})
 }
 pub async fn read_line<R: tokio::io::AsyncBufRead + Unpin>(
     r: &mut R,
@@ -1331,7 +1408,8 @@ mod state_tests {
                 "invite_mint",
                 "attachments",
                 "user_status",
-                "presence"
+                "presence",
+                "communities"
             ])
         );
         assert_eq!(v["status"]["catalog"]["state"], "unavailable");

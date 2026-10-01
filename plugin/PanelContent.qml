@@ -312,6 +312,176 @@ FocusScope {
     font.family: Style.font.family
     font.pixelSize: Style.font.caption
   }
+  // Join an existing community: Desktop's field and button
+  // (`InviteRedeemForm.tsx`, add-community variant). The helper parses the text
+  // (community URL, invite link or code) and answers with a fixed category.
+  // Used in the Join and Create views and in first setup.
+  component CommunityJoinForm: ColumnLayout {
+    id: joinForm
+    property var service: null
+    property string label: "Community URL or invite link"
+    property string fieldName: "buzzCommunityInput"
+    property string buttonName: "buzzCommunityJoin"
+    property string statusName: "buzzCommunityJoinStatus"
+    property alias field: communityField
+    // Older helpers (no `communities`) take a relay address in first setup.
+    readonly property bool legacy: !!service && !service.communitiesSupported && !service.sampleMode
+    readonly property bool canSubmit: !!service && communityField.text.trim() !== ""
+      && (legacy ? service.setupAssistAvailable && service.setupState !== "sending" : service.canJoinCommunity)
+    function submit() { if (canSubmit) service.joinCommunity(communityField.text) }
+    Layout.fillWidth: true
+    spacing: Style.space(4)
+    Text {
+      Layout.fillWidth: true
+      text: joinForm.label
+      textFormat: Text.PlainText
+      elide: Text.ElideRight
+      color: Color.foreground
+      opacity: 0.6
+      font.family: Style.font.family
+      font.pixelSize: Style.font.caption
+    }
+    RowLayout {
+      Layout.fillWidth: true
+      spacing: Style.space(6)
+      Ui.TextField {
+        id: communityField
+        objectName: joinForm.fieldName
+        Layout.fillWidth: true
+        verticalPadding: Style.space(4)
+        maximumLength: 4096
+        placeholderText: "https://community.example.com or paste an invite link"
+        inputMethodHints: Qt.ImhUrlCharactersOnly | Qt.ImhNoPredictiveText
+        onAccepted: joinForm.submit()
+      }
+      Ui.Button {
+        objectName: joinForm.buttonName
+        text: "Join community"
+        tooltipText: "Join with this community URL or invite link"
+        focusable: true
+        enabled: joinForm.canSubmit
+        opacity: enabled ? 1 : 0.5
+        onClicked: joinForm.submit()
+      }
+    }
+    Text {
+      objectName: joinForm.statusName
+      Layout.fillWidth: true
+      visible: text !== ""
+      // An older helper's first-setup outcome is shown by buzzSetupStatus.
+      text: !joinForm.service || joinForm.legacy ? ""
+        : joinForm.service.communityRequestKind === "join" ? joinForm.service.communityLabel : ""
+      textFormat: Text.PlainText
+      wrapMode: Text.WordWrap
+      color: Color.foreground
+      font.family: Style.font.family
+      font.pixelSize: Style.font.caption
+    }
+  }
+  // Create a new community: Desktop creates it on Builderlab, which a
+  // third-party client cannot call (DESIGN.md). It happens at buzz.xyz in the
+  // browser; the new community's URL or invite link then joins as usual.
+  component CommunityCreateSteps: ColumnLayout {
+    id: createSteps
+    property var service: null
+    property var opener: null
+    property string prefix: "buzzCommunityCreate"
+    Layout.fillWidth: true
+    spacing: Style.space(6)
+    Text {
+      objectName: createSteps.prefix + "Description"
+      Layout.fillWidth: true
+      text: createSteps.service ? createSteps.service.createCommunityDescription : ""
+      textFormat: Text.PlainText
+      wrapMode: Text.WordWrap
+      color: Color.foreground
+      opacity: 0.7
+      font.family: Style.font.family
+      font.pixelSize: Style.font.body
+    }
+    Ui.Button {
+      objectName: createSteps.prefix + "Open"
+      text: "Open buzz.xyz"
+      tooltipText: "Open buzz.xyz in your browser to create a community"
+      focusable: true
+      // Fixed upstream URL, opened only by this explicit user action.
+      onClicked: if (typeof createSteps.opener === "function") createSteps.opener("https://buzz.xyz"); else Qt.openUrlExternally("https://buzz.xyz")
+    }
+    CommunityJoinForm {
+      service: createSteps.service
+      label: "Paste your new community's URL or invite link"
+      fieldName: createSteps.prefix + "Input"
+      buttonName: createSteps.prefix + "Join"
+      statusName: createSteps.prefix + "Status"
+    }
+  }
+  // An invite's terms after joining a community that has them (`setup.policy`).
+  component CommunityTerms: ColumnLayout {
+    id: terms
+    property var service: null
+    readonly property var policy: service && service.policyShown ? service.joinSetup.joinPolicy : null
+    Layout.fillWidth: true
+    spacing: Style.space(4)
+    visible: policy !== null
+    Text {
+      Layout.fillWidth: true
+      text: "Joining means accepting this community's terms (version " + (terms.policy ? terms.policy.version : "") + "):"
+      textFormat: Text.PlainText
+      wrapMode: Text.WordWrap
+      color: Color.foreground
+      opacity: 0.7
+      font.family: Style.font.family
+      font.pixelSize: Style.font.caption
+    }
+    Controls.ScrollView {
+      Layout.fillWidth: true
+      Layout.preferredHeight: Math.min(Style.space(160), termsText.implicitHeight + Style.space(8))
+      clip: true
+      contentWidth: availableWidth
+      Text {
+        id: termsText
+        objectName: "buzzCommunityTermsText"
+        width: parent.width
+        text: terms.policy ? (terms.policy.text || "(No text was provided.)") : ""
+        textFormat: Text.PlainText
+        wrapMode: Text.WordWrap
+        color: Color.foreground
+        font.family: Style.font.family
+        font.pixelSize: Style.font.caption
+      }
+    }
+    Text {
+      Layout.fillWidth: true
+      visible: !!terms.policy && terms.policy.ageRequired
+      text: "Accepting also confirms you meet the community's minimum age."
+      textFormat: Text.PlainText
+      wrapMode: Text.WordWrap
+      color: Color.foreground
+      opacity: 0.7
+      font.family: Style.font.family
+      font.pixelSize: Style.font.caption
+    }
+    Ui.Button {
+      objectName: "buzzCommunityAccept"
+      text: "Accept and join"
+      tooltipText: "Accept these terms and join the community"
+      focusable: true
+      enabled: !!terms.service && terms.service.canAcceptInvite
+      opacity: enabled ? 1 : 0.5
+      onClicked: terms.service.acceptInvite()
+    }
+    Text {
+      objectName: "buzzCommunityTermsStatus"
+      Layout.fillWidth: true
+      visible: text !== ""
+      text: terms.service ? terms.service.inviteLabel : ""
+      textFormat: Text.PlainText
+      wrapMode: Text.WordWrap
+      color: Color.foreground
+      font.family: Style.font.family
+      font.pixelSize: Style.font.caption
+    }
+  }
   property bool presentationSwitchEnabled: false
   property bool windowMode: true
   property alias recipientPickerExpanded: roomComposer.pickerExpanded
@@ -331,6 +501,7 @@ FocusScope {
     if (!agentsVisible || (id !== "" && !agentService.agent(id))) return false
     settingsOpen = false
     statusOpen = false
+    communityView = ""
     agentEditorId = id
     agentEditorOpen = true
     agentEditor.load()
@@ -378,6 +549,46 @@ FocusScope {
   // Presence: the menu row and your own dot (`presence`).
   readonly property bool presenceEntryShown: !!service && (service.presenceSupported || service.sampleMode)
   readonly property string myPresenceLabel: service && (accountState === "online" || accountState === "sample") ? service.presenceLabel(service.myPresence) : ""
+  // Communities: Join an existing community and Create a new community, opened
+  // from the account menu like Desktop's dialog. A join that succeeded returns
+  // to the rooms (after accepting the community's terms, if it has them).
+  property string communityView: ""
+  property bool communityAwaiting: false
+  // Settings: the community being renamed, and the one whose leave is armed.
+  property string renamingRelay: ""
+  property string leavingRelay: ""
+  // Tests may set linkOpener to record buzz.xyz instead of opening a browser.
+  property var linkOpener: null
+  function openCommunityView(kind) {
+    if (!service || (kind !== "join" && kind !== "create")) return false
+    closeAccountMenu()
+    closeAgentEditor()
+    settingsOpen = false
+    statusOpen = false
+    statusAwaiting = false
+    communityAwaiting = false
+    service.resetCommunityRequest()
+    communityView = kind
+    Qt.callLater(function() { headerBack.forceActiveFocus() })
+    return true
+  }
+  function switchCommunity(relay) {
+    closeAccountMenu()
+    return !!service && service.switchCommunity(relay)
+  }
+  Connections {
+    target: root.service
+    function onCommunityRequestDone(kind, ok) {
+      if (kind === "join" && root.communityView !== "") root.communityAwaiting = ok && root.service.policyShown
+      if (kind === "join" && ok && root.communityView !== "" && !root.service.policyShown) root.backToRooms()
+      if (kind === "rename" && ok) root.renamingRelay = ""
+      if (kind === "leave") root.leavingRelay = ""
+    }
+    // The terms were accepted and the claim answered: back to the rooms.
+    function onJoinSetupChanged() {
+      if (root.communityView !== "" && root.communityAwaiting && root.service.joinSetup.state === "joined") root.backToRooms()
+    }
+  }
   // Update your status: a compact view like Settings, opened from the account
   // menu. The helper signs and publishes; the panel sends text, emoji and hours.
   property bool statusOpen: false
@@ -400,6 +611,7 @@ FocusScope {
     closeAccountMenu()
     closeAgentEditor()
     settingsOpen = false
+    communityView = ""
     var mine = service.myStatus
     statusField.text = mine ? mine.text : ""
     statusEmojiField.text = mine && mine.emoji ? mine.emoji : ""
@@ -440,6 +652,7 @@ FocusScope {
     closeAccountMenu()
     closeAgentEditor()
     statusOpen = false
+    communityView = ""
     settingsOpen = true
     Qt.callLater(function() { headerBack.forceActiveFocus() })
     return true
@@ -453,11 +666,14 @@ FocusScope {
   // the header then shows "← Back to rooms" and the view's title in place of
   // the Buzz title and room name.
   readonly property string subView: settingsOpen ? "settings" : statusOpen ? "status"
+    : communityView === "join" ? "join-community" : communityView === "create" ? "create-community"
     : agentEditorShown ? (agentEditorId === "" ? "new-agent" : "agent") : ""
   readonly property bool subViewOpen: subView !== ""
   readonly property string subViewTitle: {
     if (subView === "settings") return "Settings"
     if (subView === "status") return "Update your status"
+    if (subView === "join-community") return "Join an existing community"
+    if (subView === "create-community") return "Create a new community"
     if (subView === "new-agent") return "New agent"
     if (subView === "agent") {
       var entry = agentService ? agentService.agent(agentEditorId) : null
@@ -478,6 +694,8 @@ FocusScope {
     settingsOpen = false
     statusOpen = false
     statusAwaiting = false
+    communityView = ""
+    communityAwaiting = false
     closeAgentEditor()
     focusRooms()
     return true
@@ -545,7 +763,7 @@ FocusScope {
     var others = participants.filter(function(key) { return typeof key === "string" && key !== root.service.identity })
     return others.length ? others[0] : ""
   }
-  readonly property bool threadOpen: !agentEditorShown && !settingsOpen && !statusOpen && !!service && service.threadRootId !== "" && service.threadRoot !== null
+  readonly property bool threadOpen: !agentEditorShown && !settingsOpen && !statusOpen && communityView === "" && !!service && service.threadRootId !== "" && service.threadRoot !== null
   // An open thread sits beside the room. Narrow windows give up the room list
   // first, then the room itself, so the thread always has a readable column.
   readonly property bool showRooms: !threadOpen || width >= Style.space(1100)
@@ -1296,6 +1514,153 @@ FocusScope {
                 : "Available once this device has a Buzz identity and the agent service is reachable."
             }
 
+            // Communities: rename (a local label) and Leave community, like
+            // Desktop's account menu; the last community cannot be left.
+            SettingsCaption { visible: communitySettings.visible; text: "Communities" }
+            ColumnLayout {
+              id: communitySettings
+              objectName: "buzzCommunitySettings"
+              visible: !!root.service && root.service.communitiesShown
+              Layout.fillWidth: true
+              spacing: Style.space(4)
+              Repeater {
+                model: root.service ? root.service.communityEntries : []
+                delegate: ColumnLayout {
+                  id: communityRow
+                  required property var modelData
+                  required property int index
+                  objectName: "buzzCommunityRow"
+                  readonly property string relay: modelData.relay
+                  readonly property bool renaming: root.renamingRelay === modelData.relay
+                  readonly property bool leaving: root.leavingRelay === modelData.relay
+                  Layout.fillWidth: true
+                  spacing: Style.space(2)
+                  RowLayout {
+                    Layout.fillWidth: true
+                    spacing: Style.space(6)
+                    visible: !communityRow.renaming
+                    ColumnLayout {
+                      Layout.fillWidth: true
+                      spacing: 0
+                      Text {
+                        objectName: "buzzCommunityRowName"
+                        Layout.fillWidth: true
+                        text: communityRow.modelData.name + (communityRow.modelData.active ? " · current" : "")
+                        textFormat: Text.PlainText
+                        elide: Text.ElideRight
+                        color: Color.foreground
+                        font.family: Style.font.family
+                        font.pixelSize: Style.font.caption
+                        font.bold: communityRow.modelData.active
+                      }
+                      Text {
+                        objectName: "buzzCommunityRowHost"
+                        Layout.fillWidth: true
+                        text: communityRow.modelData.host + (communityRow.modelData.hint && communityRow.modelData.hint !== communityRow.modelData.name
+                          ? " · calls itself " + communityRow.modelData.hint : "")
+                        textFormat: Text.PlainText
+                        elide: Text.ElideMiddle
+                        color: Color.foreground
+                        opacity: 0.6
+                        font.family: Style.font.family
+                        font.pixelSize: Style.font.caption
+                      }
+                    }
+                    Ui.Button {
+                      objectName: "buzzCommunityRename"
+                      text: "Rename"
+                      tooltipText: "Change the name this device shows for this community"
+                      fontSize: Style.font.caption
+                      focusable: true
+                      enabled: !!root.service && root.service.communitiesAvailable && !root.service.communityBusy
+                      opacity: enabled ? 1 : 0.5
+                      onClicked: {
+                        root.leavingRelay = ""
+                        root.service.resetCommunityRequest()
+                        root.renamingRelay = communityRow.relay
+                        renameField.text = communityRow.modelData.name
+                        renameField.forceActiveFocus()
+                      }
+                    }
+                    Ui.Button {
+                      objectName: "buzzCommunityLeave"
+                      text: communityRow.leaving ? "Confirm leave" : "Leave community"
+                      tooltipText: root.service && root.service.communityEntries.length <= 1
+                        ? "You can't leave your only community" : "Leave this community; your identity stays on this device"
+                      fontSize: Style.font.caption
+                      focusable: true
+                      selected: communityRow.leaving
+                      enabled: !!root.service && root.service.canLeaveCommunity
+                      opacity: enabled ? 1 : 0.5
+                      onClicked: {
+                        if (!communityRow.leaving) { root.service.resetCommunityRequest(); root.renamingRelay = ""; root.leavingRelay = communityRow.relay; return }
+                        if (!root.service.leaveCommunity(communityRow.relay)) root.leavingRelay = ""
+                      }
+                    }
+                    Ui.Button {
+                      objectName: "buzzCommunityLeaveCancel"
+                      visible: communityRow.leaving && !(root.service && root.service.communityBusy)
+                      text: "Cancel"
+                      fontSize: Style.font.caption
+                      focusable: true
+                      onClicked: root.leavingRelay = ""
+                    }
+                  }
+                  RowLayout {
+                    Layout.fillWidth: true
+                    spacing: Style.space(6)
+                    visible: communityRow.renaming
+                    Ui.TextField {
+                      id: renameField
+                      objectName: "buzzCommunityRenameField"
+                      Layout.fillWidth: true
+                      verticalPadding: Style.space(4)
+                      maximumLength: 64
+                      placeholderText: "Community name"
+                      onAccepted: root.service.renameCommunity(communityRow.relay, text)
+                      Keys.onEscapePressed: function(event) { event.accepted = true; root.renamingRelay = "" }
+                    }
+                    Ui.Button {
+                      objectName: "buzzCommunityRenameSave"
+                      text: "Save"
+                      fontSize: Style.font.caption
+                      focusable: true
+                      enabled: renameField.text.trim() !== "" && !!root.service && !root.service.communityBusy
+                      opacity: enabled ? 1 : 0.5
+                      onClicked: root.service.renameCommunity(communityRow.relay, renameField.text)
+                    }
+                    Ui.Button {
+                      objectName: "buzzCommunityRenameCancel"
+                      text: "Cancel"
+                      fontSize: Style.font.caption
+                      focusable: true
+                      onClicked: root.renamingRelay = ""
+                    }
+                  }
+                  SettingsNote {
+                    objectName: "buzzCommunityLeaveNote"
+                    visible: communityRow.leaving
+                    text: "Leaving tells " + communityRow.modelData.host + " to end your membership. Your identity stays on this device, and you can join again with a new invite."
+                  }
+                }
+              }
+              SettingsNote {
+                objectName: "buzzCommunityLastNote"
+                visible: !!root.service && root.service.communityEntries.length === 1
+                text: "You can't leave your only community. Join another one first."
+              }
+              SettingsNote {
+                visible: !!root.service && root.service.sampleMode
+                text: "Not available with sample data."
+              }
+              SettingsNote {
+                objectName: "buzzCommunitySettingsStatus"
+                visible: text !== ""
+                text: !root.service ? "" : root.service.communityNoticeLabel !== "" ? root.service.communityNoticeLabel
+                  : ["rename", "leave"].indexOf(root.service.communityRequestKind) !== -1 ? root.service.communityLabel : ""
+              }
+            }
+
             SettingsCaption { visible: inviteSection.visible; text: "Invite people" }
             ColumnLayout {
               id: inviteSection
@@ -1635,8 +2000,57 @@ FocusScope {
         Item { Layout.fillHeight: true }
       }
 
+      // Join an existing community / Create a new community (account menu).
+      // Back to rooms and the title are in the header (buzzHeaderBack).
       ColumnLayout {
-        visible: root.showTimeline && !root.agentEditorShown && !root.settingsOpen && !root.statusOpen
+        id: communityJoinView
+        objectName: "buzzCommunityJoinView"
+        visible: root.communityView === "join"
+        Layout.fillWidth: true
+        Layout.fillHeight: true
+        Layout.preferredWidth: Style.space(400)
+        spacing: Style.space(8)
+        SettingsNote {
+          objectName: "buzzCommunityJoinDescription"
+          text: root.service ? root.service.joinCommunityDescription : ""
+        }
+        SettingsNote {
+          visible: !!root.service && root.service.sampleMode
+          text: "Not available with sample data."
+        }
+        CommunityJoinForm {
+          id: communityJoinForm
+          service: root.service
+          visible: !root.communityAwaiting
+        }
+        CommunityTerms {
+          service: root.service
+          visible: root.communityAwaiting && policy !== null
+        }
+        Item { Layout.fillHeight: true }
+      }
+      ColumnLayout {
+        id: communityCreateView
+        objectName: "buzzCommunityCreateView"
+        visible: root.communityView === "create"
+        Layout.fillWidth: true
+        Layout.fillHeight: true
+        Layout.preferredWidth: Style.space(400)
+        spacing: Style.space(8)
+        CommunityCreateSteps {
+          service: root.service
+          opener: root.linkOpener
+          visible: !root.communityAwaiting
+        }
+        CommunityTerms {
+          service: root.service
+          visible: root.communityAwaiting && policy !== null
+        }
+        Item { Layout.fillHeight: true }
+      }
+
+      ColumnLayout {
+        visible: root.showTimeline && !root.agentEditorShown && !root.settingsOpen && !root.statusOpen && root.communityView === ""
         Layout.fillWidth: true
         Layout.fillHeight: true
         Layout.preferredWidth: Style.space(400)
@@ -1719,27 +2133,27 @@ FocusScope {
           visible: !root.connected
           Layout.fillWidth: true
           spacing: Style.space(8)
+          // First setup in Desktop's order: Join an existing community, or
+          // Create a new community (at buzz.xyz), with the same components as
+          // the views opened from the account menu.
           RowLayout {
             spacing: Style.space(8)
             Ui.Button {
-              text: "Buzz hosted"
-              selected: root.service && root.service.setupProvider === "hosted"
+              objectName: "buzzSetupJoinOption"
+              text: "Join an existing community"
+              tooltipText: "Use a community URL or invite link"
+              selected: !!root.service && root.service.setupProvider === "join"
               focusable: true
-              onClicked: if (root.service) root.service.chooseSetupProvider("hosted")
+              onClicked: if (root.service) root.service.chooseSetupProvider("join")
             }
             Ui.Button {
-              text: "Custom relay"
-              selected: root.service && root.service.setupProvider === "custom"
+              objectName: "buzzSetupCreateOption"
+              text: "Create a new community"
+              tooltipText: "Claim a Buzz address for your team at buzz.xyz"
+              selected: !!root.service && root.service.setupProvider === "create"
               focusable: true
-              onClicked: if (root.service) root.service.chooseSetupProvider("custom")
+              onClicked: if (root.service) root.service.chooseSetupProvider("create")
             }
-          }
-          Ui.Button {
-            visible: root.service && root.service.setupProvider === "hosted"
-            text: "Open Buzz hosted setup"
-            focusable: true
-            // Fixed upstream URL, opened only by this explicit user action.
-            onClicked: Qt.openUrlExternally("https://buzz.xyz")
           }
           Text {
             objectName: "buzzSetupInstructions"
@@ -1752,35 +2166,37 @@ FocusScope {
             font.family: Style.font.family
             font.pixelSize: Style.font.body
           }
-          // Setup assist: only with a helper that offers `setup_assist` and is
-          // not authenticated. Older helpers keep the terminal instructions.
-          RowLayout {
+          // Only with a helper that offers `setup_assist` and is not
+          // authenticated; older helpers keep the terminal instructions.
+          ColumnLayout {
+            objectName: "buzzSetupJoin"
             Layout.fillWidth: true
-            spacing: Style.space(8)
-            visible: !!root.service && root.service.setupAssistAvailable
-            Ui.TextField {
-              id: relayField
-              objectName: "buzzSetupRelayUrl"
-              Layout.fillWidth: true
-              verticalPadding: Style.space(4)
-              maximumLength: 2048
-              placeholderText: "wss://your-community.example"
-              inputMethodHints: Qt.ImhUrlCharactersOnly | Qt.ImhNoPredictiveText
-              onAccepted: if (root.service) root.service.setupRelay(text)
-              Component.onCompleted: if (root.service && root.service.relay) text = root.service.relay
+            spacing: Style.space(4)
+            visible: !!root.service && root.service.setupAssistAvailable && root.service.setupProvider === "join"
+            SettingsNote {
+              objectName: "buzzSetupJoinDescription"
+              text: root.service ? root.service.joinCommunityDescription : ""
             }
-            Ui.Button {
-              objectName: "buzzSetupRelay"
-              text: "Use this relay"
-              tooltipText: "Save this relay address in the helper"
-              focusable: true
-              onClicked: if (root.service) root.service.setupRelay(relayField.text)
+            CommunityJoinForm {
+              id: setupJoinForm
+              service: root.service
+              fieldName: "buzzSetupRelayUrl"
+              buttonName: "buzzSetupRelay"
+              statusName: "buzzSetupJoinStatus"
+              Component.onCompleted: if (root.service && root.service.relay) field.text = root.service.relay
             }
+          }
+          CommunityCreateSteps {
+            objectName: "buzzSetupCreate"
+            visible: !!root.service && root.service.setupProvider === "create"
+            service: root.service
+            opener: root.linkOpener
+            prefix: "buzzSetupCreate"
           }
           Connections {
             target: root.service
             // Show the helper's saved relay once, without overwriting typing.
-            function onRelayChanged() { if (root.service.relay && !relayField.activeFocus) relayField.text = root.service.relay }
+            function onRelayChanged() { if (root.service.relay && !setupJoinForm.field.activeFocus) setupJoinForm.field.text = root.service.relay }
           }
           ColumnLayout {
             Layout.fillWidth: true
@@ -2164,58 +2580,122 @@ FocusScope {
           }
         }
         Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: Util.alpha(Color.foreground, 0.14) }
-        // One community per helper for now; the row names it without switching.
-        Item {
-          objectName: "buzzAccountCommunity"
+        // Communities, like Desktop's account menu: the current one, the others
+        // to switch to, then Join an existing community and Create a new one.
+        ColumnLayout {
+          objectName: "buzzAccountCommunities"
           Layout.fillWidth: true
-          implicitHeight: communityRow.implicitHeight
-          readonly property string tooltipText: "Switching communities is not available yet"
-          Controls.ToolTip.visible: communityHover.containsMouse
-          Controls.ToolTip.delay: 400
-          Controls.ToolTip.text: tooltipText
-          MouseArea { id: communityHover; anchors.fill: parent; hoverEnabled: true; acceptedButtons: Qt.NoButton }
-          RowLayout {
-            id: communityRow
-            anchors.fill: parent
-            spacing: Style.space(6)
-            Text {
-              text: "⬢"
-              textFormat: Text.PlainText
-              color: Color.accent
-              font.family: Style.font.family
-              font.pixelSize: Style.font.caption
+          spacing: Style.space(2)
+          Text {
+            Layout.fillWidth: true
+            text: "Communities"
+            textFormat: Text.PlainText
+            color: Color.foreground
+            opacity: 0.6
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+          }
+          Item {
+            objectName: "buzzAccountCommunity"
+            Layout.fillWidth: true
+            implicitHeight: menuCommunityRow.implicitHeight
+            readonly property string tooltipText: root.service && root.service.activeCommunity
+              ? root.service.activeCommunity.relay : root.service && root.service.relay ? root.service.relay : "No community yet"
+            Controls.ToolTip.visible: communityHover.containsMouse
+            Controls.ToolTip.delay: 400
+            Controls.ToolTip.text: tooltipText
+            MouseArea { id: communityHover; anchors.fill: parent; hoverEnabled: true; acceptedButtons: Qt.NoButton }
+            RowLayout {
+              id: menuCommunityRow
+              anchors.fill: parent
+              spacing: Style.space(6)
+              Text {
+                text: "⬢"
+                textFormat: Text.PlainText
+                color: Color.accent
+                font.family: Style.font.family
+                font.pixelSize: Style.font.caption
+              }
+              ColumnLayout {
+                Layout.fillWidth: true
+                spacing: 0
+                Text {
+                  objectName: "buzzAccountCommunityName"
+                  Layout.fillWidth: true
+                  text: root.service && root.service.activeCommunity ? "✓ " + root.service.activeCommunity.name : "Community"
+                  textFormat: Text.PlainText
+                  elide: Text.ElideRight
+                  color: Color.foreground
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.caption
+                  font.bold: !!root.service && !!root.service.activeCommunity
+                }
+                Text {
+                  objectName: "buzzAccountCommunityHost"
+                  Layout.fillWidth: true
+                  text: root.service && root.service.activeCommunity ? root.service.activeCommunity.host
+                    : root.communityHost !== "" ? root.communityHost : root.service && root.service.sampleMode ? root.service.viewModel.community : "No relay"
+                  textFormat: Text.PlainText
+                  elide: Text.ElideMiddle
+                  color: Color.foreground
+                  opacity: 0.6
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.caption
+                }
+              }
             }
-            ColumnLayout {
+          }
+          Repeater {
+            model: root.service ? root.service.otherCommunities : []
+            Ui.Button {
+              required property var modelData
+              required property int index
+              objectName: "buzzCommunitySwitch"
+              readonly property string relay: modelData.relay
               Layout.fillWidth: true
-              spacing: 0
-              Text {
-                Layout.fillWidth: true
-                text: "Community"
-                textFormat: Text.PlainText
-                color: Color.foreground
-                opacity: 0.6
-                font.family: Style.font.family
-                font.pixelSize: Style.font.caption
-              }
-              Text {
-                objectName: "buzzAccountCommunityHost"
-                Layout.fillWidth: true
-                text: root.communityHost !== "" ? root.communityHost : root.service && root.service.sampleMode ? root.service.viewModel.community : "No relay"
-                textFormat: Text.PlainText
-                elide: Text.ElideMiddle
-                color: Color.foreground
-                font.family: Style.font.family
-                font.pixelSize: Style.font.caption
-              }
+              clip: true
+              text: modelData.name + " · " + modelData.host
+              tooltipText: "Switch to this community; your identity stays the same"
+              fontSize: Style.font.caption
+              leftAlign: true
+              focusable: true
+              enabled: !!root.service && root.service.canSwitchCommunity
+              opacity: enabled ? 1 : 0.5
+              onClicked: root.switchCommunity(relay)
             }
-            Text {
-              text: "›"
-              textFormat: Text.PlainText
-              color: Color.foreground
-              opacity: 0.4
-              font.family: Style.font.family
-              font.pixelSize: Style.font.body
-            }
+          }
+          Text {
+            objectName: "buzzAccountCommunityStatus"
+            Layout.fillWidth: true
+            visible: text !== ""
+            text: root.service && root.service.communityRequestKind === "switch" ? root.service.communityLabel : ""
+            textFormat: Text.PlainText
+            wrapMode: Text.WordWrap
+            color: Color.foreground
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+          }
+          Ui.Button {
+            objectName: "buzzAccountJoinCommunity"
+            visible: !!root.service && root.service.communitiesShown
+            Layout.fillWidth: true
+            text: "Join an existing community…"
+            tooltipText: "Use a community URL or invite link"
+            fontSize: Style.font.caption
+            leftAlign: true
+            focusable: true
+            onClicked: root.openCommunityView("join")
+          }
+          Ui.Button {
+            objectName: "buzzAccountCreateCommunity"
+            visible: !!root.service && root.service.communitiesShown
+            Layout.fillWidth: true
+            text: "Create a new community…"
+            tooltipText: "Claim a Buzz address for your team at buzz.xyz"
+            fontSize: Style.font.caption
+            leftAlign: true
+            focusable: true
+            onClicked: root.openCommunityView("create")
           }
         }
         Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: Util.alpha(Color.foreground, 0.14) }

@@ -160,6 +160,7 @@ async fn real_relay_messaging_conformance() {
         let mut status = protocol::Status::new(&config::Config {
             relay: Some(relay.clone()),
             identity: Some(user.public_key().to_hex()),
+            communities: Vec::new(),
         });
         status.connection = "authenticated".into();
         status.catalog.rooms = discovered

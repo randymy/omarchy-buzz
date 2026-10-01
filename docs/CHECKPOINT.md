@@ -3078,3 +3078,115 @@ was open, with the in-page "Back to rooms" link too easy to miss.
 - Draft `v0.0.22` deleted; draft `v0.0.24` cut from the same commit
   (release run 36821877929, ten assets), unpublished until the maintainer
   publishes it.
+
+## Communities: join, switch, leave (`communities`) — October 1
+
+Branch `communities` (not merged or installed; no real relay contacted,
+nothing real published, no keyring touched by tests). Design brief:
+[COMMUNITY_MAP.md](COMMUNITY_MAP.md) §5–§6; upstream references are to the
+pinned Buzz `781d3951` (`leaveCommunity.ts`, `AddCommunityDialog.tsx`,
+`InviteRedeemForm.tsx`, `CommunitySwitcher.tsx`, `communityStorage.ts`).
+Desktop's order: **Join an existing community** first, then **Create a new
+community**. One identity for every community, as Desktop.
+
+- Configuration (`helper/src/config.rs`), format 2:
+  `version = 2`, `identity = "<hex>"`, `activeRelay = "<relay>"`, then
+  `[[communities]]` tables `{relay, name, joinedAt}` (at most 16, canonical
+  relays, unique, labels sanitized to 64 bytes, the active one listed;
+  anything else is `invalid_config`, fail closed, nothing rewritten). A
+  format-1 file (`relay`, `identity`) is migrated in place on first load: its
+  bytes are copied to `config.v1.toml` (0600, a timestamped name if a
+  different backup exists), then the format-2 file replaces it atomically;
+  if that cannot be written the migrated view is still used and the old file
+  stays. `Config` keeps `relay` (the active one) and `identity` for every
+  existing caller. `omarchy-buzz setup relay` keeps its old meaning (another
+  relay clears the identity and the list). Secret Service entries are
+  unchanged (`relay|identity` per community); the secret is stored under a
+  community's account before the configuration names it, and no entry is ever
+  deleted (leaving keeps it).
+- Requests (capability `communities`, 21st): `join_community {id: UUID,
+  input, generation, instanceId}`, `switch_community {id: UUID, relay,
+  generation, instanceId}`, `rename_community {id: UUID, relay, name}`,
+  `leave_community {id: UUID, relay, generation, instanceId}`. Refused before
+  the actor with `join_busy` for another scope, another community request,
+  a send/DM open/upload/invite still running or while connecting; a leave
+  without an identity is `relay_unavailable`. Answered with a `status` frame
+  or a fixed category: `join_invalid`, `join_rejected`, `join_rate_limited`,
+  `join_busy`, `join_last`, `join_full`, `policy_required`,
+  `relay_unavailable`, `identity_unavailable`, `config_unavailable`,
+  `community_unknown`, `name_invalid`, `leave_rejected`, `leave_owner`.
+- Status: `communities: {state: ready|joining|switching|renaming|leaving|
+  failed, active, entries: [{relay, name, host, active, hint}], category,
+  pendingInvite, notice}`. `hint` is the relay's NIP-11 `name` (sanitized and
+  bounded like a profile name, cached per helper process, never a label);
+  `notice` is `already_absent` after a leave the relay answered "not a relay
+  member"; `pendingInvite` marks a first-setup join from an invite link.
+- Join (`helper/src/communities.rs`): the input is an invite link
+  (`https://<relay>/invite/<code>`, `buzz://join?relay=…&code=…`, parsed by
+  `join::parse_invite`), a community URL (`wss://`, `https://` → `wss://`,
+  `http://` → `ws://` for this computer only, a bare host → `wss://`), or a
+  bare code for the active community; every relay goes through
+  `config::canonical_relay`. One join at a time, at least 5 s apart. An
+  already listed community without an invite is a switch. Otherwise the
+  relay's NIP-11 is read (its signer may not be this identity); an invite
+  reads the join policy and, without one, makes the NIP-98 claim with the same
+  key against that relay (`join::check_relay` is unchanged: it still binds
+  `claim_invite` to the active relay; joining another relay goes through this
+  path). With terms, the community is added and switched to and
+  `status.setup` shows the policy for `accept_invite` (**Accept and join**). A
+  URL without an invite is added only if the relay accepts this identity's
+  NIP-42 sign-in (a refusal is `join_rejected`). With no identity yet (first
+  setup) only the relay is checked and saved. Every change of the active
+  relay goes through `auth::apply_loaded_config`: new generation, full status
+  reset, reconnect.
+- Leave: the last community is refused (`join_last`). If the relay's NIP-11
+  lists NIP 43, Desktop's event is published on its own authenticated
+  connection: kind 28936, empty content, tags `[["-"]]`, signed by the
+  identity (`nostr::EventBuilder`, `Tag::protected()`; no pinned buzz-sdk
+  builder exists), resolved by the `OK` for that id: accepted → removed;
+  "not a relay member" (in the `OK` or the NIP-42 refusal) → removed with the
+  notice; "owner cannot leave" → `leave_owner`; anything else
+  `leave_rejected`; no answer `relay_unavailable` (kept; leaving again shows
+  whether it applied). A relay without NIP 43 is removed without a request.
+  Leaving the active community switches to the next one listed (else the one
+  before).
+- Panel: the account menu's Communities block (current community with host,
+  the others to switch to, **Join an existing community…**, **Create a new
+  community…**) sits above Send feedback / Update your status. **Join an
+  existing community** (header `← Back to rooms · Join an existing community`)
+  uses Desktop's copy: "Use the community URL or invite link you received.",
+  "Community URL or invite link", placeholder "https://community.example.com
+  or paste an invite link", **Join community** disabled until text is
+  entered, a joining line and fixed failure sentences (`join_invalid` is
+  Desktop's "Please enter a valid invite link or community URL",
+  `join_rejected` its "Not a member yet…"). Success returns to the rooms.
+  **Create a new community** says in two sentences that communities are
+  created at buzz.xyz in the browser and this panel cannot create one, offers
+  **Open buzz.xyz**, then "Paste your new community's URL or invite link"
+  into the same join. Settings → **Communities** lists them with inline
+  **Rename** and **Leave community** (second click **Confirm leave**),
+  disabled with a note for the only one. First setup offers the same Join /
+  Create choice (Join selected) with the same components; an invite link
+  entered before the identity exists is redeemed right after **Create a new
+  identity on this device**. Older helpers without `communities` keep the
+  relay-only first setup. Sample mode has two fixture communities (switching
+  is presentation only). `view.json` is now version 2, `{rooms: {"relay|
+  identity": roomId}}` for up to 16 communities (version 1 still read), so
+  each community keeps its last room across switches.
+- Evidence (synthetic only): Rust `config::tests` (migration with backup,
+  idempotence, unwritable directory, different existing backup, 14 damaged
+  files), `communities::tests` (every input shape and 24 hostile ones, NIP-11
+  name sanitization, invite claim to a new loopback relay with the same
+  identity and NIP-98 proof, refused claims and a relay-signer key adding
+  nothing, terms left for acceptance, URL join only after NIP-42 acceptance,
+  first setup, rate limit, switch, rename bounds, leave event shape and every
+  leave outcome, last-community refusal, generation bump with old state
+  cleared, request shapes); `tests/helper_smoke.py` (unconfigured refusals,
+  format-2 file); `scripts/preview --communities` (`tests/Communities.qml` +
+  `tests/communities_fixture.py`, also checking `view.json`).
+- Not verified: anything against a real relay (claim on a second relay, the
+  NIP-42 refusal text of a deployed relay, NIP-43 leave on the deployed
+  relay), migration of the installed configuration, Buzz Desktop seeing the
+  same membership, and the rendered menu on the installed shell. A panel
+  older than this one refuses a helper announcing 21 capabilities: update
+  both together.

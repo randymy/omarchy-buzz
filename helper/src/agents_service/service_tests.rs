@@ -36,6 +36,7 @@ fn fixture(relay_url: &str) -> Fixture {
     let config = Config {
         relay: Some(relay_url.into()),
         identity: Some(owner.public_key().to_hex()),
+        communities: Vec::new(),
     };
     let service = Service::open(
         home.paths.clone(),
@@ -768,6 +769,7 @@ async fn delete_skips_memberships_of_a_previous_owner() {
     let config = Config {
         relay: Some(relay.url.clone()),
         identity: Some(owner.public_key().to_hex()),
+        communities: Vec::new(),
     };
     let service = Service::open(
         f.home.paths.clone(),

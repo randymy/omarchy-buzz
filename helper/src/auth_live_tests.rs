@@ -257,6 +257,7 @@ impl Relay {
         let config = config::Config {
             relay: Some(origin.clone()),
             identity: Some(public.to_hex()),
+            communities: Vec::new(),
         };
         let (tx, status) = watch::channel(Status::new(&config));
         let (commands, mut command_rx) = mpsc::channel(8);

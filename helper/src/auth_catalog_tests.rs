@@ -121,7 +121,7 @@ async fn authenticated_catalog_is_partial_and_reauthentication_clears_it() {
             timeout(Duration::from_secs(5),ws_done_wait).await.unwrap().unwrap();
             drop(websocket);
         }));
-        let config=config::Config{relay:Some(origin.clone()),identity:Some(public.to_hex())};
+        let config=config::Config{relay:Some(origin.clone()),identity:Some(public.to_hex()),communities:Vec::new()};
         let (tx,mut status)=watch::channel(Status::new(&config));
         let (send_retry,mut retry)=mpsc::channel(1);
         let mut connection=connect_identity(&origin,&user).await.unwrap();
@@ -568,6 +568,7 @@ async fn recheck_fixture_every(first: Option<Discovery>, catalog: Duration) -> R
     let config = config::Config {
         relay: Some(origin.clone()),
         identity: Some(public.to_hex()),
+        communities: Vec::new(),
     };
     let (tx, status) = watch::channel(Status::new(&config));
     let injector = tx.clone();
@@ -597,6 +598,7 @@ async fn recheck_fixture_every(first: Option<Discovery>, catalog: Duration) -> R
                 ..FRESHNESS
             },
             &mut sender,
+            &crate::setup::Setup::unavailable(),
         )
         .await
     }));

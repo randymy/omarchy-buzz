@@ -138,7 +138,7 @@ async fn scenario(in_flight: bool, automatic: bool, automatic_failure: bool) {
             }
             timeout(Duration::from_secs(5),ws_done_wait).await.unwrap().unwrap();drop(websocket);
         }));
-        let config=config::Config{relay:Some(origin.clone()),identity:Some(public.to_hex())};let (tx,mut status)=watch::channel(Status::new(&config));
+        let config=config::Config{relay:Some(origin.clone()),identity:Some(public.to_hex()),communities:Vec::new()};let (tx,mut status)=watch::channel(Status::new(&config));
         let (commands,mut command_rx)=mpsc::channel(4);let mut conn=connect_identity(&origin,&user).await.unwrap();
         let observer=AbortTask(tokio::spawn(async move {
             let mut pin=None;let mut backoff=Backoff::default();
@@ -294,7 +294,7 @@ async fn older_page_is_held_across_head_refresh_and_dropped_on_reselect() {
                 let _ = stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", payload.len(), payload).as_bytes()).await;
             }
         }));
-        let config = config::Config { relay: Some(origin.clone()), identity: Some(public.to_hex()) };
+        let config = config::Config { relay: Some(origin.clone()), identity: Some(public.to_hex()), communities: Vec::new() };
         let (tx, mut status) = watch::channel(Status::new(&config));
         let (commands, mut command_rx) = mpsc::channel(4);
         let mut conn = connect_identity(&origin, &user).await.unwrap();

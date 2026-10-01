@@ -32,6 +32,7 @@ async fn session() -> Session {
             Ok(crate::config::Config {
                 relay: Some("ws://127.0.0.1:9/".into()),
                 identity: Some(owner.clone()),
+                communities: Vec::new(),
             })
         }),
     )

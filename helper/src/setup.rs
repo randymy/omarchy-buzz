@@ -25,23 +25,35 @@ const CATEGORIES: [&str; 7] = [
 pub(crate) struct Setup {
     pub dir: Result<PathBuf, &'static str>,
     pub secrets: Arc<dyn enrollment::IdentitySecrets>,
+    /// When the last community join started (`communities::JOIN_GAP`).
+    pub joins: Arc<std::sync::Mutex<Option<std::time::Instant>>>,
 }
 impl Setup {
     pub fn system() -> Self {
         Self {
             dir: config::dir(),
             secrets: Arc::new(enrollment::SecretService),
+            joins: Default::default(),
         }
     }
-    fn dir(&self) -> Result<PathBuf, &'static str> {
+    pub(crate) fn dir(&self) -> Result<PathBuf, &'static str> {
         self.dir.clone().map_err(|_| "config_unavailable")
+    }
+    /// A setup that can read and write nothing (connection tests).
+    #[cfg(test)]
+    pub fn unavailable() -> Self {
+        Self {
+            dir: Err("config_unavailable"),
+            secrets: Arc::new(enrollment::SecretService),
+            joins: Default::default(),
+        }
     }
     pub fn load(&self) -> Result<config::Config, &'static str> {
         config::load_from(&self.dir.clone()?)
     }
 }
 
-async fn blocking<T: Send + 'static>(
+pub(crate) async fn blocking<T: Send + 'static>(
     f: impl FnOnce() -> Result<T, &'static str> + Send + 'static,
 ) -> Result<T, &'static str> {
     tokio::task::spawn_blocking(f)
@@ -145,6 +157,7 @@ pub(crate) mod tests {
             Setup {
                 dir: Ok(dir.clone()),
                 secrets: secrets.clone(),
+                joins: Default::default(),
             },
             secrets,
             dir,
@@ -188,6 +201,7 @@ pub(crate) mod tests {
             &config::Config {
                 relay: Some(relay.into()),
                 identity: None,
+                communities: Vec::new(),
             },
         )
         .unwrap();
@@ -222,6 +236,7 @@ pub(crate) mod tests {
             &config::Config {
                 relay: Some("wss://example.com/".into()),
                 identity: Some(identity.clone()),
+                communities: Vec::new(),
             },
         )
         .unwrap();
@@ -248,6 +263,7 @@ pub(crate) mod tests {
             &config::Config {
                 relay: Some("ws://127.0.0.1:1/".into()),
                 identity: Some(nostr::Keys::generate().public_key().to_hex()),
+                communities: Vec::new(),
             },
         )
         .unwrap();

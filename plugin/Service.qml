@@ -13,7 +13,9 @@ Item {
   // Only offscreen fixtures opt into sampleMode; production never loads sample rooms.
   property bool sampleMode: false
   property bool autoConnect: true
-  property string setupProvider: "hosted"
+  // First setup, in Desktop's order: "join" an existing community (default) or
+  // "create" a new one at buzz.xyz. Presentation only.
+  property string setupProvider: "join"
   // Opt-in across shell restarts. Only this boolean is stored; alert payloads stay generic.
   property bool notificationsEnabled: false
   readonly property string stateHome: Quickshell.env("XDG_STATE_HOME").startsWith("/")
@@ -97,27 +99,43 @@ Item {
       root.notificationPreferenceDirty = false
     }
   }
-  // The room last chosen by the user, restored after a shell restart. Only a
-  // public room ID and its relay and identity scope are stored; no message data.
+  // The room last chosen by the user in each community, restored after a
+  // switch or a shell restart. Only public room IDs keyed by their relay and
+  // identity scope are stored (at most 16 scopes); no message data. Version 1
+  // files (one scope) are still read.
   readonly property string viewSettingsPath: notificationSettingsDir + "/view.json"
-  property string rememberedScope: ""
-  property string rememberedRoom: ""
+  property var rememberedRooms: ({})
+  readonly property int rememberedScopes: 16
+  function rememberedRoomFor(scope) { return Object.prototype.hasOwnProperty.call(rememberedRooms, scope) ? rememberedRooms[scope] : "" }
+  function validRememberedScope(scope) { return boundedString(scope, 2200) && /^[^|]+\|[^|]+$/.test(scope) }
   function loadViewSettings(raw) {
     try {
       var parsed = JSON.parse(raw)
-      if (parsed && parsed.version === 1 && uuidValue(parsed.roomId) && boundedString(parsed.scope, 2200) && parsed.scope !== "") {
-        rememberedScope = parsed.scope
-        rememberedRoom = parsed.roomId
+      var rooms = ({})
+      if (parsed && parsed.version === 1 && uuidValue(parsed.roomId) && validRememberedScope(parsed.scope)) rooms[parsed.scope] = parsed.roomId
+      else if (parsed && parsed.version === 2 && parsed.rooms && typeof parsed.rooms === "object" && !Array.isArray(parsed.rooms)) {
+        var scopes = Object.keys(parsed.rooms)
+        if (scopes.length > rememberedScopes) return
+        for (var i = 0; i < scopes.length; i++) {
+          if (!validRememberedScope(scopes[i]) || !uuidValue(parsed.rooms[scopes[i]])) return
+          rooms[scopes[i]] = parsed.rooms[scopes[i]]
+        }
       }
+      rememberedRooms = rooms
     } catch (error) { /* Missing or malformed settings select the first room. */ }
   }
   function rememberRoom(roomId) {
     // Both a relay and an identity are required: an incomplete scope is never remembered.
-    if (sampleMode || !/^[^|]+\|[^|]+$/.test(draftScopeKey) || !uuidValue(roomId)
-        || (rememberedScope === draftScopeKey && rememberedRoom === roomId)) return
-    rememberedScope = draftScopeKey
-    rememberedRoom = roomId
-    if (notificationSettingsDirReady) viewSettingsFile.setText(JSON.stringify({version: 1, scope: rememberedScope, roomId: rememberedRoom}) + "\n")
+    if (sampleMode || !validRememberedScope(draftScopeKey) || !uuidValue(roomId)
+        || rememberedRoomFor(draftScopeKey) === roomId) return
+    var rooms = ({})
+    var kept = Object.keys(rememberedRooms).filter(function(scope) { return scope !== root.draftScopeKey })
+    // The most recent scope is written last; the oldest beyond the bound is dropped.
+    kept = kept.slice(Math.max(0, kept.length - (rememberedScopes - 1)))
+    for (var i = 0; i < kept.length; i++) rooms[kept[i]] = rememberedRooms[kept[i]]
+    rooms[draftScopeKey] = roomId
+    rememberedRooms = rooms
+    if (notificationSettingsDirReady) viewSettingsFile.setText(JSON.stringify({version: 2, rooms: rememberedRooms}) + "\n")
   }
   FileView {
     id: viewSettingsFile
@@ -419,9 +437,12 @@ Item {
     unconfigured: "Setup required", connecting: "Connecting", authenticated: historyState === "snapshot" ? "Authenticated · recent snapshot" : historyState === "loading" ? "Authenticated · history loading" : "Authenticated · history unavailable",
     identity_locked: "Identity locked", disconnected: "Disconnected", unavailable: "Helper unavailable"
   })[connection] || "Unavailable"
-  readonly property string providerInstructions: setupProvider === "hosted"
-    ? "Set up your account and identity binding at buzz.xyz. Create or join a community, then use its assigned URL. There is no single public global relay; invitations and membership still apply."
-    : "Use the URL of a relay you already belong to, including one you were invited to. Choosing custom does not require running your own relay."
+  // Desktop's join wording (`AddCommunityDialog.tsx`), and the honest create
+  // step: a third-party client cannot create a hosted community itself.
+  readonly property string joinCommunityDescription: "Use the community URL or invite link you received."
+  readonly property string createCommunityDescription: "New Buzz communities are created at buzz.xyz, in your browser; this panel cannot create one itself. Once yours exists, paste its URL or invite link here to join it."
+  readonly property string providerInstructions: setupProvider === "create" ? createCommunityDescription
+    : joinCommunityDescription + " That can be a hosted community or one you were invited to; you do not need to run your own relay."
   readonly property string setupInstructions: category === "incompatible_response"
     ? "Install a matching Buzz plugin and helper release, restart the helper service, then Retry. Updating the Omarchy plugin alone does not replace its helper. Your existing identity stays in the secret store."
     : (category === "config_unavailable" || category === "invalid_config")
@@ -435,7 +456,7 @@ Item {
       : connection === "authenticated"
         ? "Relay authentication succeeded. Choose a joined room to fetch a recent snapshot. Use the composer to send plain text. Select exact room recipients when available; agent execution is configured separately."
         : setupAssistAvailable
-          ? providerInstructions + "\nEnter that relay address below and choose Use this relay. Hosted account sign-in stays in your browser. Never enter keys or account tokens in this panel."
+          ? "Hosted account sign-in stays in your browser. Never enter keys or account tokens in this panel."
         : providerInstructions + "\nLink manually in a terminal after installing the helper:\nomarchy-buzz setup relay <community-url>\nomarchy-buzz setup identity enroll\nEnroll the same existing Buzz identity using hidden input and your OS secret store, then Retry. Hosted account sign-in stays in your browser. Never enter keys or account tokens in this panel."
 
   // Setup assist (`setup_assist`): relay choice and identity creation go to the
@@ -539,7 +560,7 @@ Item {
   readonly property bool canLeaveRoom: openRoomsAvailable && !roomActionBusy && selectedRoom !== null && selectedRoom.kind === "stream"
   readonly property var inviteMessages: ({
     invite_invalid: "That invite was not recognized. Paste the whole link or code.",
-    invite_relay_mismatch: "That invite is for a different relay. Change the relay first if you meant to join it.",
+    invite_relay_mismatch: "That invite is for another community. Use Join an existing community to add it.",
     invite_rejected: "The relay refused this invite. It may have expired or been used up.",
     invite_rate_limited: "Too many attempts. Wait a minute, then try again.",
     policy_required: "The community's terms changed. Redeem the invite again to read them.",
@@ -575,6 +596,166 @@ Item {
   readonly property string openRoomsLabel: openRoomsState === "loading" ? "Loading open rooms…"
     : openRoomsState === "snapshot" ? (openRooms.length ? "" : "No open rooms to join right now.")
     : openRoomsCategory ? "Open rooms could not be loaded. Try again." : ""
+
+  // Communities (`communities`): join, switch, rename and leave, like Buzz
+  // Desktop's account menu. The helper parses what the user pasted, checks the
+  // relay, claims invites with the one identity, saves the list and reconnects
+  // with a new generation; the panel sends text and choices and shows the
+  // helper's validated list. Names are local labels; `hint` is the relay's own
+  // NIP-11 name, untrusted and shown as a hint only.
+  signal communityRequestDone(string kind, bool ok)
+  property bool communitiesSupported: false
+  property var communities: ({state: "ready", active: null, entries: [], category: null, pendingInvite: false, notice: null})
+  property string communityLocal: "idle"
+  property string communityCategory: ""
+  property string communityRequestId: ""
+  property string communityRequestKind: ""
+  property string communityRequestRelay: ""
+  property string communityRequestInput: ""
+  property string communityInstance: ""
+  // First setup saved a community from an invite link: redeemed once the identity exists.
+  property string pendingInviteInput: ""
+  property string communityNotice: ""
+  property var sampleCommunities: [
+    {relay: "wss://sample.example/", name: "Sample", host: "sample.example", active: true, hint: null},
+    {relay: "wss://second.example/", name: "Second team", host: "second.example", active: false, hint: "Second Team HQ"}
+  ]
+  readonly property var communityCategories: ["join_invalid", "join_rejected", "join_rate_limited", "join_busy", "join_last", "join_full", "policy_required",
+    "relay_unavailable", "identity_unavailable", "config_unavailable", "community_unknown", "name_invalid", "leave_rejected", "leave_owner"]
+  readonly property var communityEntries: sampleMode ? sampleCommunities : communitiesSupported ? communities.entries : []
+  readonly property var activeCommunity: communityEntries.find(function(entry) { return entry.active }) || null
+  readonly property var otherCommunities: communityEntries.filter(function(entry) { return !entry.active })
+  readonly property bool communitiesShown: sampleMode || communitiesSupported
+  readonly property bool communityBusy: communityLocal === "sending" || ["joining", "switching", "renaming", "leaving"].indexOf(communities.state) !== -1
+  // Requests go to the helper only when it can take them (not while connecting).
+  readonly property bool communitiesAvailable: communitiesSupported && !sampleMode && !sessionFailed && instanceId !== ""
+    && connection !== "connecting" && category !== "identity_access_pending" && bridge.running
+  readonly property bool canJoinCommunity: communitiesAvailable && !communityBusy
+  readonly property bool canSwitchCommunity: (sampleMode || communitiesAvailable) && !communityBusy
+  readonly property bool canLeaveCommunity: communitiesAvailable && !communityBusy && identity !== "" && communityEntries.length > 1
+  readonly property var communityMessages: ({
+    join_invalid: "Please enter a valid invite link or community URL",
+    join_rejected: "Not a member yet. This relay requires an invitation. Ask a relay admin to add you as a member, then come back and try again.",
+    join_rate_limited: "Too many attempts. Wait a moment, then try again.",
+    join_busy: "Finish connecting the community already in progress, then try again.",
+    join_last: "This is your only community. Join another one before you leave it.",
+    join_full: "This device keeps up to 16 communities. Leave one first.",
+    policy_required: "The community's terms changed. Join again to read them.",
+    relay_unavailable: "Couldn't reach the community. Check the URL and your connection, then try again.",
+    identity_unavailable: "Your Buzz identity is not available. Unlock your secret store, then try again.",
+    config_unavailable: "The helper could not save its configuration. Check its configuration folder.",
+    community_unknown: "That community is no longer on this device.",
+    name_invalid: "Enter a name.",
+    leave_rejected: "Couldn't leave the community. Try again.",
+    leave_owner: "You own this community, so its relay does not let you leave it."
+  })
+  function communityMessage(kind, category) {
+    // Desktop's leave wording for a relay that could not be reached.
+    if (kind === "leave" && category === "relay_unavailable") return "Couldn't send the leave request. Check your connection and try again."
+    return communityMessages[category] || "That did not work. Try again."
+  }
+  readonly property string communityLabel: {
+    if (communityLocal === "failed") return communityMessage(communityRequestKind, communityCategory)
+    if (communityLocal === "sending" || communityBusy) return ({join: "Joining…", "switch": "Switching…", rename: "Saving…", leave: "Leaving…"})[communityRequestKind] || "Working…"
+    return ""
+  }
+  readonly property string communityNoticeLabel: communityNotice === "already_absent"
+    ? "Community removed — You were no longer a member, so Buzz removed the community from this device." : ""
+  function communityRelayValue(value) { return typeof value === "string" && value.length <= 2048 && /^wss?:\/\/[^\s@\/?#]+\/$/.test(value) }
+  function beginCommunity(kind, relay, input) {
+    communityRequestId = correlationUuid()
+    communityRequestKind = kind
+    communityRequestRelay = relay || ""
+    communityRequestInput = input || ""
+    communityInstance = instanceId
+    communityLocal = "sending"
+    communityCategory = ""
+    communityNotice = ""
+    communityTimeout.restart()
+  }
+  function loseCommunity() {
+    communityTimeout.stop()
+    if (communityLocal === "sending") { communityLocal = "idle"; communityCategory = "" }
+    communityRequestId = ""
+  }
+  function resetCommunityRequest() {
+    if (communityLocal === "sending") return
+    communityLocal = "idle"
+    communityCategory = ""
+    communityNotice = ""
+  }
+  function joinCommunity(text) {
+    var value = typeof text === "string" ? text.trim() : ""
+    if (!value) return false
+    if (!canJoinCommunity) {
+      // Helpers without `communities` keep the relay-only first setup.
+      if (!communitiesSupported && setupAssistAvailable && /^wss?:\/\/[^\s@]+$/.test(value)) return setupRelay(value)
+      return false
+    }
+    if (value.length > 4096 || value.indexOf("\u0000") !== -1) { communityLocal = "failed"; communityRequestKind = "join"; communityCategory = "join_invalid"; return false }
+    beginCommunity("join", "", value)
+    bridge.write(JSON.stringify({version: 1, id: communityRequestId, type: "join_community", input: value, generation: generation, instanceId: instanceId}) + "\n")
+    return true
+  }
+  function switchCommunity(relay) {
+    if (sampleMode) {
+      // Presentation only: sample data has no relay to switch to.
+      if (!sampleCommunities.some(function(entry) { return entry.relay === relay })) return false
+      sampleCommunities = sampleCommunities.map(function(entry) { return Object.assign({}, entry, {active: entry.relay === relay}) })
+      return true
+    }
+    if (!canSwitchCommunity || !communityRelayValue(relay) || (activeCommunity && activeCommunity.relay === relay)
+        || !communityEntries.some(function(entry) { return entry.relay === relay })) return false
+    beginCommunity("switch", relay, "")
+    bridge.write(JSON.stringify({version: 1, id: communityRequestId, type: "switch_community", relay: relay, generation: generation, instanceId: instanceId}) + "\n")
+    return true
+  }
+  function renameCommunity(relay, name) {
+    var value = typeof name === "string" ? name.trim() : ""
+    if (!communitiesAvailable || communityBusy || !communityRelayValue(relay) || !communityEntries.some(function(entry) { return entry.relay === relay })) return false
+    if (!value || utf8Size(value) > 1024 || value.indexOf("\u0000") !== -1) { communityLocal = "failed"; communityRequestKind = "rename"; communityCategory = "name_invalid"; return false }
+    beginCommunity("rename", relay, "")
+    bridge.write(JSON.stringify({version: 1, id: communityRequestId, type: "rename_community", relay: relay, name: value}) + "\n")
+    return true
+  }
+  function leaveCommunity(relay) {
+    if (!canLeaveCommunity || !communityRelayValue(relay) || !communityEntries.some(function(entry) { return entry.relay === relay })) return false
+    beginCommunity("leave", relay, "")
+    bridge.write(JSON.stringify({version: 1, id: communityRequestId, type: "leave_community", relay: relay, generation: generation, instanceId: instanceId}) + "\n")
+    return true
+  }
+  function clearCommunities() {
+    communities = {state: "ready", active: null, entries: [], category: null, pendingInvite: false, notice: null}
+  }
+  // `status.communities`: exactly these keys; the active entry is the frame's relay.
+  function validatedCommunities(view, relay) {
+    if (!view || typeof view !== "object" || Array.isArray(view)
+        || Object.keys(view).sort().join(",") !== "active,category,entries,notice,pendingInvite,state"
+        || ["ready", "joining", "switching", "renaming", "leaving", "failed"].indexOf(view.state) === -1
+        || (view.state === "failed") !== (view.category !== null)
+        || (view.category !== null && communityCategories.indexOf(view.category) === -1)
+        || typeof view.pendingInvite !== "boolean" || (view.notice !== null && view.notice !== "already_absent")
+        || view.active !== relay || (view.active !== null && !communityRelayValue(view.active))
+        || !Array.isArray(view.entries) || view.entries.length > 16 || (view.active === null) !== (view.entries.length === 0)) return null
+    var clean = []
+    var seen = ({})
+    var actives = 0
+    for (var i = 0; i < view.entries.length; i++) {
+      var entry = view.entries[i]
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)
+          || Object.keys(entry).sort().join(",") !== "active,hint,host,name,relay"
+          || !communityRelayValue(entry.relay) || seen[entry.relay]
+          || !boundedString(entry.name, 64) || !entry.name.trim() || utf8Size(entry.name) > 64
+          || !boundedString(entry.host, 260) || !/^[A-Za-z0-9.:\[\]-]+$/.test(entry.host)
+          || typeof entry.active !== "boolean" || entry.active !== (entry.relay === view.active)
+          || (entry.hint !== null && (!boundedString(entry.hint, 64) || !entry.hint.trim() || utf8Size(entry.hint) > 64))) return null
+      seen[entry.relay] = true
+      if (entry.active) actives++
+      clean.push({relay: entry.relay, name: entry.name, host: entry.host, active: entry.active, hint: entry.hint})
+    }
+    if (view.active !== null && actives !== 1) return null
+    return {state: view.state, active: view.active, entries: clean, category: view.category, pendingInvite: view.pendingInvite, notice: view.notice}
+  }
   function inviteCodeValue(value) { return typeof value === "string" && /^[A-Za-z0-9._-]{1,1024}$/.test(value) }
   function redeemInvite(text) {
     if (!canRedeemInvite) return false
@@ -1327,7 +1508,9 @@ Item {
 
   function chooseSetupProvider(provider) {
     // Presentation only: choosing a provider never writes config or sends IPC.
-    if (provider === "hosted" || provider === "custom") setupProvider = provider
+    // "custom" and "hosted" are the names older panels used.
+    var chosen = ({join: "join", create: "create", custom: "join", hosted: "create"})[provider]
+    if (chosen) setupProvider = chosen
   }
 
   function selectRoom(roomId) {
@@ -1820,10 +2003,10 @@ Item {
     if (!sampleMode) selectedRoomId = ""
   }
   function validCapabilities(capabilities) {
-    return Array.isArray(capabilities) && capabilities.length >= 1 && capabilities.length <= 20
+    return Array.isArray(capabilities) && capabilities.length >= 1 && capabilities.length <= 21
       && capabilities.indexOf("connection_status") !== -1
       && capabilities.every(function(cap, index) {
-        return ["connection_status", "room_catalog", "room_history", "message_send", "room_recipients", "history_auto_refresh", "room_activity", "agent_profiles", "thread_replies", "thread_send", "thread_summaries", "dm_open", "older_history", "live_updates", "setup_assist", "community_join", "invite_mint", "attachments", "user_status", "presence"].indexOf(cap) !== -1 && capabilities.indexOf(cap) === index
+        return ["connection_status", "room_catalog", "room_history", "message_send", "room_recipients", "history_auto_refresh", "room_activity", "agent_profiles", "thread_replies", "thread_send", "thread_summaries", "dm_open", "older_history", "live_updates", "setup_assist", "community_join", "invite_mint", "attachments", "user_status", "presence", "communities"].indexOf(cap) !== -1 && capabilities.indexOf(cap) === index
       })
   }
   // Streams carry no participants and are never hidden. A DM lists 2-9 distinct
@@ -1938,6 +2121,9 @@ Item {
     userStatusSupported = false
     clearPresence()
     presenceSupported = false
+    loseCommunity()
+    communitiesSupported = false
+    clearCommunities()
     losePendingDelivery()
     loseDmOpen()
     dmOpenSupported = false
@@ -1983,6 +2169,9 @@ Item {
     userStatusSupported = false
     clearPresence()
     presenceSupported = false
+    loseCommunity()
+    communitiesSupported = false
+    clearCommunities()
     losePendingDelivery()
     loseDmOpen()
     dmOpenSupported = false
@@ -2019,7 +2208,8 @@ Item {
         "setup_invalid_relay", "identity_exists", "identity_unavailable", "relay_unavailable", "setup_busy", "setup_not_allowed", "config_unavailable",
         "invite_invalid", "invite_relay_mismatch", "invite_rejected", "invite_rate_limited", "policy_required", "room_not_open", "join_rejected", "leave_rejected",
         "invite_forbidden", "attachment_unknown", "attachment_forbidden", "attachment_mismatch", "attachment_too_large", "attachment_invalid",
-        "attachment_type_refused", "attachment_storage_unavailable", "status_invalid", "status_rate_limited", "status_rejected"].indexOf(frame.category) !== -1) {
+        "attachment_type_refused", "attachment_storage_unavailable", "status_invalid", "status_rate_limited", "status_rejected",
+        "join_invalid", "join_rate_limited", "join_busy", "join_last", "join_full", "community_unknown", "name_invalid", "leave_owner"].indexOf(frame.category) !== -1) {
       if (instanceId === "" || frame.instanceId !== instanceId) return false
       if (!boundedString(frame.id, 128) || !/^ui-[0-9]+$/.test(frame.id) && !uuidValue(frame.id)) { fail("invalid_response"); return false }
       if (frame.id === presenceRequestId && presenceRequestId !== "") {
@@ -2031,6 +2221,15 @@ Item {
       }
       if (frame.id === setupRequestId && setupState === "sending") {
         refuseSetup(frame.category === "request_busy" ? "setup_busy" : frame.category)
+        return true
+      }
+      if (frame.id === communityRequestId && communityLocal === "sending") {
+        // Refused, failed, or the helper lost the request; nothing is assumed saved.
+        communityTimeout.stop()
+        communityLocal = "failed"
+        communityCategory = communityCategories.indexOf(frame.category) !== -1 ? frame.category : "join_busy"
+        communityRequestId = ""
+        communityRequestDone(communityRequestKind, false)
         return true
       }
       if (frame.id === statusRequestId && statusRequestState === "sending") {
@@ -2179,6 +2378,9 @@ Item {
     if (supportsStatus && !shownStatus) { fail("invalid_response"); return false }
     var shownPresence = supportsPresence ? validatedPresence(state.presence) : null
     if (supportsPresence && !shownPresence) { fail("invalid_response"); return false }
+    var supportsCommunities = frame.capabilities.indexOf("communities") !== -1
+    var shownCommunities = supportsCommunities ? validatedCommunities(state.communities, state.relay) : null
+    if (supportsCommunities && !shownCommunities) { fail("invalid_response"); return false }
     var supportsMint = frame.capabilities.indexOf("invite_mint") !== -1
     var minted = supportsMint ? validatedInvites(state.invites) : null
     if (supportsMint && !minted) { fail("invalid_response"); return false }
@@ -2224,8 +2426,9 @@ Item {
         && !catalogRooms.some(function(room) { return room.id === root.selectedRoomId })) {
       clearHistory()
       clearRecipients()
-      var remembered = rememberedScope === incomingScope && visibleRooms.some(function(room) { return room.id === root.rememberedRoom })
-      selectedRoomId = remembered ? rememberedRoom : visibleRooms.length ? visibleRooms[0].id : ""
+      var rememberedId = rememberedRoomFor(incomingScope)
+      var remembered = rememberedId !== "" && visibleRooms.some(function(room) { return room.id === rememberedId })
+      selectedRoomId = remembered ? rememberedId : visibleRooms.length ? visibleRooms[0].id : ""
     }
     historySupported = supportsHistory
     if (state.connection !== "authenticated" || !supportsHistory || ["loading", "unavailable"].indexOf(catalogState) !== -1) clearHistory()
@@ -2338,6 +2541,26 @@ Item {
         roomActionLocal = "idle"
       }
       if (action.requestId === roomActionRequestId && ["rejected", "unknown"].indexOf(action.state) !== -1) joinTarget = ""
+    }
+    communitiesSupported = supportsCommunities
+    if (!supportsCommunities) { loseCommunity(); clearCommunities(); pendingInviteInput = "" }
+    else {
+      if (!sameProjection(communities, shownCommunities)) communities = shownCommunities
+      if (frame.type === "status" && communityLocal === "sending" && frame.id === communityRequestId && frame.instanceId === communityInstance) {
+        communityTimeout.stop()
+        communityLocal = "idle"
+        communityRequestId = ""
+        communityNotice = shownCommunities.notice || ""
+        // First setup with an invite link: redeem it once the identity exists.
+        if (communityRequestKind === "join" && shownCommunities.pendingInvite) pendingInviteInput = communityRequestInput
+        communityRequestDone(communityRequestKind, true)
+      }
+    }
+    // The invite saved during first setup is redeemed as soon as it can be.
+    if (pendingInviteInput !== "" && canRedeemInvite && !inviteBusy) {
+      var pendingInput = pendingInviteInput
+      pendingInviteInput = ""
+      redeemInvite(pendingInput)
     }
     inviteMintSupported = supportsMint
     if (!supportsMint) { loseMint(); clearInvites() }
@@ -2545,6 +2768,15 @@ Item {
     // Beyond the helper's own 60-second bound for the three invite requests.
     interval: 70000
     onTriggered: { if (root.inviteState === "sending") { root.inviteState = "failed"; root.inviteCategory = "setup_busy" }; root.inviteRequestId = "" }
+  }
+  Timer {
+    id: communityTimeout
+    // Beyond the helper's own 120-second bound for a join or a leave.
+    interval: 130000
+    onTriggered: {
+      if (root.communityLocal === "sending") { root.communityLocal = "failed"; root.communityCategory = "join_busy"; root.communityRequestDone(root.communityRequestKind, false) }
+      root.communityRequestId = ""
+    }
   }
   Timer {
     id: statusTimeout
