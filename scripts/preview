@@ -104,6 +104,10 @@ elif [[ ${1:-} == --settings ]]; then
   mkdir -m 700 "$preview_dir/files"
   cp "$project_root/tests/fixtures/avatar.ans" "$preview_dir/files/avatar.ans"
   export BUZZ_ANSI_FIXTURE="$preview_dir/files/avatar.ans"
+elif [[ ${1:-} == --navigation ]]; then
+  # Synthetic frames only. BUZZ_NAVIGATION_CAPTURE_DIR optionally saves the room
+  # view and the agent editor with the header to PNG files after the checks pass.
+  cp "$project_root/tests/Navigation.qml" "$preview_dir/shell.qml"
 elif [[ ${1:-} == --author-names ]]; then
   cp "$project_root/tests/AuthorNames.qml" "$preview_dir/shell.qml"
 elif [[ ${1:-} == --presentation ]]; then

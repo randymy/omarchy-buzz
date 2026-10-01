@@ -43,7 +43,7 @@ ShellRoot {
         shownButton("buzzSettingsWindow").clicked()
         if (!panel.opened || !panel.windowMode || host.closes || !shownButton("buzzSettingsWindow").selected)
           throw new Error("Return to window closed view")
-        shownButton("buzzSettingsBack").clicked()
+        shownButton("buzzHeaderBack").clicked()
         if (panel.content.settingsOpen) throw new Error("Back to rooms did not close Settings")
         panel.close()
         if (panel.opened || service.panelOpen || host.closes) throw new Error("Host close reentered hide")

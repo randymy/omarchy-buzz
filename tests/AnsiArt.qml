@@ -21,6 +21,7 @@ ShellRoot {
   readonly property string capturePath: Quickshell.env("BUZZ_ANSI_CAPTURE")
   readonly property string captureDir: Quickshell.env("BUZZ_ANSI_CAPTURE_DIR")
   property string fixtureArt: ""
+  property bool layoutWait: false
   Buzz.Service { id: service; autoConnect: false }
   FloatingWindow {
     id: window
@@ -110,6 +111,10 @@ ShellRoot {
     input.mouseClick(account, account.width / 2, account.height / 2)
     one("buzzAccountSettings").clicked()
     check(view.settingsOpen && !view.accountMenuOpen, "Settings did not open from the account menu")
+    // Let the layout place the settings view before anything in it is clicked;
+    // the check timer skips its ticks during this nested wait.
+    test.layoutWait = true
+    try { input.waitForRendering(view) } finally { test.layoutWait = false }
   }
 
   function parserCases() {
@@ -267,6 +272,7 @@ ShellRoot {
     running: true
     repeat: true
     onTriggered: {
+      if (test.layoutWait) return
       try {
         test.ticks++
         if (test.ticks > 120) throw new Error("Timed out at stage " + test.stage)
@@ -325,7 +331,7 @@ ShellRoot {
           var restored = fresh.agents.avatarBrightnessForKey(test.me)
           fresh.destroy()
           check(restored === 1.75, "Brightness not restored by a fresh service: " + restored)
-          test.one("buzzSettingsBack").clicked()
+          test.one("buzzHeaderBack").clicked()
           check(!view.settingsOpen && test.myLeadAvatar().visible && test.myLeadAvatar().clickable, "Back to rooms did not show my clickable avatar")
           test.stage = 3
         } else if (test.stage === 3) {
@@ -400,7 +406,7 @@ ShellRoot {
           // Clear removes it here and on restore.
           test.openSettings()
           test.one("buzzMyAvatarPathClear").clicked()
-          test.one("buzzSettingsBack").clicked()
+          test.one("buzzHeaderBack").clicked()
           check(service.agents.avatarArtForKey(test.me) === "" && !test.myLeadAvatar().usesArt, "Clear kept the avatar")
           check(JSON.stringify(JSON.parse(test.readStore()).avatars) === "{}" && test.freshOwnArt() === "", "Clear not saved")
           test.messageAvatars()

@@ -332,7 +332,7 @@ ShellRoot {
           var remove = test.one(view, "buzzAgentDelete")
           remove.clicked()
           if (remove.text !== "Confirm delete" || test.requests().some(function(r) { return r.type !== "subscribe" })) throw new Error("Delete did not wait for confirmation")
-          test.one(view, "buzzAgentBack").clicked()
+          test.one(view, "buzzHeaderBack").clicked()
           if (test.shown(view, "buzzAgentEditor").length || !test.shown(view, "buzzHistoryScroll").length)
             throw new Error("Back to rooms did not restore the room view")
           test.one(view, "buzzNewAgent").clicked()
