@@ -6,6 +6,7 @@ import importlib.util
 import json
 from pathlib import Path
 import shutil
+import subprocess
 import tempfile
 import tomllib
 import unittest
@@ -129,6 +130,39 @@ class VerifyPackage(unittest.TestCase):
         shutil.copytree(source / "notices", directory / "notices")
         with self.assertRaisesRegex(ValueError, "must include third-party notices"):
             verifier.verify(directory, "aarch64")
+
+
+class ReleaseNotes(unittest.TestCase):
+    notes = load("release_notes", ROOT / "scripts/release-notes")
+
+    def test_template_names_version_pins_and_install_command(self):
+        text = self.notes.notes(VERSION, tag=None)
+        self.assertIn(f"python3 scripts/helper-install fetch {VERSION}", text)
+        self.assertIn(f"sha256sum -c omarchy-buzz-{VERSION}-checksums.txt", text)
+        self.assertIn(REVISION, text)
+        self.assertIn("First tagged release", text)
+        with self.assertRaises(ValueError):
+            self.notes.notes("0.0.0", tag=None)
+
+    def test_checkpoint_sections_since_previous_tag(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            def git(*args):
+                subprocess.run(["git", "-C", temporary, "-c", "user.name=t", "-c", "user.email=t@t",
+                                "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false", *args],
+                               check=True, capture_output=True)
+            git("init", "-q")
+            (root / "docs").mkdir()
+            checkpoint = root / "docs/CHECKPOINT.md"
+            checkpoint.write_text("# Checkpoint\n\n## Old section\n")
+            git("add", ".")
+            git("commit", "-qm", "one")
+            git("tag", "v0.0.1")
+            checkpoint.write_text(checkpoint.read_text() + "\n## New section — October 1\n\ntext\n")
+            git("commit", "-qam", "two")
+            self.assertEqual(self.notes.previous_tag(root, "0.0.2"), "v0.0.1")
+            self.assertEqual(self.notes.checkpoint_sections(root, "v0.0.1"), ["New section — October 1"])
+            self.assertIsNone(self.notes.checkpoint_sections(root, "v9.9.9"))
 
 
 if __name__ == "__main__":

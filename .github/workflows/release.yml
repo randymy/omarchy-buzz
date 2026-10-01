@@ -1,0 +1,136 @@
+name: Draft helper release
+
+# Manual only. Builds both architectures natively through the reusable helper
+# build, verifies every artifact against this checkout, and creates a DRAFT
+# GitHub Release tagged v<version>. It never publishes: a maintainer reviews
+# the draft and publishes it by hand.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version; must equal manifest.json and helper/Cargo.toml (e.g. 0.0.21)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: helper-release
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Check version, branch and that the tag is new
+        env:
+          VERSION: ${{ inputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          test "$GITHUB_REF" = refs/heads/main || { echo "release only from main, not $GITHUB_REF" >&2; exit 1; }
+          python3 - <<'PY'
+          import json,os,pathlib,re,tomllib
+          version=os.environ['VERSION']
+          assert re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?',version),'version must look like 0.0.21'
+          manifest=json.loads(pathlib.Path('manifest.json').read_text())['version']
+          cargo=tomllib.loads(pathlib.Path('helper/Cargo.toml').read_text())['package']['version']
+          assert version==manifest==cargo,f'version {version} differs from manifest.json {manifest} or helper/Cargo.toml {cargo}'
+          PY
+          refs=$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/v$VERSION" --jq '.[].ref')
+          if printf '%s\n' "$refs" | grep -qxF "refs/tags/v$VERSION"; then
+            echo "tag v$VERSION already exists" >&2
+            exit 1
+          fi
+
+  build-aarch64:
+    needs: preflight
+    permissions:
+      contents: read
+    uses: ./.github/workflows/helper-build.yml
+    with:
+      runner: ubuntu-24.04-arm
+      arch: aarch64
+      target: aarch64-unknown-linux-gnu
+      artifact: helper-aarch64-release
+
+  build-x86_64:
+    needs: preflight
+    permissions:
+      contents: read
+    uses: ./.github/workflows/helper-build.yml
+    with:
+      runner: ubuntu-24.04
+      arch: x86_64
+      target: x86_64-unknown-linux-gnu
+      artifact: helper-x86_64-release
+
+  release:
+    needs: [build-aarch64, build-x86_64]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      actions: read
+    env:
+      VERSION: ${{ inputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Download both build artifacts from this run
+        run: |
+          for arch in aarch64 x86_64; do
+            gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+              --name "helper-$arch-release" --dir "$RUNNER_TEMP/artifacts/$arch"
+          done
+      - name: Verify packages, sidecars, build.json and notices against this checkout
+        run: |
+          for arch in aarch64 x86_64; do
+            python3 scripts/verify-package "$RUNNER_TEMP/artifacts/$arch" --arch "$arch" \
+              --source-revision "$GITHUB_SHA"
+          done
+      - name: Assemble release assets and checksums
+        run: |
+          assets="$RUNNER_TEMP/assets"
+          mkdir "$assets"
+          for arch in aarch64 x86_64; do
+            source="$RUNNER_TEMP/artifacts/$arch"
+            stem="omarchy-buzz-$VERSION-linux-$arch"
+            cp "$source/$stem.tar.gz" "$source/$stem.sha256.json" "$assets/"
+            cp "$source/build.json" "$assets/build-$arch.json"
+            tar --sort=name --owner=0 --group=0 --numeric-owner --mtime=@0 \
+              -C "$source" -cf - notices | gzip -n > "$assets/notices-$arch.tar.gz"
+          done
+          cp LICENSE "$assets/LICENSE"
+          (cd "$assets" && sha256sum -- * > "../omarchy-buzz-$VERSION-checksums.txt")
+          mv "$RUNNER_TEMP/omarchy-buzz-$VERSION-checksums.txt" "$assets/"
+          (cd "$assets" && sha256sum -c "omarchy-buzz-$VERSION-checksums.txt")
+          ls -l "$assets"
+          python3 scripts/release-notes "$VERSION" \
+            --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            > "$RUNNER_TEMP/release-notes.md"
+          cat "$RUNNER_TEMP/release-notes.md"
+      - name: Create the draft release (never published here)
+        run: |
+          refs=$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/v$VERSION" --jq '.[].ref')
+          if printf '%s\n' "$refs" | grep -qxF "refs/tags/v$VERSION"; then
+            echo "tag v$VERSION appeared during the build" >&2
+            exit 1
+          fi
+          existing=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases" --jq '.[].tag_name')
+          if printf '%s\n' "$existing" | grep -qxF "v$VERSION"; then
+            echo "a release (possibly a draft) for v$VERSION already exists" >&2
+            exit 1
+          fi
+          gh release create "v$VERSION" --repo "$GITHUB_REPOSITORY" --draft \
+            --target "$GITHUB_SHA" --title "Buzz for Omarchy $VERSION (development preview)" \
+            --notes-file "$RUNNER_TEMP/release-notes.md" "$RUNNER_TEMP"/assets/*
