@@ -3207,3 +3207,13 @@ community**. One identity for every community, as Desktop.
   Capabilities are now 21 (`communities`); helper and plugin install together.
   The installed `config.toml` (format 1) will be migrated on first start,
   with `config.v1.toml` kept beside it.
+
+- Live verdict (maintainer, October 1, ~16:45 CDT, 0.0.25 installed): a
+  plain-URL join of a second, separately hosted community was first refused
+  (`join_rejected`, "Not a member yet…" — the identity was not a member
+  there); after the maintainer added the plugin's public key as a member
+  from Buzz Desktop (owner identity), the same join succeeded: the community
+  was added, switched to and authenticated with the same identity — "it
+  worked". The migrated config holds two entries. One `presence read
+  failed: query_busy` line appeared once at the first start after the
+  install (overlap with the initial catalog load) and did not repeat.

@@ -110,7 +110,14 @@ Do not claim full live desktop acceptance solely from helper/socket tests.
 
 ## In flight at the September 30 evening stop (read before continuing)
 
-**Installed:** helper 0.0.24 (`ad8cdc6`; SHA256
+**Installed:** helper 0.0.25 (`a8b5eda`; communities — join by URL or
+invite onto a new relay with the same identity, switcher, rename, NIP-43
+leave; config format 2 with `config.v1.toml` backup; SHA256
+`6a5ce96d79fc9fe4bb937cdf1d43ea9a4e0409806f407493bb78b96e71d9f7e6`, run
+36927504391, rollback backup
+`~/.local/share/omarchy-buzz/backups/20261001T212451.554771Z`), live-verified:
+the maintainer joined a second community after being added as a member there
+from Desktop. Before that, helper 0.0.24 (`ad8cdc6`; SHA256
 `0afff9d40325cb4c55031a318987d5f6b28855588c441a11df14bb03f737cb24`, ARM64 run
 36819994489, rollback backup
 `~/.local/share/omarchy-buzz/backups/20261001T054453.461820Z`), both harness
@@ -157,13 +164,15 @@ real upload or download had been exercised at this line's writing.
 
 No branch is in progress; all worktrees are removed.
 
-No branch is in progress; all worktrees are removed.
+No branch is in progress; all worktrees are removed. Marketplace update
+request omacom/omarchy-plugin-marketplace#9501 (commit `7d5faf2`) awaits a
+maintainer; draft release `v0.0.24` is unpublished. "Create a new community"
+is deliberately a buzz.xyz hand-off (Desktop creates on Builderlab's private
+API; `DESIGN.md`).
 
-Resume order: hear the maintainer's verdict on presence dots, Test model
-("The model answered." expected) and the new header → marketplace update
-through the "verify or update a listed plugin" form (newer-commit path) so
-the listing, the preview card and a published release line up → cut and
-publish a release for that commit → then the next feature.
+Resume order: check #9501 → when it is promoted, consider a fresh update
+request plus a release for the then-current commit → next feature (Desktop
+parity candidates: reactions, edit/delete own messages, search).
 run on `vClaude` from the panel (then adjust the patterns in
 `helper/src/agents_service/models.rs` if the sentence is wrong) →
 presence/"Update your status" → community distribution (x86-64 package,
