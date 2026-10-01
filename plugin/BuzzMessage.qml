@@ -16,6 +16,8 @@ Column {
   readonly property bool sample: !!service && service.sampleMode
   readonly property bool lead: !row.grouped
   readonly property bool ready: !!service && !!row && typeof row.author === "string"
+  // The author's verified status from the room's roster (`user_status`), if any.
+  readonly property var authorStatus: ready && lead ? service.authorStatus(row.author) : null
   // Thread replies nest compactly: at most three steps of indentation.
   readonly property int depth: Number.isInteger(row.depth) ? row.depth : 1
   readonly property real indent: Math.min(Math.max(depth - 1, 0), 3) * Style.space(14)
@@ -98,7 +100,7 @@ Column {
           text: !root.ready ? "" : root.sample ? root.row.author + " · " + root.row.role : root.service.messageAuthorName(root.row.author)
           textFormat: Text.PlainText
           elide: Text.ElideRight
-          width: Math.min(implicitWidth, parent.width - stamp.width - agentTag.width - parent.spacing * 2)
+          width: Math.min(implicitWidth, parent.width - stamp.width - agentTag.width - statusTag.width - parent.spacing * 3)
           color: Color.accent
           font.family: Style.font.family
           font.pixelSize: Style.font.body
@@ -107,6 +109,26 @@ Column {
           Controls.ToolTip.text: root.sample || !root.ready ? "" : root.row.author
           MouseArea {
             id: authorHover
+            anchors.fill: parent
+            hoverEnabled: true
+            acceptedButtons: Qt.NoButton
+          }
+        }
+        Text {
+          id: statusTag
+          objectName: "buzzAuthorStatus"
+          anchors.baseline: author.baseline
+          visible: !!root.authorStatus
+          // No explicit width: an emoji's implicit width must not depend on it.
+          text: visible ? root.service.statusEmojiText(root.authorStatus) : ""
+          textFormat: Text.PlainText
+          color: Color.foreground
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+          Controls.ToolTip.visible: statusHover.containsMouse && root.authorStatus && root.authorStatus.text !== ""
+          Controls.ToolTip.text: root.authorStatus ? root.authorStatus.text : ""
+          MouseArea {
+            id: statusHover
             anchors.fill: parent
             hoverEnabled: true
             acceptedButtons: Qt.NoButton

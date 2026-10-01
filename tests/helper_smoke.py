@@ -48,7 +48,7 @@ def status(frame, kind):
     assert frame["status"]["identity"] is None, frame
     assert frame["status"]["relay"] is None, frame
     assert frame["status"]["clockSkewSeconds"] is None, frame
-    assert frame["capabilities"] == ["connection_status", "room_catalog", "room_history", "message_send", "thread_send", "room_recipients", "history_auto_refresh", "room_activity", "agent_profiles", "thread_replies", "thread_summaries", "dm_open", "older_history", "live_updates", "setup_assist", "community_join", "invite_mint", "attachments"], frame
+    assert frame["capabilities"] == ["connection_status", "room_catalog", "room_history", "message_send", "thread_send", "room_recipients", "history_auto_refresh", "room_activity", "agent_profiles", "thread_replies", "thread_summaries", "dm_open", "older_history", "live_updates", "setup_assist", "community_join", "invite_mint", "attachments", "user_status"], frame
     assert frame["status"]["catalog"]["state"] == "unavailable", frame
     assert frame["status"]["catalog"]["rooms"] == [], frame
     assert frame["status"]["history"] == {
@@ -74,6 +74,7 @@ def status(frame, kind):
     assert frame["status"]["invites"] == {
         "state": "idle", "code": None, "expiresAt": None, "maxUses": None, "role": None, "category": None,
     }, frame
+    assert frame["status"]["userStatus"] == {"state": "unavailable", "mine": None, "category": None}, frame
     assert frame["instanceId"] and frame["generation"] == 1, frame
 
 
@@ -196,6 +197,16 @@ def main():
                 client.sendall(json.dumps(join).encode() + b"\n")
                 error = frames.matching(join["id"])
                 assert error["type"] == "error" and error["category"] == "relay_unavailable", error
+                # A status needs a working session: refused, nothing signed or saved.
+                status_set = {"version": 1, "id": "00000000-0000-4000-8000-000000000003", "type": "set_status",
+                              "text": "In a meeting", "emoji": "\U0001f5e3\ufe0f", "expiresInHours": 4}
+                status_clear = {"version": 1, "id": "00000000-0000-4000-8000-000000000004", "type": "clear_status"}
+                for payload in (status_set, status_clear):
+                    client.sendall(json.dumps(payload).encode() + b"\n")
+                    error = frames.matching(payload["id"])
+                    assert error["type"] == "error" and error["category"] == "relay_unavailable", error
+                client.sendall(request("status0", "get_snapshot"))
+                assert frames.matching("status0")["status"]["userStatus"]["state"] == "unavailable"
                 # No relay yet: nothing to create an identity for.
                 client.sendall(request("create0", "create_identity"))
                 error = frames.matching("create0")
@@ -218,7 +229,7 @@ def main():
             daemon.send_signal(signal.SIGTERM)
             assert daemon.wait(timeout=5) == 0, "SIGTERM did not stop daemon cleanly"
             assert not endpoint.exists(), "standalone daemon left its socket behind"
-            print("PASS: unconfigured hello/status, malformed and oversized requests, bridge EOF, setup assist refusals and relay save, invite and room action refusals, SIGTERM socket cleanup")
+            print("PASS: unconfigured hello/status, malformed and oversized requests, bridge EOF, setup assist refusals and relay save, invite, room action and status refusals, SIGTERM socket cleanup")
         finally:
             for process in reversed(processes):
                 stop(process)
