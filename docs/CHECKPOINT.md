@@ -2795,3 +2795,16 @@ upstream references are to the pinned Buzz `781d3951`. Presence
   `:shortcode:` images (shown as text here), and the visual result on the
   installed shell. A panel older than this one refuses a helper announcing 19
   capabilities: update both together.
+
+## Marketplace listing approved — October 1
+
+- omacom/omarchy-plugin-marketplace#9414: after the bounded-client reply, the
+  reviewer re-reviewed the complete plugin at `4692efa` and accepted the
+  reported remote-build, service-management, installer, privilege and
+  package-manager capabilities within the documented explicit setup and
+  user-service scope ("this decision applies only to this commit"). The
+  marketplace bot published it: https://omarchyplugins.com/plugin.html?id=community.buzz
+  (labels `listed`, `manual-setup`, `approved-and-verified`; verification
+  method `maintainer-reviewed`). Commits after `4692efa` (0.0.22 onwards) are
+  not covered by that review; a listing update goes through the
+  marketplace's own re-validation.

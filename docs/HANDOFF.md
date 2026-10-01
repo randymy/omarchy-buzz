@@ -116,12 +116,12 @@ maintainer's fork at the reviewed PR commit, `relay_resource_limit`; SHA256
 36798105802, rollback backup
 `~/.local/share/omarchy-buzz/backups/20261001T011734.112722Z`), both harness
 bundles `ready`, plugin at `256154e` after one clean shell restart; the panel
-authenticates and shows rooms, DMs and the running agent. The reply to
-the marketplace reviewer (omacom/omarchy-plugin-marketplace#9414) was posted on
-the maintainer's instruction on September 30 (comment 5923152389); the issue
-still carries `needs-fixes` and `security-review-required` until a
-maintainer re-reviews, and its body still describes 0.0.13 (the validation
-bot checked `e3c7c46`); a maintainer may ask for a fresh validation.
+authenticates and shows rooms, DMs and the running agent. **Listed on the
+Omarchy plugin marketplace** (https://omarchyplugins.com/plugin.html?id=community.buzz,
+`approved-and-verified`, `manual-setup`) after the reviewer accepted the
+bounded WebSocket client at `4692efa` on October 1; that approval names that
+commit only. Release 0.0.22 (`c563ca6`, Update your status) followed and is
+not part of the reviewed snapshot.
 Before that, 0.0.20 (`26cb346`) carried the model check, clock skew and the
 portal file chooser.
 
@@ -160,7 +160,7 @@ real upload or download had been exercised at this line's writing.
 
 No branch is in progress; all worktrees are removed.
 
-Resume order: watch #9414 for the reviewer's answer → a real **Test model**
+Resume order: install 0.0.22 when its build lands (run 36807469560) → draft release `v0.0.21` on the maintainer's word (`release.yml`) → a real **Test model**
 run on `vClaude` from the panel (then adjust the patterns in
 `helper/src/agents_service/models.rs` if the sentence is wrong) →
 presence/"Update your status" → community distribution (x86-64 package,
