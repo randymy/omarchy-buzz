@@ -110,14 +110,17 @@ Do not claim full live desktop acceptance solely from helper/socket tests.
 
 ## In flight at the September 30 evening stop (read before continuing)
 
-**Installed:** helper 0.0.20 (`26cb346`; model check for agents, clock skew,
-portal file chooser; SHA256
-`dd72a3ab9bd4302ac2d2c9f17922a437e51834d5fa8d6e789cc9463bc5dc2739`, ARM64 run
-36784460429, rollback backup
-`~/.local/share/omarchy-buzz/backups/20260930T222412.125256Z`), both harness
-bundles refreshed to `ready` (the launcher changed; the running `vClaude`
-unit still holds the previous launcher until its next start), and the plugin
-at `5c5471b` (`main`) after one clean shell restart.
+**Installed:** helper 0.0.21 (`256154e`; bounded WebSocket client from the
+maintainer's fork at the reviewed PR commit, `relay_resource_limit`; SHA256
+`a4017c4bd66573dee5a6df4ea7904c6642b3b0400491b3ddc4fb23240882f22d`, ARM64 run
+36798105802, rollback backup
+`~/.local/share/omarchy-buzz/backups/20261001T011734.112722Z`), both harness
+bundles `ready`, plugin at `256154e` after one clean shell restart; the panel
+authenticates and shows rooms, DMs and the running agent. The marketplace
+listing (omacom/omarchy-plugin-marketplace#9414) is waiting on the reply to
+the reviewer's comment; a draft was shown to the maintainer at this stop.
+Before that, 0.0.20 (`26cb346`) carried the model check, clock skew and the
+portal file chooser.
 
 Two things from that install to know:
 
@@ -154,7 +157,7 @@ real upload or download had been exercised at this line's writing.
 
 No branch is in progress; all worktrees are removed.
 
-Resume order: a real **Test model**
+Resume order: post or adjust the #9414 reply (maintainer's call) → a real **Test model**
 run on `vClaude` from the panel (then adjust the patterns in
 `helper/src/agents_service/models.rs` if the sentence is wrong) →
 presence/"Update your status" → community distribution (x86-64 package,

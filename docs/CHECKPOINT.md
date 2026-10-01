@@ -2628,3 +2628,7 @@ unavailable model failed silently on the agent's first turn. Contract in
   301 passed (`RUST_TEST_THREADS=1`), `cargo fmt --check` clean, helper and
   agents smoke tests, `--bridge` and default previews pass, read-only relay
   check unchanged. Released as 0.0.21.
+
+- Installed 0.0.21 on the maintainer's machine (helper SHA256
+  `a4017c4b…`, run 36798105802); the panel authenticated through the bounded
+  client at once, bundles `ready`, one shell restart.
