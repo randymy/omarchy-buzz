@@ -3429,3 +3429,16 @@ section just bound to one relay, so it stops here. Design:
   attestation), but a leaked key speaks in every community at once and a
   revocation must reach every relay; per-community keys would isolate that
   at the cost of separate identities and attestations.
+
+## Release 0.0.26 — October 1
+
+- Merges `agent-community` (`ba7073c`): agents belong to a community (persona
+  `relay`, migration from the unit file, every relay path per agent, the
+  Agents section grouped by community). "Add to this community" (one agent,
+  several community instances) is designed in the checkpoint and built next.
+- `tests/Navigation.qml`: the 720×500 agent-editor header measurement now
+  waits one more stage tick for layout; it had failed about one run in three
+  across several merges and passes 6/6 after the change.
+- Verified on the merged tree: Rust 355 passed (`RUST_TEST_THREADS=1`), fmt
+  clean; Python 108; helper and agents smoke; packaging; default plus all 28
+  named previews. Helper and plugin install together (new status keys).

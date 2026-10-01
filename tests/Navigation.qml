@@ -201,7 +201,11 @@ ShellRoot {
           narrow.openAgentEditor(test.agentId)
           test.stage = 3
         } else if (test.stage === 3) {
+          // One tick for the editor to open; a second for its header row to lay out
+          // (measuring on the first tick raced the layout about one run in three).
           check(one("buzzHeaderPlace", narrow).text === "vClaude" && one("buzzHeaderBack", narrow).visible, "Narrow agent header wrong")
+          test.stage = 4
+        } else if (test.stage === 4) {
           test.expectHeaderFits("720 agent", narrow)
           narrow.backToRooms()
           // Escape order, one step per press. Start in the composer with a mention list open.
