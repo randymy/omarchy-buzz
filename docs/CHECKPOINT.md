@@ -2796,6 +2796,113 @@ upstream references are to the pinned Buzz `781d3951`. Presence
   installed shell. A panel older than this one refuses a helper announcing 19
   capabilities: update both together.
 
+## Presence (`presence`) — October 1
+
+Branch `presence` (not merged or installed; no real relay contacted, nothing
+real published). Design brief: [PRESENCE_MAP.md](PRESENCE_MAP.md) §1, §3–§5;
+upstream references are to the pinned Buzz `781d3951`. Same structure as
+`user_status`: the helper derives, signs, publishes and verifies; the panel
+sends a preference and an idle hint and presents validated projections.
+
+- What: Buzz Desktop's presence. The account menu gains **Set yourself as…**
+  (Auto / Away / Appear offline, the current one marked) directly below
+  **Update your status**; the account avatar carries your own state as a small
+  corner dot (green online, amber away, grey offline; the connection dot stays
+  at the end of the row). Others' state is a dot before the name in DM rows,
+  new-DM candidates, the composer's recipient picker and message authors
+  (tooltip Online / Away / Offline); no dot when unknown.
+- Request: `set_presence {id: UUID, mode: "auto"|"away"|"offline", active:
+  bool}` (both required, never null, on no other request). Refused with
+  `relay_unavailable` unless authenticated (the panel sends it again on
+  connect); otherwise answered at once (`status` frame), the relay's answer
+  arriving in the view. An unchanged `(mode, active)` is a no-op.
+- Helper (`helper/src/presence.rs`, capability `presence`, 20th): derived
+  state `offline` (mode offline), `away` (mode away, or auto and not active),
+  `online` (auto and active). Event: pinned `buzz_sdk::build_presence_update`
+  (exists at the pin, `builders.rs:1898-1910`): kind 20001, content the state,
+  `["status", state]`; sent with `send_raw`, resolved only by the relay's `OK`
+  for that exact id (15 s, then `relay_unavailable`). Re-published every 60 s
+  while online or away and fresh; offline is published once and never
+  repeated. One publication in flight; at most one per 5 s process-wide
+  (`presence::GATE`); a change inside the gap is sent when the gap ends (not
+  refused). A refused or unanswered heartbeat is a view category only; the
+  connection is unaffected. When the last UI bridge disconnects the daemon
+  sends `PresenceDetach` (offline once, if anything else was published, then
+  nothing until the next `set_presence`); on SIGTERM/idle exit it sends
+  `PresenceShutdown` and waits at most 2 s (`ipc::PRESENCE_SHUTDOWN`) for the
+  offline `OK` before stopping the session (an unanswered heartbeat is
+  abandoned; the 5 s gate still applies).
+- Reads: `QueryRequest::Presence {authors ≤ 20}` →
+  `{"kinds":[20001],"authors":[…],"limit":n}`, the filter the relay's
+  `synthesize_presence` intercepts (`bridge.rs:2539-2631`). Only after the
+  panel's first `set_presence` on the connection (no existing fixture issues
+  one), on the joined-room check (about every 30 s), after a roster read, and
+  once on the first preference; one read in flight, batches of 20 run one after
+  another, at most 60 subjects: the selected room's verified roster and the
+  partners of listed DMs, without this identity. `presence::verify` is the only
+  routine (fail closed, the whole read rejected): signature, kind 20001, signer
+  equal to the pinned NIP-11 `self` key (`relay_pin`), exactly one `p` tag with
+  canonical 64-hex inside the queried subjects. Per subject the newest event;
+  `created_at` more than 240 s from now reads offline; content `online` /
+  `away` / `offline` or the legacy `{"status": …}` JSON up to 128 bytes, else
+  that subject is unknown; a subject absent from the answer is offline (the
+  relay's empty answer is authoritative). Self-signed peer events are never
+  used. A failed read keeps the last states until they are 240 s old.
+- Status frame: each `recipients.entries[]` gains `presence: "online"|"away"|
+  "offline"|null` (this identity's own entry shows what the relay accepted);
+  new `presence: {state: unavailable|ready|failed, mode, published,
+  lastPublishedAt, category, peers: [{key, presence}]}` (`peers` ≤ 60, sorted,
+  never this identity; categories `presence_rejected`, `relay_unavailable`).
+- Panel (`Service.qml`): strict validation of `presence` (exact keys, enums,
+  `published` and `lastPublishedAt` both or neither, `ready` needs `published`,
+  `failed` needs a category, peers canonical, distinct, not this identity) and
+  of each roster `presence`; `IdleMonitor` from `Quickshell.Wayland` (installed
+  Quickshell 0.3.1: `enabled`, `timeout` in seconds, `respectInhibitors`,
+  `isIdle`), 600 s, enabled only on the Wayland platform outside sample mode;
+  when it is unavailable (offscreen, or `enabled` turns false because the
+  compositor lacks ext-idle-notify-v1) the hint is "active while the panel is
+  open". The preference is kept in `presence.json` (`{"version":1,"mode":…}`,
+  beside `view.json`, whose exact keys the last-room check pins). `set_presence`
+  is sent on connect, on a preference change and when idleness flips, never
+  twice for the same `(mode, active)` in a session; a refusal is retried after
+  5 s. Sample mode shows fixture states and publishes nothing. The capability
+  list now allows 20. `PresenceDot.qml` draws every dot.
+- Fixed on the way: `PanelContent.dmPartner` used `Array.isArray` on a
+  Repeater's `modelData.participants`, which is an array-like there, so every
+  DM row's partner was empty (identicon key, status emoji). It now copies the
+  array-like first.
+- Evidence (synthetic only): Rust unit tests for the event against the pinned
+  builder, the derivation table, heartbeat scheduling and the 5 s gate on a
+  fake clock (including a panel flipping idleness every 500 ms), offline on
+  detach and shutdown (also with a heartbeat in flight), exact-id `OK`,
+  re-authentication, legacy content, and every verification rejection (forged
+  signature, self-signed, non-relay signer, missing / extra / bare /
+  non-canonical / short `p`, subject outside the roster, wrong kind, stale
+  either way, malformed content); NIP-11 (`self` only; a document with only an
+  operator `pubkey` yields no signer); protocol shapes; IPC gating
+  (`presence_needs_an_authenticated_session_and_reaches_the_actor_as_sent`);
+  and `presence_integration` through the production observer on the loopback
+  fixture: exactly one signed 20001 `online` with `["status","online"]`
+  acknowledged on its exact `OK`, the relay-signed read (`peers`, roster
+  entries, own entry), the no-op, away after the gap, the heartbeat, a refusal
+  (`presence_rejected`, still authenticated), offline not repeated, a read
+  signed by another key ignored, offline on shutdown within 2 s, and offline
+  once when the last panel leaves. Every `scripts/preview` mode passes,
+  including the new `--presence` (`tests/Presence.qml` +
+  `tests/presence_fixture.py`, which also checks the saved `presence.json`).
+- Deviation from the brief: the relay's signing key is NIP-11 `self`, not
+  `pubkey` (pinned `nip11.rs:36-38,70-72`: `pubkey` is the operator's contact
+  and `None` in Buzz; `synthesize_presence` signs with `state.relay_keypair`,
+  which `self` advertises). The helper already parses `self` into the pinned,
+  per-relay `relay_pin` (`catalog::info_signer`), so no new NIP-11 field was
+  added; without `self` there is no pin and no relay-signed read at all.
+- Not verified: any publication or read on a real relay (the relay's answer
+  text, Redis TTL, whether the deployed relay intercepts the filter), Buzz
+  Desktop showing a state set here (and the reverse), the idle flip after 10
+  real minutes (on this Hyprland session `IdleMonitor` is created and stays
+  enabled), and the visual result on the installed shell. A panel older than
+  this one refuses a helper announcing 20 capabilities: update both together.
+
 ## Marketplace listing approved — October 1
 
 - omacom/omarchy-plugin-marketplace#9414: after the bounded-client reply, the
