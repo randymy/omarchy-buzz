@@ -2808,3 +2808,7 @@ upstream references are to the pinned Buzz `781d3951`. Presence
   method `maintainer-reviewed`). Commits after `4692efa` (0.0.22 onwards) are
   not covered by that review; a listing update goes through the
   marketplace's own re-validation.
+
+- Live verdict (maintainer, October 1, ~22:00 CDT, 0.0.22 installed): "status
+  works" — the first real kind-30315 publish from the account menu was
+  accepted by the relay and shown back in the panel.
