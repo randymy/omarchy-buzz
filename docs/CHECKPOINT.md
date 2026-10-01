@@ -3301,3 +3301,10 @@ step after joining".
   debug helper build).
 - Not verified: the installed shell, a real relay's join and open-rooms
   timing, and the maintainer's look at the pane.
+- After the merge (`c7209b9`): the sidebar's open-rooms section now stays
+  folded while the welcome pane lists the same rooms (it still opens on
+  request, and on its own when there is no welcome pane); `--welcome` and
+  `--onboarding` updated to the pane's copies. Sweep note: a preview sweep
+  can leave a crashed mode's `quickshell` behind, which then fails later
+  modes (`--ansi-art`, `--navigation`, `--settings` here); each passes alone
+  once the stray instance is killed by PID.

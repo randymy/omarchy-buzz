@@ -837,10 +837,11 @@ FocusScope {
   // New direct message: a compact picker over the open room's verified members.
   readonly property bool newDmAvailable: !!service && service.dmOpenAvailable
   property bool newDmOpen: false
-  // The sidebar's join section: always when connected without rooms, else on request.
+  // The sidebar's join section: on request, or when connected without rooms
+  // while the welcome pane is not already listing the same open rooms.
   property bool joinOpen: false
   readonly property bool joinFooterShown: connected && !!service && !service.sampleMode && service.joinAvailable
-    && (service.streamRooms.length === 0 || joinOpen)
+    && (joinOpen || (service.streamRooms.length === 0 && !welcomeShown))
   // Leave room: a second click within five seconds confirms, like Delete.
   property bool leaveArmed: false
   Timer { id: leaveDisarm; interval: 5000; onTriggered: root.leaveArmed = false }

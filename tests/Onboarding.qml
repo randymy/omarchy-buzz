@@ -116,12 +116,14 @@ ShellRoot {
           if (!service.publicKeyCopied || shown("buzzCopyPublicKey")[0].text !== "Copied") throw new Error("Copy not confirmed")
           if (service.setupRelay("wss://fixture.example") || service.createIdentity())
             throw new Error("Setup sent while authenticated")
-          // No rooms yet: the sidebar lists open rooms, saying they need no approval.
-          if (shown("buzzJoinFooter").length !== 1 || shown("buzzOpenRooms").length !== 1 || shown("buzzOpenRoom").length !== 1
-              || findNamed(view, "buzzOpenRooms", [])[0].children.every(function(c) { return !c.text || c.text.indexOf("no approval") === -1 }))
+          // No rooms yet: the welcome pane lists the open rooms, saying they need
+          // no approval; the sidebar's copy stays folded beside it.
+          if (shown("buzzWelcomePane").length !== 1 || shown("buzzJoinFooter").length !== 0
+              || shown("buzzWelcomeOpenRooms").length !== 1 || shown("buzzWelcomeOpenRoom").length !== 1
+              || findNamed(view, "buzzWelcomeOpenRooms", [])[0].children.every(function(c) { return !c.text || c.text.indexOf("no approval") === -1 }))
             throw new Error("Open rooms not offered with their no-approval note")
           if (service.joinRoom("bbbbbbbb-0000-4000-8000-00000000000b")) throw new Error("Joined a room that is not listed as open")
-          click("buzzOpenRoomJoin")
+          click("buzzWelcomeOpenRoomJoin")
           test.stage = 8
         } else if (test.stage === 8 && service.selectedRoomId === "aaaaaaaa-0000-4000-8000-00000000000a") {
           if (service.openRooms.length !== 0 || shown("buzzJoinFooter").length) throw new Error("Joined room still offered")
@@ -139,7 +141,9 @@ ShellRoot {
           click("buzzLeaveRoom")
           test.stage = 10
         } else if (test.stage === 10 && service.roomAction.state === "acknowledged" && service.rooms.length === 0) {
-          if (service.openRooms.length !== 1 || shown("buzzJoinFooter").length !== 1) throw new Error("Left room not offered again")
+          // Back to no rooms: the welcome pane offers the left room again.
+          if (service.openRooms.length !== 1 || shown("buzzWelcomeOpenRoom").length !== 1 || shown("buzzJoinFooter").length !== 0)
+            throw new Error("Left room not offered again")
           record.reload()
           test.stage = 11
         } else if (test.stage === 11) {

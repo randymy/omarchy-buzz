@@ -139,14 +139,15 @@ ShellRoot {
           check(texts().indexOf("Connect Buzz") === -1, "Stale Connect Buzz heading shown")
           check(service.statusLabel === "Authenticated · no rooms joined yet" && one("buzzHeaderStatus").text.endsWith(service.statusLabel), "Header wording wrong: " + one("buzzHeaderStatus").text)
           check(texts().indexOf("Rooms · none joined") !== -1 && texts().join("|").indexOf("Partial list") === -1, "Sidebar wording wrong")
-          check(shown("buzzJoinFooter").length === 1 && !view.joinOpen, "Sidebar open rooms not shown by default with no rooms")
+          // The welcome pane carries the open rooms; the sidebar copy stays folded until asked.
+          check(shown("buzzJoinFooter").length === 0 && !view.joinOpen, "Sidebar open rooms duplicated beside the welcome pane")
           test.stage = 2
         } else if (test.stage === 2 && service.openRoomsState === "snapshot") {
           var rows = shown("buzzWelcomeOpenRoom")
           check(rows.length === 2 && one("buzzWelcomeOpenRooms").children.some(function(c) { return c.text && c.text.indexOf("no approval") !== -1 }),
             "Open rooms not listed inline")
           check(findNamed(rows[1], "", []).some(function(c) { return c.text === "# welcome-everyone" }), "Room name wrong")
-          check(shown("buzzOpenRoom").length === 2, "Sidebar open rooms missing")
+          check(shown("buzzOpenRoom").length === 0, "Sidebar open rooms duplicated beside the welcome pane")
           // The invite field and the switcher.
           check(shown("buzzWelcomeInviteInput").length === 1 && texts().indexOf("Have an invite? Paste it below") !== -1, "Invite row missing")
           check(shown("buzzWelcomeOpenRoomsRefresh").length === 1, "Refresh missing")
