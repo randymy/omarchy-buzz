@@ -2691,3 +2691,12 @@ keyring check and notices inventory on a real x86-64 runner;
 `gh run download` of artifacts from the same, still-running workflow run;
 `gh release create --draft`; and `fetch` against real GitHub downloads (the
 asset redirect host is assumed from GitHub's current behavior).
+
+- Verified after the merge (`7446113`): the refactored ARM64 caller (run
+  36804043638) and the first x86-64 preview (run 36804041261) both pass;
+  `scripts/verify-package --arch x86_64 --source-revision 7446113` accepts
+  the x86-64 artifact (binary SHA256 `f1b3ae4e…`, helper 0.0.21, backend
+  `781d395`, `ld-linux-x86-64.so.2` plus the same four libraries as ARM64,
+  245 notice packages, 14 flagged for review as before). `release.yml` has
+  not been run; it creates only a draft release and waits for the
+  maintainer's say-so.
