@@ -7,6 +7,7 @@ systemd unit, Secret Service item, script or relay is touched. HOME, the XDG
 directories and the runtime directory are private temporary directories.
 """
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -24,8 +25,28 @@ ROOM = "00000000-0000-4000-8000-0000000000b1"
 OWNER = "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
 AGENT_KEYS = ["id", "name", "description", "instructions", "harness", "model", "acpCommand", "rooms",
               "respondTo", "workspace", "identity", "enrolled", "unit", "startAtLogin", "answersDms", "published", "lastError",
-              "relay", "community"]
+              "relay", "community", "instances"]
+INSTANCE_KEYS = ["relay", "community", "rooms", "unit", "startAtLogin", "published", "lastError", "state"]
 RELAY = "ws://127.0.0.1:9/"
+OTHER_RELAY = "ws://127.0.0.1:7/"
+# Public key of the synthetic secret 2 (NIP-OA test vector): an enrolled agent's identity.
+AGENT_IDENTITY = "c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5"
+
+
+def unit_name(agent_id, relay=None):
+    """The unit of an agent's primary instance, or of its instance in `relay`."""
+    if relay is None:
+        return "omarchy-buzz-agent-%s.service" % agent_id
+    return "omarchy-buzz-agent-%s-%s.service" % (agent_id, hashlib.sha256(relay.encode()).hexdigest()[:12])
+
+
+def v1_persona(agent):
+    """A version 2 agent's first instance as a version 1 persona record."""
+    first = dict(agent["instances"][0])
+    del first["primary"]
+    persona = {k: v for k, v in agent.items() if k != "instances"}
+    persona.update(first)
+    return persona
 
 
 class Frames:
@@ -72,6 +93,15 @@ def check_status(frame, kind, instance=None):
         assert harness == {"id": harness["id"], "bundle": "missing", "signedIn": None}, harness
     for agent in status["agents"]:
         assert sorted(agent) == sorted(AGENT_KEYS), agent
+        assert 1 <= len(agent["instances"]) <= 4, agent
+        for instance in agent["instances"]:
+            assert sorted(instance) == sorted(INSTANCE_KEYS), instance
+        # The top level repeats the first instance.
+        first = agent["instances"][0]
+        assert (agent["relay"], agent["community"], agent["rooms"], agent["startAtLogin"], agent["published"],
+                agent["lastError"], agent["unit"]) == (first["relay"], first["community"], first["rooms"],
+                                                      first["startAtLogin"], first["published"], first["lastError"],
+                                                      first["state"]), agent
     return status
 
 
@@ -162,8 +192,13 @@ def main():
                 assert agent["unit"] == "inactive" and agent["published"] is False and agent["lastError"] is None
                 # Bound to the active community, named from the configuration.
                 assert agent["relay"] == RELAY and agent["community"] == "Smoke", agent
-                record = json.loads(store.read_text())["agents"][0]
-                assert record["relay"] == RELAY, record
+                assert agent["instances"] == [{"relay": RELAY, "community": "Smoke", "rooms": [ROOM],
+                                               "unit": unit_name(agent["id"]), "startAtLogin": False,
+                                               "published": False, "lastError": None, "state": "inactive"}], agent
+                saved = json.loads(store.read_text())
+                assert saved["version"] == 2, saved
+                record = saved["agents"][0]
+                assert record["instances"][0]["relay"] == RELAY and record["instances"][0]["primary"] is True, record
                 workspace = Path(agent["workspace"])
                 assert workspace == base / "state/omarchy-buzz-room-workspaces" / agent["id"], agent
                 assert stat.S_IMODE(workspace.stat().st_mode) == 0o700
@@ -173,7 +208,8 @@ def main():
                 status = check_status(frames.answer(uuid(3)), "status", instance)
                 assert status["pending"]["state"] == "done" and status["agents"][0]["name"] == "Renamed", status
                 assert json.loads(store.read_text())["agents"][0]["name"] == "Renamed"
-                assert json.loads(store.read_text())["agents"][0]["relay"] == RELAY
+                assert json.loads(store.read_text())["agents"][0]["instances"][0]["relay"] == RELAY
+                record = json.loads(store.read_text())["agents"][0]
 
                 # Refused requests: a bad field, an unknown room, an unknown harness.
                 for n, kind, extra in (
@@ -208,6 +244,27 @@ def main():
                 client.sendall(request(uuid(15), instance, "probe_model", agentId=agent["id"], model="opus"))
                 assert frames.answer(uuid(15)) == {"version": 1, "type": "error", "id": uuid(15), "instanceId": instance,
                                                    "category": "agent_invalid"}
+                # Instances: a never-enrolled agent cannot join another community,
+                # the only community cannot be left, a relay it is not in is refused.
+                for n, kind, extra in (
+                    (16, "enroll_agent_in", {"agentId": agent["id"], "relay": RELAY, "rooms": [ROOM]}),
+                    (17, "leave_agent_community", {"agentId": agent["id"], "relay": RELAY}),
+                    (18, "start_agent", {"agentId": agent["id"], "relay": OTHER_RELAY}),
+                ):
+                    client.sendall(request(uuid(n), instance, kind, **extra))
+                    status = check_status(frames.answer(uuid(n)), "status", instance)
+                    assert status["pending"] == {"requestId": uuid(n), "type": kind, "state": "failed",
+                                                 "category": "agent_invalid", "detail": None}, status
+                # Malformed: nine rooms, no rooms key, a non-canonical relay.
+                for n, extra in (
+                    (19, {"agentId": agent["id"], "relay": RELAY, "rooms": [uuid(k) for k in range(9)]}),
+                    (20, {"agentId": agent["id"], "relay": RELAY}),
+                    (21, {"agentId": agent["id"], "relay": "ws://127.0.0.1:9", "rooms": [ROOM]}),
+                ):
+                    client.sendall(request(uuid(n), instance, "enroll_agent_in", **extra))
+                    assert frames.answer(uuid(n)) == {"version": 1, "type": "error", "id": uuid(n),
+                                                      "instanceId": instance, "category": "agent_invalid"}
+                assert len(json.loads(store.read_text())["agents"][0]["instances"]) == 1
                 # refresh_bundle: the installed agent-bundle is absent.
                 client.sendall(request(uuid(11), instance, "refresh_bundle", harness="codex"))
                 assert frames.answer(uuid(11))["status"]["pending"]["category"] == "harness_missing"
@@ -275,7 +332,7 @@ def main():
             # takes the configuration's first community. Migrated once on load.
             older = []
             for n in (1, 2):
-                persona = dict(record, id="00000000-0000-4000-8000-0000000000a%d" % n, name="Old %d" % n,
+                persona = dict(v1_persona(record), id="00000000-0000-4000-8000-0000000000a%d" % n, name="Old %d" % n,
                                workspace=str(base / ("home/old%d" % n)))
                 del persona["relay"]
                 older.append(persona)
@@ -304,15 +361,62 @@ def main():
                 agents = check_status(Frames(client.fileno()).read(), "hello")["agents"]
                 assert [(a["name"], a["relay"], a["community"]) for a in agents] == [
                     ("Old 1", "ws://127.0.0.1:7/", "127.0.0.1:7"), ("Old 2", RELAY, "Smoke")], agents
+                # Each wrapped persona is its agent's primary instance: same unit name.
+                assert [[i["unit"] for i in a["instances"]] for a in agents] == [
+                    [unit_name(older[0]["id"])], [unit_name(older[1]["id"])]], agents
             migrated = json.loads(store.read_text())
-            assert [a["relay"] for a in migrated["agents"]] == ["ws://127.0.0.1:7/", RELAY], migrated
-            assert stat.S_IMODE(store.stat().st_mode) == 0o600
+            assert migrated["version"] == 2, migrated
+            assert [[(i["relay"], i["primary"], i["workspace"]) for i in a["instances"]] for a in migrated["agents"]] == [
+                [("ws://127.0.0.1:7/", True, older[0]["workspace"])], [(RELAY, True, older[1]["workspace"])]], migrated
+            backup = store.parent / "personas.v1.json"
+            assert json.loads(backup.read_text()) == {"version": 1, "agents": older}
+            assert stat.S_IMODE(store.stat().st_mode) == 0o600 and stat.S_IMODE(backup.stat().st_mode) == 0o600
             assert unit.read_text() == unit_text, "the unit file was changed"
+            daemon.send_signal(signal.SIGTERM)
+            assert daemon.wait(timeout=5) == 0
+
+            # A version 2 store with an agent enrolled in two communities: both
+            # instances reported with their own units; one community is left
+            # (no memberships recorded, so nothing is published), the last is not.
+            two = dict(migrated["agents"][1], identity=AGENT_IDENTITY)
+            second = dict(two["instances"][0], relay=OTHER_RELAY, primary=False, workspace=str(base / "home/second"))
+            two["instances"] = [two["instances"][0], second]
+            store.write_text(json.dumps({"version": 2, "agents": [two]}))
+            daemon = subprocess.Popen(
+                [str(binary), "agents-daemon", "--keep-running"], env=env,
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+            processes.append(daemon)
+            deadline = time.monotonic() + 5
+            while not endpoint.exists():
+                assert daemon.poll() is None, "daemon refused the version 2 store"
+                assert time.monotonic() < deadline, "daemon socket timed out"
+                time.sleep(0.02)
+            with socket.socket(socket.AF_UNIX) as client:
+                client.settimeout(5)
+                client.connect(str(endpoint))
+                frames = Frames(client.fileno())
+                hello = frames.read()
+                [agent] = check_status(hello, "hello")["agents"]
+                instance = hello["instanceId"]
+                assert agent["enrolled"] is True and agent["relay"] == RELAY, agent
+                assert [(i["relay"], i["community"], i["unit"]) for i in agent["instances"]] == [
+                    (RELAY, "Smoke", unit_name(two["id"])),
+                    (OTHER_RELAY, "127.0.0.1:7", unit_name(two["id"], OTHER_RELAY))], agent
+                client.sendall(request(uuid(30), instance, "leave_agent_community", agentId=two["id"], relay=OTHER_RELAY))
+                status = check_status(frames.answer(uuid(30)), "status", instance)
+                assert status["pending"]["state"] == "done", status
+                assert [i["relay"] for i in status["agents"][0]["instances"]] == [RELAY], status
+                client.sendall(request(uuid(31), instance, "leave_agent_community", agentId=two["id"], relay=RELAY))
+                status = check_status(frames.answer(uuid(31)), "status", instance)
+                assert status["pending"]["category"] == "agent_invalid", status
+            assert [i["relay"] for i in json.loads(store.read_text())["agents"][0]["instances"]] == [RELAY]
             daemon.send_signal(signal.SIGTERM)
             assert daemon.wait(timeout=5) == 0
             assert not list((base / "data").rglob("*")), "fake mode wrote into the data directory"
             print("PASS: agents hello/status, create/update/delete round trip with the agent's community, "
-                  "older store migrated from the unit file and the first community, refused requests, "
+                  "older store migrated from the unit file and the first community and wrapped into version 2 "
+                  "with its unit names, instances reported and left, refused instance requests, refused requests, "
                   "harness model check and probe gating, "
                   "malformed and oversized frames, bridge EOF, SIGTERM socket cleanup")
         finally:
