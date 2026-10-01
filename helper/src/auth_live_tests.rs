@@ -30,6 +30,8 @@ const POLICY: FreshnessPolicy = FreshnessPolicy {
     head: Duration::from_secs(1),
     live_poll: Duration::from_secs(3),
     status_gap: crate::user_status::GAP,
+    presence_gap: crate::presence::GAP,
+    presence_heartbeat: crate::presence::HEARTBEAT,
 };
 
 fn event(key: &Keys, kind: u16, content: &str, tags: Vec<Tag>, at: u64) -> Event {

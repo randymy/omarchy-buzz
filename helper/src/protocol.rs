@@ -48,6 +48,10 @@ pub struct Request {
     pub path: Option<String>,
     /// `set_status` only: a native emoji or `:shortcode:` (`user_status::valid_emoji`).
     pub emoji: Option<String>,
+    /// `set_presence` only: `auto`, `away` or `offline` (`presence::Mode`).
+    pub mode: Option<String>,
+    /// `set_presence` only: the panel's idle hint (input within the threshold).
+    pub active: Option<bool>,
 }
 fn is_hash(value: &str) -> bool {
     crate::attachments::is_hash(value)
@@ -112,6 +116,7 @@ pub fn request(bytes: &[u8]) -> Result<Request, &'static str> {
             | "remove_pending_attachment"
             | "set_status"
             | "clear_status"
+            | "set_presence"
     ) {
         return Err("unsupported_request");
     }
@@ -266,6 +271,16 @@ pub fn request(bytes: &[u8]) -> Result<Request, &'static str> {
     } else if raw.get("emoji").is_some() {
         return Err("invalid_request");
     }
+    if r.kind == "set_presence" {
+        // Both required, never null.
+        if !matches!(raw.get("mode"), Some(serde_json::Value::String(m)) if crate::presence::Mode::parse(m).is_some())
+            || !matches!(raw.get("active"), Some(serde_json::Value::Bool(_)))
+        {
+            return Err("invalid_request");
+        }
+    } else if raw.get("mode").is_some() || raw.get("active").is_some() {
+        return Err("invalid_request");
+    }
     if matches!(
         r.kind.as_str(),
         "download_attachment" | "thumbnail_attachment"
@@ -296,7 +311,7 @@ pub fn request(bytes: &[u8]) -> Result<Request, &'static str> {
     // Room actions and mints are correlated like other publishing requests.
     if matches!(
         r.kind.as_str(),
-        "join_room" | "leave_room" | "mint_invite" | "set_status" | "clear_status"
+        "join_room" | "leave_room" | "mint_invite" | "set_status" | "clear_status" | "set_presence"
     ) {
         let id = uuid::Uuid::parse_str(&r.id).map_err(|_| "invalid_request")?;
         if id.to_string() != r.id {
@@ -405,6 +420,17 @@ pub enum Command {
         StatusIntent,
         tokio::sync::oneshot::Sender<Option<&'static str>>,
     ),
+    /// `presence`: the panel's preference and idle hint.
+    SetPresence(
+        crate::presence::Mode,
+        bool,
+        tokio::sync::oneshot::Sender<Option<&'static str>>,
+    ),
+    /// The last panel bridge left: publish `offline` once, then stop.
+    PresenceDetach,
+    /// The helper is stopping: publish `offline` (best effort); the reply
+    /// comes once the relay answered or nothing was sent.
+    PresenceShutdown(tokio::sync::oneshot::Sender<()>),
 }
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -657,6 +683,45 @@ pub struct Recipient {
     pub name: String,
     /// A verified, unexpired status (`user_status`); always serialized.
     pub status: Option<RecipientStatus>,
+    /// `online`, `away` or `offline` from a verified relay snapshot
+    /// (`presence`); none when unknown. Always serialized.
+    pub presence: Option<String>,
+}
+/// Another identity's presence (`presence`): a member of the shown roster or a
+/// DM partner, from the latest verified relay snapshot.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct PresencePeer {
+    pub key: String,
+    pub presence: String,
+}
+/// This identity's presence and the verified states of those shown.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PresenceView {
+    /// `unavailable` (no session, or nothing accepted yet), `ready` or `failed`.
+    pub state: String,
+    /// The preference the panel last sent on this connection, or none.
+    pub mode: Option<String>,
+    /// The state the relay last accepted from this identity, or none.
+    pub published: Option<String>,
+    /// Unix seconds of that acceptance.
+    pub last_published_at: Option<u64>,
+    /// Present only in `failed`: one of `presence::CATEGORIES`.
+    pub category: Option<String>,
+    /// At most `presence::SUBJECTS`, sorted by key; unknown keys are absent.
+    pub peers: Vec<PresencePeer>,
+}
+impl PresenceView {
+    pub fn unavailable() -> Self {
+        Self {
+            state: "unavailable".into(),
+            mode: None,
+            published: None,
+            last_published_at: None,
+            category: None,
+            peers: Vec::new(),
+        }
+    }
 }
 /// Another member's status as shown beside their name.
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -898,6 +963,7 @@ pub struct Status {
     pub pending_attachments: Vec<PendingAttachment>,
     pub upload: Upload,
     pub user_status: UserStatusView,
+    pub presence: PresenceView,
 }
 impl Status {
     pub fn new(c: &crate::config::Config) -> Self {
@@ -924,11 +990,12 @@ impl Status {
             pending_attachments: Vec::new(),
             upload: Upload::default(),
             user_status: UserStatusView::unavailable(None),
+            presence: PresenceView::unavailable(),
         }
     }
 }
 pub fn envelope(kind: &str, id: Option<&str>, instance: &str, s: &Status) -> serde_json::Value {
-    serde_json::json!({"version":1,"type":kind,"id":id,"instanceId":instance,"generation":s.generation,"capabilities":["connection_status","room_catalog","room_history","message_send","thread_send","room_recipients","history_auto_refresh","room_activity","agent_profiles","thread_replies","thread_summaries","dm_open","older_history","live_updates","setup_assist","community_join","invite_mint","attachments","user_status"],"backendRevision":crate::compatibility::BUZZ_REVISION,"status":s})
+    serde_json::json!({"version":1,"type":kind,"id":id,"instanceId":instance,"generation":s.generation,"capabilities":["connection_status","room_catalog","room_history","message_send","thread_send","room_recipients","history_auto_refresh","room_activity","agent_profiles","thread_replies","thread_summaries","dm_open","older_history","live_updates","setup_assist","community_join","invite_mint","attachments","user_status","presence"],"backendRevision":crate::compatibility::BUZZ_REVISION,"status":s})
 }
 pub async fn read_line<R: tokio::io::AsyncBufRead + Unpin>(
     r: &mut R,
@@ -1012,6 +1079,61 @@ mod tests {
             serde_json::json!({"version":1,"id":id,"type":"get_snapshot","maxUses":5}),
         ] {
             assert!(request(bad.to_string().as_bytes()).is_err(), "{bad}");
+        }
+    }
+    #[test]
+    fn presence_requests_carry_only_mode_and_active() {
+        let parse = |v: &serde_json::Value| request(&serde_json::to_vec(v).unwrap());
+        let id = "55555555-5555-4555-8555-555555555555";
+        for mode in ["auto", "away", "offline"] {
+            for active in [true, false] {
+                let ok = serde_json::json!({"version":1,"id":id,"type":"set_presence","mode":mode,"active":active});
+                let parsed = parse(&ok).unwrap();
+                assert_eq!(
+                    (parsed.mode.as_deref(), parsed.active),
+                    (Some(mode), Some(active))
+                );
+            }
+        }
+        let base = serde_json::json!({"version":1,"id":id,"type":"set_presence","mode":"auto","active":true});
+        for (field, value) in [
+            ("id", serde_json::json!("ui-1")),
+            ("mode", serde_json::Value::Null),
+            ("mode", serde_json::json!("online")),
+            ("mode", serde_json::json!("Auto")),
+            ("mode", serde_json::json!(1)),
+            ("active", serde_json::Value::Null),
+            ("active", serde_json::json!(1)),
+            ("active", serde_json::json!("true")),
+            ("text", serde_json::json!("online")),
+            ("emoji", serde_json::json!("🙂")),
+            ("kind", serde_json::json!(20001)),
+            ("pubkey", serde_json::json!("a".repeat(64))),
+            (
+                "roomId",
+                serde_json::json!("00000000-0000-4000-8000-000000000001"),
+            ),
+        ] {
+            let mut bad = base.clone();
+            bad[field] = value;
+            assert!(parse(&bad).is_err(), "{bad}");
+        }
+        for field in ["mode", "active"] {
+            let mut missing = base.clone();
+            missing.as_object_mut().unwrap().remove(field);
+            assert!(parse(&missing).is_err(), "{missing}");
+        }
+        // No other request carries them.
+        for extra in [
+            serde_json::json!({"mode":"auto"}),
+            serde_json::json!({"active":true}),
+        ] {
+            let mut other = serde_json::json!({"version":1,"id":"a","type":"subscribe"});
+            other
+                .as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            assert!(parse(&other).is_err(), "{other}");
         }
     }
     #[test]
@@ -1208,7 +1330,8 @@ mod state_tests {
                 "community_join",
                 "invite_mint",
                 "attachments",
-                "user_status"
+                "user_status",
+                "presence"
             ])
         );
         assert_eq!(v["status"]["catalog"]["state"], "unavailable");
@@ -1665,6 +1788,7 @@ mod state_tests {
                     text: "\\".repeat(crate::user_status::TEXT_BYTES),
                     emoji: Some(format!(":{}:", "a".repeat(32))),
                 }),
+                presence: Some("offline".into()),
             })
             .collect();
         status.activity = (0..20)
@@ -1770,6 +1894,19 @@ mod state_tests {
                 expires_at: Some(u64::MAX),
             }),
             category: Some("status_rate_limited".into()),
+        };
+        status.presence = PresenceView {
+            state: "failed".into(),
+            mode: Some("offline".into()),
+            published: Some("offline".into()),
+            last_published_at: Some(u64::MAX),
+            category: Some("presence_rejected".into()),
+            peers: (0..crate::presence::SUBJECTS)
+                .map(|_| PresencePeer {
+                    key: "d".repeat(64),
+                    presence: "offline".into(),
+                })
+                .collect(),
         };
         let encoded = serde_json::to_vec(&envelope(
             "status",

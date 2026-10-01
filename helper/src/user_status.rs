@@ -136,6 +136,13 @@ pub struct Gate {
     last: Option<Instant>,
 }
 impl Gate {
+    pub const fn new() -> Self {
+        Self { last: None }
+    }
+    /// The earliest instant `admit` accepts again, or none when it would now.
+    pub fn ready_at(&self, gap: Duration) -> Option<Instant> {
+        self.last.map(|last| last + gap)
+    }
     /// Admits (and records) a publication unless one was admitted within `gap`.
     pub fn admit(&mut self, now: Instant, gap: Duration) -> bool {
         if self
@@ -149,7 +156,7 @@ impl Gate {
     }
 }
 /// Process-wide, so a reconnect does not reset the limit.
-pub static GATE: std::sync::Mutex<Gate> = std::sync::Mutex::new(Gate { last: None });
+pub static GATE: std::sync::Mutex<Gate> = std::sync::Mutex::new(Gate::new());
 
 struct Pending {
     event: Event,

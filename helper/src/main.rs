@@ -19,6 +19,7 @@ mod join;
 mod ledger;
 mod live;
 mod media;
+mod presence;
 mod protocol;
 mod query;
 #[cfg(test)]

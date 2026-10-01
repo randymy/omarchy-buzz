@@ -59,6 +59,12 @@ pub enum QueryRequest {
     UserStatuses {
         authors: Vec<nostr::PublicKey>,
     },
+    /// `presence`: kind 20001 for `authors`, answered by the relay's
+    /// `synthesize_presence` with relay-signed snapshot events whose `p` tag
+    /// names the subject (`presence::verify` checks the signer and subjects).
+    Presence {
+        authors: Vec<nostr::PublicKey>,
+    },
     DmVisibility,
     /// Unscoped channel metadata: member channels plus every open channel
     /// (`channel_members.rs` `get_accessible_channel_ids`), for open rooms.
@@ -78,6 +84,9 @@ impl QueryRequest {
             }
             Self::UserStatuses { authors } if !authors.is_empty() && authors.len() <= 20 => {
                 serde_json::json!({"kinds":[30315],"authors":authors.iter().map(|p|p.to_hex()).collect::<Vec<_>>(),"#d":["general"],"limit":authors.len()})
+            }
+            Self::Presence { authors } if !authors.is_empty() && authors.len() <= 20 => {
+                serde_json::json!({"kinds":[20001],"authors":authors.iter().map(|p|p.to_hex()).collect::<Vec<_>>(),"limit":authors.len()})
             }
             // NIP-DV per-viewer hidden-DM snapshot (docs/nips/NIP-DV.md:104-110).
             Self::DmVisibility => {
@@ -150,6 +159,8 @@ impl QueryRequest {
                             && t.as_slice().get(1).map(String::as_str) == Some("general")
                     })
             }
+            // The signer is the relay, not an author; `presence::verify` checks it.
+            Self::Presence { .. } => event.kind.as_u16() == 20001,
             Self::RoomHistory { room, .. } => {
                 let kind = event.kind.as_u16();
                 // The pinned SDK's NIP-25 reaction builder emits an e target

@@ -176,6 +176,14 @@ struct Script {
     status_reply: DmReply,
     status_events: Vec<Event>,
     statuses: Vec<Event>,
+    // How a kind 20001 heartbeat is answered, every one received, the state
+    // the relay keeps per author, how many presence reads were served, and
+    // whether those reads are signed by a key other than the relay's.
+    presence_reply: DmReply,
+    presence_events: Vec<Event>,
+    presence: std::collections::BTreeMap<String, String>,
+    presence_reads: usize,
+    presence_forged: bool,
 }
 #[derive(Clone, Copy, PartialEq)]
 enum DmReply {
@@ -260,6 +268,11 @@ async fn recheck_fixture_every(first: Option<Discovery>, catalog: Duration) -> R
         status_reply: DmReply::Silent,
         status_events: Vec::new(),
         statuses: Vec::new(),
+        presence_reply: DmReply::Silent,
+        presence_events: Vec::new(),
+        presence: std::collections::BTreeMap::new(),
+        presence_reads: 0,
+        presence_forged: false,
     }));
     let (count_tx, discoveries) = watch::channel(0_usize);
     let count_tx = std::sync::Arc::new(count_tx);
@@ -333,6 +346,42 @@ async fn recheck_fixture_every(first: Option<Discovery>, catalog: Duration) -> R
                                         } else {
                                             script.joined.retain(|r| *r != room);
                                             script.open.push(room);
+                                        }
+                                        Some(json!(["OK", id, true, ""]))
+                                    }
+                                }
+                            };
+                            if let Some(reply) = reply {
+                                ws.send(Message::Text(reply.to_string().into()))
+                                    .await
+                                    .unwrap();
+                            }
+                            continue;
+                        }
+                        if event.kind.as_u16() == 20001 {
+                            event.verify().unwrap();
+                            assert_eq!(event.pubkey, public);
+                            let id = event.id.to_hex();
+                            let reply = {
+                                let mut script = dm_script.lock().unwrap();
+                                script.presence_events.push(event.clone());
+                                match script.presence_reply {
+                                    DmReply::Silent => None,
+                                    DmReply::Reject => Some(json!([
+                                        "OK",
+                                        id,
+                                        false,
+                                        "rate-limited: fixture refusal"
+                                    ])),
+                                    DmReply::Open => {
+                                        // As `handle_ephemeral_event`: offline clears the entry.
+                                        if event.content == "offline" {
+                                            script.presence.remove(&event.pubkey.to_hex());
+                                        } else {
+                                            script.presence.insert(
+                                                event.pubkey.to_hex(),
+                                                event.content.clone(),
+                                            );
                                         }
                                         Some(json!(["OK", id, true, ""]))
                                     }
@@ -483,6 +532,23 @@ async fn recheck_fixture_every(first: Option<Discovery>, catalog: Duration) -> R
                             events.retain(|e| authors.contains(&e.pubkey.to_hex()));
                             ok(&serde_json::to_string(&events).unwrap())
                         }
+                        // `synthesize_presence`: relay-signed snapshots with a p tag
+                        // for each author the relay holds; the other member is away.
+                        20001 => {
+                            assert_eq!(filter.as_object().unwrap().keys().cloned().collect::<Vec<_>>(), vec!["authors".to_string(), "kinds".into(), "limit".into()]);
+                            let authors = tagged("authors");
+                            let (held, forged) = {
+                                let mut script = script.lock().unwrap();
+                                script.presence_reads += 1;
+                                let mut held = script.presence.clone();
+                                held.insert(other.public_key().to_hex(), "away".into());
+                                (held, script.presence_forged)
+                            };
+                            let signer = if forged { Keys::generate() } else { relay_keys.clone() };
+                            let events: Vec<Event> = held.iter().filter(|(k, _)| authors.contains(k))
+                                .map(|(k, state)| note(&signer, 20001, state, vec![Tag::parse(["p", k.as_str()]).unwrap()])).collect();
+                            ok(&serde_json::to_string(&events).unwrap())
+                        }
                         9 => {
                             let room = tagged("#h").remove(0);
                             if joined.contains(&room) {
@@ -526,6 +592,8 @@ async fn recheck_fixture_every(first: Option<Discovery>, catalog: Duration) -> R
                 response: Duration::from_secs(1),
                 catalog,
                 status_gap: Duration::from_millis(300),
+                presence_gap: Duration::from_millis(300),
+                presence_heartbeat: Duration::from_millis(1500),
                 ..FRESHNESS
             },
             &mut sender,
@@ -825,6 +893,9 @@ mod dm_open_integration;
 #[cfg(test)]
 #[path = "auth_join_tests.rs"]
 mod join_integration;
+#[cfg(test)]
+#[path = "auth_presence_tests.rs"]
+mod presence_integration;
 #[cfg(test)]
 #[path = "auth_status_tests.rs"]
 mod status_integration;

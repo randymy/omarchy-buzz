@@ -164,6 +164,10 @@ async fn client(
                         else {None}};
                     if let Some(category)=refused {write(&mut out,&serde_json::json!({"version":1,"type":"error","id":r.id,"category":category,"instanceId":instance})).await?;continue;}
                 }
+                if r.kind=="set_presence" && status.borrow().connection!="authenticated" {
+                    // The panel sends its preference again once connected.
+                    write(&mut out,&serde_json::json!({"version":1,"type":"error","id":r.id,"category":"relay_unavailable","instanceId":instance})).await?;continue;
+                }
                 if r.kind=="join_room" || r.kind=="leave_room" {
                     let busy={let current=status.borrow();current.room_action.state=="sending" && current.room_action.request_id.as_deref()!=Some(r.id.as_str())};
                     if busy {write(&mut out,&serde_json::json!({"version":1,"type":"error","id":r.id,"category":"setup_busy","instanceId":instance})).await?;continue;}
@@ -179,7 +183,7 @@ async fn client(
                 let media=matches!(r.kind.as_str(),"download_attachment"|"thumbnail_attachment"|"open_download"|"upload_attachment"|"remove_pending_attachment");
                 // A setup reply that never arrives is not a refusal; the next
                 // status frame shows whether the change was saved.
-                let unknown=if r.kind=="open_dm" {"dm_open_unknown"} else if user_status {"relay_unavailable"} else if setup || room_action || media {"setup_busy"} else {"delivery_unknown"};
+                let unknown=if r.kind=="open_dm" {"dm_open_unknown"} else if user_status || r.kind=="set_presence" {"relay_unavailable"} else if setup || room_action || media {"setup_busy"} else {"delivery_unknown"};
                 let command=match r.kind.as_str() {
                     "retry_connection"=>Some(protocol::Command::Retry),
                     "fetch_recent"=>Some(protocol::Command::FetchRecent(r.room_id.clone().unwrap())),
@@ -210,6 +214,9 @@ async fn client(
                     "set_status"|"clear_status"=>{let (reply,receiver)=tokio::sync::oneshot::channel();send_reply=Some(receiver);
                         let set=(r.kind=="set_status").then(||protocol::StatusSet {text:r.text.clone().unwrap(),emoji:r.emoji.clone(),hours:r.expires_in_hours});
                         Some(protocol::Command::SetStatus(protocol::StatusIntent {set},reply))},
+                    "set_presence"=>{let (reply,receiver)=tokio::sync::oneshot::channel();send_reply=Some(receiver);
+                        let mode=r.mode.as_deref().and_then(crate::presence::Mode::parse).expect("checked by protocol::request");
+                        Some(protocol::Command::SetPresence(mode,r.active.unwrap_or(false),reply))},
                     "remove_pending_attachment"=>{let (reply,receiver)=tokio::sync::oneshot::channel();send_reply=Some(receiver);Some(protocol::Command::RemovePendingAttachment(r.hash.clone().unwrap(),reply))},
                     _=>None,
                 };
@@ -275,6 +282,22 @@ pub(crate) fn listen(path: &std::path::Path) -> Result<(UnixListener, bool), &'s
     };
     Ok((listener, standalone))
 }
+/// Shutdown never waits longer than this for the offline presence.
+pub(crate) const PRESENCE_SHUTDOWN: Duration = Duration::from_secs(2);
+/// Asks the session to publish `offline` and waits for its answer, bounded.
+async fn presence_offline(retry: &mpsc::Sender<protocol::Command>) {
+    let _ = tokio::time::timeout(PRESENCE_SHUTDOWN, async {
+        let (reply, done) = tokio::sync::oneshot::channel();
+        if retry
+            .send(protocol::Command::PresenceShutdown(reply))
+            .await
+            .is_ok()
+        {
+            let _ = done.await;
+        }
+    })
+    .await;
+}
 pub async fn daemon(keep: bool) -> Result<(), &'static str> {
     let c = config::load()?;
     let path = socket_path()?;
@@ -297,10 +320,17 @@ pub async fn daemon(keep: bool) -> Result<(), &'static str> {
                 let (s,_)=accepted.map_err(|_|"ipc_unavailable")?;
                 if count.load(Ordering::SeqCst)>=8 {drop(s);continue;}
                 count.fetch_add(1,Ordering::SeqCst); let count=count.clone();let rx=rx.clone();let retry=retry_tx.clone();let instance=instance.clone();
-                tokio::spawn(async move {let _=client(s,rx,retry,instance).await;count.fetch_sub(1,Ordering::SeqCst);});
+                tokio::spawn(async move {
+                    let _=client(s,rx,retry.clone(),instance).await;
+                    // The last panel left: its presence goes offline (best effort).
+                    if count.fetch_sub(1,Ordering::SeqCst)==1 {
+                        let _=tokio::time::timeout(PRESENCE_SHUTDOWN,retry.send(protocol::Command::PresenceDetach)).await;
+                    }
+                });
             }
         }
     }
+    presence_offline(&retry_tx).await;
     auth.abort();
     drop(listener);
     if standalone {
@@ -688,6 +718,67 @@ mod setup_tests {
         let frame = answer(&mut lines, &mut seen, id).await;
         assert_eq!(frame["type"], "status");
         assert_eq!(frame["status"]["userStatus"]["state"], "ready");
+    }
+
+    #[tokio::test]
+    async fn presence_needs_an_authenticated_session_and_reaches_the_actor_as_sent() {
+        let mut status = Status::new(&config::Config::default());
+        status.connection = "unconfigured".into();
+        let (tx, rx) = watch::channel(status);
+        let (commands, mut received) = mpsc::channel(1);
+        let (mut lines, mut write) = connect(rx, commands);
+        let mut seen = String::new();
+        assert_eq!(next(&mut lines, &mut seen).await["type"], "hello");
+        let id = "66666666-6666-4666-8666-666666666666";
+        let frame = serde_json::json!({"version":1,"id":id,"type":"set_presence","mode":"away","active":false}).to_string();
+        for connection in ["unconfigured", "disconnected", "connecting", "unavailable"] {
+            tx.send_modify(|s| s.connection = connection.into());
+            write.write_all(frame.as_bytes()).await.unwrap();
+            write.write_all(b"\n").await.unwrap();
+            let answer = answer(&mut lines, &mut seen, id).await;
+            assert_eq!(
+                (answer["type"].as_str(), answer["category"].as_str()),
+                (Some("error"), Some("relay_unavailable")),
+                "{connection}"
+            );
+        }
+        assert!(
+            received.try_recv().is_err(),
+            "a refused presence reached the actor"
+        );
+        tx.send_modify(|s| s.connection = "authenticated".into());
+        write.write_all(frame.as_bytes()).await.unwrap();
+        write.write_all(b"\n").await.unwrap();
+        let command = timeout(Duration::from_secs(5), received.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let protocol::Command::SetPresence(mode, active, reply) = command else {
+            panic!("set_presence expected")
+        };
+        assert_eq!((mode, active), (crate::presence::Mode::Away, false));
+        reply.send(Some("relay_unavailable")).unwrap();
+        let answer_frame = answer(&mut lines, &mut seen, id).await;
+        assert_eq!(answer_frame["category"], "relay_unavailable");
+        write.write_all(frame.as_bytes()).await.unwrap();
+        write.write_all(b"\n").await.unwrap();
+        let protocol::Command::SetPresence(_, _, reply) =
+            timeout(Duration::from_secs(5), received.recv())
+                .await
+                .unwrap()
+                .unwrap()
+        else {
+            panic!("set_presence expected")
+        };
+        reply.send(None).unwrap();
+        let answer_frame = answer(&mut lines, &mut seen, id).await;
+        assert_eq!(answer_frame["type"], "status");
+        assert_eq!(answer_frame["status"]["presence"]["state"], "unavailable");
+        assert!(answer_frame["capabilities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c == "presence"));
     }
 
     #[tokio::test]

@@ -49,6 +49,7 @@ fn status() -> Status {
                 key: hex(c),
                 name: String::new(),
                 status: None,
+                presence: None,
             })
             .collect(),
         agents: Vec::new(),

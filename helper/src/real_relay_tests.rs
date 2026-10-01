@@ -185,6 +185,7 @@ async fn real_relay_messaging_conformance() {
                     key: r.key,
                     name: r.name,
                     status: None,
+                    presence: None,
                 })
                 .collect(),
             partial: roster.partial,

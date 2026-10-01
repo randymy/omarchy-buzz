@@ -65,6 +65,32 @@ fn nip11_self_is_authority_and_rotation_is_refused() {
     );
 }
 #[test]
+fn presence_signer_is_the_nip11_self_key_and_absent_means_unavailable() {
+    // `presence::verify` checks snapshot signatures against the pinned key
+    // this returns. A document with only an operator `pubkey` (even a valid
+    // key), or a malformed `self`, yields no signer: presence reads (like
+    // every relay-signed read) are unavailable, never trusted.
+    let relay = key(1).public_key();
+    for document in [
+        serde_json::json!({"pubkey": relay.to_hex()}),
+        serde_json::json!({"self": null, "pubkey": relay.to_hex()}),
+        serde_json::json!({"self": relay.to_hex()[..63]}),
+        serde_json::json!({"self": 7}),
+        serde_json::json!({}),
+    ] {
+        assert_eq!(
+            info_signer(&serde_json::to_vec(&document).unwrap(), None).unwrap_err(),
+            "discovery_signer_unavailable",
+            "{document}"
+        );
+    }
+    let document = serde_json::json!({"self": relay.to_hex()});
+    assert_eq!(
+        info_signer(&serde_json::to_vec(&document).unwrap(), None).unwrap(),
+        relay
+    );
+}
+#[test]
 fn inline_icon_metadata_is_bounded_and_does_not_change_authority() {
     let relay = key(1).public_key();
     let other = key(2).public_key();

@@ -82,6 +82,10 @@ fn update(tx: &watch::Sender<Status>, state: &str, category: Option<&str>) {
                 .then(|| s.user_status.category.clone())
                 .flatten();
             s.user_status = crate::protocol::UserStatusView::unavailable(failed.as_deref());
+            s.presence = crate::protocol::PresenceView::unavailable();
+            for entry in s.recipients.entries.iter_mut() {
+                entry.presence = None;
+            }
         }
     });
 }
@@ -175,6 +179,7 @@ fn apply_loaded_config(
                     s.pending_attachments.clear();
                     s.upload = Default::default();
                     s.user_status = crate::protocol::UserStatusView::unavailable(None);
+                    s.presence = crate::protocol::PresenceView::unavailable();
                 }
             });
             Ok(c)
@@ -232,6 +237,10 @@ struct FreshnessPolicy {
     live_poll: Duration,
     // At most one status publication per this interval (`user_status::GAP`).
     status_gap: Duration,
+    // At most one presence publication per this interval (`presence::GAP`),
+    // and the re-publication interval while online or away.
+    presence_gap: Duration,
+    presence_heartbeat: Duration,
 }
 const FRESHNESS: FreshnessPolicy = FreshnessPolicy {
     interval: Duration::from_secs(20),
@@ -240,6 +249,8 @@ const FRESHNESS: FreshnessPolicy = FreshnessPolicy {
     head: Duration::from_secs(5),
     live_poll: Duration::from_secs(30),
     status_gap: crate::user_status::GAP,
+    presence_gap: crate::presence::GAP,
+    presence_heartbeat: crate::presence::HEARTBEAT,
 };
 struct Backoff {
     failures: u8,
@@ -351,8 +362,13 @@ pub(crate) async fn offline_command(
         | Command::DownloadAttachment(_, _, reply)
         | Command::ThumbnailAttachment(_, _, reply)
         | Command::UploadAttachment(_, _, _, reply)
-        | Command::SetStatus(_, reply) => {
+        | Command::SetStatus(_, reply)
+        | Command::SetPresence(_, _, reply) => {
             let _ = reply.send(Some("relay_unavailable"));
+        }
+        // Nothing can be published without a session.
+        Command::PresenceShutdown(reply) => {
+            let _ = reply.send(());
         }
         // Drafts and saved files do not need the relay.
         command @ (Command::OpenDownload(..) | Command::RemovePendingAttachment(..)) => {
@@ -698,6 +714,8 @@ async fn observe_sending(
     let mut actions = crate::join::RoomActions::default();
     // A status publication is answered on this connection too.
     let mut statuses = crate::user_status::Publisher::default();
+    // So is the presence heartbeat; the panel sends its preference on connect.
+    let mut presence = crate::presence::Publisher::default();
     let result = observe_inner(
         conn,
         keys,
@@ -712,6 +730,7 @@ async fn observe_sending(
         &mut live,
         &mut actions,
         &mut statuses,
+        &mut presence,
     )
     .await;
     if statuses.unknown() {
@@ -770,8 +789,20 @@ async fn observe_inner(
     live: &mut crate::live::Live,
     actions: &mut crate::join::RoomActions,
     statuses: &mut crate::user_status::Publisher,
+    presence: &mut crate::presence::Publisher,
 ) -> ConnectionExit {
     let mut pending: Option<String> = None;
+    // `presence`: one verified read of the shown roster and DM partners at a
+    // time, on the joined-room check cycle (and when the roster or the panel's
+    // first preference arrives), never before the panel asked for presence.
+    // States older than `presence::FRESH_SECS` are dropped, never shown.
+    let mut presence_jobs = tokio::task::JoinSet::new();
+    let mut presence_ticket = 0_u64;
+    let mut presence_seen: std::collections::BTreeMap<String, &'static str> =
+        std::collections::BTreeMap::new();
+    let mut presence_read_at: Option<tokio::time::Instant> = None;
+    // A shutdown waits (briefly, bounded by the daemon) for its offline OK.
+    let mut presence_shutdown: Option<tokio::sync::oneshot::Sender<()>> = None;
     // `user_status`: this identity's own status comes with each roster read
     // (the verified roster includes it; no extra subscription or poll), and is
     // read again after each accepted publication. A failed read is retried a
@@ -991,12 +1022,71 @@ async fn observe_inner(
             });
         }};
     }
+    macro_rules! project_presence {
+        () => {{
+            let own = keys.public_key().to_hex();
+            publish_status(tx, |s| apply_presence(s, presence, &presence_seen, &own));
+        }};
+    }
+    macro_rules! spawn_presence {
+        () => {{
+            if presence.configured() && fresh && presence_jobs.is_empty() {
+                if let Some(pin) = *relay_pin {
+                    let subjects = presence_subjects(&tx.borrow(), &keys.public_key().to_hex());
+                    if !subjects.is_empty() {
+                        presence_ticket = presence_ticket.wrapping_add(1);
+                        let ticket = presence_ticket;
+                        let relay = relay.to_owned();
+                        let keys = keys.clone();
+                        presence_jobs.spawn(async move {
+                            let result = match timeout(
+                                Duration::from_secs(30),
+                                crate::presence::read(&relay, &keys, pin, subjects),
+                            )
+                            .await
+                            {
+                                Ok(r) => r,
+                                Err(_) => Err("query_timeout"),
+                            };
+                            (ticket, result)
+                        });
+                    }
+                }
+            }
+        }};
+    }
+    macro_rules! answer_shutdown {
+        () => {{
+            // Nothing in flight and nothing more owed: the shutdown may proceed.
+            if presence_shutdown.is_some()
+                && !presence.is_pending()
+                && presence
+                    .due(tokio::time::Instant::now(), None, policy.presence_heartbeat)
+                    .is_none()
+            {
+                if let Some(reply) = presence_shutdown.take() {
+                    let _ = reply.send(());
+                }
+            }
+        }};
+    }
     loop {
         // Only the selected room of a fresh session may hold the live
         // subscription; every path that drops the selection closes it here.
         if live.room().is_some() && (!fresh || selected_history.as_deref() != live.room()) {
             close_live!();
         }
+        let presence_at = {
+            let ready = crate::presence::GATE
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .ready_at(policy.presence_gap);
+            presence.due(
+                tokio::time::Instant::now(),
+                ready,
+                policy.presence_heartbeat,
+            )
+        };
         tokio::select! {
             biased;
             _=tokio::time::sleep_until(due)=> {
@@ -1023,6 +1113,36 @@ async fn observe_inner(
             // No OK in time: the relay may have stored it; the shown status stays.
             _=tokio::time::sleep_until(statuses.deadline()), if statuses.is_pending()=> {
                 if statuses.unknown() {publish_status(tx, |s|s.user_status=crate::user_status::failed(s,"relay_unavailable"));}
+            },
+            // No OK in time: a category only; the connection is unaffected.
+            _=tokio::time::sleep_until(presence.deadline()), if presence.is_pending()=> {
+                if presence.unknown() {project_presence!();}
+                answer_shutdown!();
+            },
+            // A change, or the heartbeat: one signed kind 20001 through the gate.
+            _=tokio::time::sleep_until(presence_at.unwrap_or(due)), if presence_at.is_some() && fresh=> {
+                let now=tokio::time::Instant::now();
+                let admitted=crate::presence::GATE.lock().unwrap_or_else(|e|e.into_inner()).admit(now,policy.presence_gap);
+                if !admitted {continue;}
+                match presence.prepare(keys,now) {
+                    Ok(event)=> {
+                        // A dropped/timed-out write may already have reached the relay.
+                        send_frame!(serde_json::json!(["EVENT",event]));
+                    },
+                    Err(category)=> {eprintln!("omarchy-buzz: presence not published: {category}");presence.detach();},
+                }
+            },
+            result=presence_jobs.join_next(), if !presence_jobs.is_empty()=> {
+                match result {
+                    Some(Ok((ticket,Ok(seen)))) if ticket==presence_ticket && fresh=> {
+                        presence_seen=seen;
+                        presence_read_at=Some(tokio::time::Instant::now());
+                        project_presence!();
+                    },
+                    // A category only; the shown states age out after `FRESH_SECS`.
+                    Some(Ok((ticket,Err(error)))) if ticket==presence_ticket=>eprintln!("omarchy-buzz: presence read failed: {error}"),
+                    _=>{},
+                }
             },
             command=retry.recv()=>match command {
                 Some(Command::Retry)=> {backoff.reset(); update(tx,"connecting",None); return ConnectionExit::Retry;},
@@ -1202,6 +1322,31 @@ async fn observe_inner(
                     publish_status(tx,|s|s.user_status=view);
                     // A dropped/timed-out write may already have reached the relay.
                     send_frame!(serde_json::json!(["EVENT",event]));
+                },
+                Some(Command::SetPresence(mode,active,reply))=> {
+                    if reply.is_closed() {continue;}
+                    if !fresh {let _=reply.send(Some("relay_unavailable"));continue;}
+                    let first=!presence.configured();
+                    // An unchanged preference and hint is a no-op; the heartbeat
+                    // loop above publishes a changed state when the gate allows.
+                    if presence.set(mode,active) {project_presence!();}
+                    let _=reply.send(None);
+                    if first {spawn_presence!();}
+                },
+                Some(Command::PresenceDetach)=> {
+                    presence.detach();
+                    presence_jobs.abort_all();presence_jobs=tokio::task::JoinSet::new();presence_ticket=presence_ticket.wrapping_add(1);
+                    project_presence!();
+                },
+                Some(Command::PresenceShutdown(reply))=> {
+                    // Best effort, bounded by the caller: `offline` once, as soon as the
+                    // gate allows (the heartbeat arm sends it); answered on its OK, or at
+                    // once when nothing is owed. A heartbeat in flight is abandoned.
+                    presence.detach();
+                    if presence.is_pending() {presence.unknown();}
+                    presence_shutdown=Some(reply);
+                    if !fresh {if let Some(reply)=presence_shutdown.take() {let _=reply.send(());}}
+                    answer_shutdown!();
                 },
                 Some(Command::FetchRecipients(room))=> {
                     recipient_jobs.abort_all();recipient_jobs=tokio::task::JoinSet::new();recipient_ticket=recipient_ticket.wrapping_add(1);
@@ -1462,10 +1607,15 @@ async fn observe_inner(
                                 }
                             }
                             s.recipients=match result {
-                        Ok(r) if r.room==room=>crate::protocol::RecipientsView {state:"snapshot".into(),room_id:Some(r.room),partial:r.partial,category:None,agents:r.agents,entries:r.entries.into_iter().map(|r|crate::protocol::Recipient {status:r.status.as_ref().map(Into::into),key:r.key,name:r.name}).collect()},
+                        Ok(r) if r.room==room=>crate::protocol::RecipientsView {state:"snapshot".into(),room_id:Some(r.room),partial:r.partial,category:None,agents:r.agents,entries:r.entries.into_iter().map(|r|crate::protocol::Recipient {status:r.status.as_ref().map(Into::into),presence:None,key:r.key,name:r.name}).collect()},
                         Ok(_)=>crate::protocol::RecipientsView::unavailable(Some(room),Some("recipients_invalid")),
                         Err(error)=>crate::protocol::RecipientsView::unavailable(Some(room),Some(recipients_category(error))),
-                    };});}
+                    };
+                            apply_presence(s,presence,&presence_seen,&own_key);
+                        });
+                        // A newly shown roster: read its members' presence now.
+                        spawn_presence!();
+                    }
                 }
             },
             _=tokio::time::sleep_until(own_due.unwrap_or(due)), if own_due.is_some() && fresh && own_jobs.is_empty()=> {
@@ -1750,6 +1900,12 @@ async fn observe_inner(
                         }
                         let listed=tx.borrow().open_rooms.state!="unavailable";
                         if open_after_catalog || (listed && !removed.is_empty()) {open_after_catalog=false;spawn_open_rooms!();}
+                        // Presence follows the joined-room check: states too old to
+                        // mean anything are dropped, then the shown keys are read again.
+                        if presence_read_at.is_some_and(|at|at.elapsed()>Duration::from_secs(crate::presence::FRESH_SECS)) {
+                            presence_seen.clear();presence_read_at=None;project_presence!();
+                        }
+                        spawn_presence!();
                     },
                     failed @ (Some(Ok(Err(_)))|Some(Err(_))) if fresh && !cancelled=>{
                         let category=match failed {Some(Ok(Err(error)))=>catalog_category(error),_=>"room_catalog_unavailable"};
@@ -1760,6 +1916,9 @@ async fn observe_inner(
                         thread_jobs.abort_all();thread_jobs=tokio::task::JoinSet::new();thread_ticket=thread_ticket.wrapping_add(1);
                         activity_jobs.abort_all();activity_jobs=tokio::task::JoinSet::new();
                         activity=crate::activity::Tracker::default();
+                        presence_jobs.abort_all();presence_jobs=tokio::task::JoinSet::new();presence_ticket=presence_ticket.wrapping_add(1);
+                        presence_seen.clear();presence_read_at=None;
+                        project_presence!();
                         publish_status(tx, |s|{
                             s.activity.clear();s.catalog=crate::protocol::Catalog::unavailable(Some(category));s.history=History::unavailable(None,None);
                             s.recipients=crate::protocol::RecipientsView::unavailable(None,None);s.thread=Thread::unavailable(None,None,None);
@@ -1794,7 +1953,7 @@ async fn observe_inner(
                     due=tokio::time::Instant::now()+policy.interval;
                     backoff.reset();
                     update(tx,"authenticated",None);
-                    if !fresh {fresh=true;catalog_due=tokio::time::Instant::now();}
+                    if !fresh {fresh=true;catalog_due=tokio::time::Instant::now();project_presence!();}
                 },
                 Ok(RelayMessage::Closed { subscription_id, .. }) if pending.as_deref()==Some(subscription_id.as_str())=>return ConnectionExit::Failure("relay_protocol_error"),
                 Ok(RelayMessage::Eose { subscription_id }) if live.is(&subscription_id)=> {
@@ -1855,6 +2014,11 @@ async fn observe_inner(
                     if let Some(view)=actions.unknown() {publish_status(tx, |s|s.room_action=view);}
                     if statuses.unknown() {publish_status(tx, |s|s.user_status=crate::user_status::failed(s,"relay_unavailable"));}
                     own_jobs.abort_all();own_jobs=tokio::task::JoinSet::new();own_ticket=own_ticket.wrapping_add(1);own_due=None;
+                    // The heartbeat starts over once the session is fresh again.
+                    presence.reauthenticated();
+                    answer_shutdown!();
+                    presence_jobs.abort_all();presence_jobs=tokio::task::JoinSet::new();presence_ticket=presence_ticket.wrapping_add(1);
+                    presence_seen.clear();presence_read_at=None;
                     open_jobs.abort_all();open_jobs=tokio::task::JoinSet::new();open_ticket=open_ticket.wrapping_add(1);
                     recipient_jobs.abort_all();recipient_jobs=tokio::task::JoinSet::new();recipient_ticket=recipient_ticket.wrapping_add(1);
                     fresh=false;
@@ -1889,6 +2053,10 @@ async fn observe_inner(
                         // Re-check joined rooms now; open rooms follow that result.
                         if view.state=="acknowledged" && fresh {jobs.abort_all();catalog_due=tokio::time::Instant::now();open_after_catalog=true;}
                         publish_status(tx, |s|s.room_action=view);
+                    }
+                    else if presence.acknowledge(&ok.event_id,ok.accepted,nostr::Timestamp::now().as_secs()) {
+                        project_presence!();
+                        answer_shutdown!();
                     }
                     else if let Some(outcome)=statuses.acknowledge(&ok.event_id,ok.accepted,nostr::Timestamp::now().as_secs()) {
                         match outcome {
@@ -1925,6 +2093,55 @@ async fn observe_inner(
     }
 }
 
+/// The keys whose presence is shown: the selected room's verified roster and
+/// the partners of listed DMs, without this identity, at most
+/// `presence::SUBJECTS` (sorted).
+fn presence_subjects(s: &Status, own: &str) -> Vec<String> {
+    let mut keys = std::collections::BTreeSet::new();
+    if s.recipients.state == "snapshot" {
+        keys.extend(s.recipients.entries.iter().map(|e| e.key.clone()));
+    }
+    for room in &s.catalog.rooms {
+        if room.kind == "dm" && !room.hidden {
+            keys.extend(room.participants.iter().cloned());
+        }
+    }
+    keys.remove(own);
+    keys.into_iter().take(crate::presence::SUBJECTS).collect()
+}
+/// Publishes this identity's presence view, the verified states of others
+/// (`peers`) and each roster entry's state. This identity's own entry shows
+/// what the relay accepted from it. Nothing is shown without a session.
+fn apply_presence(
+    s: &mut Status,
+    presence: &crate::presence::Publisher,
+    seen: &std::collections::BTreeMap<String, &'static str>,
+    own: &str,
+) {
+    let authenticated = s.connection == "authenticated";
+    let mut view = presence.view(authenticated);
+    if authenticated {
+        view.peers = seen
+            .iter()
+            .take(crate::presence::SUBJECTS)
+            .map(|(key, state)| crate::protocol::PresencePeer {
+                key: key.clone(),
+                presence: (*state).to_owned(),
+            })
+            .collect();
+    }
+    for entry in s.recipients.entries.iter_mut() {
+        entry.presence = if !authenticated {
+            None
+        } else if entry.key == own {
+            presence.published()
+        } else {
+            seen.get(&entry.key).copied()
+        }
+        .map(str::to_owned);
+    }
+    s.presence = view;
+}
 pub async fn run(
     _initial: config::Config,
     tx: watch::Sender<Status>,

@@ -373,6 +373,7 @@ fn selected_mentions_require_current_room_roster_and_use_exact_key() {
             key: recipient.clone(),
             name: "Untrusted label".into(),
             status: None,
+            presence: None,
         }],
     };
     assert!(sender
@@ -403,6 +404,7 @@ fn selected_mentions_require_current_room_roster_and_use_exact_key() {
         key: recipient.clone(),
         name: "Duplicate display name".into(),
         status: None,
+        presence: None,
     });
     let (_, event) = sender.prepare(intent, "ws://127.0.0.1/", &keys, &status, true, true);
     let event = event.unwrap();
@@ -551,6 +553,7 @@ fn direct_messages_tag_every_other_participant_like_desktop() {
             key: friend.clone(),
             name: "friend".into(),
             status: None,
+            presence: None,
         }],
         agents: Vec::new(),
         partial: false,
