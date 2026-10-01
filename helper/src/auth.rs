@@ -76,6 +76,12 @@ fn update(tx: &watch::Sender<Status>, state: &str, category: Option<&str>) {
             s.activity.clear();
             s.recipients = crate::protocol::RecipientsView::unavailable(None, None);
             s.open_rooms = crate::protocol::OpenRooms::unavailable(None);
+            // Nothing is known about the status without a session; a failure's
+            // category stays readable.
+            let failed = (s.user_status.state == "failed")
+                .then(|| s.user_status.category.clone())
+                .flatten();
+            s.user_status = crate::protocol::UserStatusView::unavailable(failed.as_deref());
         }
     });
 }
@@ -168,6 +174,7 @@ fn apply_loaded_config(
                     s.thumbnails.clear();
                     s.pending_attachments.clear();
                     s.upload = Default::default();
+                    s.user_status = crate::protocol::UserStatusView::unavailable(None);
                 }
             });
             Ok(c)
@@ -223,6 +230,8 @@ struct FreshnessPolicy {
     // Head poll, and the helper's own open-thread refresh, while the live
     // subscription is primed. Polling stays the safety net for missed events.
     live_poll: Duration,
+    // At most one status publication per this interval (`user_status::GAP`).
+    status_gap: Duration,
 }
 const FRESHNESS: FreshnessPolicy = FreshnessPolicy {
     interval: Duration::from_secs(20),
@@ -230,6 +239,7 @@ const FRESHNESS: FreshnessPolicy = FreshnessPolicy {
     catalog: Duration::from_secs(30),
     head: Duration::from_secs(5),
     live_poll: Duration::from_secs(30),
+    status_gap: crate::user_status::GAP,
 };
 struct Backoff {
     failures: u8,
@@ -340,7 +350,8 @@ pub(crate) async fn offline_command(
         | Command::MintInvite(_, _, reply)
         | Command::DownloadAttachment(_, _, reply)
         | Command::ThumbnailAttachment(_, _, reply)
-        | Command::UploadAttachment(_, _, _, reply) => {
+        | Command::UploadAttachment(_, _, _, reply)
+        | Command::SetStatus(_, reply) => {
             let _ = reply.send(Some("relay_unavailable"));
         }
         // Drafts and saved files do not need the relay.
@@ -685,6 +696,8 @@ async fn observe_sending(
     let mut live = crate::live::Live::default();
     // A join or leave cannot outlive its connection either: its OK arrives here.
     let mut actions = crate::join::RoomActions::default();
+    // A status publication is answered on this connection too.
+    let mut statuses = crate::user_status::Publisher::default();
     let result = observe_inner(
         conn,
         keys,
@@ -698,8 +711,14 @@ async fn observe_sending(
         &mut opener,
         &mut live,
         &mut actions,
+        &mut statuses,
     )
     .await;
+    if statuses.unknown() {
+        publish_status(tx, |s| {
+            s.user_status = crate::user_status::failed(s, "relay_unavailable")
+        });
+    }
     if let Some(view) = actions.unknown() {
         publish_status(tx, |s| s.room_action = view);
     }
@@ -750,8 +769,25 @@ async fn observe_inner(
     opener: &mut crate::dm_open::Opener,
     live: &mut crate::live::Live,
     actions: &mut crate::join::RoomActions,
+    statuses: &mut crate::user_status::Publisher,
 ) -> ConnectionExit {
     let mut pending: Option<String> = None;
+    // `user_status`: this identity's own status comes with each roster read
+    // (the verified roster includes it; no extra subscription or poll), and is
+    // read again after each accepted publication. A failed read is retried a
+    // few times, then waits for the next trigger. `status_epoch` counts
+    // accepted publications so an older read never replaces a newer status.
+    let mut own_jobs = tokio::task::JoinSet::new();
+    let mut own_ticket = 0_u64;
+    let mut own_due: Option<tokio::time::Instant> = None;
+    let mut own_attempts = 0_u32;
+    let mut status_epoch = 0_u64;
+    // Expiry of the statuses shown beside roster names (the shown roster and
+    // this identity only), applied locally on each joined-room check: the
+    // relay never expires them.
+    let mut status_expiry: std::collections::BTreeMap<String, u64> =
+        std::collections::BTreeMap::new();
+    let own_key = keys.public_key().to_hex();
     // At most one invite request (HTTP) and one open-rooms read at a time.
     let mut invite_jobs = tokio::task::JoinSet::new();
     // At most one mint at a time (`invite_mint`).
@@ -931,6 +967,30 @@ async fn observe_inner(
             }
         }};
     }
+    macro_rules! spawn_own_status {
+        () => {{
+            own_jobs.abort_all();
+            own_jobs = tokio::task::JoinSet::new();
+            own_ticket = own_ticket.wrapping_add(1);
+            own_due = None;
+            let ticket = own_ticket;
+            let epoch = status_epoch;
+            let relay = relay.to_owned();
+            let keys = keys.clone();
+            own_jobs.spawn(async move {
+                let result = match timeout(
+                    Duration::from_secs(15),
+                    crate::recipients::own_status(&relay, &keys),
+                )
+                .await
+                {
+                    Ok(r) => r,
+                    Err(_) => Err("query_timeout"),
+                };
+                (ticket, epoch, result)
+            });
+        }};
+    }
     loop {
         // Only the selected room of a fresh session may hold the live
         // subscription; every path that drops the selection closes it here.
@@ -959,6 +1019,10 @@ async fn observe_inner(
             },
             _=tokio::time::sleep_until(actions.deadline()), if actions.is_pending()=> {
                 if let Some(view)=actions.unknown() {publish_status(tx, |s|s.room_action=view);}
+            },
+            // No OK in time: the relay may have stored it; the shown status stays.
+            _=tokio::time::sleep_until(statuses.deadline()), if statuses.is_pending()=> {
+                if statuses.unknown() {publish_status(tx, |s|s.user_status=crate::user_status::failed(s,"relay_unavailable"));}
             },
             command=retry.recv()=>match command {
                 Some(Command::Retry)=> {backoff.reset(); update(tx,"connecting",None); return ConnectionExit::Retry;},
@@ -1122,6 +1186,23 @@ async fn observe_inner(
                         Err(_)=>return ConnectionExit::Failure("relay_timeout"),
                     }
                 },
+                Some(Command::SetStatus(intent,reply))=> {
+                    if reply.is_closed() {continue;}
+                    let prepared={
+                        let status=tx.borrow();
+                        let mut gate=crate::user_status::GATE.lock().unwrap_or_else(|e|e.into_inner());
+                        statuses.prepare(&intent,keys,&status,fresh && relay_pin.is_some(),&mut gate,policy.status_gap,tokio::time::Instant::now(),nostr::Timestamp::now().as_secs())
+                    };
+                    let (view,event)=match prepared {Ok(p)=>p,Err(category)=>{let _=reply.send(Some(category));continue;}};
+                    if reply.send(None).is_err() {
+                        // Nothing was written: the caller left before publication.
+                        statuses.abandon();
+                        continue;
+                    }
+                    publish_status(tx,|s|s.user_status=view);
+                    // A dropped/timed-out write may already have reached the relay.
+                    send_frame!(serde_json::json!(["EVENT",event]));
+                },
                 Some(Command::FetchRecipients(room))=> {
                     recipient_jobs.abort_all();recipient_jobs=tokio::task::JoinSet::new();recipient_ticket=recipient_ticket.wrapping_add(1);
                     let status=tx.borrow();
@@ -1133,10 +1214,10 @@ async fn observe_inner(
                         continue;
                     }
                     publish_status(tx, |s|s.recipients=crate::protocol::RecipientsView {state:"loading".into(),..crate::protocol::RecipientsView::unavailable(Some(room.clone()),None)});
-                    let ticket=recipient_ticket;let relay=relay.to_owned();let keys=keys.clone();let pin=relay_pin.unwrap();let id=parsed.unwrap();
+                    let ticket=recipient_ticket;let epoch=status_epoch;let relay=relay.to_owned();let keys=keys.clone();let pin=relay_pin.unwrap();let id=parsed.unwrap();
                     recipient_jobs.spawn(async move {
                         let result=match timeout(Duration::from_secs(15),crate::recipients::fetch(&relay,&keys,pin,id)).await {Ok(r)=>r,Err(_)=>Err("recipients_timeout")};
-                        (ticket,generation,room,result)
+                        (ticket,generation,room,epoch,result)
                     });
                 },
                 Some(Command::CloseThread)=> {
@@ -1340,7 +1421,7 @@ async fn observe_inner(
                     recipient_jobs.abort_all();recipient_jobs=tokio::task::JoinSet::new();recipient_ticket=recipient_ticket.wrapping_add(1);
                     publish_status(tx, |s|s.recipients=crate::protocol::RecipientsView::unavailable(s.recipients.room_id.clone(),Some("recipients_unavailable")));
                 }
-                if let Some(Ok((ticket,generation,room,result)))=result {
+                if let Some(Ok((ticket,generation,room,epoch,result)))=result {
                     let status=tx.borrow();
                     let allowed=ticket==recipient_ticket && generation==status.generation && fresh && relay_pin.is_some() && status.catalog.rooms.iter().any(|r|r.id==room);drop(status);
                     if allowed {
@@ -1361,11 +1442,56 @@ async fn observe_inner(
                                 if s.history.room_id.as_deref()==Some(room.as_str()) {s.history=History::unavailable(Some(room.clone()),Some("history_access_denied"));}
                             }
                             if let Some(delivery)=revoked_delivery {s.delivery=delivery;}
+                            // The roster includes this identity: its status read is this
+                            // identity's too, unless a publication was accepted meanwhile.
+                            if let Ok(r)=&result {
+                                if r.room==room && r.statuses_known {
+                                    status_expiry.retain(|key,_|*key==own_key || r.entries.iter().any(|e|e.key==*key));
+                                    for entry in &r.entries {
+                                        match entry.status.as_ref().and_then(|st|st.expires_at) {
+                                            Some(at)=>{status_expiry.insert(entry.key.clone(),at);},
+                                            None=>{status_expiry.remove(&entry.key);},
+                                        }
+                                    }
+                                    if let Some(me)=r.entries.iter().find(|e|e.key==own_key) {
+                                        if epoch==status_epoch && s.user_status.state!="sending" {
+                                            s.user_status.mine=me.status.clone();
+                                            if s.user_status.state=="unavailable" {s.user_status.state="ready".into();s.user_status.category=None;}
+                                        }
+                                    }
+                                }
+                            }
                             s.recipients=match result {
-                        Ok(r) if r.room==room=>crate::protocol::RecipientsView {state:"snapshot".into(),room_id:Some(r.room),partial:r.partial,category:None,agents:r.agents,entries:r.entries.into_iter().map(|r|crate::protocol::Recipient {key:r.key,name:r.name}).collect()},
+                        Ok(r) if r.room==room=>crate::protocol::RecipientsView {state:"snapshot".into(),room_id:Some(r.room),partial:r.partial,category:None,agents:r.agents,entries:r.entries.into_iter().map(|r|crate::protocol::Recipient {status:r.status.as_ref().map(Into::into),key:r.key,name:r.name}).collect()},
                         Ok(_)=>crate::protocol::RecipientsView::unavailable(Some(room),Some("recipients_invalid")),
                         Err(error)=>crate::protocol::RecipientsView::unavailable(Some(room),Some(recipients_category(error))),
                     };});}
+                }
+            },
+            _=tokio::time::sleep_until(own_due.unwrap_or(due)), if own_due.is_some() && fresh && own_jobs.is_empty()=> {
+                spawn_own_status!();
+            },
+            result=own_jobs.join_next(), if !own_jobs.is_empty()=> {
+                match result {
+                    Some(Ok((ticket,epoch,Ok(mine)))) if ticket==own_ticket && fresh=> {
+                        own_attempts=0;
+                        if epoch==status_epoch {
+                            publish_status(tx,|s| {
+                                if s.user_status.state!="sending" {
+                                    // Others see the same status beside this identity's name.
+                                    if let Some(entry)=s.recipients.entries.iter_mut().find(|e|e.key==own_key) {entry.status=mine.as_ref().map(Into::into);}
+                                    s.user_status.mine=mine;
+                                    if s.user_status.state=="unavailable" {s.user_status.state="ready".into();s.user_status.category=None;}
+                                }
+                            });
+                        }
+                    },
+                    Some(Ok((ticket,_,Err(error)))) if ticket==own_ticket && fresh=> {
+                        // A category only; the read is retried a few times.
+                        eprintln!("omarchy-buzz: own status read failed: {error}");
+                        if own_attempts<3 {own_attempts+=1;own_due=Some(tokio::time::Instant::now()+Duration::from_secs(5*u64::from(own_attempts)));}
+                    },
+                    _=>{},
                 }
             },
             _=tokio::time::sleep_until(activity_due), if fresh && activity_jobs.is_empty()=> {
@@ -1609,6 +1735,19 @@ async fn observe_inner(
                             let joined=&s.catalog.rooms;
                             s.open_rooms.rooms.retain(|r|!joined.iter().any(|j|j.id==r.id));
                         });
+                        // Statuses expire on the reader's clock (the relay keeps them).
+                        let now_secs=nostr::Timestamp::now().as_secs();
+                        let expired:Vec<String>=status_expiry.iter().filter(|(_,at)|**at<=now_secs).map(|(k,_)|k.clone()).collect();
+                        for key in &expired {status_expiry.remove(key);}
+                        let mine_expired=tx.borrow().user_status.mine.as_ref().is_some_and(|m|m.expires_at.is_some_and(|at|at<=now_secs));
+                        if mine_expired || !expired.is_empty() {
+                            publish_status(tx,|s| {
+                                if mine_expired {s.user_status.mine=None;}
+                                for entry in s.recipients.entries.iter_mut() {
+                                    if expired.contains(&entry.key) || (mine_expired && entry.key==own_key) {entry.status=None;}
+                                }
+                            });
+                        }
                         let listed=tx.borrow().open_rooms.state!="unavailable";
                         if open_after_catalog || (listed && !removed.is_empty()) {open_after_catalog=false;spawn_open_rooms!();}
                     },
@@ -1714,6 +1853,8 @@ async fn observe_inner(
                     if let Some(delivery)=sender.unknown() {publish_status(tx, |s|s.delivery=delivery);}
                     if let Some(view)=opener.unknown() {publish_status(tx, |s|s.dm_open=view);}
                     if let Some(view)=actions.unknown() {publish_status(tx, |s|s.room_action=view);}
+                    if statuses.unknown() {publish_status(tx, |s|s.user_status=crate::user_status::failed(s,"relay_unavailable"));}
+                    own_jobs.abort_all();own_jobs=tokio::task::JoinSet::new();own_ticket=own_ticket.wrapping_add(1);own_due=None;
                     open_jobs.abort_all();open_jobs=tokio::task::JoinSet::new();open_ticket=open_ticket.wrapping_add(1);
                     recipient_jobs.abort_all();recipient_jobs=tokio::task::JoinSet::new();recipient_ticket=recipient_ticket.wrapping_add(1);
                     fresh=false;
@@ -1748,6 +1889,27 @@ async fn observe_inner(
                         // Re-check joined rooms now; open rooms follow that result.
                         if view.state=="acknowledged" && fresh {jobs.abort_all();catalog_due=tokio::time::Instant::now();open_after_catalog=true;}
                         publish_status(tx, |s|s.room_action=view);
+                    }
+                    else if let Some(outcome)=statuses.acknowledge(&ok.event_id,ok.accepted,nostr::Timestamp::now().as_secs()) {
+                        match outcome {
+                            crate::user_status::Outcome::Accepted(mine)=> {
+                                // Any read started before this answer is stale now.
+                                status_epoch=status_epoch.wrapping_add(1);
+                                own_jobs.abort_all();own_jobs=tokio::task::JoinSet::new();own_ticket=own_ticket.wrapping_add(1);
+                                match mine.as_ref().and_then(|m|m.expires_at) {
+                                    Some(at)=>{status_expiry.insert(own_key.clone(),at);},
+                                    None=>{status_expiry.remove(&own_key);},
+                                }
+                                publish_status(tx,|s| {
+                                    if let Some(entry)=s.recipients.entries.iter_mut().find(|e|e.key==own_key) {entry.status=mine.as_ref().map(Into::into);}
+                                    s.user_status=crate::protocol::UserStatusView {state:"ready".into(),mine,category:None};
+                                });
+                                // Confirm with a read of what the relay now holds.
+                                own_attempts=0;
+                                own_due=Some(tokio::time::Instant::now()+Duration::from_secs(1));
+                            },
+                            crate::user_status::Outcome::Rejected=>publish_status(tx,|s|s.user_status=crate::user_status::failed(s,"status_rejected")),
+                        }
                     }
                     else if let Some(view)=opener.acknowledge(&ok.event_id,ok.accepted,&ok.message) {
                         // Re-check joined rooms now so the opened DM is listed; a check

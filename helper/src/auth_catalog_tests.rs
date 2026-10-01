@@ -171,6 +171,11 @@ struct Script {
     open: Vec<String>,
     room_reply: DmReply,
     room_events: Vec<Event>,
+    // How a kind 30315 status is answered, every one received, and the
+    // accepted ones the relay now serves to status reads.
+    status_reply: DmReply,
+    status_events: Vec<Event>,
+    statuses: Vec<Event>,
 }
 #[derive(Clone, Copy, PartialEq)]
 enum DmReply {
@@ -252,6 +257,9 @@ async fn recheck_fixture_every(first: Option<Discovery>, catalog: Duration) -> R
         open: Vec::new(),
         room_reply: DmReply::Silent,
         room_events: Vec::new(),
+        status_reply: DmReply::Silent,
+        status_events: Vec::new(),
+        statuses: Vec::new(),
     }));
     let (count_tx, discoveries) = watch::channel(0_usize);
     let count_tx = std::sync::Arc::new(count_tx);
@@ -326,6 +334,33 @@ async fn recheck_fixture_every(first: Option<Discovery>, catalog: Duration) -> R
                                             script.joined.retain(|r| *r != room);
                                             script.open.push(room);
                                         }
+                                        Some(json!(["OK", id, true, ""]))
+                                    }
+                                }
+                            };
+                            if let Some(reply) = reply {
+                                ws.send(Message::Text(reply.to_string().into()))
+                                    .await
+                                    .unwrap();
+                            }
+                            continue;
+                        }
+                        if event.kind.as_u16() == 30315 {
+                            event.verify().unwrap();
+                            assert_eq!(event.pubkey, public);
+                            let id = event.id.to_hex();
+                            let reply = {
+                                let mut script = dm_script.lock().unwrap();
+                                script.status_events.push(event.clone());
+                                match script.status_reply {
+                                    DmReply::Silent => None,
+                                    DmReply::Reject => {
+                                        Some(json!(["OK", id, false, "blocked: fixture refusal"]))
+                                    }
+                                    DmReply::Open => {
+                                        // Parameterized replaceable: the relay keeps the latest.
+                                        script.statuses.retain(|e| e.pubkey != event.pubkey);
+                                        script.statuses.push(event);
                                         Some(json!(["OK", id, true, ""]))
                                     }
                                 }
@@ -438,6 +473,16 @@ async fn recheck_fixture_every(first: Option<Discovery>, catalog: Duration) -> R
                         })).collect::<Vec<_>>()).unwrap()),
                         // No NIP-DV snapshot: nothing is hidden.
                         0 | 10100 | 30622 => ok("[]"),
+                        // Statuses: the other member's fixed one, plus every accepted
+                        // publication by the viewer (the reader picks the newest).
+                        30315 => {
+                            assert_eq!(tagged("#d"), vec!["general".to_string()]);
+                            let authors = tagged("authors");
+                            let mut events = script.lock().unwrap().statuses.clone();
+                            events.push(note(&other, 30315, "Out sick", vec![Tag::parse(["d", "general"]).unwrap(), Tag::parse(["emoji", "🤒"]).unwrap()]));
+                            events.retain(|e| authors.contains(&e.pubkey.to_hex()));
+                            ok(&serde_json::to_string(&events).unwrap())
+                        }
                         9 => {
                             let room = tagged("#h").remove(0);
                             if joined.contains(&room) {
@@ -480,6 +525,7 @@ async fn recheck_fixture_every(first: Option<Discovery>, catalog: Duration) -> R
                 interval: Duration::from_secs(2),
                 response: Duration::from_secs(1),
                 catalog,
+                status_gap: Duration::from_millis(300),
                 ..FRESHNESS
             },
             &mut sender,
@@ -779,3 +825,6 @@ mod dm_open_integration;
 #[cfg(test)]
 #[path = "auth_join_tests.rs"]
 mod join_integration;
+#[cfg(test)]
+#[path = "auth_status_tests.rs"]
+mod status_integration;

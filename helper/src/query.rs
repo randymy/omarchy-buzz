@@ -54,6 +54,11 @@ pub enum QueryRequest {
     AgentProfiles {
         authors: Vec<nostr::PublicKey>,
     },
+    /// `user_status`: kind 30315 on the `d:general` coordinate (Desktop's
+    /// `fetchUserStatusLookup` filter, `hooks.ts:198-250`).
+    UserStatuses {
+        authors: Vec<nostr::PublicKey>,
+    },
     DmVisibility,
     /// Unscoped channel metadata: member channels plus every open channel
     /// (`channel_members.rs` `get_accessible_channel_ids`), for open rooms.
@@ -70,6 +75,9 @@ impl QueryRequest {
             }
             Self::AgentProfiles { authors } if !authors.is_empty() && authors.len() <= 20 => {
                 serde_json::json!({"kinds":[10100],"authors":authors.iter().map(|p|p.to_hex()).collect::<Vec<_>>(),"limit":authors.len()})
+            }
+            Self::UserStatuses { authors } if !authors.is_empty() && authors.len() <= 20 => {
+                serde_json::json!({"kinds":[30315],"authors":authors.iter().map(|p|p.to_hex()).collect::<Vec<_>>(),"#d":["general"],"limit":authors.len()})
             }
             // NIP-DV per-viewer hidden-DM snapshot (docs/nips/NIP-DV.md:104-110).
             Self::DmVisibility => {
@@ -133,6 +141,14 @@ impl QueryRequest {
             }
             Self::AgentProfiles { authors } => {
                 event.kind.as_u16() == 10100 && authors.contains(&event.pubkey)
+            }
+            Self::UserStatuses { authors } => {
+                event.kind.as_u16() == 30315
+                    && authors.contains(&event.pubkey)
+                    && event.tags.iter().any(|t| {
+                        t.as_slice().first().map(String::as_str) == Some("d")
+                            && t.as_slice().get(1).map(String::as_str) == Some("general")
+                    })
             }
             Self::RoomHistory { room, .. } => {
                 let kind = event.kind.as_u16();

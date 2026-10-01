@@ -156,6 +156,14 @@ async fn client(
                         else {None}};
                     if let Some(category)=refused {write(&mut out,&serde_json::json!({"version":1,"type":"error","id":r.id,"category":category,"instanceId":instance})).await?;continue;}
                 }
+                if r.kind=="set_status" || r.kind=="clear_status" {
+                    // A status needs a working session; one publication at a time.
+                    let refused={let current=status.borrow();
+                        if current.connection!="authenticated" {Some("relay_unavailable")}
+                        else if current.user_status.state=="sending" {Some("status_rate_limited")}
+                        else {None}};
+                    if let Some(category)=refused {write(&mut out,&serde_json::json!({"version":1,"type":"error","id":r.id,"category":category,"instanceId":instance})).await?;continue;}
+                }
                 if r.kind=="join_room" || r.kind=="leave_room" {
                     let busy={let current=status.borrow();current.room_action.state=="sending" && current.room_action.request_id.as_deref()!=Some(r.id.as_str())};
                     if busy {write(&mut out,&serde_json::json!({"version":1,"type":"error","id":r.id,"category":"setup_busy","instanceId":instance})).await?;continue;}
@@ -167,10 +175,11 @@ async fn client(
                 let mut send_reply=None;
                 let setup=matches!(r.kind.as_str(),"set_relay"|"create_identity"|"claim_invite"|"accept_invite"|"mint_invite");
                 let room_action=r.kind=="join_room" || r.kind=="leave_room";
+                let user_status=r.kind=="set_status" || r.kind=="clear_status";
                 let media=matches!(r.kind.as_str(),"download_attachment"|"thumbnail_attachment"|"open_download"|"upload_attachment"|"remove_pending_attachment");
                 // A setup reply that never arrives is not a refusal; the next
                 // status frame shows whether the change was saved.
-                let unknown=if r.kind=="open_dm" {"dm_open_unknown"} else if setup || room_action || media {"setup_busy"} else {"delivery_unknown"};
+                let unknown=if r.kind=="open_dm" {"dm_open_unknown"} else if user_status {"relay_unavailable"} else if setup || room_action || media {"setup_busy"} else {"delivery_unknown"};
                 let command=match r.kind.as_str() {
                     "retry_connection"=>Some(protocol::Command::Retry),
                     "fetch_recent"=>Some(protocol::Command::FetchRecent(r.room_id.clone().unwrap())),
@@ -198,10 +207,13 @@ async fn client(
                     "thumbnail_attachment"=>{let (reply,receiver)=tokio::sync::oneshot::channel();send_reply=Some(receiver);Some(protocol::Command::ThumbnailAttachment(r.event_id.clone().unwrap(),r.hash.clone().unwrap(),reply))},
                     "open_download"=>{let (reply,receiver)=tokio::sync::oneshot::channel();send_reply=Some(receiver);Some(protocol::Command::OpenDownload(r.path.clone().unwrap(),reply))},
                     "upload_attachment"=>{let (reply,receiver)=tokio::sync::oneshot::channel();send_reply=Some(receiver);Some(protocol::Command::UploadAttachment(r.room_id.clone().unwrap(),r.root_id.clone(),r.path.clone().unwrap(),reply))},
+                    "set_status"|"clear_status"=>{let (reply,receiver)=tokio::sync::oneshot::channel();send_reply=Some(receiver);
+                        let set=(r.kind=="set_status").then(||protocol::StatusSet {text:r.text.clone().unwrap(),emoji:r.emoji.clone(),hours:r.expires_in_hours});
+                        Some(protocol::Command::SetStatus(protocol::StatusIntent {set},reply))},
                     "remove_pending_attachment"=>{let (reply,receiver)=tokio::sync::oneshot::channel();send_reply=Some(receiver);Some(protocol::Command::RemovePendingAttachment(r.hash.clone().unwrap(),reply))},
                     _=>None,
                 };
-                if let Some(command)=command {if retry.try_send(command).is_err() {write(&mut out,&serde_json::json!({"version":1,"type":"error","id":r.id,"category":if setup || room_action {"setup_busy"} else if media {"setup_busy"} else {"request_busy"},"instanceId":instance})).await?;continue;}}
+                if let Some(command)=command {if retry.try_send(command).is_err() {write(&mut out,&serde_json::json!({"version":1,"type":"error","id":r.id,"category":if setup || room_action {"setup_busy"} else if media {"setup_busy"} else if user_status {"status_rate_limited"} else {"request_busy"},"instanceId":instance})).await?;continue;}}
                 if let Some(reply)=send_reply {
                     // Relay discovery (up to 13 s), a Secret Service write and an invite's
                     // three HTTP requests (10 s each) take longer than a send.
@@ -601,6 +613,81 @@ mod setup_tests {
             .unwrap()
             .unwrap();
         assert!(matches!(command, protocol::Command::MintInvite(5, 168, _)));
+    }
+
+    #[tokio::test]
+    async fn statuses_need_an_authenticated_session_and_one_at_a_time() {
+        let mut status = Status::new(&config::Config::default());
+        status.connection = "unconfigured".into();
+        let (tx, rx) = watch::channel(status);
+        let (commands, mut received) = mpsc::channel(1);
+        let (mut lines, mut write) = connect(rx, commands);
+        let mut seen = String::new();
+        assert_eq!(next(&mut lines, &mut seen).await["type"], "hello");
+        let id = "44444444-4444-4444-8444-444444444444";
+        let set = serde_json::json!({"version":1,"id":id,"type":"set_status","text":"In a meeting","emoji":"🗣️","expiresInHours":4}).to_string();
+        let clear = serde_json::json!({"version":1,"id":id,"type":"clear_status"}).to_string();
+        for (connection, state, category) in [
+            ("unconfigured", "unavailable", "relay_unavailable"),
+            ("disconnected", "unavailable", "relay_unavailable"),
+            ("connecting", "unavailable", "relay_unavailable"),
+            ("authenticated", "sending", "status_rate_limited"),
+        ] {
+            tx.send_modify(|s| {
+                s.connection = connection.into();
+                s.user_status.state = state.into();
+            });
+            for frame in [&set, &clear] {
+                write.write_all(frame.as_bytes()).await.unwrap();
+                write.write_all(b"\n").await.unwrap();
+                let frame = answer(&mut lines, &mut seen, id).await;
+                assert_eq!(
+                    (frame["type"].as_str(), frame["category"].as_str()),
+                    (Some("error"), Some(category)),
+                    "{connection} {state}"
+                );
+            }
+        }
+        assert!(
+            received.try_recv().is_err(),
+            "a refused status reached the actor"
+        );
+        tx.send_modify(|s| {
+            s.connection = "authenticated".into();
+            s.user_status.state = "ready".into();
+        });
+        write.write_all(set.as_bytes()).await.unwrap();
+        write.write_all(b"\n").await.unwrap();
+        let command = timeout(Duration::from_secs(5), received.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let protocol::Command::SetStatus(intent, reply) = command else {
+            panic!("set_status expected")
+        };
+        let set = intent.set.unwrap();
+        assert_eq!(
+            (set.text.as_str(), set.emoji.as_deref(), set.hours),
+            ("In a meeting", Some("🗣️"), Some(4))
+        );
+        // The actor's refusal reaches the panel as an error frame.
+        reply.send(Some("status_invalid")).unwrap();
+        let frame = answer(&mut lines, &mut seen, id).await;
+        assert_eq!(frame["category"], "status_invalid");
+        write.write_all(clear.as_bytes()).await.unwrap();
+        write.write_all(b"\n").await.unwrap();
+        let command = timeout(Duration::from_secs(5), received.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let protocol::Command::SetStatus(intent, reply) = command else {
+            panic!("clear_status expected")
+        };
+        assert!(intent.set.is_none());
+        reply.send(None).unwrap();
+        let frame = answer(&mut lines, &mut seen, id).await;
+        assert_eq!(frame["type"], "status");
+        assert_eq!(frame["status"]["userStatus"]["state"], "ready");
     }
 
     #[tokio::test]

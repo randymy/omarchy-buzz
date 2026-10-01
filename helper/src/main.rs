@@ -27,6 +27,7 @@ mod recipients;
 mod sending;
 mod setup;
 mod thread;
+mod user_status;
 // Network fixtures share the production concurrency budgets. Serialize fixtures,
 // while individual tests still exercise multiple simultaneous requests explicitly.
 #[cfg(test)]

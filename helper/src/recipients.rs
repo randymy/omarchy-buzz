@@ -1,6 +1,7 @@
 //! Verified roster keys with optional self-asserted plaintext profile names.
 //! Names are display hints, never ownership, classification, or authority.
 use crate::query::{query, QueryRequest};
+use crate::user_status::UserStatus;
 use nostr::{Event, Keys, PublicKey, Timestamp};
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
@@ -9,6 +10,8 @@ const LIMIT: usize = 20;
 pub struct Recipient {
     pub key: String,
     pub name: String,
+    /// Verified, unexpired `user_status`; none when absent or not read.
+    pub status: Option<UserStatus>,
 }
 #[derive(Clone, Debug)]
 pub struct Recipients {
@@ -16,6 +19,8 @@ pub struct Recipients {
     pub partial: bool,
     pub entries: Vec<Recipient>,
     pub agents: Vec<crate::agents::AgentHint>,
+    /// The status read succeeded: an entry without a status has none.
+    pub statuses_known: bool,
 }
 
 pub fn roster(
@@ -76,9 +81,11 @@ pub fn roster(
             .map(|key| Recipient {
                 key,
                 name: String::new(),
+                status: None,
             })
             .collect(),
         agents: Vec::new(),
+        statuses_known: false,
     })
 }
 /// Sanitized display name from one kind 0 event; empty when absent or malformed.
@@ -96,23 +103,111 @@ pub(crate) fn name(event: &Event) -> String {
     let Some(value) = chosen.and_then(|v| v.as_str()) else {
         return String::new();
     };
+    sanitize(value, 64)
+}
+/// An untrusted self-asserted label, at most `limit` bytes: controls and bidi
+/// formatting become spaces (they must not reorder an adjacent identity key);
+/// emoji ZWJ sequences are preserved.
+pub(crate) fn sanitize(value: &str, limit: usize) -> String {
     let mut out = String::new();
     for ch in value.chars() {
-        // Profiles are untrusted labels displayed beside an identity key. Bidi
-        // formatting must not reorder that surrounding key; preserve emoji ZWJ.
-        let ch = if ch.is_control()
-            || matches!(ch, '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
-        {
+        let ch = if ch.is_control() || crate::user_status::bidi(ch) {
             ' '
         } else {
             ch
         };
-        if out.len() + ch.len_utf8() > 64 {
+        if out.len() + ch.len_utf8() > limit {
             break;
         }
         out.push(ch);
     }
     out.trim().to_owned()
+}
+/// Verified `user_status` (kind 30315, `d:general`) per author, for authors
+/// with a current status. The single verification routine for status events
+/// (docs/PRESENCE_MAP.md §6): any event with a bad signature, another kind, an
+/// author outside `roster`, a future time or not exactly one `d` tag equal to
+/// `general` rejects the whole read. Per author the newest by `created_at`
+/// (the lower id on a tie) is the state: it counts as no status when expired (`expiration` at or
+/// before `now`; the relay never enforces it), when its `emoji` or
+/// `expiration` tag is malformed or repeated, or when it is empty after the
+/// text is sanitized like a name.
+pub fn status(
+    roster: &[String],
+    events: &[Event],
+    now: u64,
+) -> Result<BTreeMap<String, UserStatus>, &'static str> {
+    let general = |e: &Event| {
+        let mut d = e
+            .tags
+            .iter()
+            .filter(|t| t.as_slice().first().is_some_and(|v| v == "d"));
+        let first = d.next().map(|t| t.as_slice());
+        first.is_some_and(|t| t.len() == 2 && t[1] == "general") && d.next().is_none()
+    };
+    if events.len() > 200
+        || events.iter().any(|e| {
+            e.verify().is_err()
+                || e.kind.as_u16() != crate::user_status::KIND
+                || e.created_at.as_secs() > now.saturating_add(60)
+                || !roster.iter().any(|key| *key == e.pubkey.to_hex())
+                || !general(e)
+        })
+    {
+        return Err("status_invalid");
+    }
+    let mut latest: BTreeMap<String, &Event> = BTreeMap::new();
+    for event in events {
+        let key = event.pubkey.to_hex();
+        // NIP-01 replaceable order, as Desktop's `statusVersionIsAtLeast`:
+        // the newer `created_at`, then the lower id on a tie.
+        if latest.get(&key).is_none_or(|old| {
+            event.created_at > old.created_at
+                || (event.created_at == old.created_at && event.id < old.id)
+        }) {
+            latest.insert(key, event);
+        }
+    }
+    let values = |e: &Event, name: &str| -> Vec<String> {
+        e.tags
+            .iter()
+            .filter(|t| t.as_slice().first().is_some_and(|v| v == name))
+            .map(|t| t.as_slice().get(1).cloned().unwrap_or_default())
+            .collect()
+    };
+    let mut out = BTreeMap::new();
+    for (key, event) in latest {
+        let expires_at = match values(event, "expiration").as_slice() {
+            [] => None,
+            [value]
+                if (1..=20).contains(&value.len()) && value.bytes().all(|b| b.is_ascii_digit()) =>
+            {
+                match value.parse::<u64>() {
+                    Ok(at) if at > now => Some(at),
+                    _ => continue,
+                }
+            }
+            _ => continue,
+        };
+        let emoji = match values(event, "emoji").as_slice() {
+            [] => None,
+            [value] if crate::user_status::valid_emoji(value) => Some(value.clone()),
+            _ => continue,
+        };
+        let text = sanitize(&event.content, crate::user_status::TEXT_BYTES);
+        if text.is_empty() && emoji.is_none() {
+            continue;
+        }
+        out.insert(
+            key,
+            UserStatus {
+                text,
+                emoji,
+                expires_at,
+            },
+        );
+    }
+    Ok(out)
 }
 /// Bad signature/scope/time rejects the entire profile projection, preserving
 /// the trusted roster keys with empty names. Missing or malformed per-author
@@ -187,7 +282,15 @@ pub async fn fetch(
         Ok(events) => profiles(&mut recipients, &events, Timestamp::now().as_secs()),
         Err(_) => {}
     }
-    match query(relay, keys, &QueryRequest::AgentProfiles { authors }).await {
+    match query(
+        relay,
+        keys,
+        &QueryRequest::AgentProfiles {
+            authors: authors.clone(),
+        },
+    )
+    .await
+    {
         Ok(events) => {
             let roster_keys = recipients
                 .entries
@@ -202,7 +305,38 @@ pub async fn fetch(
         }
         Err(_) => {}
     }
+    // One batched status read for the same roster; unavailable means unknown.
+    if let Ok(events) = query(relay, keys, &QueryRequest::UserStatuses { authors }).await {
+        let roster_keys = recipients
+            .entries
+            .iter()
+            .map(|r| r.key.clone())
+            .collect::<Vec<_>>();
+        if let Ok(mut found) = status(&roster_keys, &events, Timestamp::now().as_secs()) {
+            for entry in &mut recipients.entries {
+                entry.status = found.remove(&entry.key);
+            }
+            recipients.statuses_known = true;
+        }
+    }
     Ok(recipients)
+}
+/// This identity's own status, through the same verification as any roster.
+pub async fn own_status(relay: &str, keys: &Keys) -> Result<Option<UserStatus>, &'static str> {
+    let own = keys.public_key();
+    let events = query(
+        relay,
+        keys,
+        &QueryRequest::UserStatuses { authors: vec![own] },
+    )
+    .await?;
+    let key = own.to_hex();
+    Ok(status(
+        std::slice::from_ref(&key),
+        &events,
+        Timestamp::now().as_secs(),
+    )?
+    .remove(&key))
 }
 #[cfg(test)]
 #[path = "recipients_tests.rs"]

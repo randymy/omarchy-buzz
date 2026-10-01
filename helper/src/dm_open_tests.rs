@@ -48,6 +48,7 @@ fn status() -> Status {
             .map(|c| Recipient {
                 key: hex(c),
                 name: String::new(),
+                status: None,
             })
             .collect(),
         agents: Vec::new(),

@@ -372,6 +372,7 @@ fn selected_mentions_require_current_room_roster_and_use_exact_key() {
         entries: vec![crate::protocol::Recipient {
             key: recipient.clone(),
             name: "Untrusted label".into(),
+            status: None,
         }],
     };
     assert!(sender
@@ -401,6 +402,7 @@ fn selected_mentions_require_current_room_roster_and_use_exact_key() {
     status.recipients.entries.push(crate::protocol::Recipient {
         key: recipient.clone(),
         name: "Duplicate display name".into(),
+        status: None,
     });
     let (_, event) = sender.prepare(intent, "ws://127.0.0.1/", &keys, &status, true, true);
     let event = event.unwrap();
@@ -548,6 +550,7 @@ fn direct_messages_tag_every_other_participant_like_desktop() {
         entries: vec![crate::protocol::Recipient {
             key: friend.clone(),
             name: "friend".into(),
+            status: None,
         }],
         agents: Vec::new(),
         partial: false,

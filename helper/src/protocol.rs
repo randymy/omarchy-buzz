@@ -46,6 +46,8 @@ pub struct Request {
     /// `upload_attachment`: the file the user typed; `open_download`: a path
     /// the helper reported. Both are checked again by the helper.
     pub path: Option<String>,
+    /// `set_status` only: a native emoji or `:shortcode:` (`user_status::valid_emoji`).
+    pub emoji: Option<String>,
 }
 fn is_hash(value: &str) -> bool {
     crate::attachments::is_hash(value)
@@ -108,6 +110,8 @@ pub fn request(bytes: &[u8]) -> Result<Request, &'static str> {
             | "open_download"
             | "upload_attachment"
             | "remove_pending_attachment"
+            | "set_status"
+            | "clear_status"
     ) {
         return Err("unsupported_request");
     }
@@ -181,7 +185,7 @@ pub fn request(bytes: &[u8]) -> Result<Request, &'static str> {
                 return Err("invalid_request");
             }
         }
-    } else if r.text.is_some() || r.mentions.is_some() {
+    } else if (r.text.is_some() && r.kind != "set_status") || r.mentions.is_some() {
         return Err("invalid_request");
     }
     if r.kind == "open_dm" {
@@ -237,7 +241,29 @@ pub fn request(bytes: &[u8]) -> Result<Request, &'static str> {
         if !crate::invites::MAX_USES.contains(&uses) || !crate::invites::HOURS.contains(&hours) {
             return Err("invalid_request");
         }
-    } else if r.max_uses.is_some() || r.expires_in_hours.is_some() {
+    } else if r.max_uses.is_some()
+        || (raw.get("expiresInHours").is_some() && r.kind != "set_status")
+    {
+        return Err("invalid_request");
+    }
+    if r.kind == "set_status" {
+        // Shape only; `user_status::check` answers `status_invalid` with the
+        // exact bounds. `emoji` and `expiresInHours` are optional, never null.
+        let text = r.text.as_deref().ok_or("invalid_request")?;
+        if text.len() > 1024 || text.contains('\0') {
+            return Err("invalid_request");
+        }
+        match raw.get("emoji") {
+            None => {}
+            Some(serde_json::Value::String(e)) if !e.is_empty() && e.len() <= 128 => {}
+            _ => return Err("invalid_request"),
+        }
+        match raw.get("expiresInHours") {
+            None => {}
+            Some(serde_json::Value::Number(_)) if r.expires_in_hours.is_some() => {}
+            _ => return Err("invalid_request"),
+        }
+    } else if raw.get("emoji").is_some() {
         return Err("invalid_request");
     }
     if matches!(
@@ -268,7 +294,10 @@ pub fn request(bytes: &[u8]) -> Result<Request, &'static str> {
         return Err("invalid_request");
     }
     // Room actions and mints are correlated like other publishing requests.
-    if matches!(r.kind.as_str(), "join_room" | "leave_room" | "mint_invite") {
+    if matches!(
+        r.kind.as_str(),
+        "join_room" | "leave_room" | "mint_invite" | "set_status" | "clear_status"
+    ) {
         let id = uuid::Uuid::parse_str(&r.id).map_err(|_| "invalid_request")?;
         if id.to_string() != r.id {
             return Err("invalid_request");
@@ -284,6 +313,18 @@ pub struct SendIntent {
     pub text: String,
     pub mentions: Vec<String>,
     pub generation: u64,
+}
+/// `set_status` (with `set`) or `clear_status` (without).
+#[derive(Clone)]
+pub struct StatusIntent {
+    pub set: Option<StatusSet>,
+}
+#[derive(Clone)]
+pub struct StatusSet {
+    pub text: String,
+    pub emoji: Option<String>,
+    /// `None` is the default (`user_status::DEFAULT_HOURS`).
+    pub hours: Option<u32>,
 }
 /// A request to open (or reopen) the DM with exactly these other participants.
 #[derive(Clone)]
@@ -359,6 +400,11 @@ pub enum Command {
     ),
     /// Drop a pending attachment (hash) from every draft.
     RemovePendingAttachment(String, tokio::sync::oneshot::Sender<Option<&'static str>>),
+    /// `user_status`: publish or clear this identity's status.
+    SetStatus(
+        StatusIntent,
+        tokio::sync::oneshot::Sender<Option<&'static str>>,
+    ),
 }
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -609,6 +655,43 @@ impl Default for Upload {
 pub struct Recipient {
     pub key: String,
     pub name: String,
+    /// A verified, unexpired status (`user_status`); always serialized.
+    pub status: Option<RecipientStatus>,
+}
+/// Another member's status as shown beside their name.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct RecipientStatus {
+    pub text: String,
+    pub emoji: Option<String>,
+}
+impl From<&crate::user_status::UserStatus> for RecipientStatus {
+    fn from(status: &crate::user_status::UserStatus) -> Self {
+        Self {
+            text: status.text.clone(),
+            emoji: status.emoji.clone(),
+        }
+    }
+}
+/// This identity's status (`user_status`).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct UserStatusView {
+    /// `unavailable` (not read yet in this session), `ready`, `sending` or
+    /// `failed`.
+    pub state: String,
+    /// The verified, unexpired status, or none.
+    pub mine: Option<crate::user_status::UserStatus>,
+    /// Present only in `failed`: one of `user_status::CATEGORIES`. After a
+    /// disconnect the view is `unavailable` and keeps a failure's category.
+    pub category: Option<String>,
+}
+impl UserStatusView {
+    pub fn unavailable(category: Option<&str>) -> Self {
+        Self {
+            state: "unavailable".into(),
+            mine: None,
+            category: category.map(str::to_owned),
+        }
+    }
 }
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -814,6 +897,7 @@ pub struct Status {
     /// At most `media::PENDING` per scope and `media::PENDING_TOTAL` in all.
     pub pending_attachments: Vec<PendingAttachment>,
     pub upload: Upload,
+    pub user_status: UserStatusView,
 }
 impl Status {
     pub fn new(c: &crate::config::Config) -> Self {
@@ -839,11 +923,12 @@ impl Status {
             thumbnails: Vec::new(),
             pending_attachments: Vec::new(),
             upload: Upload::default(),
+            user_status: UserStatusView::unavailable(None),
         }
     }
 }
 pub fn envelope(kind: &str, id: Option<&str>, instance: &str, s: &Status) -> serde_json::Value {
-    serde_json::json!({"version":1,"type":kind,"id":id,"instanceId":instance,"generation":s.generation,"capabilities":["connection_status","room_catalog","room_history","message_send","thread_send","room_recipients","history_auto_refresh","room_activity","agent_profiles","thread_replies","thread_summaries","dm_open","older_history","live_updates","setup_assist","community_join","invite_mint","attachments"],"backendRevision":crate::compatibility::BUZZ_REVISION,"status":s})
+    serde_json::json!({"version":1,"type":kind,"id":id,"instanceId":instance,"generation":s.generation,"capabilities":["connection_status","room_catalog","room_history","message_send","thread_send","room_recipients","history_auto_refresh","room_activity","agent_profiles","thread_replies","thread_summaries","dm_open","older_history","live_updates","setup_assist","community_join","invite_mint","attachments","user_status"],"backendRevision":crate::compatibility::BUZZ_REVISION,"status":s})
 }
 pub async fn read_line<R: tokio::io::AsyncBufRead + Unpin>(
     r: &mut R,
@@ -928,6 +1013,70 @@ mod tests {
         ] {
             assert!(request(bad.to_string().as_bytes()).is_err(), "{bad}");
         }
+    }
+    #[test]
+    fn status_requests_carry_only_their_own_fields() {
+        let parse = |v: &serde_json::Value| request(&serde_json::to_vec(v).unwrap());
+        let id = "33333333-3333-4333-8333-333333333333";
+        let set = serde_json::json!({"version":1,"id":id,"type":"set_status","text":"In a meeting","emoji":"🗣️","expiresInHours":4});
+        let parsed = parse(&set).unwrap();
+        assert_eq!(
+            (
+                parsed.text.as_deref(),
+                parsed.emoji.as_deref(),
+                parsed.expires_in_hours
+            ),
+            (Some("In a meeting"), Some("🗣️"), Some(4))
+        );
+        // Emoji and hours are optional; the text may be empty (shape only here).
+        let minimal = serde_json::json!({"version":1,"id":id,"type":"set_status","text":""});
+        let parsed = parse(&minimal).unwrap();
+        assert!(parsed.emoji.is_none() && parsed.expires_in_hours.is_none());
+        let clear = serde_json::json!({"version":1,"id":id,"type":"clear_status"});
+        assert!(parse(&clear).is_ok());
+        for (base, field, value) in [
+            (&set, "id", serde_json::json!("ui-1")),
+            (&set, "text", serde_json::Value::Null),
+            (&set, "text", serde_json::json!("a".repeat(1025))),
+            (&set, "text", serde_json::json!("a\u{0}b")),
+            (&set, "text", serde_json::json!(7)),
+            (&set, "emoji", serde_json::Value::Null),
+            (&set, "emoji", serde_json::json!("")),
+            (&set, "emoji", serde_json::json!("x".repeat(129))),
+            (&set, "expiresInHours", serde_json::Value::Null),
+            (&set, "expiresInHours", serde_json::json!(-1)),
+            (&set, "expiresInHours", serde_json::json!(1.5)),
+            (&set, "maxUses", serde_json::json!(1)),
+            (
+                &set,
+                "roomId",
+                serde_json::json!("00000000-0000-4000-8000-000000000001"),
+            ),
+            (&set, "kind", serde_json::json!(30315)),
+            (&set, "tags", serde_json::json!([["d", "general"]])),
+            (&set, "pubkey", serde_json::json!("a".repeat(64))),
+            (&clear, "text", serde_json::json!("x")),
+            (&clear, "emoji", serde_json::json!("🙂")),
+            (&clear, "expiresInHours", serde_json::json!(24)),
+            (&clear, "id", serde_json::json!("ui-2")),
+        ] {
+            let mut bad = base.clone();
+            bad[field] = value;
+            assert!(parse(&bad).is_err(), "{bad}");
+        }
+        let mut missing = set.clone();
+        missing.as_object_mut().unwrap().remove("text");
+        assert!(parse(&missing).is_err());
+        // Other requests never carry an emoji, and a mint still needs its own hours.
+        assert!(
+            parse(&serde_json::json!({"version":1,"id":"a","type":"subscribe","emoji":"🙂"}))
+                .is_err()
+        );
+        assert!(parse(
+            &serde_json::json!({"version":1,"id":"a","type":"subscribe","expiresInHours":24})
+        )
+        .is_err());
+        assert!(parse(&serde_json::json!({"version":1,"id":id,"type":"mint_invite","maxUses":5,"expiresInHours":24,"emoji":"🙂"})).is_err());
     }
     #[test]
     fn attachment_requests_carry_only_their_own_fields() {
@@ -1058,7 +1207,8 @@ mod state_tests {
                 "setup_assist",
                 "community_join",
                 "invite_mint",
-                "attachments"
+                "attachments",
+                "user_status"
             ])
         );
         assert_eq!(v["status"]["catalog"]["state"], "unavailable");
@@ -1511,6 +1661,10 @@ mod state_tests {
             .map(|_| Recipient {
                 key: "c".repeat(64),
                 name: "\\".repeat(64),
+                status: Some(RecipientStatus {
+                    text: "\\".repeat(crate::user_status::TEXT_BYTES),
+                    emoji: Some(format!(":{}:", "a".repeat(32))),
+                }),
             })
             .collect();
         status.activity = (0..20)
@@ -1607,6 +1761,15 @@ mod state_tests {
             scope: Some(format!("{}:{}", "0".repeat(36), "a".repeat(64))),
             name: Some("\"".repeat(crate::attachments::NAME_CHARS)),
             category: Some("attachment_type_refused".into()),
+        };
+        status.user_status = UserStatusView {
+            state: "failed".into(),
+            mine: Some(crate::user_status::UserStatus {
+                text: "\\".repeat(crate::user_status::TEXT_BYTES),
+                emoji: Some(format!(":{}:", "a".repeat(32))),
+                expires_at: Some(u64::MAX),
+            }),
+            category: Some("status_rate_limited".into()),
         };
         let encoded = serde_json::to_vec(&envelope(
             "status",
