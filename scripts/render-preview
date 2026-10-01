@@ -1,21 +1,22 @@
 #!/bin/sh
-# Render the marketplace preview card (root preview.png) from the ASCII art
-# in assets/preview with ImageMagick. The card is original text art: a
-# block-letter BUZZ wordmark in yellow and a small bee, on the shell's dark
-# background. Fonts: JetBrainsMono Nerd Font (installed on Omarchy).
+# Render the marketplace preview card (root preview.png) with ImageMagick from
+# the text art in assets/preview: the Buzz app icon as half-block characters
+# (assets/preview/icon.txt, traced from block/buzz's Apache-2.0
+# desktop/src-tauri/icons at 64×40 with `magick … -threshold 50%`; Buzz is
+# Block's; this plugin is independent) over a small block-letter BUZZ
+# wordmark, in Buzz yellow on the shell's dark background. Fonts:
+# JetBrainsMono Nerd Font (installed on Omarchy).
 set -eu
 root=$(cd "$(dirname "$0")/.." && pwd)
 art="$root/assets/preview"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
-bg='#14151c'; yellow='#ffcf3f'; font='JetBrainsMono-NF-Bold'
-magick -background "$bg" -fill "$yellow" -font "$font" -pointsize 40 -interline-spacing -8 label:@"$art/wordmark.txt" +repage "$tmp/word.png"
-magick -background "$bg" -fill "$yellow" -font "$font" -pointsize 20 -interline-spacing -4 label:@"$art/bee.txt" +repage "$tmp/bee.png"
+bg='#14151c'; yellow='#e3d62e'; font='JetBrainsMono-NF-Bold'
+magick -background "$bg" -fill "$yellow" -font "$font" -pointsize 24 -interline-spacing -8 label:@"$art/icon.txt" +repage "$tmp/icon.png"
+magick -background "$bg" -fill "$yellow" -font "$font" -pointsize 22 -interline-spacing -6 label:@"$art/wordmark.txt" +repage "$tmp/word.png"
 magick -size 1600x900 xc:"$bg" \
-  "$tmp/word.png" -gravity center -geometry +0-120 -composite \
-  "$tmp/bee.png" -gravity center -geometry +520-300 -composite \
-  \( -background none -fill '#d6d8e2' -font "$font" -pointsize 40 label:'for Omarchy' +repage \) -gravity center -geometry +0+90 -composite \
-  \( -background none -fill '#8a8ea0' -font "$font" -pointsize 24 label:'rooms · threads · direct messages · agents — native in your shell' +repage \) -gravity center -geometry +0+170 -composite \
-  \( -background none -fill '#5a5e70' -font "$font" -pointsize 20 label:'Super+B' +repage \) -gravity center -geometry +0+360 -composite \
+  "$tmp/icon.png" -gravity center -geometry +0-110 -composite \
+  "$tmp/word.png" -gravity center -geometry +0+225 -composite \
+  \( -background none -fill '#c9cbd6' -font "$font" -pointsize 30 label:'for Omarchy' +repage \) -gravity center -geometry +0+345 -composite \
   -strip "$root/preview.png"
 echo "wrote $root/preview.png"

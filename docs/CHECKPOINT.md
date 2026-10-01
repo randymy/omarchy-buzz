@@ -3035,3 +3035,12 @@ was open, with the in-page "Back to rooms" link too easy to miss.
   validation; default plus all 26 named preview modes with no `WARN scene` or
   `ERROR`. Capabilities are now 20 (`presence`); helper and plugin must be
   installed together.
+
+- Replaced on the maintainer's request ("the Buzz icon in yellow ASCII"):
+  `preview.png` now shows the Buzz app icon as half-block text art
+  (`assets/preview/icon.txt`, traced from block/buzz's Apache-2.0
+  `desktop/src-tauri/icons/128x128@2x.png` at 64×40 with a 50 % threshold —
+  wings, eyes and stripes survive) above a small block-letter BUZZ wordmark,
+  in the icon's yellow (`#e3d62e`). The Buzz name and icon are Block's; the
+  plugin remains independent, as the README says. The earlier hand-drawn bee
+  is gone. `scripts/render-preview` rebuilds it.
