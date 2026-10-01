@@ -3217,3 +3217,87 @@ community**. One identity for every community, as Desktop.
   worked". The migrated config holds two entries. One `presence read
   failed: query_busy` line appeared once at the first start after the
   install (overlap with the initial catalog load) and did not repeat.
+
+## Post-join welcome and empty states — October 1
+
+Branch `welcome` (QML, tests and docs only; not merged or installed; no relay,
+helper process, keyring or unit contacted). After a live join of a second
+community the maintainer saw an empty room pane titled "Connect Buzz", a
+header reading "Authenticated · history unavailable", "Partial list · 0 shown
+(limit 20)" in the sidebar, "Me" on the account control and vClaude's avatar
+as a few stray characters: "there should be some kind of success and next
+step after joining".
+
+- **"Connect Buzz"** was the room pane's title fallback for "no room
+  selected" (`PanelContent.qml`, the timeline's title row). It was meant for
+  setup but showed whenever a connected community had no room. That row is
+  now hidden while the welcome pane shows, and the fallback text is used only
+  when not connected (the setup pane keeps it).
+- **Success line.** `Service.communityArrived(kind, name)` fires after a join
+  or switch the panel asked for: `joined` when the now-active community was
+  not listed before the request, `switched` when it was (a join of an already
+  listed URL), never in first setup (no identity) and, for a join that shows
+  terms, only once they are accepted and claimed. The panel shows "You joined
+  <name>." or, for a switch chosen from the account menu only, "Switched to
+  <name>." (`buzzCommunityJoined`, dismissible with ✕
+  `buzzCommunityJoinedDismiss`) at the top of the room pane. It hides after
+  8 s (`arrivalTimeout`), on opening any view, opening a thread, or choosing
+  another room (the room a new community selects by itself does not count).
+  Switches nobody chose there — startup, the helper moving on after leaving
+  the active community, a direct `service.switchCommunity` — say nothing.
+  Sample data's presentation-only switch says "Switched to …" at once.
+- **Welcome pane** (`buzzWelcomePane`) replaces the empty room view when the
+  helper is authenticated, the catalog is `partial` or `ready` and lists no
+  stream room (`Service.noRoomsJoined`) and no direct message is selected:
+  "Welcome to <local label>" (`buzzWelcomeTitle`), the host underneath when it
+  differs (`buzzWelcomeHost`), "Pick a room to get started."
+  (`buzzWelcomeLead`), the open rooms inline (the same `JoinCommunity`
+  component, model, Join buttons, refusals, loading and failure wording, with
+  `buzzWelcome…` object names: `buzzWelcomeOpenRooms`, `buzzWelcomeOpenRoom`,
+  `buzzWelcomeOpenRoomJoin`, `buzzWelcomeOpenRoomsStatus`), then "Have an
+  invite? Paste it below" with the invite field (`buzzWelcomeInviteInput`,
+  same redeem/terms path), then **Switch community** (`buzzWelcomeSwitch`),
+  which opens the account menu. Joining a room selects it through the
+  existing `joinTarget`/`selectJoinedRoom` path, so the pane goes by itself.
+  `JoinCommunity` gained `prefix`, `showInvite` and `inviteCaption`; the
+  sidebar's copy keeps its `buzz…` names. The sidebar's open-rooms section
+  stays expanded by default with no rooms (unchanged), so the open rooms
+  appear twice on a wide window; both copies share one model and state.
+- **Open rooms once per community.** The automatic `open_rooms` request on
+  "no rooms" now waits for the catalog (`noRoomsJoined`, not merely an empty
+  list while loading) and is made again after a generation change; before,
+  the one-shot flag was reset only on disconnect, so a second empty
+  community never asked.
+- **Wording.** Header: "Authenticated · no rooms joined yet" in that state;
+  "history unavailable" stays for a selected room without history. Sidebar:
+  "Rooms · none joined" instead of the empty partial count.
+- **Account control.** Without a profile name on the active community's
+  verified roster it shows the key's short form (`identity.slice(0, 12)` +
+  "…", as message authors without a name), tooltip starting "No profile name
+  on this community yet". "Me" remains only for sample data (no key). Note:
+  the roster is per selected room, so the name also falls back while no room
+  is selected or before the roster loads.
+- **vClaude's avatar.** Not a relay or fallback failure: agent avatar art is
+  stored only on this machine (`avatars.json`, keyed by persona id, read
+  unchanged in every community; the 30175 persona record carries no art).
+  The installed store holds, for vClaude's persona, a 33-character plain
+  pasted sketch (`x`, `\`, `_`, starting with an empty line); the yellow ANSI
+  portrait is stored under the maintainer's own public key (the account
+  avatar). The sidebar drew exactly that sketch. `BuzzAvatar` now drops
+  leading blank lines of plain art when rendering (the stored form is
+  unchanged, so existing files stay valid); grid art whose thumbnail is empty
+  and agents without art show the key's identicon. To give vClaude the
+  portrait, choose the `.ans` file in its editor.
+- Tests: new `scripts/preview --welcome` (`tests/Welcome.qml` +
+  `tests/welcome_fixture.py`; synthetic helper and agent frames): success
+  line, its timeout and dismissal by room change and by Settings; welcome
+  pane with open rooms loading then listed, Join wiring, invite field and
+  Switch community; header and sidebar wording; pane gone after a room join;
+  menu switch announced, a direct switch silent; account fallback and
+  tooltip; one agent without art (identicon), one with the installed sketch's
+  shape (shown without its blank line), empty grid art (identicon), the same
+  in both communities. `BUZZ_WELCOME_CAPTURE_DIR` saves `welcome.png`.
+  Default plus all 28 named preview modes pass (`--bridge` against a local
+  debug helper build).
+- Not verified: the installed shell, a real relay's join and open-rooms
+  timing, and the maintainer's look at the pane.

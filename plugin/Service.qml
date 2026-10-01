@@ -368,13 +368,20 @@ Item {
   property var catalogRooms: []
   property string catalogState: "unavailable"
   property string catalogCategory: ""
-  readonly property string catalogLabel: sampleMode ? "Sample rooms" : ({unavailable: "Rooms unavailable", loading: "Loading rooms", partial: "Partial list · " + catalogRooms.length + " shown (limit 20)", ready: catalogRooms.length ? "Joined rooms · " + catalogRooms.length : "No joined rooms"})[catalogState]
+  // No joined rooms yet ("Rooms · none joined") reads better than an empty partial count.
+  readonly property string catalogLabel: sampleMode ? "Sample rooms" : noRoomsJoined ? "Rooms · none joined"
+    : ({unavailable: "Rooms unavailable", loading: "Loading rooms", partial: "Partial list · " + catalogRooms.length + " shown (limit 20)", ready: catalogRooms.length ? "Joined rooms · " + catalogRooms.length : "No joined rooms"})[catalogState]
   readonly property var rooms: sample ? sample.rooms : catalogRooms
   // Sample rooms predate room kinds and count as streams; validated frames always carry kind.
   readonly property var streamRooms: rooms.filter(function(room) { return room.kind !== "dm" })
   // Hidden DMs stay selectable in the catalog but are not listed.
   readonly property var dmRooms: rooms.filter(function(room) { return room.kind === "dm" && room.hidden !== true })
   readonly property var visibleRooms: streamRooms.concat(dmRooms)
+  // Connected to a community whose catalog lists no joined room yet (a fresh
+  // join, or every room left): the panel shows its welcome pane instead of an
+  // empty room view. Direct messages do not count as joined rooms.
+  readonly property bool noRoomsJoined: !sampleMode && !sessionFailed && connection === "authenticated"
+    && ["partial", "ready"].indexOf(catalogState) !== -1 && streamRooms.length === 0
   function roomTitle(room) { return room ? (room.kind === "dm" ? room.name : "# " + room.name) : "" }
   property string selectedRoomId: sampleMode ? "sample-general" : ""
   readonly property var selectedRoom: rooms.find(function(room) { return room.id === root.selectedRoomId }) || null
@@ -434,7 +441,8 @@ Item {
   readonly property string barLabel: sampleMode ? "TEST" : category === "clock_skew" && connection !== "authenticated" ? "Clock" : ({unconfigured: "Setup", connecting: "Connecting", authenticated: "Connected", identity_locked: "Locked", disconnected: "Offline", unavailable: "Error"})[connection] || "Error"
   readonly property string barSymbol: sampleMode ? "T" : category === "clock_skew" && connection !== "authenticated" ? "!" : ({unconfigured: "?", connecting: "…", authenticated: "✓", identity_locked: "!", disconnected: "○", unavailable: "!"})[connection] || "!"
   readonly property string statusLabel: sampleMode ? "Sample data" : category === "incompatible_response" ? "Incompatible helper" : category === "identity_access_pending" ? "Waiting for secret store unlock" : category === "clock_skew" && connection !== "authenticated" ? clockSkewText(clockSkewSeconds) : ({
-    unconfigured: "Setup required", connecting: "Connecting", authenticated: historyState === "snapshot" ? "Authenticated · recent snapshot" : historyState === "loading" ? "Authenticated · history loading" : "Authenticated · history unavailable",
+    unconfigured: "Setup required", connecting: "Connecting", authenticated: historyState === "snapshot" ? "Authenticated · recent snapshot" : historyState === "loading" ? "Authenticated · history loading"
+      : noRoomsJoined && selectedRoom === null ? "Authenticated · no rooms joined yet" : "Authenticated · history unavailable",
     identity_locked: "Identity locked", disconnected: "Disconnected", unavailable: "Helper unavailable"
   })[connection] || "Unavailable"
   // Desktop's join wording (`AddCommunityDialog.tsx`), and the honest create
@@ -604,6 +612,13 @@ Item {
   // helper's validated list. Names are local labels; `hint` is the relay's own
   // NIP-11 name, untrusted and shown as a hint only.
   signal communityRequestDone(string kind, bool ok)
+  // A community this device now uses, after a join or switch the user asked
+  // for: `joined` when the active community is new to the list, `switched` when
+  // it was already listed. A join that first shows the community's terms
+  // arrives once they are accepted; first setup (no identity yet) never does.
+  signal communityArrived(string kind, string name)
+  property var communityRelaysBefore: []
+  property string arrivalAwaitingTerms: ""
   property bool communitiesSupported: false
   property var communities: ({state: "ready", active: null, entries: [], category: null, pendingInvite: false, notice: null})
   property string communityLocal: "idle"
@@ -668,6 +683,8 @@ Item {
     communityRequestRelay = relay || ""
     communityRequestInput = input || ""
     communityInstance = instanceId
+    communityRelaysBefore = communityEntries.map(function(entry) { return entry.relay })
+    arrivalAwaitingTerms = ""
     communityLocal = "sending"
     communityCategory = ""
     communityNotice = ""
@@ -2406,6 +2423,7 @@ Item {
     draftScopeKey = incomingScope
     if (state.connection !== "authenticated") { losePendingDelivery(); loseDmOpen() }
     var previousCatalogState = catalogState
+    var generationBefore = generation
     var resyncingCatalog = resyncStage === "catalog"
     if (state.connection !== "authenticated") catalog = {state: "unavailable", rooms: [], category: ""}
     if (frame.generation !== generation || state.connection !== "authenticated") clearCatalog()
@@ -2554,6 +2572,23 @@ Item {
         // First setup with an invite link: redeem it once the identity exists.
         if (communityRequestKind === "join" && shownCommunities.pendingInvite) pendingInviteInput = communityRequestInput
         communityRequestDone(communityRequestKind, true)
+        var arrived = activeCommunity
+        if (arrived && identity !== "" && !shownCommunities.pendingInvite) {
+          if (communityRequestKind === "switch") communityArrived("switched", arrived.name)
+          else if (communityRequestKind === "join") {
+            if (communityRelaysBefore.indexOf(arrived.relay) !== -1) communityArrived("switched", arrived.name)
+            else if (joinSetup.state === "policy") arrivalAwaitingTerms = arrived.relay
+            else communityArrived("joined", arrived.name)
+          }
+        }
+      }
+      // A join that showed terms: arrived once they are accepted and claimed.
+      if (arrivalAwaitingTerms !== "") {
+        if (relay !== arrivalAwaitingTerms || joinSetup.state === "failed" || joinSetup.state === "idle") arrivalAwaitingTerms = ""
+        else if (joinSetup.state === "joined" && activeCommunity) {
+          arrivalAwaitingTerms = ""
+          communityArrived("joined", activeCommunity.name)
+        }
       }
     }
     // The invite saved during first setup is redeemed as soon as it can be.
@@ -2617,10 +2652,11 @@ Item {
       advanceResync("thread")
     selectOpenedDm()
     selectJoinedRoom()
-    // A connected identity with no rooms sees what it can join at once.
-    if (openRoomsAvailable && streamRooms.length === 0 && openRoomsState === "unavailable" && openRoomsCategory === ""
+    // A connected identity with no rooms sees what it can join at once, once per
+    // community (a new generation is another community or configuration).
+    if (connection !== "authenticated" || generationBefore !== generation) openRoomsRequested = false
+    if (openRoomsAvailable && noRoomsJoined && openRoomsState === "unavailable" && openRoomsCategory === ""
         && !openRoomsRequested) { openRoomsRequested = true; refreshOpenRooms() }
-    if (connection !== "authenticated") openRoomsRequested = false
     // On connect (and whenever the preference or idleness changed meanwhile).
     syncPresence()
     return true

@@ -49,6 +49,14 @@ elif [[ ${1:-} == --communities ]]; then
   export BUZZ_TEST_HELPER="$preview_dir/helper-fixture"
   export BUZZ_SEND_RECORD="$preview_dir/send-record.json"
   printf '{"requests":[]}\n' > "$BUZZ_SEND_RECORD"
+elif [[ ${1:-} == --welcome ]]; then
+  # Synthetic helper and agent frames only. BUZZ_WELCOME_CAPTURE_DIR optionally
+  # saves the welcome pane to welcome.png.
+  cp "$project_root/tests/Welcome.qml" "$preview_dir/shell.qml"
+  cp "$project_root/tests/welcome_fixture.py" "$preview_dir/helper-fixture"
+  export BUZZ_TEST_HELPER="$preview_dir/helper-fixture"
+  export BUZZ_SEND_RECORD="$preview_dir/send-record.json"
+  printf '{"requests":[]}\n' > "$BUZZ_SEND_RECORD"
 elif [[ ${1:-} == --invites ]]; then
   cp "$project_root/tests/Invites.qml" "$preview_dir/shell.qml"
   cp "$project_root/tests/invites_fixture.py" "$preview_dir/helper-fixture"
