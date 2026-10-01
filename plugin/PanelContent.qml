@@ -465,7 +465,6 @@ FocusScope {
     }
     return ""
   }
-  readonly property string roomPlaceTitle: service && service.selectedRoom ? service.roomTitle(service.selectedRoom) : ""
   // Focus after returning: the composer that is in use, else the panel itself.
   function focusRooms() {
     var composer = activeComposer
@@ -739,9 +738,11 @@ FocusScope {
       }
       Text {
         objectName: "buzzHeaderPlace"
-        visible: text !== ""
+        // The room view's title lives in the timeline's own row; the header
+        // names only a sub-view, so the room is never shown twice (an empty
+        // text keeps the slot, so opening a view needs no relayout).
         Layout.maximumWidth: Style.space(260)
-        text: root.subViewOpen ? root.subViewTitle : root.roomPlaceTitle
+        text: root.subViewOpen ? root.subViewTitle : ""
         textFormat: Text.PlainText
         elide: Text.ElideRight
         color: Color.foreground

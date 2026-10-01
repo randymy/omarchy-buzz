@@ -3017,3 +3017,21 @@ was open, with the in-page "Back to rooms" link too easy to miss.
 - Not verified: the overlay on a real desktop (only `--presentation`'s
   synthetic Wayland check), a physical keyboard, and the maintainer's own
   look at the new header.
+
+## Release 0.0.23 — October 1
+
+- Merges `presence` (`13a1310`) and `navigation` (`a8ff282`) on top of the
+  probe fix (`747874e`) and the preview card (`5298f15`). After the merge the
+  header no longer repeats the room's name on the room view (the timeline row
+  keeps it); `--navigation` adjusted. Known flaky tests, both HTTP-fixture
+  timing with one-second or six-second windows, seen once each during these
+  merges and green on rerun: `auth::history_integration_tests::
+  failed_background_refresh_clears_stale_rows` and
+  `auth::activity_integration_tests::denied_background_room_is_removed_
+  without_changing_selected_history` (1 failure in ~10 runs alone).
+- Verified on the merged tree: Rust 328 passed (`RUST_TEST_THREADS=1`), fmt
+  clean; Python unittest 108; helper and agents smoke; package, installer,
+  verify-package, notices and `check-upstream --self-test`; manifest
+  validation; default plus all 26 named preview modes with no `WARN scene` or
+  `ERROR`. Capabilities are now 20 (`presence`); helper and plugin must be
+  installed together.

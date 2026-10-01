@@ -98,8 +98,9 @@ ShellRoot {
   // The room view: Buzz and the room on the left, × on the right, no Back.
   function expectRooms(label) {
     check(!view.subViewOpen && shown("buzzHeaderBack").length === 0, label + ": Back shown on the room view")
-    check(one("buzzHeaderTitle").text === "Buzz" && one("buzzHeaderPlace").text === "# Fixture room",
-      label + ": header does not show Buzz and the room: " + one("buzzHeaderPlace").text)
+    // The room's title stays in the timeline row only; the header names no room.
+    check(one("buzzHeaderTitle").text === "Buzz" && one("buzzHeaderPlace").text === "",
+      label + ": header should show Buzz without the room: " + one("buzzHeaderPlace").text)
     var close = one("buzzHeaderClose")
     check(close.text === "×" && close.tooltipText === (view.threadOpen ? "Close Buzz" : "Close Buzz · Esc"),
       label + ": close control wrong: " + close.text + " / " + close.tooltipText)
@@ -128,9 +129,10 @@ ShellRoot {
     var close = one("buzzHeaderClose", panel)
     var right = close.mapToItem(panel, close.width, 0).x
     check(right <= panel.width, label + ": × outside the panel (" + right + " > " + panel.width + ")")
-    var place = one("buzzHeaderPlace", panel)
+    // The leftmost header item: Back on a sub-view, the Buzz title on the room view.
+    var title = shown("buzzHeaderBack", panel)[0] || one("buzzHeaderTitle", panel)
     var status = one("buzzHeaderStatus", panel)
-    check(place.width > 0 && place.mapToItem(panel, place.width, 0).x <= status.mapToItem(panel, 0, 0).x + 1
+    check(title.width > 0 && title.mapToItem(panel, title.width, 0).x <= status.mapToItem(panel, 0, 0).x + 1
       && status.mapToItem(panel, status.width, 0).x <= close.mapToItem(panel, 0, 0).x + 1, label + ": header items overlap")
     check(status.text.length > 0, label + ": header status text missing")
   }
