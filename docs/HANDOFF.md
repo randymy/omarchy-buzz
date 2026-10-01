@@ -110,22 +110,17 @@ Do not claim full live desktop acceptance solely from helper/socket tests.
 
 ## In flight at the September 30 evening stop (read before continuing)
 
-**Installed:** helper 0.0.21 (`256154e`; bounded WebSocket client from the
-maintainer's fork at the reviewed PR commit, `relay_resource_limit`; SHA256
-`a4017c4bd66573dee5a6df4ea7904c6642b3b0400491b3ddc4fb23240882f22d`, ARM64 run
-36798105802, rollback backup
-`~/.local/share/omarchy-buzz/backups/20261001T011734.112722Z`), both harness
-bundles `ready`, plugin at `256154e` after one clean shell restart; the panel
-authenticates and shows rooms, DMs and the running agent. **Listed on the
-Omarchy plugin marketplace** (https://omarchyplugins.com/plugin.html?id=community.buzz,
-`approved-and-verified`, `manual-setup`) after the reviewer accepted the
-bounded WebSocket client at `4692efa` on October 1; that approval names that
-commit only. Release 0.0.22 (`c563ca6`, Update your status) followed, **is installed**
-(helper SHA256 `df5255c4…`, run 36807469560, rollback backup
-`~/.local/share/omarchy-buzz/backups/20261001T025501.255345Z`) and is live-verified
-("status works"); it is not part of the reviewed marketplace snapshot.
-Before that, 0.0.20 (`26cb346`) carried the model check, clock skew and the
-portal file chooser.
+**Installed:** helper 0.0.24 (`ad8cdc6`; SHA256
+`0afff9d40325cb4c55031a318987d5f6b28855588c441a11df14bb03f737cb24`, ARM64 run
+36819994489, rollback backup
+`~/.local/share/omarchy-buzz/backups/20261001T054453.461820Z`), both harness
+bundles `ready`, plugin at `ad8cdc6` after one clean shell restart. 0.0.23
+(presence, header navigation, probe as a transient service, preview card)
+and 0.0.24 (presence reads tolerate the maintainer's relay's subject-less
+relay-signed event) went in on October 1; "Update your status" is
+live-verified; presence reads show no failures on 0.0.24. The marketplace
+listing (`approved-and-verified`, snapshot `4692efa`) predates all of this;
+draft release `v0.0.22` exists on GitHub (unpublished). Capabilities: 20.
 
 Two things from that install to know:
 
@@ -162,12 +157,13 @@ real upload or download had been exercised at this line's writing.
 
 No branch is in progress; all worktrees are removed.
 
-Draft release `v0.0.22` exists (run 36807823465, ten assets); the maintainer
-publishes it on GitHub when wanted. Branch in progress: `presence` (worktree
-`~/Projects/omarchy-buzz-presence`, Opus builder): kind-20001 heartbeat and
-relay-signed presence reads per `docs/PRESENCE_MAP.md` §4.
+No branch is in progress; all worktrees are removed.
 
-Resume order: merge `presence` when green → release 0.0.23 → a real **Test model**
+Resume order: hear the maintainer's verdict on presence dots, Test model
+("The model answered." expected) and the new header → marketplace update
+through the "verify or update a listed plugin" form (newer-commit path) so
+the listing, the preview card and a published release line up → cut and
+publish a release for that commit → then the next feature.
 run on `vClaude` from the panel (then adjust the patterns in
 `helper/src/agents_service/models.rs` if the sentence is wrong) →
 presence/"Update your status" → community distribution (x86-64 package,
