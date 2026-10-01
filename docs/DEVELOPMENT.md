@@ -288,5 +288,7 @@ service), `--settings` (the account control, its menu and the settings view;
 set `BUZZ_SETTINGS_CAPTURE_DIR` to also save `account-menu.png` and
 `settings-view.png`), `--navigation` (header Back to rooms, × and the Escape
 order; set `BUZZ_NAVIGATION_CAPTURE_DIR` to also save `navigation-rooms.png`
-and `navigation-agent.png`), `--presentation` (needs Wayland) and `--bridge` (needs
+and `navigation-agent.png`), `--welcome` (the success line after joining a
+community and the welcome pane for a community without joined rooms; set
+`BUZZ_WELCOME_CAPTURE_DIR` to also save `welcome.png`), `--presentation` (needs Wayland) and `--bridge` (needs
 `BUZZ_TEST_HELPER` set to a built helper).
