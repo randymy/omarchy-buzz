@@ -158,7 +158,9 @@ environment of only `PATH`, `HOME`, `XDG_RUNTIME_DIR` and
 `DBUS_SESSION_BUS_ADDRESS`:
 
 ```
-/usr/bin/systemd-run --user --scope --collect --quiet -p MemoryMax=2G -p TasksMax=128 --
+/usr/bin/systemd-run --user --pipe --wait --collect --quiet -p MemoryMax=2G -p TasksMax=128
+  -p RuntimeMaxSec=90 --setenv=PATH=… --setenv=HOME=… --setenv=XDG_RUNTIME_DIR=…
+  --setenv=DBUS_SESSION_BUS_ADDRESS=… --
   ~/.local/share/omarchy-buzz/agent-<harness>/launcher/room-agent --probe-model <model>
   --harness <harness> --profile ~/.local/state/omarchy-buzz-agent-preview/<harness>
   --bundle ~/.local/share/omarchy-buzz/agent-<harness>
@@ -427,7 +429,7 @@ limited to 108 bytes).
   `buzz-acp` run with it is unverified.
 - `agent-login` detaches the terminal into its own transient user scope
   (see Sign-in and status), so it outlives the service. A real
-  `systemd-run --user --scope` launch from the socket-activated service, and
+  `systemd-run --user --pipe --wait` launch from the socket-activated service, and
   whether the user manager's environment carries the display variables on a
   given login, are unverified.
 - The relay's acceptance of kind 30175/30177/9000/9001 over WebSocket with these

@@ -915,8 +915,8 @@ impl Service {
         }
         self.harness_ready(&persona.harness).await?;
         let launcher = unit::launcher(&self.paths, &persona.harness);
-        let argv = models::probe_argv(&self.paths, &persona.harness, &persona.model);
         let env = models::probe_environment(std::env::vars_os());
+        let argv = models::probe_argv(&self.paths, &persona.harness, &persona.model, &env);
         let spawner = self.deps.spawner.clone();
         if !blocking({
             let spawner = spawner.clone();

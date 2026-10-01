@@ -2818,3 +2818,25 @@ upstream references are to the pinned Buzz `781d3951`. Presence
   verification and the release job all passed; draft release `v0.0.22` holds
   all ten assets with generated notes. Publishing the draft is the
   maintainer's action on GitHub; the tag appears on publication.
+
+## Model probe runs as a transient service — October 1
+
+- The maintainer's first live **Test model** (vClaude, `opus`) came back
+  "The probe failed." The same launcher argv succeeds from a shell; under the
+  agent manager's own unit settings it fails with `bwrap: Can't open source
+  /usr: Function not implemented`. Bisecting the unit properties:
+  `RestrictSUIDSGID=yes` alone reproduces it (systemd's seccomp filter answers
+  a syscall bubblewrap uses with ENOSYS); `NoNewPrivileges`, `LockPersonality`
+  and `LimitNOFILE=256` are harmless. A `systemd-run --scope` child stays in
+  the manager's process tree and inherits that filter; the per-agent units are
+  services of their own and never had the problem.
+- Fix: `models::probe_argv` now runs the probe as a transient *service* —
+  `systemd-run --user --pipe --wait --collect --quiet -p MemoryMax=2G -p
+  TasksMax=128 -p RuntimeMaxSec=90 --setenv=… --` — with the four-variable
+  environment passed explicitly through `--setenv` (a transient unit does not
+  inherit `systemd-run`'s own environment) and the output still arriving on
+  the manager's pipe; `RuntimeMaxSec` ends the unit even if the manager gives
+  up first. The service unit's hardening is unchanged. Verified by running
+  the exact new argv from a transient unit carrying every restriction of
+  `omarchy-buzz-agents.service`: `OK`, exit 0. `service_tests` assert the new
+  argv including the `--setenv` entries; `docs/AGENTS_SERVICE.md` updated.

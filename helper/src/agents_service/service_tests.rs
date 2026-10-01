@@ -1314,18 +1314,30 @@ async fn probe_model_is_gated_and_runs_the_launcher_in_probe_mode() {
     let data = &f.home.paths.data;
     let state = &f.home.paths.state;
     let path = |p: std::path::PathBuf| p.to_str().unwrap().to_string();
-    assert_eq!(
-        argv,
+    // The transient unit gets exactly the filtered environment, as --setenv.
+    let setenv: Vec<String> = env
+        .iter()
+        .map(|(k, v)| format!("--setenv={}={}", k.to_str().unwrap(), v.to_str().unwrap()))
+        .collect();
+    let mut expected: Vec<String> = [
+        "/usr/bin/systemd-run",
+        "--user",
+        "--pipe",
+        "--wait",
+        "--collect",
+        "--quiet",
+        "-p",
+        "MemoryMax=2G",
+        "-p",
+        "TasksMax=128",
+        "-p",
+        "RuntimeMaxSec=90",
+    ]
+    .map(String::from)
+    .to_vec();
+    expected.extend(setenv);
+    expected.extend(
         [
-            "/usr/bin/systemd-run",
-            "--user",
-            "--scope",
-            "--collect",
-            "--quiet",
-            "-p",
-            "MemoryMax=2G",
-            "-p",
-            "TasksMax=128",
             "--",
             &path(data.join("omarchy-buzz/agent-claude-code/launcher/room-agent")),
             "--probe-model",
@@ -1337,7 +1349,9 @@ async fn probe_model_is_gated_and_runs_the_launcher_in_probe_mode() {
             "--bundle",
             &path(data.join("omarchy-buzz/agent-claude-code")),
         ]
+        .map(String::from),
     );
+    assert_eq!(argv, expected);
     // No relay, owner, identity, workspace or key reaches the probe.
     for word in [
         "--relay",

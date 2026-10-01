@@ -84,22 +84,44 @@ pub const PROBE_DEADLINE: Duration = Duration::from_secs(90);
 pub const PROBE_OUTPUT: usize = 4 * 1024;
 const SYSTEMD_RUN: &str = "/usr/bin/systemd-run";
 
-/// The exact probe argv. The launcher runs in its own transient user scope
-/// with the agent unit's memory and task limits: as a child of the agent
-/// service it would otherwise count against the service's own 256 MiB bound,
-/// which a vendor CLI exceeds.
-pub fn probe_argv(paths: &Paths, harness: &str, model: &str) -> Vec<String> {
+/// The exact probe argv. The launcher runs as its own transient user
+/// service (`--pipe --wait`, output on this process's pipe) with the agent
+/// unit's memory and task limits and a hard runtime bound. A transient
+/// *scope* would keep it in the agent service's process tree and so under the
+/// service's seccomp filters (`RestrictSUIDSGID=` made `bwrap` fail with
+/// ENOSYS), and its memory would count against the service's own 256 MiB
+/// bound, which a vendor CLI exceeds. The transient unit gets exactly `env`
+/// through `--setenv`, nothing from the manager's environment block beyond
+/// what systemd sets for every unit.
+pub fn probe_argv(
+    paths: &Paths,
+    harness: &str,
+    model: &str,
+    env: &[(OsString, OsString)],
+) -> Vec<String> {
     let text = |p: std::path::PathBuf| p.to_string_lossy().into_owned();
-    vec![
+    let mut argv: Vec<String> = vec![
         SYSTEMD_RUN.into(),
         "--user".into(),
-        "--scope".into(),
+        "--pipe".into(),
+        "--wait".into(),
         "--collect".into(),
         "--quiet".into(),
         "-p".into(),
         "MemoryMax=2G".into(),
         "-p".into(),
         "TasksMax=128".into(),
+        "-p".into(),
+        format!("RuntimeMaxSec={}", PROBE_DEADLINE.as_secs()),
+    ];
+    for (key, value) in env {
+        argv.push(format!(
+            "--setenv={}={}",
+            key.to_string_lossy(),
+            value.to_string_lossy()
+        ));
+    }
+    argv.extend([
         "--".into(),
         text(super::unit::launcher(paths, harness)),
         "--probe-model".into(),
@@ -110,7 +132,8 @@ pub fn probe_argv(paths: &Paths, harness: &str, model: &str) -> Vec<String> {
         text(paths.profile(harness)),
         "--bundle".into(),
         text(paths.bundle(harness)),
-    ]
+    ]);
+    argv
 }
 
 /// The probe's environment: enough for `systemd-run` to reach the user
