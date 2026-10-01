@@ -116,9 +116,12 @@ maintainer's fork at the reviewed PR commit, `relay_resource_limit`; SHA256
 36798105802, rollback backup
 `~/.local/share/omarchy-buzz/backups/20261001T011734.112722Z`), both harness
 bundles `ready`, plugin at `256154e` after one clean shell restart; the panel
-authenticates and shows rooms, DMs and the running agent. The marketplace
-listing (omacom/omarchy-plugin-marketplace#9414) is waiting on the reply to
-the reviewer's comment; a draft was shown to the maintainer at this stop.
+authenticates and shows rooms, DMs and the running agent. The reply to
+the marketplace reviewer (omacom/omarchy-plugin-marketplace#9414) was posted on
+the maintainer's instruction on September 30 (comment 5923152389); the issue
+still carries `needs-fixes` and `security-review-required` until a
+maintainer re-reviews, and its body still describes 0.0.13 (the validation
+bot checked `e3c7c46`); a maintainer may ask for a fresh validation.
 Before that, 0.0.20 (`26cb346`) carried the model check, clock skew and the
 portal file chooser.
 
@@ -157,7 +160,7 @@ real upload or download had been exercised at this line's writing.
 
 No branch is in progress; all worktrees are removed.
 
-Resume order: post or adjust the #9414 reply (maintainer's call) → a real **Test model**
+Resume order: watch #9414 for the reviewer's answer → a real **Test model**
 run on `vClaude` from the panel (then adjust the patterns in
 `helper/src/agents_service/models.rs` if the sentence is wrong) →
 presence/"Update your status" → community distribution (x86-64 package,
