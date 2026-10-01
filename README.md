@@ -41,6 +41,10 @@ Selected-room history refreshes about five seconds after a request finishes. A s
 
 **Alerts: on** (Settings → Notifications) enables generic notifications for new observed activity outside the visible conversation. This default-off preference survives shell restarts and applies across communities. Alerts contain no message text or room names. Initial snapshots, own messages, and edited/unavailable rows do not alert. These are best-effort hints, not a delivery guarantee.
 
+**Join an existing community** (account menu → Communities, and the first setup step) takes the community URL or invite link you received, as Buzz Desktop does: the helper checks the relay, claims an invite with your one identity (NIP-98, the relay's terms shown first when it has them), adds the community and switches to it. Other communities are listed in the account menu (click one to switch; each keeps its own last room), and Settings → **Communities** renames them or offers **Leave community** (with a confirmation; your identity stays, and the last community cannot be left). Update the helper and plugin together (`communities`).
+
+**Create a new community** opens buzz.xyz in your browser, where Buzz communities are created (this panel cannot create one itself), then joins the new community from the URL or invite link you paste.
+
 **Update your status** (account menu, above Settings) sets or clears the same text-and-emoji status Buzz Desktop shows (1 hour to 1 week); the helper signs and publishes it, verifies every status it reads, and others' status emoji appears beside their names in the open room. Update the helper and plugin together (`user_status`).
 
 **Set yourself as…** (account menu, below Update your status) chooses Auto, Away or Appear offline as Buzz Desktop does; the helper publishes the derived online/away/offline heartbeat (Auto turns away after 10 idle minutes), shows your state as a dot on your avatar and verified relay-signed states as dots before others' names. Update the helper and plugin together (`presence`).

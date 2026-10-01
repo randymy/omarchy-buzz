@@ -49,7 +49,11 @@ ShellRoot {
     setupService.beginSession()
     if (!setupService.acceptFrame(setupFrame("hello", 1, assist, "unconfigured", null, null, null))
         || shown("buzzSetupRelay") !== 1 || shown("buzzSetupRelayUrl") !== 1 || shown("buzzCreateIdentity") || shown("buzzExistingIdentityNote")
-        || setupService.setupInstructions.indexOf("Use this relay") === -1)
+        || shown("buzzSetupJoinDescription") !== 1 || shown("buzzSetupJoinOption") !== 1 || shown("buzzSetupCreateOption") !== 1
+        || findNamed(setupView, "buzzSetupJoinDescription", [])[0].text !== "Use the community URL or invite link you received."
+        || findNamed(setupView, "buzzSetupRelayUrl", [])[0].placeholderText !== "https://community.example.com or paste an invite link"
+        || findNamed(setupView, "buzzSetupRelay", [])[0].text !== "Join community"
+        || setupService.setupInstructions.indexOf("Never enter keys") === -1)
       throw new Error("Setup assist relay entry incorrect")
     if (!setupService.acceptFrame(setupFrame("status", 2, assist, "unconfigured", null, "wss://fixture.example/", null))
         || shown("buzzCreateIdentity") !== 1 || shown("buzzExistingIdentityNote") !== 1 || shown("buzzNewIdentityNote") !== 1
@@ -160,15 +164,18 @@ ShellRoot {
         if (protocolService.rooms.length !== 0 || protocolService.messages.length !== 0)
           throw new Error("Production state exposed sample data")
         checkSetupStates()
-        if (protocolService.setupProvider !== "hosted") throw new Error("Hosted setup is not the default")
+        if (protocolService.setupProvider !== "join") throw new Error("Joining an existing community is not the default")
         var beforeProvider = [protocolService.relay, protocolService.instanceId, protocolService.generation,
           protocolService.requestSequence, protocolService.connection, protocolService.category].join("|")
-        protocolService.chooseSetupProvider("custom")
-        if (protocolService.setupProvider !== "custom" || protocolService.providerInstructions.indexOf("invited") === -1)
-          throw new Error("Custom setup guidance incorrect")
+        protocolService.chooseSetupProvider("create")
+        if (protocolService.setupProvider !== "create" || protocolService.providerInstructions.indexOf("buzz.xyz") === -1)
+          throw new Error("Create setup guidance incorrect")
         protocolService.chooseSetupProvider("unexpected")
-        if (protocolService.setupProvider !== "custom") throw new Error("Invalid provider accepted")
-        protocolService.chooseSetupProvider("hosted")
+        if (protocolService.setupProvider !== "create") throw new Error("Invalid provider accepted")
+        protocolService.chooseSetupProvider("custom")
+        if (protocolService.setupProvider !== "join" || protocolService.providerInstructions.indexOf("invited") === -1)
+          throw new Error("Older provider name not mapped to join")
+        protocolService.chooseSetupProvider("join")
         if (beforeProvider !== [protocolService.relay, protocolService.instanceId, protocolService.generation,
           protocolService.requestSequence, protocolService.connection, protocolService.category].join("|"))
           throw new Error("Provider selection mutated connection configuration")

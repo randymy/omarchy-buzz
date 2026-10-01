@@ -93,7 +93,7 @@ ShellRoot {
           enterInvite("https://other.example/invite/x")
           test.stage = 5
         } else if (test.stage === 5 && service.inviteState === "failed") {
-          if (service.inviteCategory !== "invite_relay_mismatch" || service.inviteLabel.indexOf("different relay") === -1
+          if (service.inviteCategory !== "invite_relay_mismatch" || service.inviteLabel.indexOf("another community") === -1
               || shown("buzzInviteStatus").length !== 1)
             throw new Error("Relay mismatch not shown as a sentence")
           enterInvite(" https://fixture.example/invite/v2.AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8 ")

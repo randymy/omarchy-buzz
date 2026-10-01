@@ -137,7 +137,10 @@ ShellRoot {
           test.openMenu()
           check(one("buzzAccountMenuName").text === "Fixture Me" && one("buzzAccountStatePill").text === "Online"
             && one("buzzAccountCommunityHost").text === "fixture.example", "Menu header or community row wrong")
-          check(one("buzzAccountCommunity").tooltipText === "Switching communities is not available yet", "Community tooltip missing")
+          check(one("buzzAccountCommunity").tooltipText === "wss://fixture.example/", "Community tooltip missing")
+          // A helper without `communities` offers no switching, joining or creating.
+          check(shown("buzzCommunitySwitch").length === 0 && shown("buzzAccountJoinCommunity").length === 0
+            && shown("buzzAccountCreateCommunity").length === 0, "Community actions offered without the capability")
           var menu = one("buzzAccountMenu")
           check(menu.y + menu.height <= account.mapToItem(view, 0, 0).y, "Menu not above the account control")
           input.keyClick(Qt.Key_Escape)
