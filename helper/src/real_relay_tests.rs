@@ -184,6 +184,7 @@ async fn real_relay_messaging_conformance() {
                 .map(|r| protocol::Recipient {
                     key: r.key,
                     name: r.name,
+                    status: None,
                 })
                 .collect(),
             partial: roster.partial,

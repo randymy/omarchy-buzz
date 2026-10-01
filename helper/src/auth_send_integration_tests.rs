@@ -57,7 +57,9 @@ async fn integrated(mode: u8) {
         let metadata=signed(39000,vec![nostr::Tag::parse(["d",&room]).unwrap(),nostr::Tag::parse(["name","Send Fixture"]).unwrap(),nostr::Tag::parse(["t","stream"]).unwrap()]);
         let roster=serde_json::to_string(&vec![membership]).unwrap();
         let mut payloads=vec![json!({"self":signer.public_key().to_hex()}).to_string(),roster.clone(),serde_json::to_string(&vec![metadata]).unwrap()];
-        if mentioning {let profile=nostr::EventBuilder::new(nostr::Kind::Metadata,r#"{"display_name":"Self asserted name"}"#).sign_with_keys(&recipient).unwrap();payloads.push(roster);payloads.push(serde_json::to_string(&vec![profile]).unwrap());}
+        if mentioning {let profile=nostr::EventBuilder::new(nostr::Kind::Metadata,r#"{"display_name":"Self asserted name"}"#).sign_with_keys(&recipient).unwrap();payloads.push(roster);payloads.push(serde_json::to_string(&vec![profile]).unwrap());
+            // Agent profiles and statuses (`user_status`): none.
+            payloads.push("[]".into());payloads.push("[]".into());}
         if revoking {let revoked=signed(39002,vec![nostr::Tag::parse(["d",&room]).unwrap(),nostr::Tag::parse(["p",&recipient_key,"","member"]).unwrap()]);payloads.push(serde_json::to_string(&vec![revoked]).unwrap());}
         let expected_recipient=recipient_key.clone();
         let ack_gate=std::sync::Arc::new(std::sync::atomic::AtomicBool::new(!checking));let server_gate=ack_gate.clone();

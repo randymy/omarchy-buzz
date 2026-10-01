@@ -112,10 +112,11 @@ ColumnLayout {
         delegate: Controls.CheckBox {
           required property var modelData
           width: people.width
-          text: (modelData.name || "Unnamed") + " · " + modelData.key.slice(0, 12) + "…" + modelData.key.slice(-8) + " · " + root.service.participantLabel(modelData.key)
+          text: (modelData.name || "Unnamed") + (modelData.status ? " " + root.service.statusEmojiText(modelData.status) : "")
+            + " · " + modelData.key.slice(0, 12) + "…" + modelData.key.slice(-8) + " · " + root.service.participantLabel(modelData.key)
           hoverEnabled: true
           Controls.ToolTip.visible: hovered
-          Controls.ToolTip.text: modelData.key
+          Controls.ToolTip.text: modelData.key + (modelData.status && modelData.status.text ? " · " + modelData.status.text : "")
           contentItem: Text {
             text: parent.text
             textFormat: Text.PlainText

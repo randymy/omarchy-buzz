@@ -254,7 +254,7 @@ Item {
   property var dmSelection: []
   readonly property var dmCandidates: recipientsState === "snapshot" && recipientsRoomId === selectedRoomId && selectedRoomId !== ""
     ? recipientEntries.filter(function(entry) { return entry.key !== root.identity })
-      .map(function(entry) { return {key: entry.key, name: entry.name, label: root.participantLabel(entry.key)} }) : []
+      .map(function(entry) { return {key: entry.key, name: entry.name, label: root.participantLabel(entry.key), status: entry.status || null} }) : []
   readonly property bool dmOpenAvailable: dmOpenSupported && !sampleMode && !sessionFailed && connection === "authenticated"
     && ["partial", "ready"].indexOf(catalogState) !== -1 && instanceId !== ""
   readonly property bool canStartDm: dmOpenAvailable && dmOpenState !== "sending" && validDmKeys(dmSelection)
@@ -786,6 +786,140 @@ Item {
     if (value.code !== null || value.expiresAt !== null || value.maxUses !== null || value.role !== null) return null
     if (value.state === "failed" ? Object.keys(mintMessages).indexOf(value.category) === -1 : value.category !== null) return null
     return {state: value.state, code: null, expiresAt: null, maxUses: null, role: null, category: value.category}
+  }
+
+  // "Update your status" (`user_status`, account menu). The helper signs and
+  // publishes the kind 30315 status and verifies every status it reads; the
+  // panel sends only text, an emoji and hours, and shows validated projections.
+  property bool userStatusSupported: false
+  property var userStatus: ({state: "unavailable", mine: null, category: null})
+  property string statusRequestState: "idle"
+  property string statusRequestCategory: ""
+  property string statusRequestId: ""
+  property string statusRequestInstance: ""
+  // A helper failure is shown for a request made since the view was opened.
+  property bool statusOutcomeShown: false
+  // A small fixed set of common statuses, as Buzz Desktop offers presets.
+  readonly property var statusPresetEmoji: ["💬", "🗓️", "🍽️", "🚌", "🤒", "🌴", "🏠", "🎧", "🧑‍💻", "☕", "🎉", "👀"]
+  // 1 hour, 4 hours, 1 day, 1 week.
+  readonly property var statusDurations: [1, 4, 24, 168]
+  readonly property int statusTextBytes: 200
+  readonly property bool userStatusAvailable: userStatusSupported && !sampleMode && !sessionFailed && instanceId !== "" && connection === "authenticated"
+  readonly property bool canSetStatus: userStatusAvailable && bridge.running && statusRequestState !== "sending" && userStatus.state !== "sending"
+  // Sample mode shows a fixture status; nothing is ever published from it.
+  readonly property var sampleStatuses: ({me: {text: "Exploring the sample", emoji: "🧭", expiresAt: null}, Alex: {text: "In a meeting", emoji: "🗓️"}})
+  readonly property var myStatus: sampleMode ? sampleStatuses.me : userStatusAvailable ? userStatus.mine : null
+  readonly property var userStatusMessages: ({
+    status_invalid: "Check the status: up to 200 characters and one emoji.",
+    status_rate_limited: "Status changed a moment ago. Wait a few seconds, then try again.",
+    status_rejected: "The relay refused this status. Try again.",
+    relay_unavailable: "Could not reach the relay. The status may not have changed."
+  })
+  readonly property string userStatusLabel: {
+    if (statusRequestState === "failed") return userStatusMessages[statusRequestCategory] || "The status was not changed. Try again."
+    if (statusRequestState === "sending" || userStatus.state === "sending") return "Updating status…"
+    if (userStatus.state === "failed" && statusOutcomeShown) return userStatusMessages[userStatus.category] || "The status was not changed. Try again."
+    return ""
+  }
+  // A native emoji sequence (1-8 code points, no ASCII, controls, whitespace,
+  // bidi or invisible characters, not starting with a joiner or modifier) or a
+  // `:shortcode:`. The helper applies the same rule to what it sends and reads.
+  function validStatusEmoji(value) {
+    if (typeof value !== "string" || value.length > 64) return false
+    if (/^:[A-Za-z0-9_+-]{1,32}:$/.test(value)) return true
+    var points = []
+    for (var i = 0; i < value.length; i++) {
+      var point = value.codePointAt(i)
+      if (point > 0xffff) i++
+      points.push(point)
+    }
+    if (points.length < 1 || points.length > 8) return false
+    var first = points[0]
+    if (first === 0x200d || (first >= 0xfe00 && first <= 0xfe0f) || first === 0x20e3 || (first >= 0x1f3fb && first <= 0x1f3ff)
+        || (first >= 0xe0020 && first <= 0xe007f) || (first >= 0x300 && first <= 0x36f)) return false
+    return points.every(function(p) {
+      return p >= 0x80 && !(p >= 0x80 && p <= 0x9f) && !/\s/.test(String.fromCodePoint(p))
+        && [0x61c, 0x200e, 0x200f, 0x200b, 0x200c, 0xfeff].indexOf(p) === -1 && !(p >= 0x202a && p <= 0x202e)
+        && !(p >= 0x2066 && p <= 0x2069) && !(p >= 0x2060 && p <= 0x2064) && !(p >= 0xe000 && p <= 0xf8ff) && p < 0xf0000
+    })
+  }
+  // Status text as the helper projects it: at most 200 bytes, no controls or bidi.
+  function validStatusText(value) {
+    return boundedString(value, 200) && utf8Size(value) <= 200
+      && !/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069\u200e\u200f\u061c]/.test(value)
+  }
+  // `{text, emoji}` beside another member's name, or null.
+  function validatedRecipientStatus(value) {
+    if (value === null) return null
+    if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join(",") !== "emoji,text"
+        || !validStatusText(value.text) || (value.emoji !== null && !validStatusEmoji(value.emoji))
+        || (value.text.trim() === "" && value.emoji === null)) return undefined
+    return {text: value.text, emoji: value.emoji}
+  }
+  function validatedUserStatus(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join(",") !== "category,mine,state"
+        || ["unavailable", "ready", "sending", "failed"].indexOf(value.state) === -1) return null
+    if (value.state === "failed" ? Object.keys(userStatusMessages).indexOf(value.category) === -1
+        : value.category !== null && (value.state !== "unavailable" || Object.keys(userStatusMessages).indexOf(value.category) === -1)) return null
+    var mine = null
+    if (value.mine !== null) {
+      var m = value.mine
+      if (!m || typeof m !== "object" || Array.isArray(m) || Object.keys(m).sort().join(",") !== "emoji,expiresAt,text"
+          || value.state === "unavailable" || !validStatusText(m.text) || (m.emoji !== null && !validStatusEmoji(m.emoji))
+          || (m.text.trim() === "" && m.emoji === null)
+          || (m.expiresAt !== null && (!Number.isInteger(m.expiresAt) || m.expiresAt < 1 || m.expiresAt > 4102444800))) return null
+      mine = {text: m.text, emoji: m.emoji, expiresAt: m.expiresAt}
+    }
+    return {state: value.state, mine: mine, category: value.category}
+  }
+  // A member's status for a name shown from the verified roster (or the sample).
+  function authorStatus(key) {
+    if (sampleMode) return sampleStatuses[key] || null
+    if (!userStatusSupported || recipientsState !== "snapshot" || recipientsRoomId !== selectedRoomId || selectedRoomId === "") return null
+    if (key === identity && userStatus.state !== "unavailable") return userStatus.mine ? {text: userStatus.mine.text, emoji: userStatus.mine.emoji} : null
+    var entry = recipientEntries.find(function(item) { return item.key === key })
+    return entry && entry.status ? entry.status : null
+  }
+  function statusEmojiText(status) { return status ? (status.emoji || "💬") : "" }
+  function setStatus(text, emoji, hours) {
+    if (!canSetStatus || typeof text !== "string" || statusDurations.indexOf(hours) === -1) return false
+    var trimmed = text.trim()
+    var chosen = typeof emoji === "string" ? emoji.trim() : ""
+    if (utf8Size(trimmed) > statusTextBytes || /[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069\u200e\u200f\u061c]/.test(trimmed)
+        || (chosen !== "" && !validStatusEmoji(chosen)) || (trimmed === "" && chosen === "")) return false
+    var request = {version: 1, id: correlationUuid(), type: "set_status", text: trimmed, expiresInHours: hours}
+    if (chosen !== "") request.emoji = chosen
+    return writeStatusRequest(request)
+  }
+  function clearStatus() {
+    if (!canSetStatus) return false
+    return writeStatusRequest({version: 1, id: correlationUuid(), type: "clear_status"})
+  }
+  function writeStatusRequest(request) {
+    statusRequestId = request.id
+    statusRequestInstance = instanceId
+    statusRequestState = "sending"
+    statusRequestCategory = ""
+    statusOutcomeShown = true
+    bridge.write(JSON.stringify(request) + "\n")
+    statusTimeout.restart()
+    return true
+  }
+  // A view opened afresh shows no earlier outcome.
+  function resetStatusRequest() {
+    if (statusRequestState !== "sending") { statusRequestState = "idle"; statusRequestCategory = "" }
+    statusOutcomeShown = false
+  }
+  function loseStatusRequest() {
+    statusTimeout.stop()
+    if (statusRequestState === "sending") { statusRequestState = "idle"; statusRequestCategory = "" }
+    statusRequestId = ""
+  }
+  function clearUserStatus() {
+    loseStatusRequest()
+    statusRequestState = "idle"
+    statusRequestCategory = ""
+    userStatus = {state: "unavailable", mine: null, category: null}
   }
 
   // File attachments (`attachments`). The helper downloads, verifies and saves
@@ -1499,7 +1633,7 @@ Item {
     if (recipientsState !== "snapshot") recipientsState = "loading"
     send("fetch_recipients", selectedRoomId)
   }
-  function validatedRecipients(value) {
+  function validatedRecipients(value, withStatus) {
     if (!value || ["unavailable", "loading", "snapshot"].indexOf(value.state) === -1
         || (value.roomId !== null && !uuidValue(value.roomId)) || typeof value.partial !== "boolean"
         || !Array.isArray(value.entries) || value.entries.length > 20
@@ -1511,8 +1645,10 @@ Item {
       var entry = value.entries[i]
       if (!entry || typeof entry.key !== "string" || !/^[a-f0-9]{64}$/.test(entry.key) || seen[entry.key]
           || !boundedString(entry.name, 64) || utf8Size(entry.name) > 64 || /[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069\u200e\u200f\u061c]/.test(entry.name)) return null
+      var status = withStatus ? validatedRecipientStatus(entry.status) : null
+      if (status === undefined) return null
       seen[entry.key] = true
-      entries.push({key:entry.key,name:entry.name})
+      entries.push({key:entry.key,name:entry.name,status:status})
     }
     return {state:value.state,roomId:value.roomId,entries:entries,partial:value.partial,category:value.category || ""}
   }
@@ -1562,10 +1698,10 @@ Item {
     if (!sampleMode) selectedRoomId = ""
   }
   function validCapabilities(capabilities) {
-    return Array.isArray(capabilities) && capabilities.length >= 1 && capabilities.length <= 18
+    return Array.isArray(capabilities) && capabilities.length >= 1 && capabilities.length <= 19
       && capabilities.indexOf("connection_status") !== -1
       && capabilities.every(function(cap, index) {
-        return ["connection_status", "room_catalog", "room_history", "message_send", "room_recipients", "history_auto_refresh", "room_activity", "agent_profiles", "thread_replies", "thread_send", "thread_summaries", "dm_open", "older_history", "live_updates", "setup_assist", "community_join", "invite_mint", "attachments"].indexOf(cap) !== -1 && capabilities.indexOf(cap) === index
+        return ["connection_status", "room_catalog", "room_history", "message_send", "room_recipients", "history_auto_refresh", "room_activity", "agent_profiles", "thread_replies", "thread_send", "thread_summaries", "dm_open", "older_history", "live_updates", "setup_assist", "community_join", "invite_mint", "attachments", "user_status"].indexOf(cap) !== -1 && capabilities.indexOf(cap) === index
       })
   }
   // Streams carry no participants and are never hidden. A DM lists 2-9 distinct
@@ -1676,6 +1812,8 @@ Item {
     loseMint()
     inviteMintSupported = false
     clearInvites()
+    clearUserStatus()
+    userStatusSupported = false
     losePendingDelivery()
     loseDmOpen()
     dmOpenSupported = false
@@ -1717,6 +1855,8 @@ Item {
     loseMint()
     inviteMintSupported = false
     clearInvites()
+    clearUserStatus()
+    userStatusSupported = false
     losePendingDelivery()
     loseDmOpen()
     dmOpenSupported = false
@@ -1753,11 +1893,19 @@ Item {
         "setup_invalid_relay", "identity_exists", "identity_unavailable", "relay_unavailable", "setup_busy", "setup_not_allowed", "config_unavailable",
         "invite_invalid", "invite_relay_mismatch", "invite_rejected", "invite_rate_limited", "policy_required", "room_not_open", "join_rejected", "leave_rejected",
         "invite_forbidden", "attachment_unknown", "attachment_forbidden", "attachment_mismatch", "attachment_too_large", "attachment_invalid",
-        "attachment_type_refused", "attachment_storage_unavailable"].indexOf(frame.category) !== -1) {
+        "attachment_type_refused", "attachment_storage_unavailable", "status_invalid", "status_rate_limited", "status_rejected"].indexOf(frame.category) !== -1) {
       if (instanceId === "" || frame.instanceId !== instanceId) return false
       if (!boundedString(frame.id, 128) || !/^ui-[0-9]+$/.test(frame.id) && !uuidValue(frame.id)) { fail("invalid_response"); return false }
       if (frame.id === setupRequestId && setupState === "sending") {
         refuseSetup(frame.category === "request_busy" ? "setup_busy" : frame.category)
+        return true
+      }
+      if (frame.id === statusRequestId && statusRequestState === "sending") {
+        // Refused before anything was signed, or the helper lost the request.
+        statusTimeout.stop()
+        statusRequestState = "failed"
+        statusRequestCategory = frame.category === "request_busy" ? "status_rate_limited" : frame.category
+        statusRequestId = ""
         return true
       }
       if (frame.id === mintRequestId && mintState === "sending") {
@@ -1876,7 +2024,8 @@ Item {
     var thread = supportsThread ? validatedThread(state.thread, supportsAttachments ? {origin: origin, count: 0} : null) : null
     if (supportsThread && (!supportsHistory || !thread)) { fail("invalid_response"); return false }
     var supportsRecipients = frame.capabilities.indexOf("room_recipients") !== -1
-    var recipients = supportsRecipients ? validatedRecipients(state.recipients) : null
+    var supportsStatus = frame.capabilities.indexOf("user_status") !== -1
+    var recipients = supportsRecipients ? validatedRecipients(state.recipients, supportsStatus) : null
     if (supportsRecipients && !recipients) { fail("invalid_response"); return false }
     var agents = frame.capabilities.indexOf("agent_profiles") !== -1 ? validatedAgents(state.recipients && state.recipients.agents, recipients) : []
     if (agents === null) { fail("invalid_response"); return false }
@@ -1892,6 +2041,8 @@ Item {
     var open = supportsJoin ? validatedOpenRooms(state.openRooms, catalog) : null
     var action = supportsJoin ? validatedRoomAction(state.roomAction) : null
     if (supportsJoin && (!join || !open || !action)) { fail("invalid_response"); return false }
+    var shownStatus = supportsStatus ? validatedUserStatus(state.userStatus) : null
+    if (supportsStatus && !shownStatus) { fail("invalid_response"); return false }
     var supportsMint = frame.capabilities.indexOf("invite_mint") !== -1
     var minted = supportsMint ? validatedInvites(state.invites) : null
     if (supportsMint && !minted) { fail("invalid_response"); return false }
@@ -2061,6 +2212,19 @@ Item {
         mintTimeout.stop()
         mintState = "idle"
         mintRequestId = ""
+      }
+    }
+    userStatusSupported = supportsStatus
+    if (!supportsStatus || state.connection !== "authenticated") {
+      // Without a session nothing about the status is shown or pending.
+      loseStatusRequest()
+      if (userStatus.state !== "unavailable" || userStatus.mine !== null) userStatus = {state: "unavailable", mine: null, category: null}
+    } else {
+      if (!sameProjection(userStatus, shownStatus)) userStatus = shownStatus
+      if (frame.type === "status" && statusRequestState === "sending" && frame.id === statusRequestId && frame.instanceId === statusRequestInstance) {
+        statusTimeout.stop()
+        statusRequestState = "idle"
+        statusRequestId = ""
       }
     }
     attachmentsSupported = supportsAttachments
@@ -2236,6 +2400,12 @@ Item {
     onTriggered: { if (root.inviteState === "sending") { root.inviteState = "failed"; root.inviteCategory = "setup_busy" }; root.inviteRequestId = "" }
   }
   Timer {
+    id: statusTimeout
+    // The helper answers at once; the relay's OK arrives in the status view.
+    interval: 30000
+    onTriggered: { if (root.statusRequestState === "sending") { root.statusRequestState = "failed"; root.statusRequestCategory = "relay_unavailable" }; root.statusRequestId = "" }
+  }
+  Timer {
     id: mintTimeout
     // Beyond the helper's own 60-second bound for one HTTP request.
     interval: 70000
@@ -2296,6 +2466,8 @@ Item {
       root.loseMint()
       root.inviteMintSupported = false
       root.clearInvites()
+      root.clearUserStatus()
+      root.userStatusSupported = false
       root.losePendingDelivery()
       root.loseDmOpen()
       root.dmOpenSupported = false

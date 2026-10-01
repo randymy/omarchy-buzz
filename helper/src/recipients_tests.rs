@@ -231,12 +231,26 @@ async fn loopback_fetch_uses_fixed_roster_and_profile_queries_and_falls_back_on_
         100,
     )])
     .unwrap();
+    let now = Timestamp::now().as_secs();
+    let expires = (now + 3600).to_string();
+    let status_payload = serde_json::to_string(&vec![event(
+        &user,
+        30315,
+        "In a \u{202e}meeting",
+        vec![
+            Tag::parse(["d", "general"]).unwrap(),
+            Tag::parse(["emoji", "🗣️"]).unwrap(),
+            Tag::parse(["expiration", expires.as_str()]).unwrap(),
+        ],
+        now - 5,
+    )])
+    .unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let origin = format!("ws://{}/", listener.local_addr().unwrap());
     let public = user.public_key();
     let task = tokio::spawn(async move {
         timeout(Duration::from_secs(3), async move {
-            for index in 0..3 {
+            for index in 0..4 {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 let mut head = Vec::new();
                 loop {
@@ -268,8 +282,10 @@ async fn loopback_fetch_uses_fixed_roster_and_profile_queries_and_falls_back_on_
                         serde_json::json!([{"kinds":[39002],"#d":[room().to_string()],"limit":1}])
                     } else if index == 1 {
                         serde_json::json!([{"kinds":[0],"authors":[public.to_hex()],"limit":1}])
-                    } else {
+                    } else if index == 2 {
                         serde_json::json!([{"kinds":[10100],"authors":[public.to_hex()],"limit":1}])
+                    } else {
+                        serde_json::json!([{"kinds":[30315],"authors":[public.to_hex()],"#d":["general"],"limit":1}])
                     }
                 );
                 let response = if index == 0 {
@@ -278,11 +294,12 @@ async fn loopback_fetch_uses_fixed_roster_and_profile_queries_and_falls_back_on_
                         payload.len(),
                         payload
                     )
-                } else if index == 2 {
+                } else if index >= 2 {
+                    let body = if index == 2 { &agent_payload } else { &status_payload };
                     format!(
                         "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                        agent_payload.len(),
-                        agent_payload
+                        body.len(),
+                        body
                     )
                 } else {
                     "HTTP/1.1 503 Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
@@ -308,6 +325,16 @@ async fn loopback_fetch_uses_fixed_roster_and_profile_queries_and_falls_back_on_
     assert_eq!(result.agents[0].key, public.to_hex());
     assert_eq!(result.agents[0].name, "Synthetic agent");
     assert_eq!(result.agents[0].execution_state, "unknown");
+    // The batched status read: verified, sanitized, with its expiry.
+    assert!(result.statuses_known);
+    assert_eq!(
+        result.entries[0].status,
+        Some(UserStatus {
+            text: "In a  meeting".into(),
+            emoji: Some("🗣️".into()),
+            expires_at: Some(now + 3600)
+        })
+    );
     assert!(result.partial);
     task.await.unwrap();
 }
@@ -324,13 +351,13 @@ async fn optional_profile_access_denial_preserves_the_verified_roster() {
     let user = key(2);
     let roster_body =
         serde_json::to_string(&vec![membership(&relay, &[user.public_key()])]).unwrap();
-    for denied_kind in [0, 10100] {
+    for denied_kind in [0, 10100, 30315] {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let origin = format!("ws://{}/", listener.local_addr().unwrap());
         let roster_body = roster_body.clone();
         let task = tokio::spawn(async move {
             timeout(Duration::from_secs(3), async move {
-                for index in 0..3 {
+                for index in 0..4 {
                     let (mut stream, _) = listener.accept().await.unwrap();
                     let mut head = Vec::new();
                     loop {
@@ -356,7 +383,7 @@ async fn optional_profile_access_denial_preserves_the_verified_roster() {
                     let request: serde_json::Value = serde_json::from_slice(&body).unwrap();
                     assert_eq!(
                         request[0]["kinds"][0],
-                        serde_json::Value::from([39002, 0, 10100][index])
+                        serde_json::Value::from([39002, 0, 10100, 30315][index])
                     );
                     let reply = if index == 0 {
                         format!(
@@ -364,7 +391,7 @@ async fn optional_profile_access_denial_preserves_the_verified_roster() {
                             roster_body.len(),
                             roster_body
                         )
-                    } else if [39002, 0, 10100][index] == denied_kind {
+                    } else if [39002, 0, 10100, 30315][index] == denied_kind {
                         "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                             .into()
                     } else {
@@ -388,6 +415,9 @@ async fn optional_profile_access_denial_preserves_the_verified_roster() {
         assert_eq!(result.entries[0].key, user.public_key().to_hex());
         assert!(result.entries[0].name.is_empty());
         assert!(result.agents.is_empty());
+        // A denied status read is unknown, not "no status".
+        assert_eq!(result.statuses_known, denied_kind != 30315);
+        assert!(result.entries[0].status.is_none());
         task.await.unwrap();
     }
 }

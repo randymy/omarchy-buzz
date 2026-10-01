@@ -450,3 +450,35 @@ fn dm_visibility_request_is_viewer_scoped() {
         .unwrap();
     assert!(!request.matches(&theirs, &viewer));
 }
+
+#[test]
+fn user_status_request_is_author_scoped_general_and_bounded() {
+    let viewer = Keys::generate();
+    let member = Keys::generate();
+    let authors = vec![viewer.public_key(), member.public_key()];
+    let request = QueryRequest::UserStatuses {
+        authors: authors.clone(),
+    };
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&request.body(&viewer).unwrap()).unwrap(),
+        serde_json::json!([{"kinds":[30315],"authors":[viewer.public_key().to_hex(),member.public_key().to_hex()],"#d":["general"],"limit":2}])
+    );
+    let status = |author: &Keys, d: &str| {
+        EventBuilder::new(Kind::Custom(30315), "Busy")
+            .tags([Tag::parse(["d", d]).unwrap()])
+            .sign_with_keys(author)
+            .unwrap()
+    };
+    assert!(request.matches(&status(&member, "general"), &viewer));
+    assert!(!request.matches(&status(&member, "music"), &viewer));
+    assert!(!request.matches(&status(&Keys::generate(), "general"), &viewer));
+    assert!(!QueryRequest::Profiles { authors }.matches(&status(&member, "general"), &viewer));
+    assert!(QueryRequest::UserStatuses { authors: vec![] }
+        .body(&viewer)
+        .is_err());
+    assert!(QueryRequest::UserStatuses {
+        authors: vec![member.public_key(); 21]
+    }
+    .body(&viewer)
+    .is_err());
+}

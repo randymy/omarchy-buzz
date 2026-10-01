@@ -330,6 +330,7 @@ FocusScope {
   function openAgentEditor(id) {
     if (!agentsVisible || (id !== "" && !agentService.agent(id))) return false
     settingsOpen = false
+    statusOpen = false
     agentEditorId = id
     agentEditorOpen = true
     agentEditor.load()
@@ -374,9 +375,68 @@ FocusScope {
     var value = source ? source.version : ""
     return typeof value === "string" && /^[0-9A-Za-z.+-]{1,32}$/.test(value) ? value : ""
   }
+  // Update your status: a compact view like Settings, opened from the account
+  // menu. The helper signs and publishes; the panel sends text, emoji and hours.
+  property bool statusOpen: false
+  property int statusHours: 24
+  property bool statusAwaiting: false
+  readonly property bool statusEntryShown: !!service && (service.userStatusSupported || service.sampleMode)
+  readonly property string myStatusEmoji: service && service.myStatus ? service.statusEmojiText(service.myStatus) : ""
+  readonly property string myStatusLine: service && service.myStatus
+    ? myStatusEmoji + (service.myStatus.text ? " " + service.myStatus.text : "") : ""
+  readonly property string statusDraftEmoji: statusEmojiField.text.trim()
+  readonly property bool statusDraftValid: !!service && service.utf8Size(statusField.text.trim()) <= service.statusTextBytes
+    && (statusDraftEmoji === "" || service.validStatusEmoji(statusDraftEmoji))
+    && (statusField.text.trim() !== "" || statusDraftEmoji !== "")
+  readonly property string statusDraftNote: !service ? ""
+    : service.utf8Size(statusField.text.trim()) > service.statusTextBytes ? "Up to 200 characters."
+    : statusDraftEmoji !== "" && !service.validStatusEmoji(statusDraftEmoji) ? "Use one emoji or a :shortcode:."
+    : ""
+  function openStatus() {
+    if (!statusEntryShown) return false
+    closeAccountMenu()
+    closeAgentEditor()
+    settingsOpen = false
+    var mine = service.myStatus
+    statusField.text = mine ? mine.text : ""
+    statusEmojiField.text = mine && mine.emoji ? mine.emoji : ""
+    statusHours = 24
+    statusAwaiting = false
+    service.resetStatusRequest()
+    statusOpen = true
+    Qt.callLater(function() { statusField.forceActiveFocus() })
+    return true
+  }
+  function closeStatus() {
+    if (!statusOpen) return
+    statusOpen = false
+    statusAwaiting = false
+    accountControl.forceActiveFocus()
+  }
+  function chooseStatusEmoji(emoji) {
+    statusEmojiField.text = statusDraftEmoji === emoji ? "" : emoji
+  }
+  function submitStatus() {
+    if (!service || !statusDraftValid) return false
+    statusAwaiting = service.setStatus(statusField.text, statusDraftEmoji, statusHours)
+    return statusAwaiting
+  }
+  function submitClearStatus() {
+    if (!service) return false
+    statusAwaiting = service.clearStatus()
+    return statusAwaiting
+  }
+  Connections {
+    target: root.service
+    // A change the relay accepted closes the view, as Desktop's dialog does.
+    function onUserStatusChanged() {
+      if (root.statusOpen && root.statusAwaiting && root.service.statusRequestState === "idle" && root.service.userStatus.state === "ready") root.closeStatus()
+    }
+  }
   function openSettings() {
     closeAccountMenu()
     closeAgentEditor()
+    statusOpen = false
     settingsOpen = true
     Qt.callLater(function() { settingsBack.forceActiveFocus() })
     return true
@@ -423,7 +483,7 @@ FocusScope {
     var others = room.participants.filter(function(key) { return key !== root.service.identity })
     return others.length ? others[0] : ""
   }
-  readonly property bool threadOpen: !agentEditorShown && !settingsOpen && !!service && service.threadRootId !== "" && service.threadRoot !== null
+  readonly property bool threadOpen: !agentEditorShown && !settingsOpen && !statusOpen && !!service && service.threadRootId !== "" && service.threadRoot !== null
   // An open thread sits beside the room. Narrow windows give up the room list
   // first, then the room itself, so the thread always has a readable column.
   readonly property bool showRooms: !threadOpen || width >= Style.space(1100)
@@ -555,7 +615,7 @@ FocusScope {
   }
   signal closeRequested()
   signal presentationRequested()
-  Keys.onEscapePressed: accountMenuOpen ? closeAccountMenu() : avatarCard.opened ? avatarCard.close() : closeRequested()
+  Keys.onEscapePressed: accountMenuOpen ? closeAccountMenu() : avatarCard.opened ? avatarCard.close() : statusOpen ? closeStatus() : closeRequested()
   // Ctrl+, opens Settings, as Buzz Desktop's ⌘, does.
   Keys.onPressed: function(event) {
     if (event.key === Qt.Key_Comma && (event.modifiers & Qt.ControlModifier)) { event.accepted = true; openSettings() }
@@ -758,8 +818,9 @@ FocusScope {
                   clip: true
                   readonly property bool chosen: root.service.dmSelection.indexOf(modelData.key) !== -1
                   text: (chosen ? "✓ " : "") + (modelData.name.trim() || modelData.key.slice(0, 12) + "…")
+                    + (modelData.status ? " " + root.service.statusEmojiText(modelData.status) : "")
                     + " · " + modelData.key.slice(0, 8) + " · " + modelData.label
-                  tooltipText: modelData.key
+                  tooltipText: modelData.key + (modelData.status && modelData.status.text ? " · " + modelData.status.text : "")
                   fontSize: Style.font.caption
                   leftAlign: true
                   focusable: true
@@ -808,11 +869,14 @@ FocusScope {
                   name: modelData.name
                   pixelSize: root.sidebarAvatarSize
                 }
+                readonly property var partnerStatus: root.service ? root.service.authorStatus(root.dmPartner(modelData)) : null
                 Ui.Button {
                   Layout.fillWidth: true
                   clip: true
-                  text: modelData.name + (root.service && root.service.roomActivityCount(modelData.id) > 0 ? " · " + root.service.roomActivityCount(modelData.id) + "+" : "")
-                  tooltipText: modelData.name + (root.service && root.service.roomActivityCount(modelData.id) > 0 ? " · new activity seen on this device, not synced unread" : "")
+                  text: modelData.name + (parent.partnerStatus ? " " + root.service.statusEmojiText(parent.partnerStatus) : "")
+                    + (root.service && root.service.roomActivityCount(modelData.id) > 0 ? " · " + root.service.roomActivityCount(modelData.id) + "+" : "")
+                  tooltipText: modelData.name + (parent.partnerStatus && parent.partnerStatus.text ? " · " + parent.partnerStatus.text : "")
+                    + (root.service && root.service.roomActivityCount(modelData.id) > 0 ? " · new activity seen on this device, not synced unread" : "")
                   leftAlign: true
                   focusable: true
                   selected: root.service && root.service.selectedRoomId === modelData.id
@@ -958,8 +1022,21 @@ FocusScope {
             }
             Text {
               objectName: "buzzAccountName"
-              Layout.fillWidth: true
+              Layout.fillWidth: !statusEmojiBadge.visible
+              Layout.maximumWidth: accountRow.width - Style.space(40)
               text: root.accountName
+              textFormat: Text.PlainText
+              elide: Text.ElideRight
+              color: Color.foreground
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+            }
+            Text {
+              id: statusEmojiBadge
+              objectName: "buzzAccountStatusEmoji"
+              visible: root.myStatusEmoji !== "" && (root.accountState === "online" || root.accountState === "sample")
+              Layout.fillWidth: true
+              text: root.myStatusEmoji
               textFormat: Text.PlainText
               elide: Text.ElideRight
               color: Color.foreground
@@ -982,6 +1059,7 @@ FocusScope {
             onClicked: { accountControl.forceActiveFocus(); accountControl.activate() }
           }
           readonly property string tooltipText: root.accountName + " · " + root.accountStateLabel
+            + (statusEmojiBadge.visible ? " · " + root.myStatusLine : "")
             + (root.myKeyKnown ? " · " + root.service.identity.slice(0, 8) + "…" : "")
           Controls.ToolTip.visible: accountArea.containsMouse && !root.accountMenuOpen
           Controls.ToolTip.delay: 400
@@ -1313,7 +1391,162 @@ FocusScope {
       }
 
       ColumnLayout {
-        visible: root.showTimeline && !root.agentEditorShown && !root.settingsOpen
+        id: statusView
+        objectName: "buzzStatusView"
+        visible: root.statusOpen
+        Layout.fillWidth: true
+        Layout.fillHeight: true
+        Layout.preferredWidth: Style.space(400)
+        spacing: Style.space(8)
+        RowLayout {
+          Layout.fillWidth: true
+          spacing: Style.space(8)
+          Ui.Button {
+            objectName: "buzzStatusBack"
+            text: "‹ Back to rooms"
+            tooltipText: "Return to the room view · Esc"
+            fontSize: Style.font.caption
+            horizontalPadding: Style.space(6)
+            verticalPadding: Style.space(2)
+            focusable: true
+            onClicked: root.closeStatus()
+          }
+          Text {
+            Layout.fillWidth: true
+            text: "Update your status"
+            textFormat: Text.PlainText
+            elide: Text.ElideRight
+            color: Color.foreground
+            font.family: Style.font.family
+            font.pixelSize: Style.font.body * 1.15
+            font.bold: true
+          }
+        }
+        ColumnLayout {
+          Layout.fillWidth: true
+          spacing: Style.space(4)
+          SettingsNote {
+            objectName: "buzzStatusCurrent"
+            text: root.myStatusLine !== "" ? "Now: " + root.myStatusLine : "No status set."
+          }
+          SettingsNote {
+            visible: !!root.service && root.service.sampleMode
+            text: "Not available with sample data."
+          }
+          SettingsNote {
+            objectName: "buzzStatusOffline"
+            visible: !!root.service && !root.service.sampleMode && !root.service.userStatusAvailable
+            text: "Connect to your relay to change your status."
+          }
+          SettingsCaption { text: "Status" }
+          RowLayout {
+            Layout.fillWidth: true
+            spacing: Style.space(6)
+            Ui.TextField {
+              id: statusEmojiField
+              objectName: "buzzStatusEmojiField"
+              Layout.preferredWidth: Style.space(70)
+              verticalPadding: Style.space(4)
+              maximumLength: 64
+              placeholderText: "Emoji"
+              inputMethodHints: Qt.ImhNoPredictiveText
+              onAccepted: root.submitStatus()
+            }
+            Ui.TextField {
+              id: statusField
+              objectName: "buzzStatusText"
+              Layout.fillWidth: true
+              verticalPadding: Style.space(4)
+              maximumLength: 200
+              placeholderText: "What's your status?"
+              onAccepted: root.submitStatus()
+            }
+          }
+          Flow {
+            objectName: "buzzStatusChips"
+            Layout.fillWidth: true
+            spacing: Style.space(4)
+            Repeater {
+              model: root.service ? root.service.statusPresetEmoji : []
+              Ui.Button {
+                required property string modelData
+                objectName: "buzzStatusChip"
+                readonly property string emoji: modelData
+                text: modelData
+                tooltipText: "Use " + modelData
+                fontSize: Style.font.caption
+                horizontalPadding: Style.space(6)
+                verticalPadding: Style.space(2)
+                focusable: true
+                selected: root.statusDraftEmoji === modelData
+                onClicked: root.chooseStatusEmoji(modelData)
+              }
+            }
+          }
+          SettingsCaption { text: "Clear after" }
+          RowLayout {
+            Layout.fillWidth: true
+            spacing: Style.space(4)
+            Repeater {
+              model: root.service ? root.service.statusDurations : []
+              Ui.Button {
+                required property int modelData
+                objectName: "buzzStatusHours" + modelData
+                text: ({1: "1 hour", 4: "4 hours", 24: "1 day", 168: "1 week"})[modelData]
+                tooltipText: "When this status clears itself"
+                fontSize: Style.font.caption
+                focusable: true
+                selected: root.statusHours === modelData
+                onClicked: root.statusHours = modelData
+              }
+            }
+            Item { Layout.fillWidth: true }
+          }
+          SettingsNote {
+            objectName: "buzzStatusDraftNote"
+            visible: text !== ""
+            text: root.statusDraftNote
+          }
+          RowLayout {
+            Layout.fillWidth: true
+            Layout.topMargin: Style.space(4)
+            spacing: Style.space(6)
+            Ui.Button {
+              objectName: "buzzStatusSet"
+              text: "Set status"
+              tooltipText: "Publish this status to your relay"
+              fontSize: Style.font.caption
+              focusable: true
+              enabled: !!root.service && root.service.canSetStatus && root.statusDraftValid
+              opacity: enabled ? 1 : 0.5
+              onClicked: root.submitStatus()
+            }
+            Ui.Button {
+              objectName: "buzzStatusClear"
+              text: "Clear status"
+              tooltipText: "Remove your status"
+              fontSize: Style.font.caption
+              focusable: true
+              enabled: !!root.service && root.service.canSetStatus && !!root.service.myStatus
+              opacity: enabled ? 1 : 0.5
+              onClicked: root.submitClearStatus()
+            }
+            Item { Layout.fillWidth: true }
+          }
+          SettingsNote {
+            objectName: "buzzStatusMessage"
+            visible: text !== ""
+            text: root.service ? root.service.userStatusLabel : ""
+          }
+          SettingsNote {
+            text: "Everyone in your community can see your status. It clears itself after the time you choose."
+          }
+        }
+        Item { Layout.fillHeight: true }
+      }
+
+      ColumnLayout {
+        visible: root.showTimeline && !root.agentEditorShown && !root.settingsOpen && !root.statusOpen
         Layout.fillWidth: true
         Layout.fillHeight: true
         Layout.preferredWidth: Style.space(400)
@@ -1905,6 +2138,18 @@ FocusScope {
           leftAlign: true
           focusable: true
           onClicked: root.sendFeedback()
+        }
+        Ui.Button {
+          objectName: "buzzAccountStatus"
+          visible: root.statusEntryShown
+          Layout.fillWidth: true
+          clip: true
+          text: root.myStatusLine !== "" ? root.myStatusLine : "☺ Update your status"
+          tooltipText: root.myStatusLine !== "" ? "Change or clear your status" : "Tell people what you are up to"
+          fontSize: Style.font.caption
+          leftAlign: true
+          focusable: true
+          onClicked: root.openStatus()
         }
         Ui.Button {
           objectName: "buzzAccountSettings"
