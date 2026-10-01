@@ -5,6 +5,7 @@
 fakes the agent service of docs/AGENTS_SERVICE.md and records every request it
 receives to BUZZ_SEND_RECORD.
 """
+import hashlib
 import json
 import os
 import sys
@@ -20,6 +21,24 @@ REMOTE_ROOM = "99999999-9999-4999-8999-999999999999"
 RELAY = "wss://fixture.invalid/"
 FIELDS = ["acpCommand", "answersDms", "description", "harness", "instructions", "model", "name", "respondTo",
           "rooms", "startAtLogin", "workspace"]
+
+
+def unit_name(agent_id, relay=None):
+    """An instance's unit: the agent id alone for the first, `<id>-<h>` for the others."""
+    if relay is None:
+        return "omarchy-buzz-agent-%s.service" % agent_id
+    return "omarchy-buzz-agent-%s-%s.service" % (agent_id, hashlib.sha256(relay.encode()).hexdigest()[:12])
+
+
+def with_instances(agent):
+    """The status form of an agent: its first instance repeats the top level;
+    further instances are kept under the fixture-only key `more`."""
+    view = {key: value for key, value in agent.items() if key != "more"}
+    view["instances"] = [{"relay": agent["relay"], "community": agent["community"], "rooms": agent["rooms"],
+                          "unit": unit_name(agent["id"]), "startAtLogin": agent["startAtLogin"],
+                          "published": agent["published"], "lastError": agent["lastError"], "state": agent["unit"]}]
+    view["instances"] += agent.get("more", [])
+    return view
 
 
 def helper():
@@ -81,7 +100,8 @@ def agents_service():
     def emit(kind="status", request_id=None):
         print(json.dumps({"version": 1, "type": kind, "id": request_id, "instanceId": instance,
                           "capabilities": ["agent_manager"],
-                          "status": {"activeRelay": RELAY, "harnesses": harnesses, "agents": agents, "pending": state["pending"],
+                          "status": {"activeRelay": RELAY, "harnesses": harnesses,
+                                     "agents": [with_instances(agent) for agent in agents], "pending": state["pending"],
                                      "modelProbe": state["probe"]}}), flush=True)
 
     def working(request):
@@ -125,7 +145,8 @@ def agents_service():
                            "published": False, "lastError": None, "relay": RELAY, "community": "Fixture"})
             done(request)
         elif kind == "update_agent":
-            assert sorted(request) == ["agentId", "fields", "id", "instanceId", "type", "version"] and request["agentId"] == AGENT
+            assert sorted(request) == ["agentId", "fields", "id", "instanceId", "relay", "type", "version"], request
+            assert request["agentId"] == AGENT and request["relay"] == RELAY, request
             assert request["fields"] in ({"answersDms": True}, {"model": "gpt-5.5"}), request
             working(request)
             agents[0].update(request["fields"])
@@ -146,7 +167,8 @@ def agents_service():
             harnesses[1]["bundle"] = "ready"
             done(request)
         elif kind == "start_agent":
-            assert sorted(request) == ["agentId", "id", "instanceId", "type", "version"] and request["agentId"] == AGENT
+            assert sorted(request) == ["agentId", "id", "instanceId", "relay", "type", "version"], request
+            assert request["agentId"] == AGENT and request["relay"] == RELAY, request
             assert harnesses[1]["bundle"] == "ready", "start sent for a stale bundle"
             working(request)
             agents[0]["unit"] = "active"

@@ -150,7 +150,22 @@ ShellRoot {
       acpCommand: "buzz-acp", rooms: [roomA], respondTo: "owner-only", workspace: "/home/fixture/w", identity: "b".repeat(64),
       enrolled: true, unit: "inactive", startAtLogin: false, answersDms: false, published: true, lastError: null,
       relay: "wss://fixture.example/", community: "Fixture"}
-    return Object.assign(value, overrides || {})
+    value = Object.assign(value, overrides || {})
+    // The first instance repeats the top level unless the case gives its own.
+    if (!value.hasOwnProperty("instances"))
+      value.instances = [instanceOf(value)].concat(value.more || [])
+    delete value.more
+    return value
+  }
+  function instanceOf(value, overrides) {
+    return Object.assign({relay: value.relay, community: value.community, rooms: value.rooms, unit: "omarchy-buzz-agent-" + value.id + ".service",
+      startAtLogin: value.startAtLogin, published: value.published, lastError: value.lastError, state: value.unit}, overrides || {})
+  }
+  // A further community's instance of the default persona.
+  function moreInstance(overrides) {
+    return Object.assign({relay: "wss://elsewhere.example/", community: "Elsewhere", rooms: [roomB],
+      unit: "omarchy-buzz-agent-" + agentId + "-0123456789ab.service", startAtLogin: false, published: true, lastError: null,
+      state: "inactive"}, overrides || {})
   }
   function agentFrame(type, capabilities, status) {
     return JSON.stringify({version: 1, type: type, id: null, instanceId: "offline-agents", capabilities: capabilities, status: status})
@@ -191,6 +206,24 @@ ShellRoot {
         || agents.startAgent(test.createdId) || agents.deleteAgent(test.createdId, false) || agents.updateAgent(test.createdId, {name: "x"})
         || agents.probeModel(test.createdId) || agents.setStartAtLogin(test.createdId, true))
       throw new Error("Agents of another community not grouped or not read-only")
+    // An agent whose first community is another one but which is enrolled
+    // here too is listed (and managed) here, with this community's state and
+    // rooms; requests name this community's relay.
+    var both = persona({id: test.createdId, name: "Both agent", relay: "wss://elsewhere.example/", community: "Elsewhere", unit: "active",
+      rooms: [roomB], more: [moreInstance({relay: "wss://fixture.example/", community: "Fixture", rooms: [roomA],
+        unit: "omarchy-buzz-agent-" + test.createdId + "-0123456789ab.service", state: "inactive"})]})
+    if (!agents.acceptFrame(agentFrame("status", ["agent_manager"], validStatus([persona(), both])))
+        || agents.currentAgents.length !== 2 || agents.otherAgents.length !== 0
+        || JSON.stringify(shown(offlineView, "buzzAgentRow").map(function(r) { return r.text })) !== JSON.stringify(["Fixture agent · stopped", "Both agent · stopped"])
+        || shown(offlineView, "buzzAgentsOtherHeading").length
+        || agents.currentInstance(agents.agent(test.createdId)).rooms[0] !== roomA
+        || agents.savedFields(agents.agent(test.createdId)).rooms[0] !== roomA
+        || agents.communityNames(agents.agent(test.createdId)) !== "Elsewhere, Fixture"
+        // Only the first community's workspace is edited here.
+        || agents.updateAgent(test.createdId, {workspace: "/home/fixture/x"}))
+      throw new Error("An agent enrolled here as its second community is not listed here")
+    if (agents.canAddToCurrent(agents.agent(test.createdId)) || agents.leaveCommunity(test.agentId, "wss://fixture.example/"))
+      throw new Error("Add offered for an agent already here, or the last community could be left")
     // A stale bundle is a documented state; its refusal category is known.
     if (!agents.acceptFrame(agentFrame("status", ["agent_manager"], {activeRelay: "wss://fixture.example/", harnesses: [{id: "codex", bundle: "stale", signedIn: true}],
         agents: [persona()], pending: {requestId: "00000000-0000-4000-8000-000000000008", type: "start_agent", state: "failed", category: "bundle_stale", detail: null},
@@ -289,6 +322,27 @@ ShellRoot {
       agentFrame("hello", ["agent_manager"], validStatus([persona({identity: null})])),
       agentFrame("hello", ["agent_manager"], validStatus([persona({lastError: "segfault"})])),
       agentFrame("hello", ["agent_manager"], validStatus([persona(), persona()])),
+      // Instances: exact keys, the agent's own unit names, 1–4 distinct
+      // communities, the first repeating the top level, one for an agent never enrolled.
+      agentFrame("hello", ["agent_manager"], validStatus([(function() { var p = persona(); delete p.instances; return p })()])),
+      agentFrame("hello", ["agent_manager"], validStatus([persona({instances: []})])),
+      agentFrame("hello", ["agent_manager"], validStatus([persona({more: [Object.assign(moreInstance(), {workspace: "/w"})]})])),
+      agentFrame("hello", ["agent_manager"], validStatus([persona({more: [(function() { var i = moreInstance(); delete i.state; return i })()]})])),
+      agentFrame("hello", ["agent_manager"], validStatus([persona({more: [moreInstance({unit: "omarchy-buzz-agent-" + createdId + "-0123456789ab.service"})]})])),
+      agentFrame("hello", ["agent_manager"], validStatus([persona({more: [moreInstance({unit: "omarchy-buzz-agent-" + agentId + "-0123456789AB.service"})]})])),
+      agentFrame("hello", ["agent_manager"], validStatus([persona({more: [moreInstance({unit: "omarchy-buzz-agent-" + agentId + ".service"})]})])),
+      agentFrame("hello", ["agent_manager"], validStatus([persona({more: [moreInstance({relay: "wss://fixture.example/"})]})])),
+      agentFrame("hello", ["agent_manager"], validStatus([persona({more: [moreInstance({state: "running"})]})])),
+      agentFrame("hello", ["agent_manager"], validStatus([persona({more: [moreInstance({rooms: []})]})])),
+      agentFrame("hello", ["agent_manager"], validStatus([persona({more: [moreInstance({lastError: "segfault"})]})])),
+      agentFrame("hello", ["agent_manager"], validStatus([persona({more: [moreInstance({community: "Evil\u202eteam"})]})])),
+      agentFrame("hello", ["agent_manager"], validStatus([persona({more: [1, 2, 3, 4].map(function(n) {
+        return moreInstance({relay: "wss://c" + n + ".example/", unit: "omarchy-buzz-agent-" + agentId + "-0123456789a" + n + ".service"}) })})])),
+      agentFrame("hello", ["agent_manager"], validStatus([persona({instances: [instanceOf(persona(), {rooms: [roomB]})]})])),
+      agentFrame("hello", ["agent_manager"], validStatus([persona({instances: [instanceOf(persona(), {state: "active"})]})])),
+      agentFrame("hello", ["agent_manager"], validStatus([persona({instances: [instanceOf(persona(), {relay: "wss://elsewhere.example/"})]})])),
+      agentFrame("hello", ["agent_manager"], validStatus([persona({identity: null, enrolled: false, more: [moreInstance()]})])),
+      agentFrame("hello", ["agent_manager"], validStatus(null, {requestId: "00000000-0000-4000-8000-000000000009", type: "join_agent", state: "working", category: null, detail: null})),
       agentFrame("hello", ["agent_manager"], validStatus(null, {requestId: "00000000-0000-4000-8000-000000000009", type: "start_agent", state: "failed", category: null, detail: null})),
       agentFrame("hello", ["agent_manager"], validStatus(null, {requestId: "00000000-0000-4000-8000-000000000009", type: "rm", state: "working", category: null, detail: null})),
       agentFrame("hello", ["agent_manager"], validStatus(null, {requestId: "ui-1", type: "start_agent", state: "working", category: null, detail: null})),
@@ -341,8 +395,25 @@ ShellRoot {
           other.clicked()
           var remoteEditor = test.findNamed(view, "buzzAgentEditor", [])[0]
           if (!remoteEditor.readOnly || test.one(view, "buzzAgentCommunity").text !== "Community: Elsewhere"
-              || test.one(view, "buzzAgentOtherCommunity").text !== "Enrolled in Elsewhere. Switch to that community to manage it.")
-            throw new Error("Read-only editor does not name the agent's community")
+              || test.one(view, "buzzAgentOtherCommunity").text !== "Enrolled in Elsewhere. Switch to that community to manage it, or add it to Fixture below.")
+            throw new Error("Read-only editor does not name the agent's community: " + test.one(view, "buzzAgentOtherCommunity").text)
+          // Its communities, read-only: no Start, Stop or Leave for them here.
+          if (test.one(view, "buzzAgentCommunitiesHeading").text !== "Communities"
+              || test.one(view, "buzzAgentInstanceLabel").text !== "Elsewhere · running · starts at login"
+              || test.one(view, "buzzAgentInstanceRooms").text !== "Room 99999999…"
+              || test.shown(view, "buzzAgentInstanceStart").length || test.shown(view, "buzzAgentInstanceStop").length
+              || test.shown(view, "buzzAgentLeave").length)
+            throw new Error("Read-only editor's Communities list wrong: " + test.one(view, "buzzAgentInstanceLabel").text)
+          // Add to this community: the helper is signed in here; rooms from this community's catalog.
+          var addRooms = test.shown(view, "buzzAgentAddRoom")
+          var addButton = test.one(view, "buzzAgentAddToCommunity")
+          if (addRooms.length !== 2 || addRooms[0].text !== "# Synthetic general" || addButton.text !== "Add to Fixture" || addButton.enabled
+              || agents.enrollAgentIn(test.remoteId, ["99999999-9999-4999-8999-999999999999"]) || agents.enrollAgentIn(test.remoteId, []))
+            throw new Error("Add to this community wrong: " + addRooms.map(function(r) { return r.text }) + " " + addButton.text)
+          addRooms[1].clicked()
+          if (!addButton.enabled || JSON.stringify(remoteEditor.addRooms) !== JSON.stringify([test.roomB])) throw new Error("Add room not chosen")
+          addRooms[1].clicked()
+          if (addButton.enabled) throw new Error("Add enabled without rooms")
           ;["buzzAgentSave", "buzzAgentStart", "buzzAgentStop", "buzzAgentEnroll", "buzzAgentDelete", "buzzProbeModel", "buzzRefreshBundle", "buzzAgentSignIn"].forEach(function(name) {
             if (test.shown(view, name).length) throw new Error("Read-only editor offers " + name)
           })
@@ -357,6 +428,13 @@ ShellRoot {
           if (test.one(view, "buzzAgentCommunity").text !== "Community: Fixture" || test.shown(view, "buzzAgentOtherCommunity").length
               || test.findNamed(view, "buzzAgentEditor", [])[0].readOnly)
             throw new Error("Current community's agent not editable or community line wrong")
+          // One community: listed, its Start is the editor's own, it cannot be left; nothing to add.
+          if (test.one(view, "buzzAgentInstanceLabel").text !== "Fixture (this community) · stopped"
+              || test.one(view, "buzzAgentInstanceRooms").text !== "# Synthetic general"
+              || test.shown(view, "buzzAgentInstanceStart").length || test.shown(view, "buzzAgentLeave").length
+              || test.one(view, "buzzAgentLastCommunity").text !== "Its only community cannot be left; delete the agent instead."
+              || test.shown(view, "buzzAgentAddSection").length)
+            throw new Error("Communities list of a one-community agent wrong: " + test.one(view, "buzzAgentInstanceLabel").text)
           test.one(view, "buzzAgentEditor")
           if (test.shown(view, "buzzHistoryScroll").length) throw new Error("Room view still shown beside the editor")
           if (test.one(view, "buzzAgentName").text !== "Fixture agent" || test.one(view, "buzzAgentInstructions").text !== "Answer briefly.")
@@ -540,7 +618,7 @@ ShellRoot {
               || !test.shown(view, "buzzHistoryScroll").length || agents.requestState !== "unknown")
             throw new Error("Malformed status did not end the agent session")
           test.validationCases()
-          console.log("PASS: Agents section lists the service's agents, edits, creates, starts and shows refusals; one request at a time; malformed frames end the session; no agent_manager hides the section; pasted avatar art is clipped, previewed, kept locally and restored, colored art from a file is previewed, brightened, saved and cleared, damaged avatar files fail closed; the direct message toggle round-trips and notes the restart; a stale harness bundle holds Start until Refresh bundle makes it ready; model alias chips fill the field, models of the other harness are refused, Test model probes only a saved model and shows each probe state as a fixed sentence; agents of another community are listed apart, open read-only with their community named and only their own rooms, and refuse every change")
+          console.log("PASS: Agents section lists the service's agents, edits, creates, starts and shows refusals; one request at a time; malformed frames end the session; no agent_manager hides the section; pasted avatar art is clipped, previewed, kept locally and restored, colored art from a file is previewed, brightened, saved and cleared, damaged avatar files fail closed; the direct message toggle round-trips and notes the restart; a stale harness bundle holds Start until Refresh bundle makes it ready; model alias chips fill the field, models of the other harness are refused, Test model probes only a saved model and shows each probe state as a fixed sentence; agents of another community are listed apart, open read-only with their community named and only their own rooms, and refuse every change; instances are checked exactly, an agent enrolled here as its second community is listed and managed here with this community's rooms, the editor lists each agent's communities and offers Add to this community with this community's verified rooms")
           Qt.quit()
         }
       } catch (error) { console.error(error.message); Qt.exit(1) }

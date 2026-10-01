@@ -11,10 +11,13 @@ the identity and redeems the invite. A community with terms is switched to
 and left awaiting `accept_invite`. No secret exists anywhere in this fixture.
 
 Run as `agents-bridge` it is the agent service instead: one agent enrolled in
-the first community (with a direct message there) and one in the second; its
-`activeRelay` is the relay the helper side last reported (a file beside the
-send record), re-read on every `subscribe`. Only `subscribe` is expected.
+the first community (with a direct message there), one in the second, and one
+in both (the second first); its `activeRelay` is the relay the helper side
+last reported (a file beside the send record), re-read on every `subscribe`.
+Besides `subscribe` it answers `enroll_agent_in` (vClaude added to the second
+community) and `leave_agent_community` (the agent in both leaves the second).
 """
+import hashlib
 import json
 import os
 import re
@@ -44,6 +47,8 @@ VCLAUDE = "33333333-3333-4333-8333-333333333333"
 NIGHT_BOT = "44444444-4444-4444-8444-444444444444"
 VCLAUDE_KEY = "c" * 64
 NIGHT_KEY = "d" * 64
+BOTH = "77777777-7777-4777-8777-777777777777"
+BOTH_KEY = "e" * 64
 DM_ROOM = "dddddddd-0000-4000-8000-0000000000d1"
 
 
@@ -60,10 +65,22 @@ def agents_bridge():
                 "acpCommand": "buzz-acp", "rooms": rooms, "respondTo": "owner-only",
                 "workspace": "/home/fixture/.local/state/omarchy-buzz-room-workspaces/" + agent_id, "identity": key,
                 "enrolled": True, "unit": "inactive", "startAtLogin": False, "answersDms": True, "published": True,
-                "lastError": None, "relay": relay, "community": community}
+                "lastError": None, "relay": relay, "community": community,
+                "instances": [instance_view(agent_id, relay, community, rooms, True)]}
 
-    agents = [persona(VCLAUDE, "vClaude", VCLAUDE_KEY, "wss://first.example/", "first", [ROOMS["wss://first.example/"][0][0]]),
-              persona(NIGHT_BOT, "Night bot", NIGHT_KEY, "wss://second.example/", "second", [ROOMS["wss://second.example/"][0][0]])]
+    def instance_view(agent_id, relay, community, rooms, first):
+        suffix = "" if first else "-" + hashlib.sha256(relay.encode()).hexdigest()[:12]
+        return {"relay": relay, "community": community, "rooms": rooms,
+                "unit": "omarchy-buzz-agent-%s%s.service" % (agent_id, suffix), "startAtLogin": False,
+                "published": True, "lastError": None, "state": "inactive"}
+
+    first_room, second_room = ROOMS["wss://first.example/"][0][0], ROOMS["wss://second.example/"][0][0]
+    agents = [persona(VCLAUDE, "vClaude", VCLAUDE_KEY, "wss://first.example/", "first", [first_room]),
+              persona(NIGHT_BOT, "Night bot", NIGHT_KEY, "wss://second.example/", "second", [second_room]),
+              persona(BOTH, "Both bot", BOTH_KEY, "wss://second.example/", "second", [second_room])]
+    # Enrolled in the first community as well, after the second.
+    agents[2]["instances"].append(instance_view(BOTH, "wss://first.example/", "first", [ROOMS["wss://first.example/"][1][0]], False))
+    pending = {"value": None}
 
     def emit(kind="status", request_id=None):
         try:
@@ -75,20 +92,42 @@ def agents_bridge():
                           "capabilities": ["agent_manager"],
                           "status": {"activeRelay": active,
                                      "harnesses": [{"id": "codex", "bundle": "ready", "signedIn": True}],
-                                     "agents": agents, "pending": None,
+                                     "agents": agents, "pending": pending["value"],
                                      "modelProbe": {"agentId": None, "state": "idle", "model": "", "detail": None}}}),
               flush=True)
+
+    def finish(request):
+        pending["value"] = {"requestId": request["id"], "type": request["type"], "state": "done", "category": None,
+                            "detail": None}
+        emit(request_id=request["id"])
 
     emit("hello")
     for line in sys.stdin:
         request = json.loads(line)
-        assert request["type"] == "subscribe" and request["instanceId"] == instance, request
-        assert sorted(request) == ["id", "instanceId", "type", "version"], request
-        requests.append(request["type"])
+        assert request["instanceId"] == instance, request
+        requests.append(request)
         with open(side_file("agents-record.json.tmp"), "w", encoding="utf-8") as output:
             json.dump({"requests": requests}, output)
         os.replace(side_file("agents-record.json.tmp"), side_file("agents-record.json"))
-        emit(request_id=request["id"])
+        if request["type"] == "subscribe":
+            assert sorted(request) == ["id", "instanceId", "type", "version"], request
+            emit(request_id=request["id"])
+        elif request["type"] == "enroll_agent_in":
+            assert sorted(request) == ["agentId", "id", "instanceId", "relay", "rooms", "type", "version"], request
+            assert request["agentId"] == VCLAUDE and request["relay"] == "wss://second.example/", request
+            assert request["rooms"] == [second_room], request
+            agents[0]["instances"].append(instance_view(VCLAUDE, request["relay"], "second", request["rooms"], False))
+            finish(request)
+        elif request["type"] == "leave_agent_community":
+            assert sorted(request) == ["agentId", "id", "instanceId", "relay", "type", "version"], request
+            assert request["agentId"] == BOTH and request["relay"] == "wss://second.example/", request
+            # The first instance left: the other one (first) repeats at the top level.
+            remaining = agents[2]["instances"][1]
+            agents[2].update(relay=remaining["relay"], community=remaining["community"], rooms=remaining["rooms"],
+                             instances=[remaining])
+            finish(request)
+        else:
+            raise AssertionError("Unexpected agent request %s" % request["type"])
 
 
 if sys.argv[1:] == ["agents-bridge"]:
