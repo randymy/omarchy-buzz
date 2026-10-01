@@ -82,7 +82,10 @@ omarchy-shell shell summon community.buzz '{}'
 
 Git refuses to replace an existing destination. Keep any existing plugin of this ID; do not overwrite it. `community.buzz` is a development ID pending marketplace acceptance; no active or retired collision was found on September 30, 2026. The owner made the repository public on September 30, 2026 for marketplace submission. The plugin has not been submitted to the marketplace.
 
-Click **Buzz** to toggle the panel, then use **Close** or Escape. An optional,
+Click **Buzz** to toggle the panel; **×** at the top right closes it. When
+Settings, your status or an agent is open, the header shows **← Back to rooms**
+and that page's title. Escape steps back one level at a time: an open menu or
+picker, then the thread, then the page, and only then closes Buzz. An optional,
 reversible [Super+B shortcut](docs/NATIVE.md) checks for conflicts before installation. Without the separately installed helper/socket, the panel shows an unavailable state. No menu entry, shortcut, service, or credentials are installed by the plugin itself. Omarchy's enable command changes its plugin configuration through the native manager.
 
 Your account sits at the bottom left: avatar, name and a connection dot

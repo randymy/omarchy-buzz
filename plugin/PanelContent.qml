@@ -414,7 +414,7 @@ FocusScope {
     if (!statusOpen) return
     statusOpen = false
     statusAwaiting = false
-    accountControl.forceActiveFocus()
+    focusRooms()
   }
   function chooseStatusEmoji(emoji) {
     statusEmojiField.text = statusDraftEmoji === emoji ? "" : emoji
@@ -441,13 +441,69 @@ FocusScope {
     closeAgentEditor()
     statusOpen = false
     settingsOpen = true
-    Qt.callLater(function() { settingsBack.forceActiveFocus() })
+    Qt.callLater(function() { headerBack.forceActiveFocus() })
     return true
   }
   function closeSettings() {
     if (!settingsOpen) return
     settingsOpen = false
-    accountControl.forceActiveFocus()
+    focusRooms()
+  }
+  // Header navigation. Every view that replaces the room view is listed here;
+  // the header then shows "← Back to rooms" and the view's title in place of
+  // the Buzz title and room name.
+  readonly property string subView: settingsOpen ? "settings" : statusOpen ? "status"
+    : agentEditorShown ? (agentEditorId === "" ? "new-agent" : "agent") : ""
+  readonly property bool subViewOpen: subView !== ""
+  readonly property string subViewTitle: {
+    if (subView === "settings") return "Settings"
+    if (subView === "status") return "Update your status"
+    if (subView === "new-agent") return "New agent"
+    if (subView === "agent") {
+      var entry = agentService ? agentService.agent(agentEditorId) : null
+      return entry && entry.name ? entry.name : "Agent"
+    }
+    return ""
+  }
+  readonly property string roomPlaceTitle: service && service.selectedRoom ? service.roomTitle(service.selectedRoom) : ""
+  // Focus after returning: the composer that is in use, else the panel itself.
+  function focusRooms() {
+    var composer = activeComposer
+    if (composer && composer.visible && composer.field.visible) composer.field.forceActiveFocus()
+    else root.forceActiveFocus()
+  }
+  // Close whichever view replaced the room view; the room, its drafts and any
+  // open thread come back unchanged.
+  function backToRooms() {
+    if (!subViewOpen) return false
+    settingsOpen = false
+    statusOpen = false
+    statusAwaiting = false
+    closeAgentEditor()
+    focusRooms()
+    return true
+  }
+  // Escape, in this order (one step per key press):
+  //   1. an open menu, card or picker: the account menu, the profile card, the
+  //      composer's mention list, recipient picker or attach field, the new
+  //      direct message picker, the sidebar's join section;
+  //   2. the thread panel;
+  //   3. a view that replaced the room view (Settings, Update your status, an
+  //      agent or New agent): back to rooms;
+  //   4. otherwise close Buzz.
+  function escapeKey() {
+    if (accountMenuOpen) { closeAccountMenu(); return "menu" }
+    if (avatarCard.opened) { avatarCard.close(); return "menu" }
+    var composer = activeComposer
+    if (composer.mentionOpen) { composer.mentionDismissed = true; composer.field.forceActiveFocus(); return "menu" }
+    if (composer.pickerExpanded) { composer.pickerExpanded = false; return "menu" }
+    if (composer.attachOpen) { composer.attachOpen = false; composer.field.forceActiveFocus(); return "menu" }
+    if (newDmOpen) { newDmOpen = false; return "menu" }
+    if (joinOpen) { joinOpen = false; return "menu" }
+    if (threadOpen) { closeThread(); return "thread" }
+    if (backToRooms()) return "view"
+    closeRequested()
+    return "close"
   }
   function openAccountMenu() {
     if (!service) return false
@@ -622,7 +678,7 @@ FocusScope {
   }
   signal closeRequested()
   signal presentationRequested()
-  Keys.onEscapePressed: accountMenuOpen ? closeAccountMenu() : avatarCard.opened ? avatarCard.close() : statusOpen ? closeStatus() : closeRequested()
+  Keys.onEscapePressed: escapeKey()
   // Ctrl+, opens Settings, as Buzz Desktop's ⌘, does.
   Keys.onPressed: function(event) {
     if (event.key === Qt.Key_Comma && (event.modifiers & Qt.ControlModifier)) { event.accepted = true; openSettings() }
@@ -641,10 +697,17 @@ FocusScope {
     anchors.margins: Style.space(14)
     spacing: Style.space(10)
 
+    // Header: where you are on the left (Buzz and the room, or Back to rooms and
+    // the open view), the connection status, and × to close Buzz on the right.
     RowLayout {
+      objectName: "buzzHeader"
       Layout.fillWidth: true
+      // One height on every view, so opening or leaving a view never moves the page.
+      Layout.preferredHeight: Math.max(headerBack.implicitHeight, headerClose.implicitHeight)
       spacing: Style.space(10)
       Text {
+        objectName: "buzzHeaderTitle"
+        visible: !root.subViewOpen
         text: "Buzz"
         textFormat: Text.PlainText
         color: Color.foreground
@@ -652,7 +715,43 @@ FocusScope {
         font.pixelSize: Style.font.body * 1.3
         font.bold: true
       }
+      Ui.Button {
+        id: headerBack
+        objectName: "buzzHeaderBack"
+        visible: root.subViewOpen
+        text: "← Back to rooms"
+        tooltipText: "Return to the room view · Esc"
+        fontSize: Style.font.body * 1.15
+        bordered: true
+        horizontalPadding: Style.space(8)
+        verticalPadding: Style.space(3)
+        focusable: true
+        onClicked: root.backToRooms()
+      }
       Text {
+        visible: root.subViewOpen
+        text: "·"
+        textFormat: Text.PlainText
+        color: Color.foreground
+        opacity: 0.6
+        font.family: Style.font.family
+        font.pixelSize: Style.font.body * 1.15
+      }
+      Text {
+        objectName: "buzzHeaderPlace"
+        visible: text !== ""
+        Layout.maximumWidth: Style.space(260)
+        text: root.subViewOpen ? root.subViewTitle : root.roomPlaceTitle
+        textFormat: Text.PlainText
+        elide: Text.ElideRight
+        color: Color.foreground
+        opacity: root.subViewOpen ? 1 : 0.8
+        font.family: Style.font.family
+        font.pixelSize: Style.font.body * 1.15
+        font.bold: true
+      }
+      Text {
+        objectName: "buzzHeaderStatus"
         Layout.fillWidth: true
         text: !root.service ? "Service unavailable" : root.service.sampleMode ? "Sample data"
           : (root.service.sendSupported || root.service.connection !== "authenticated" ? "" : "Read-only · ") + root.service.statusLabel
@@ -664,9 +763,13 @@ FocusScope {
         font.pixelSize: Style.font.caption
       }
       Ui.Button {
-        objectName: "buzzClose"
-        text: "Close · Esc"
-        fontSize: Style.font.caption
+        id: headerClose
+        objectName: "buzzHeaderClose"
+        text: "×"
+        tooltipText: root.subViewOpen || root.threadOpen ? "Close Buzz" : "Close Buzz · Esc"
+        fontSize: Style.font.body * 1.3
+        horizontalPadding: Style.space(8)
+        verticalPadding: Style.space(1)
         focusable: true
         onClicked: root.closeRequested()
       }
@@ -1117,7 +1220,7 @@ FocusScope {
         agents: root.agentService
         service: root.service
         agentId: root.agentEditorId
-        onBackRequested: root.closeAgentEditor()
+        onBackRequested: root.backToRooms()
         // A create finished while its editor is still open: show the new agent.
         onAgentChosen: function(agentId) { if (root.agentEditorShown && root.agentEditorId === "") root.openAgentEditor(agentId) }
       }
@@ -1130,31 +1233,7 @@ FocusScope {
         Layout.fillHeight: true
         Layout.preferredWidth: Style.space(400)
         spacing: Style.space(8)
-        RowLayout {
-          Layout.fillWidth: true
-          spacing: Style.space(8)
-          Ui.Button {
-            id: settingsBack
-            objectName: "buzzSettingsBack"
-            text: "‹ Back to rooms"
-            tooltipText: "Return to the room view"
-            fontSize: Style.font.caption
-            horizontalPadding: Style.space(6)
-            verticalPadding: Style.space(2)
-            focusable: true
-            onClicked: root.closeSettings()
-          }
-          Text {
-            Layout.fillWidth: true
-            text: "Settings"
-            textFormat: Text.PlainText
-            elide: Text.ElideRight
-            color: Color.foreground
-            font.family: Style.font.family
-            font.pixelSize: Style.font.body * 1.15
-            font.bold: true
-          }
-        }
+        // Back to rooms and the title are in the header (buzzHeaderBack).
         Controls.ScrollView {
           Layout.fillWidth: true
           Layout.fillHeight: true
@@ -1431,30 +1510,7 @@ FocusScope {
         Layout.fillHeight: true
         Layout.preferredWidth: Style.space(400)
         spacing: Style.space(8)
-        RowLayout {
-          Layout.fillWidth: true
-          spacing: Style.space(8)
-          Ui.Button {
-            objectName: "buzzStatusBack"
-            text: "‹ Back to rooms"
-            tooltipText: "Return to the room view · Esc"
-            fontSize: Style.font.caption
-            horizontalPadding: Style.space(6)
-            verticalPadding: Style.space(2)
-            focusable: true
-            onClicked: root.closeStatus()
-          }
-          Text {
-            Layout.fillWidth: true
-            text: "Update your status"
-            textFormat: Text.PlainText
-            elide: Text.ElideRight
-            color: Color.foreground
-            font.family: Style.font.family
-            font.pixelSize: Style.font.body * 1.15
-            font.bold: true
-          }
-        }
+        // Back to rooms and the title are in the header (buzzHeaderBack).
         ColumnLayout {
           Layout.fillWidth: true
           spacing: Style.space(4)
@@ -2018,7 +2074,7 @@ FocusScope {
           placeholder: "Reply…"
           showDelivery: root.threadOpen && root.service.deliveryState !== "idle"
             && root.service.submissionDraftKey === root.service.selectedRoomId + ":" + root.service.threadRootId
-          onEscaped: root.closeThread()
+          onEscaped: root.escapeKey()
         }
       }
     }

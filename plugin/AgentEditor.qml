@@ -193,13 +193,6 @@ ColumnLayout {
       text: root.entry ? root.agents.statusWord(root.entry) + " · " + root.agents.harnessLabel(root.entry.harness)
         + (root.entry.published ? " · published" : "") : "Not saved"
     }
-    Ui.Button {
-      objectName: "buzzAgentBack"
-      text: "Back to rooms"
-      fontSize: Style.font.caption
-      focusable: true
-      onClicked: root.backRequested()
-    }
   }
 
   Controls.ScrollView {

@@ -2963,3 +2963,57 @@ sends a preference and an idle hint and presents validated projections.
 - The listing picks it up only through the marketplace's "verify or update a
   listed plugin" form (newer-commit path: fresh validation, security
   baseline and maintainer approval); until then the card stays as listed.
+
+## Header navigation: Back to rooms, Esc order, × — October 1
+
+Branch `navigation` (QML, tests and docs only; not merged or installed; no
+relay, helper process or agent service contacted). The maintainer found
+"Close · Esc" confusing while another page (for example the vClaude agent)
+was open, with the in-page "Back to rooms" link too easy to miss.
+
+- Header shows where you are. On the room view: **Buzz**, the room title
+  (`buzzHeaderPlace`), the connection status (`buzzHeaderStatus`) and **×**
+  (`buzzHeaderClose`). Every view that replaces the room view — Settings,
+  Update your status, an agent's editor and New agent (`subView` =
+  `settings`, `status`, `agent`, `new-agent`) — swaps **Buzz** for a bordered,
+  keyboard-focusable **← Back to rooms** (`buzzHeaderBack`, room-title size)
+  followed by the view's title (`← Back to rooms · vClaude`). Settings opens
+  with focus on Back. The in-page links (`buzzSettingsBack`,
+  `buzzStatusBack`, `buzzAgentBack`) and the duplicate Settings/status title
+  rows are removed; the tests click `buzzHeaderBack`. Invites, joining rooms
+  and new direct messages are not separate views: Invite people is a Settings
+  section and the other two expand in the sidebar.
+- Back (`backToRooms()`) returns the room, drafts and any open thread
+  unchanged and puts focus in the composer in use (else the panel). Closing
+  Settings or the status view by any route does the same; it used to focus
+  the account control.
+- Escape is one function, `PanelContent.escapeKey()` (QML reserves the name
+  `escape`), called by the panel's Escape handler and by the thread
+  composer. One step per press, in order: (1) an open menu, card or picker —
+  account menu, profile card, the composer's mention list, recipient picker
+  or attach field, the new-message picker, the sidebar's join section;
+  (2) the thread panel; (3) the open view, back to rooms; (4) otherwise close
+  Buzz. The account menu, profile card, mention list and attach field still
+  take Escape themselves while focused, with the same result.
+- **×** replaces **Close · Esc** (`buzzClose` is gone) in both the window and
+  the overlay; its tooltip is "Close Buzz", plus " · Esc" when Escape would
+  close Buzz (the room view with no thread open). The thread panel keeps its
+  own ✕ and narrow-window ‹.
+- Tests: new `scripts/preview --navigation` (`tests/Navigation.qml`,
+  synthetic helper and agent-service frames, no processes) covers the room
+  header, each view's Back and title, Back by click and by Enter with focus
+  returning to the composer, the Escape order (mention list, recipient
+  picker, account menu, profile card, new-message picker, join section,
+  thread, view, close), Escape from inside the agent editor and status
+  fields, × from a view, both tooltips, and the header fitting at
+  720 × 500. `BUZZ_NAVIGATION_CAPTURE_DIR` saves `navigation-rooms.png` and
+  `navigation-agent.png`. `--settings`, `--status`, `--agents`,
+  `--ansi-art` and `--presentation` now use `buzzHeaderBack`/`buzzHeaderClose`.
+  The header keeps one height on every view so opening a view never moves
+  the page. `--ansi-art` clicked Browse… in the same tick Settings opened,
+  before layout, and only passed because the stale point happened to land on
+  the button; it now waits for rendering first (its timer skips ticks during
+  that wait).
+- Not verified: the overlay on a real desktop (only `--presentation`'s
+  synthetic Wayland check), a physical keyboard, and the maintainer's own
+  look at the new header.

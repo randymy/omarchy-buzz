@@ -86,14 +86,14 @@ ShellRoot {
     click(one("buzzAccount"))
     check(view.accountMenuOpen && one("buzzAccountMenu").visible, "Account menu did not open on click")
   }
-  // Header: title, status and Close only; the moved controls live in Settings.
+  // Header: title, status and × only; the moved controls live in Settings.
   function headerClean() {
     var moved = findNamed(view, "", []).filter(function(item) {
       return item.visible && typeof item.text === "string" && /^(Alerts: (on|off)|Window|Overlay)$/.test(item.text)
         && typeof item.clicked === "function" && ["buzzSettingsAlerts", "buzzSettingsWindow", "buzzSettingsOverlay"].indexOf(item.objectName) === -1
     })
     check(moved.length === 0, "Header still shows moved controls: " + moved.map(function(item) { return item.text }).join(", "))
-    one("buzzClose")
+    one("buzzHeaderClose")
   }
 
   Timer {
@@ -215,17 +215,17 @@ ShellRoot {
           check(Quickshell.clipboardText === test.me && /^[a-f0-9]{64}$/.test(Quickshell.clipboardText) && one("buzzCopyPublicKey").text === "Copied",
             "Copy public key did not copy the 64-hex key")
 
-          test.click(one("buzzSettingsBack"))
+          test.click(one("buzzHeaderBack"))
           check(!view.settingsOpen && shown("buzzSettingsView").length === 0 && roomsView.visible, "Back to rooms did not return")
           // Ctrl+, opens Settings from the panel.
           view.forceActiveFocus()
           input.keyClick(Qt.Key_Comma, Qt.ControlModifier)
           check(view.settingsOpen, "Ctrl+, did not open Settings")
-          test.click(one("buzzSettingsBack"))
+          test.click(one("buzzHeaderBack"))
           check(test.closeRequests === 0 && window.visible, "The panel closed during the checks")
 
           if (test.captureDir === "") {
-            console.log("PASS: the account control shows my avatar and name with a green, amber, red or grey dot per connection state; its menu opens above it, closes on Escape, outside click or a choice, and opens Send feedback's fixed URL only on click; Settings replaces the room view and Back to rooms returns; Alerts flips notificationsEnabled; Overlay/Window request the switch; Copy public key copies the 64-hex key; the header keeps only title, status and Close")
+            console.log("PASS: the account control shows my avatar and name with a green, amber, red or grey dot per connection state; its menu opens above it, closes on Escape, outside click or a choice, and opens Send feedback's fixed URL only on click; Settings replaces the room view and Back to rooms returns; Alerts flips notificationsEnabled; Overlay/Window request the switch; Copy public key copies the 64-hex key; the header keeps only title, status and ×")
             Qt.quit()
             return
           }

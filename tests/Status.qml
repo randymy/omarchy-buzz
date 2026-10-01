@@ -169,7 +169,7 @@ ShellRoot {
           input.keyClick(Qt.Key_Escape)
           check(!view.statusOpen && test.closeRequests === 0 && shown("buzzHistoryScroll").length === 1, "Escape did not return to the rooms")
           click(test.openEntry())
-          click("buzzStatusBack")
+          click("buzzHeaderBack")
           check(!view.statusOpen && shown("buzzHistoryScroll").length === 1, "Back did not return to the rooms")
           click(test.openEntry())
           check(one("buzzStatusClear").enabled, "Clear disabled with a status set")
