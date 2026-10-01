@@ -61,6 +61,12 @@ elif [[ ${1:-} == --status ]]; then
   export BUZZ_TEST_HELPER="$preview_dir/helper-fixture"
   export BUZZ_SEND_RECORD="$preview_dir/send-record.json"
   printf '{"requests":[]}\n' > "$BUZZ_SEND_RECORD"
+elif [[ ${1:-} == --presence ]]; then
+  cp "$project_root/tests/Presence.qml" "$preview_dir/shell.qml"
+  cp "$project_root/tests/presence_fixture.py" "$preview_dir/helper-fixture"
+  export BUZZ_TEST_HELPER="$preview_dir/helper-fixture"
+  export BUZZ_SEND_RECORD="$preview_dir/send-record.json"
+  printf '{"requests":[]}\n' > "$BUZZ_SEND_RECORD"
 elif [[ ${1:-} == --agents ]]; then
   cp "$project_root/tests/Agents.qml" "$preview_dir/shell.qml"
   cp "$project_root/tests/agents_fixture.py" "$preview_dir/helper-fixture"
@@ -168,6 +174,10 @@ if [[ ${1:-} == --notification-preference ]]; then
     XDG_RUNTIME_DIR="$preview_dir/runtime" XDG_CONFIG_HOME="$preview_dir/config" \
     XDG_STATE_HOME="$preview_dir/state" timeout 15s qs -p "$preview_dir" --no-color
   [[ $(cat "$preference_file") == '{broken' ]] || { echo "preview: invalid settings were overwritten without user action" >&2; exit 1; }
+fi
+if [[ ${1:-} == --presence ]]; then
+  presence_file="$preview_dir/state/omarchy-buzz/presence.json"
+  [[ $(jq -c . "$presence_file") == '{"version":1,"mode":"away"}' ]] || { echo "preview: presence preference was not saved" >&2; exit 1; }
 fi
 if [[ ${1:-} == --last-room ]]; then
   view_file="$preview_dir/state/omarchy-buzz/view.json"
