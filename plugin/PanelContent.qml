@@ -375,6 +375,9 @@ FocusScope {
     var value = source ? source.version : ""
     return typeof value === "string" && /^[0-9A-Za-z.+-]{1,32}$/.test(value) ? value : ""
   }
+  // Presence: the menu row and your own dot (`presence`).
+  readonly property bool presenceEntryShown: !!service && (service.presenceSupported || service.sampleMode)
+  readonly property string myPresenceLabel: service && (accountState === "online" || accountState === "sample") ? service.presenceLabel(service.myPresence) : ""
   // Update your status: a compact view like Settings, opened from the account
   // menu. The helper signs and publishes; the panel sends text, emoji and hours.
   property bool statusOpen: false
@@ -479,8 +482,12 @@ FocusScope {
   }
   // A direct message shows the first participant other than this identity.
   function dmPartner(room) {
-    if (!room || !Array.isArray(room.participants) || !service) return ""
-    var others = room.participants.filter(function(key) { return key !== root.service.identity })
+    // A Repeater's modelData turns arrays into array-likes (Array.isArray is
+    // false there), so the participants are copied into a plain array first.
+    var participants = room && room.participants && typeof room.participants.length === "number"
+      ? Array.prototype.slice.call(room.participants) : null
+    if (!participants || !service) return ""
+    var others = participants.filter(function(key) { return typeof key === "string" && key !== root.service.identity })
     return others.length ? others[0] : ""
   }
   readonly property bool threadOpen: !agentEditorShown && !settingsOpen && !statusOpen && !!service && service.threadRootId !== "" && service.threadRoot !== null
@@ -810,22 +817,32 @@ FocusScope {
               }
               Repeater {
                 model: root.service ? root.service.dmCandidates : []
-                delegate: Ui.Button {
+                delegate: RowLayout {
                   required property var modelData
-                  readonly property string key: modelData.key
-                  objectName: "buzzNewDmCandidate"
                   Layout.fillWidth: true
-                  clip: true
-                  readonly property bool chosen: root.service.dmSelection.indexOf(modelData.key) !== -1
-                  text: (chosen ? "✓ " : "") + (modelData.name.trim() || modelData.key.slice(0, 12) + "…")
-                    + (modelData.status ? " " + root.service.statusEmojiText(modelData.status) : "")
-                    + " · " + modelData.key.slice(0, 8) + " · " + modelData.label
-                  tooltipText: modelData.key + (modelData.status && modelData.status.text ? " · " + modelData.status.text : "")
-                  fontSize: Style.font.caption
-                  leftAlign: true
-                  focusable: true
-                  selected: chosen
-                  onClicked: root.service.toggleDmParticipant(modelData.key)
+                  spacing: Style.space(4)
+                  PresenceDot {
+                    objectName: "buzzNewDmPresence"
+                    service: root.service
+                    presence: parent.modelData.presence || ""
+                  }
+                  Ui.Button {
+                    readonly property var modelData: parent.modelData
+                    readonly property string key: modelData.key
+                    objectName: "buzzNewDmCandidate"
+                    Layout.fillWidth: true
+                    clip: true
+                    readonly property bool chosen: root.service.dmSelection.indexOf(modelData.key) !== -1
+                    text: (chosen ? "✓ " : "") + (modelData.name.trim() || modelData.key.slice(0, 12) + "…")
+                      + (modelData.status ? " " + root.service.statusEmojiText(modelData.status) : "")
+                      + " · " + modelData.key.slice(0, 8) + " · " + modelData.label
+                    tooltipText: modelData.key + (modelData.status && modelData.status.text ? " · " + modelData.status.text : "")
+                    fontSize: Style.font.caption
+                    leftAlign: true
+                    focusable: true
+                    selected: chosen
+                    onClicked: root.service.toggleDmParticipant(modelData.key)
+                  }
                 }
               }
               Ui.Button {
@@ -868,6 +885,11 @@ FocusScope {
                   key: root.dmPartner(modelData)
                   name: modelData.name
                   pixelSize: root.sidebarAvatarSize
+                }
+                PresenceDot {
+                  objectName: "buzzDmPresence"
+                  service: root.service
+                  presence: root.service ? root.service.presenceOf(root.dmPartner(modelData)) : ""
                 }
                 readonly property var partnerStatus: root.service ? root.service.authorStatus(root.dmPartner(modelData)) : null
                 Ui.Button {
@@ -1019,6 +1041,16 @@ FocusScope {
               art: root.myAvatarArt
               brightness: root.myAvatarBrightness
               pixelSize: root.sidebarAvatarSize
+              // Your own presence on the avatar's corner; the connection dot stays at the end.
+              PresenceDot {
+                objectName: "buzzAccountPresenceDot"
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                anchors.rightMargin: -Style.space(2)
+                anchors.bottomMargin: -Style.space(2)
+                service: root.service
+                presence: root.service && (root.accountState === "online" || root.accountState === "sample") ? root.service.myPresence : ""
+              }
             }
             Text {
               objectName: "buzzAccountName"
@@ -1059,6 +1091,7 @@ FocusScope {
             onClicked: { accountControl.forceActiveFocus(); accountControl.activate() }
           }
           readonly property string tooltipText: root.accountName + " · " + root.accountStateLabel
+            + (root.myPresenceLabel !== "" ? " · " + root.myPresenceLabel : "")
             + (statusEmojiBadge.visible ? " · " + root.myStatusLine : "")
             + (root.myKeyKnown ? " · " + root.service.identity.slice(0, 8) + "…" : "")
           Controls.ToolTip.visible: accountArea.containsMouse && !root.accountMenuOpen
@@ -2150,6 +2183,47 @@ FocusScope {
           leftAlign: true
           focusable: true
           onClicked: root.openStatus()
+        }
+        // Set yourself as…: Desktop's presence preference. The helper derives
+        // and publishes the state; Auto follows idleness.
+        ColumnLayout {
+          objectName: "buzzPresenceRow"
+          visible: root.presenceEntryShown
+          Layout.fillWidth: true
+          spacing: Style.space(2)
+          Text {
+            Layout.fillWidth: true
+            text: "Set yourself as…"
+            textFormat: Text.PlainText
+            elide: Text.ElideRight
+            color: Color.foreground
+            opacity: 0.6
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+          }
+          RowLayout {
+            Layout.fillWidth: true
+            spacing: Style.space(4)
+            Repeater {
+              model: root.service ? root.service.presenceModes : []
+              Ui.Button {
+                required property string modelData
+                objectName: "buzzPresenceMode_" + modelData
+                readonly property string mode: modelData
+                readonly property bool current: !!root.service && root.service.presenceMode === modelData
+                text: (current ? "✓ " : "") + root.service.presenceModeLabels[modelData]
+                tooltipText: ({auto: "Online while you are active, away after 10 minutes idle",
+                  away: "Show as away", offline: "Appear offline to others"})[modelData]
+                fontSize: Style.font.caption
+                horizontalPadding: Style.space(6)
+                verticalPadding: Style.space(2)
+                focusable: true
+                selected: current
+                onClicked: root.service.setPresenceMode(modelData)
+              }
+            }
+            Item { Layout.fillWidth: true }
+          }
         }
         Ui.Button {
           objectName: "buzzAccountSettings"

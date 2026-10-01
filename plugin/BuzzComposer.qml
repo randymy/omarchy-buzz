@@ -117,14 +117,26 @@ ColumnLayout {
           hoverEnabled: true
           Controls.ToolTip.visible: hovered
           Controls.ToolTip.text: modelData.key + (modelData.status && modelData.status.text ? " · " + modelData.status.text : "")
-          contentItem: Text {
-            text: parent.text
-            textFormat: Text.PlainText
+          contentItem: Row {
             leftPadding: parent.indicator ? parent.indicator.width + Style.space(6) : 0
-            color: Color.foreground
-            font.family: Style.font.family
-            font.pixelSize: Style.font.caption
-            elide: Text.ElideRight
+            spacing: Style.space(4)
+            // The member's verified presence (`presence`), when known.
+            PresenceDot {
+              id: pickerPresence
+              objectName: "buzzRecipientPresence"
+              anchors.verticalCenter: parent.verticalCenter
+              service: root.service
+              presence: root.service ? root.service.presenceOf(modelData.key) : ""
+            }
+            Text {
+              width: parent.width - parent.leftPadding - (pickerPresence.visible ? pickerPresence.width + parent.spacing : 0)
+              text: parent.parent.text
+              textFormat: Text.PlainText
+              color: Color.foreground
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+              elide: Text.ElideRight
+            }
           }
           checked: root.service && root.service.selectedRecipients.indexOf(modelData.key) !== -1
           enabled: root.service && !root.service.recipientPickerLocked && root.service.recipientsState === "snapshot"

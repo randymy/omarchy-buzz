@@ -1,6 +1,7 @@
 import QtQuick
 import Quickshell
 import Quickshell.Io
+import Quickshell.Wayland
 import "SampleData.js" as SampleData
 import "ActivityObserver.js" as ActivityObserver
 import "RoomActivity.js" as RoomActivity
@@ -254,7 +255,7 @@ Item {
   property var dmSelection: []
   readonly property var dmCandidates: recipientsState === "snapshot" && recipientsRoomId === selectedRoomId && selectedRoomId !== ""
     ? recipientEntries.filter(function(entry) { return entry.key !== root.identity })
-      .map(function(entry) { return {key: entry.key, name: entry.name, label: root.participantLabel(entry.key), status: entry.status || null} }) : []
+      .map(function(entry) { return {key: entry.key, name: entry.name, label: root.participantLabel(entry.key), status: entry.status || null, presence: root.presenceOf(entry.key)} }) : []
   readonly property bool dmOpenAvailable: dmOpenSupported && !sampleMode && !sessionFailed && connection === "authenticated"
     && ["partial", "ready"].indexOf(catalogState) !== -1 && instanceId !== ""
   readonly property bool canStartDm: dmOpenAvailable && dmOpenState !== "sending" && validDmKeys(dmSelection)
@@ -920,6 +921,126 @@ Item {
     statusRequestState = "idle"
     statusRequestCategory = ""
     userStatus = {state: "unavailable", mine: null, category: null}
+  }
+
+  // Presence (`presence`, account menu "Set yourself as…"). The helper derives,
+  // signs and publishes the kind 20001 heartbeat and verifies every state it
+  // reads; the panel sends only the person's preference and an idle hint, and
+  // shows validated projections.
+  property bool presenceSupported: false
+  property var presence: ({state: "unavailable", mode: null, published: null, lastPublishedAt: null, category: null, peers: []})
+  readonly property var presenceModes: ["auto", "away", "offline"]
+  readonly property var presenceModeLabels: ({auto: "Auto", away: "Away", offline: "Appear offline"})
+  readonly property var presenceLabels: ({online: "Online", away: "Away", offline: "Offline"})
+  readonly property var presenceColors: ({online: "#3fb950", away: "#d29922", offline: "#8b949e"})
+  // The person's preference, kept across shell restarts (presence.json).
+  property string presenceMode: "auto"
+  readonly property string presenceSettingsPath: notificationSettingsDir + "/presence.json"
+  // Idle hint: Wayland ext-idle-notify through Quickshell's IdleMonitor (10
+  // minutes, Desktop's PRESENCE_IDLE_TIMEOUT_MS). Without it (offscreen, or a
+  // compositor without the protocol) the panel counts as active while open.
+  readonly property int presenceIdleSeconds: 600
+  readonly property bool idleMonitorWanted: !sampleMode && Qt.platform.pluginName === "wayland"
+  readonly property bool idleMonitorWorking: idleMonitor.enabled
+  readonly property bool presenceActive: idleMonitorWorking ? !idleMonitor.isIdle : panelOpen
+  readonly property bool presenceAvailable: presenceSupported && !sampleMode && !sessionFailed && instanceId !== "" && connection === "authenticated"
+  // The `mode|active` last sent in this session; a repeat is never sent.
+  property string presenceSentKey: ""
+  property string presenceRequestId: ""
+  // Sample mode shows fixture states and publishes nothing.
+  readonly property var samplePresence: ({Alex: "online", "Research agent": "away", "Code agent": "offline"})
+  function derivedPresence(mode, active) { return mode === "offline" ? "offline" : mode === "away" || !active ? "away" : "online" }
+  // This identity's own state: what the relay accepted (or the sample's).
+  readonly property string myPresence: sampleMode ? derivedPresence(presenceMode, presenceActive)
+    : presenceAvailable && presence.published ? presence.published : ""
+  // A key's verified state, or "" when unknown.
+  function presenceOf(key) {
+    if (sampleMode) return samplePresence[key] || ""
+    if (!presenceAvailable || typeof key !== "string") return ""
+    if (key === identity) return myPresence
+    var entry = recipientEntries.find(function(item) { return item.key === key })
+    if (entry && entry.presence) return entry.presence
+    var peer = presence.peers.find(function(item) { return item.key === key })
+    return peer ? peer.presence : ""
+  }
+  function presenceLabel(state) { return presenceLabels[state] || "" }
+  function validPresenceState(value) { return ["online", "away", "offline"].indexOf(value) !== -1 }
+  function validatedPresence(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)
+        || Object.keys(value).sort().join(",") !== "category,lastPublishedAt,mode,peers,published,state"
+        || ["unavailable", "ready", "failed"].indexOf(value.state) === -1
+        || (value.mode !== null && presenceModes.indexOf(value.mode) === -1)
+        || (value.published !== null && !validPresenceState(value.published))
+        || (value.lastPublishedAt !== null && (!Number.isInteger(value.lastPublishedAt) || value.lastPublishedAt < 1 || value.lastPublishedAt > 4102444800))
+        || ((value.published === null) !== (value.lastPublishedAt === null))
+        || (value.state === "failed" ? ["presence_rejected", "relay_unavailable"].indexOf(value.category) === -1 : value.category !== null)
+        || (value.state === "ready" && value.published === null)
+        || !Array.isArray(value.peers) || value.peers.length > 60) return null
+    var peers = []
+    var seen = ({})
+    for (var i = 0; i < value.peers.length; i++) {
+      var peer = value.peers[i]
+      if (!peer || typeof peer !== "object" || Array.isArray(peer) || Object.keys(peer).sort().join(",") !== "key,presence"
+          || typeof peer.key !== "string" || !/^[a-f0-9]{64}$/.test(peer.key) || seen[peer.key] || peer.key === identity
+          || !validPresenceState(peer.presence)) return null
+      seen[peer.key] = true
+      peers.push({key: peer.key, presence: peer.presence})
+    }
+    return {state: value.state, mode: value.mode, published: value.published, lastPublishedAt: value.lastPublishedAt,
+      category: value.category, peers: peers}
+  }
+  // Sends the preference and idle hint when either changed (or on connect).
+  function syncPresence() {
+    if (!presenceAvailable || !bridge.running) { if (!presenceAvailable) presenceSentKey = ""; return false }
+    var key = presenceMode + "|" + presenceActive
+    if (key === presenceSentKey) return false
+    var request = {version: 1, id: correlationUuid(), type: "set_presence", mode: presenceMode, active: presenceActive}
+    presenceSentKey = key
+    presenceRequestId = request.id
+    bridge.write(JSON.stringify(request) + "\n")
+    return true
+  }
+  function setPresenceMode(mode) {
+    if (presenceModes.indexOf(mode) === -1 || (!presenceSupported && !sampleMode)) return false
+    if (mode === presenceMode) return true
+    presenceMode = mode
+    if (!sampleMode && notificationSettingsDirReady) presenceSettingsFile.setText(JSON.stringify({version: 1, mode: mode}) + "\n")
+    return true
+  }
+  function loadPresenceSettings(raw) {
+    try {
+      var parsed = JSON.parse(raw)
+      if (parsed && parsed.version === 1 && presenceModes.indexOf(parsed.mode) !== -1) presenceMode = parsed.mode
+    } catch (error) { /* Missing or malformed settings mean Auto. */ }
+  }
+  function clearPresence() {
+    presenceSentKey = ""
+    presenceRequestId = ""
+    presenceRetry.stop()
+    presence = {state: "unavailable", mode: null, published: null, lastPublishedAt: null, category: null, peers: []}
+  }
+  onPresenceModeChanged: syncPresence()
+  onPresenceActiveChanged: syncPresence()
+  IdleMonitor {
+    id: idleMonitor
+    enabled: root.idleMonitorWanted
+    timeout: root.presenceIdleSeconds
+    respectInhibitors: true
+  }
+  FileView {
+    id: presenceSettingsFile
+    path: root.sampleMode ? "" : root.presenceSettingsPath
+    watchChanges: false
+    atomicWrites: true
+    printErrors: false
+    blockLoading: true
+    onLoaded: root.loadPresenceSettings(text())
+  }
+  Timer {
+    id: presenceRetry
+    // A refused or lost `set_presence` is sent again a little later.
+    interval: 5000
+    onTriggered: root.syncPresence()
   }
 
   // File attachments (`attachments`). The helper downloads, verifies and saves
@@ -1633,7 +1754,7 @@ Item {
     if (recipientsState !== "snapshot") recipientsState = "loading"
     send("fetch_recipients", selectedRoomId)
   }
-  function validatedRecipients(value, withStatus) {
+  function validatedRecipients(value, withStatus, withPresence) {
     if (!value || ["unavailable", "loading", "snapshot"].indexOf(value.state) === -1
         || (value.roomId !== null && !uuidValue(value.roomId)) || typeof value.partial !== "boolean"
         || !Array.isArray(value.entries) || value.entries.length > 20
@@ -1647,8 +1768,9 @@ Item {
           || !boundedString(entry.name, 64) || utf8Size(entry.name) > 64 || /[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069\u200e\u200f\u061c]/.test(entry.name)) return null
       var status = withStatus ? validatedRecipientStatus(entry.status) : null
       if (status === undefined) return null
+      if (withPresence && entry.presence !== null && !validPresenceState(entry.presence)) return null
       seen[entry.key] = true
-      entries.push({key:entry.key,name:entry.name,status:status})
+      entries.push({key:entry.key,name:entry.name,status:status,presence:withPresence ? entry.presence : null})
     }
     return {state:value.state,roomId:value.roomId,entries:entries,partial:value.partial,category:value.category || ""}
   }
@@ -1698,10 +1820,10 @@ Item {
     if (!sampleMode) selectedRoomId = ""
   }
   function validCapabilities(capabilities) {
-    return Array.isArray(capabilities) && capabilities.length >= 1 && capabilities.length <= 19
+    return Array.isArray(capabilities) && capabilities.length >= 1 && capabilities.length <= 20
       && capabilities.indexOf("connection_status") !== -1
       && capabilities.every(function(cap, index) {
-        return ["connection_status", "room_catalog", "room_history", "message_send", "room_recipients", "history_auto_refresh", "room_activity", "agent_profiles", "thread_replies", "thread_send", "thread_summaries", "dm_open", "older_history", "live_updates", "setup_assist", "community_join", "invite_mint", "attachments", "user_status"].indexOf(cap) !== -1 && capabilities.indexOf(cap) === index
+        return ["connection_status", "room_catalog", "room_history", "message_send", "room_recipients", "history_auto_refresh", "room_activity", "agent_profiles", "thread_replies", "thread_send", "thread_summaries", "dm_open", "older_history", "live_updates", "setup_assist", "community_join", "invite_mint", "attachments", "user_status", "presence"].indexOf(cap) !== -1 && capabilities.indexOf(cap) === index
       })
   }
   // Streams carry no participants and are never hidden. A DM lists 2-9 distinct
@@ -1814,6 +1936,8 @@ Item {
     clearInvites()
     clearUserStatus()
     userStatusSupported = false
+    clearPresence()
+    presenceSupported = false
     losePendingDelivery()
     loseDmOpen()
     dmOpenSupported = false
@@ -1857,6 +1981,8 @@ Item {
     clearInvites()
     clearUserStatus()
     userStatusSupported = false
+    clearPresence()
+    presenceSupported = false
     losePendingDelivery()
     loseDmOpen()
     dmOpenSupported = false
@@ -1896,6 +2022,13 @@ Item {
         "attachment_type_refused", "attachment_storage_unavailable", "status_invalid", "status_rate_limited", "status_rejected"].indexOf(frame.category) !== -1) {
       if (instanceId === "" || frame.instanceId !== instanceId) return false
       if (!boundedString(frame.id, 128) || !/^ui-[0-9]+$/.test(frame.id) && !uuidValue(frame.id)) { fail("invalid_response"); return false }
+      if (frame.id === presenceRequestId && presenceRequestId !== "") {
+        // Not taken (no session yet, or busy): sent again shortly.
+        presenceRequestId = ""
+        presenceSentKey = ""
+        presenceRetry.restart()
+        return true
+      }
       if (frame.id === setupRequestId && setupState === "sending") {
         refuseSetup(frame.category === "request_busy" ? "setup_busy" : frame.category)
         return true
@@ -2025,7 +2158,8 @@ Item {
     if (supportsThread && (!supportsHistory || !thread)) { fail("invalid_response"); return false }
     var supportsRecipients = frame.capabilities.indexOf("room_recipients") !== -1
     var supportsStatus = frame.capabilities.indexOf("user_status") !== -1
-    var recipients = supportsRecipients ? validatedRecipients(state.recipients, supportsStatus) : null
+    var supportsPresence = frame.capabilities.indexOf("presence") !== -1
+    var recipients = supportsRecipients ? validatedRecipients(state.recipients, supportsStatus, supportsPresence) : null
     if (supportsRecipients && !recipients) { fail("invalid_response"); return false }
     var agents = frame.capabilities.indexOf("agent_profiles") !== -1 ? validatedAgents(state.recipients && state.recipients.agents, recipients) : []
     if (agents === null) { fail("invalid_response"); return false }
@@ -2043,6 +2177,8 @@ Item {
     if (supportsJoin && (!join || !open || !action)) { fail("invalid_response"); return false }
     var shownStatus = supportsStatus ? validatedUserStatus(state.userStatus) : null
     if (supportsStatus && !shownStatus) { fail("invalid_response"); return false }
+    var shownPresence = supportsPresence ? validatedPresence(state.presence) : null
+    if (supportsPresence && !shownPresence) { fail("invalid_response"); return false }
     var supportsMint = frame.capabilities.indexOf("invite_mint") !== -1
     var minted = supportsMint ? validatedInvites(state.invites) : null
     if (supportsMint && !minted) { fail("invalid_response"); return false }
@@ -2227,6 +2363,15 @@ Item {
         statusRequestId = ""
       }
     }
+    presenceSupported = supportsPresence
+    if (!supportsPresence || state.connection !== "authenticated") {
+      // Without a session nothing is shown; the preference is sent again on connect.
+      if (presence.state !== "unavailable" || presence.published !== null || presence.peers.length) clearPresence()
+      presenceSentKey = ""
+    } else {
+      if (!sameProjection(presence, shownPresence)) presence = shownPresence
+      if (frame.type === "status" && frame.id === presenceRequestId) presenceRequestId = ""
+    }
     attachmentsSupported = supportsAttachments
     applyTransfers(transfers, frame)
     applyDelivery(delivery)
@@ -2253,6 +2398,8 @@ Item {
     if (openRoomsAvailable && streamRooms.length === 0 && openRoomsState === "unavailable" && openRoomsCategory === ""
         && !openRoomsRequested) { openRoomsRequested = true; refreshOpenRooms() }
     if (connection !== "authenticated") openRoomsRequested = false
+    // On connect (and whenever the preference or idleness changed meanwhile).
+    syncPresence()
     return true
   }
   property bool openRoomsRequested: false
@@ -2468,6 +2615,8 @@ Item {
       root.clearInvites()
       root.clearUserStatus()
       root.userStatusSupported = false
+      root.clearPresence()
+      root.presenceSupported = false
       root.losePendingDelivery()
       root.loseDmOpen()
       root.dmOpenSupported = false

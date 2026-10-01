@@ -43,6 +43,8 @@ Selected-room history refreshes about five seconds after a request finishes. A s
 
 **Update your status** (account menu, above Settings) sets or clears the same text-and-emoji status Buzz Desktop shows (1 hour to 1 week); the helper signs and publishes it, verifies every status it reads, and others' status emoji appears beside their names in the open room. Update the helper and plugin together (`user_status`).
 
+**Set yourself as…** (account menu, below Update your status) chooses Auto, Away or Appear offline as Buzz Desktop does; the helper publishes the derived online/away/offline heartbeat (Auto turns away after 10 idle minutes), shows your state as a dot on your avatar and verified relay-signed states as dots before others' names. Update the helper and plugin together (`presence`).
+
 Enrollment verifies the relay's signing identity before saving a human key and rejects the server signing key. The relay must be reachable. Update helper and plugin together: 0.0.5 adds `room_activity` and `agent_profiles` capabilities. See [ACP readiness](docs/ACP_READINESS.md) for the remaining real-agent launch blockers.
 
 The helper owns identity access through Linux Secret Service. Enrollment uses hidden terminal input; QML receives bounded presentation data and never identity keys. Missing or failed helpers leave the panel usable with setup instructions and Retry. Authentication is not a claim that room synchronization works.

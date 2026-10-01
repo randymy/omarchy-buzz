@@ -95,12 +95,20 @@ Column {
         visible: root.lead
         width: parent.width
         spacing: Style.space(8)
+        // The author's verified presence (`presence`), when known.
+        PresenceDot {
+          id: presenceTag
+          objectName: "buzzAuthorPresence"
+          anchors.verticalCenter: author.verticalCenter
+          service: root.service
+          presence: root.ready && root.lead ? root.service.presenceOf(root.row.author) : ""
+        }
         Text {
           id: author
           text: !root.ready ? "" : root.sample ? root.row.author + " · " + root.row.role : root.service.messageAuthorName(root.row.author)
           textFormat: Text.PlainText
           elide: Text.ElideRight
-          width: Math.min(implicitWidth, parent.width - stamp.width - agentTag.width - statusTag.width - parent.spacing * 3)
+          width: Math.min(implicitWidth, parent.width - stamp.width - agentTag.width - statusTag.width - presenceTag.width - parent.spacing * 4)
           color: Color.accent
           font.family: Style.font.family
           font.pixelSize: Style.font.body
