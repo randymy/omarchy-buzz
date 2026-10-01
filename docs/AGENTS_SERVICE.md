@@ -47,6 +47,59 @@ installation and identity administration for this one component.
 | `answersDms` | boolean, default false: launch without a room filter so the agent also answers direct messages (see Units) |
 | `relay` | canonical relay (`config::canonical_relay`) of the community the agent belongs to: the active community when it was created, never changed afterwards (see "Agents belong to a community") |
 
+Since October 1 (branch `agent-instances`) the table above is the flat form of
+**one agent in one community** (`store::Persona`, also a version 1 record).
+The store keeps version 2, below.
+
+### Store version 2: one agent, several communities (added October 1)
+
+```
+{"version": 2, "agents": [{
+  "id", "name", "description", "instructions", "harness", "model", "acpCommand",
+  "respondTo", "answersDms", "identity", "authTag",                    // the agent: shared
+  "instances": [{"relay", "primary", "rooms", "workspace", "startAtLogin",
+                 "published", "memberRooms", "publishedAt", "lastError"}]   // one per community
+}]}
+```
+
+- **Shared** by every instance: the definition, the identity (one Secret
+  Service key, one pubkey everywhere), the owner's NIP-OA attestation and the
+  `agents/<id>/instructions.md` and `auth-tag.json` files. **Per instance**:
+  the community (`relay`), its 1–8 rooms, workspace, start at login and the
+  publication state of that relay (`published`, `memberRooms`, `publishedAt`,
+  `lastError`).
+- 1–4 instances (`MAX_INSTANCES`; the largest valid store, 16 agents × 4
+  instances with every field at its limit, is 1 013 060 bytes against the
+  1 MiB bound, `store_tests::the_largest_valid_store_fits_its_bound`), in
+  distinct communities; at most one `primary`; an agent without an identity
+  has exactly one. Every instance passes the persona rules above. Unknown keys,
+  a missing key or another version are refused (`store_invalid`).
+- **Names.** An instance's *key* is the agent id for the `primary` instance
+  (the one the agent was created with, or a version 1 record) and
+  `<id>-<h>` otherwise, `h` = the first 12 hex digits of SHA-256 of the
+  canonical relay (`store::relay_hash`). The key names the unit
+  `omarchy-buzz-agent-<key>.service` and the default workspace
+  `~/.local/state/omarchy-buzz-room-workspaces/<key>`. When the primary
+  instance is left, the others keep their suffixed names (`primary` is
+  stored, not derived from the position). The *first* instance (position 0)
+  is what a request without `relay` acts on and what the top-level status
+  fields repeat.
+- **Wrap from version 1** (`Store::open_with`, once, when the service
+  opens): the `relay` migration of "Agents belong to a community" runs first;
+  then each persona becomes an agent with one `primary` instance holding its
+  relay, rooms, workspace, start at login and publication state unchanged, so
+  a running agent keeps its unit name, unit file (the service renders it byte
+  for byte the same), workspace and rooms
+  (`store_tests::a_running_version_1_agent_keeps_its_unit_and_workspace`,
+  `service_tests::the_service_keeps_managing_a_version_1_agents_running_unit`).
+  The wrapped store is validated; the version 1 bytes are written to
+  `personas.v1.json` (0600) and the version 2 store replaces `personas.json`
+  atomically, both before use. A failure refuses the store and changes
+  nothing else; the next start tries again. **Rollback**: a helper older than
+  this change refuses a version 2 store (`store_invalid`); restore
+  `personas.v1.json` as `personas.json` before downgrading (instances added
+  since are then forgotten by the service, their units stay).
+
 ## IPC (line-delimited JSON, same envelope style as the helper)
 
 Refined on September 30 with the panel and bundle work; these are the exact
@@ -67,20 +120,32 @@ status: {
   agents: [{id,name,description,instructions,harness,model,acpCommand,rooms,respondTo,workspace,
             identity|null, enrolled:bool, unit:"active"|"inactive"|"failed"|"unknown",
             startAtLogin:bool, answersDms:bool, published:bool, lastError:string|null,
-            relay:string, community:string}],
+            relay:string, community:string,
+            instances:[{relay, community, rooms, unit:"omarchy-buzz-agent-<id>[-<h>].service",
+                        startAtLogin:bool, published:bool, lastError:string|null,
+                        state:"active"|"inactive"|"failed"|"unknown"}]}],
   pending: {requestId,type,state:"working"|"done"|"failed",category:string|null,detail:string|null} | null,
   modelProbe: {agentId:uuid|null, state:"idle"|"running"|"ok"|"unavailable"|"not_signed_in"|"failed",
                model:string, detail:string|null}
 }
 ```
 
-Each agent has exactly those 19 keys (`relay` and `community` added October 1);
+Each agent has exactly those 20 keys (`relay` and `community` added October 1,
+`instances` with the instances branch the same day); each instance exactly
+those 8. `instances` lists every community the agent is enrolled in, the first
+first; the top-level `relay`, `community`, `rooms`, `workspace`, `unit`
+(= the first instance's `state`), `startAtLogin`, `published` and `lastError`
+are the first instance's, for compatibility. An instance's `unit` is its unit
+name and `state` that unit's state (an agent without an identity: `inactive`).
+The instance's workspace is not reported (only the first's, at the top
+level); another instance's is its default unless an `update_agent` naming its
+relay changed it.
 `activeRelay` is the configuration's active community (canonical relay) or null
 when none is configured; an agent's `relay` is its own community's canonical
 relay and `community` that community's local name from the configuration, or
 the relay's `host[:port]` when the configuration no longer lists it; `id` is a lowercase UUID v4; `enrolled`
 is true only with a non-null `identity`; at most 16 agents. `pending.type` is
-one of the ten mutating types; `category` is non-null exactly when `state` is
+one of the twelve mutating types; `category` is non-null exactly when `state` is
 `failed`; `detail` (added with the model check) is null or, only when `failed`,
 a fixed code (so far only `model_not_for_harness`). `modelProbe` (see Model
 check) is always present: `idle` with a null `agentId`, empty `model` and null
@@ -95,14 +160,19 @@ The target agent is `agentId` because `id` is the request UUID:
 | --- | --- |
 | `subscribe` | none |
 | `create_agent` | `fields:{name, description, instructions, harness, model, rooms, respondTo, workspace, startAtLogin, answersDms, acpCommand:"buzz-acp"}` (all present; empty `workspace` = service default) |
-| `update_agent` | `agentId`, `fields` with only the changed persona fields (never `startAtLogin`) |
+| `update_agent` | `agentId`, `fields` with only the changed persona fields (never `startAtLogin`), `relay` (optional) |
 | `delete_agent` | `agentId`, `forget` (optional, default false) |
-| `enroll_agent`, `start_agent`, `stop_agent` | `agentId` |
-| `set_start_at_login` | `agentId`, `enabled` |
+| `enroll_agent`, `start_agent`, `stop_agent` | `agentId`, `relay` (optional) |
+| `set_start_at_login` | `agentId`, `enabled`, `relay` (optional) |
+| `enroll_agent_in` | `agentId`, `relay`, `rooms` (1–8 distinct canonical room UUIDs) |
+| `leave_agent_community` | `agentId`, `relay` |
 | `sign_in` | `harness` |
 | `refresh_bundle` | `harness` |
 | `probe_model` | `agentId` (never a model, harness or command: the saved persona's are used) |
 
+`relay` (added October 1, see "Several communities") is a canonical relay
+(`canonical_relay(r) == r`, else the request is refused) naming one of the
+agent's instances; without it a request acts on the first instance.
 `update_agent` stops a running agent first only when `harness`, `workspace`,
 `rooms`, `respondTo` or `answersDms` change; other edits republish and take effect on next
 start. A room dropped from an enrolled agent is left on the relay (the owner's
@@ -152,6 +222,9 @@ that community is active again; start, stop, start at login, republishing
 edits, `probe_model` (which never uses a relay) and `delete_agent` work for
 any agent. The panel lists the active community's agents and shows the others
 read-only under "In other communities" (see CHECKPOINT).
+Since the instances branch (below, "Several communities") this binding is per
+instance: an agent may gain further instances, each bound to its own
+community in the same way.
 
 **Migration.** A store written before `relay` existed is migrated once when
 the service opens it (`Store::open_with`). Each persona without `relay` gets:
@@ -170,6 +243,67 @@ as any other and is written back once, atomically (0600, temporary file,
 fsync, rename, directory fsync) before it is used; a failed write refuses it
 (`store_unavailable`). A persona that already has a `relay` is never changed,
 whatever its unit file says.
+
+### Several communities (added October 1, branch `agent-instances`)
+
+One agent (one identity) can be enrolled in up to four communities, each an
+instance (see "Store version 2").
+
+- **`enroll_agent_in {agentId, relay, rooms}`** adds the agent to the active
+  community. Refused with `agent_invalid`: an unknown agent, one never
+  enrolled (no identity or attestation), one already there, four instances
+  already, rooms not 1–8 distinct canonical UUIDs (the request parser
+  refuses those with an error frame), rooms not in that community's verified
+  catalog. Refused with `relay_unavailable`: `relay` is not the
+  configuration's active community (or the configuration does not list it, or
+  has no identity), or the helper's catalog is unavailable; nothing is asked
+  of a catalog for another community. `enroll_failed` when the owner key for
+  that community or the agent key cannot be read, or the shared attestation
+  is not the current owner's (enroll the agent again in its first community
+  first). Then: the instance is created (not primary; default workspace
+  `<id>-<h>`, created 0700 and checked like any workspace; start at login
+  off), the instructions and attestation files are written, and the same
+  publications as `enroll_agent` run on that relay with the owner key Secret
+  Service keeps for that community: 30175, 30177, kind 9000 per room (the
+  owner admits the agent's existing key there), and the kind-0 profile signed
+  by the agent with the attestation. A failed publication keeps the instance,
+  unpublished with `lastError`; `enroll_agent {agentId, relay}` retries it
+  (its rooms are checked in the active community, as before).
+- **Zero rooms are not allowed**, even with `answersDms`: an instance with no
+  room would have no membership in that community that this service made or
+  can verify, and whether the relay lets an agent with no membership
+  authenticate or be found for a direct message is unverified.
+- **`start_agent`, `stop_agent`, `set_start_at_login`** with `relay` act on
+  that instance's unit (`omarchy-buzz-agent-<key>.service`, rendered from the
+  same template with that instance's relay, rooms and workspace, and the
+  shared identity, attestation and instructions); without, on the first.
+  They work for any instance whatever community is active.
+- **`update_agent`** with `relay`: `rooms` and `workspace` change that
+  instance (rooms only while its community is active, as before); definition
+  fields change the agent, so `name`, `description`, `instructions`,
+  `harness`, `model` or `respondTo` republish 30175/30177/0 in **every**
+  community (each instance's `published`/`lastError` its own; the first
+  failure is the request's category), and `harness`, `respondTo` or
+  `answersDms` stop every running instance; `rooms` or `workspace` stop only
+  that one.
+- **`leave_agent_community {agentId, relay}`**: the owner's kind 9001 for
+  each room of that instance's `memberRooms` (as `delete_agent` does; a
+  failure is recorded and nothing else changes, so it can be retried), then
+  the instance's unit is stopped, disabled and removed (`daemon-reload`), and
+  the instance dropped. Its workspace and the 30175/30177 records on that
+  relay stay. It works whatever community is active. The last instance
+  cannot be left (`agent_invalid`): delete the agent instead.
+- **`delete_agent`** leaves every community's rooms (instance by instance;
+  a failure stops it there with the rooms already left recorded), removes
+  every instance's unit, then the agent; the key is forgotten only with
+  `forget: true`, and only here (leaving one community never touches it).
+- **Workspace rules** treat each instance as a separate agent: an instance's
+  own default `<key>` is the only one allowed under
+  `~/.local/state/omarchy-buzz*`, and no instance's workspace may overlap
+  another instance's, of the same agent or another.
+- **Shared key, trade-off** (design): the agent is the same pubkey in every
+  community (one avatar, one attestation, recognizable), but a leaked key
+  speaks in all of them at once and a revocation must reach every relay.
 
 ### Model check (added September 30, branch `model-check`)
 
@@ -261,7 +395,9 @@ in every case the launcher itself survives.
 
 ## Units
 
-`~/.config/systemd/user/omarchy-buzz-agent-<id>.service`, generated from the
+`~/.config/systemd/user/omarchy-buzz-agent-<id>.service` (the agent's primary
+instance) or `omarchy-buzz-agent-<id>-<h>.service` (an instance in a further
+community, see "Store version 2"; its `Description=` names the same key), generated from the
 template in `service/agent.service.in` (same limits as the existing Codex unit:
 `MemoryMax=2G`, `TasksMax=128`, `LimitCORE=0`, `KillMode=control-group`,
 `Restart=no`, no stdout/stderr). `ExecStart` is exactly (paths expanded, one
@@ -327,9 +463,10 @@ clients, idle exit after 30 s unless a request is still running).
   is refused rather than changed). Refused when equal to, inside or containing:
   `$HOME` (or any ancestor), `~/.config`/`$XDG_CONFIG_HOME`, `~/.ssh`,
   `~/.gnupg`, `~/.local/share/omarchy-buzz` (bundles), either harness profile,
-  another agent's workspace; and anything under `~/.local/state/omarchy-buzz*`
-  (and `$XDG_STATE_HOME/omarchy-buzz*`) except this agent's own default
-  `…/omarchy-buzz-room-workspaces/<id>`. The default is created at 0700; its
+  another agent's (or another instance's) workspace; and anything under
+  `~/.local/state/omarchy-buzz*` (and `$XDG_STATE_HOME/omarchy-buzz*`) except
+  this instance's own default `…/omarchy-buzz-room-workspaces/<key>` (`<id>`
+  for the primary instance, `<id>-<h>` for the others). The default is created at 0700; its
   existing parent is never changed but must be an unlinked user directory that
   others cannot write. Workspaces are rechecked before every start.
 - Unit files: every word is double-quoted with `\`, `"`, `%` and `$` escaped,
@@ -337,7 +474,8 @@ clients, idle exit after 30 s unless a request is still running).
   are revalidated when rendering. Unit control uses only
   `/usr/bin/systemctl --user start|stop|enable|disable <unit>`,
   `daemon-reload` and `show --property=ActiveState <unit>`, for unit names
-  `omarchy-buzz-agent-<uuid>.service` only, with a 30 s bound and no shell.
+  `omarchy-buzz-agent-<uuid>.service` and `omarchy-buzz-agent-<uuid>-<12
+  lowercase hex>.service` only (`unit::checked_unit`), with a 30 s bound and no shell.
   `ActiveState` `active`/`inactive`/`failed` map directly; any other state or
   failure is `unknown`. Agents without an identity report `inactive`.
 

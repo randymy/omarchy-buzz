@@ -3442,3 +3442,89 @@ section just bound to one relay, so it stops here. Design:
 - Verified on the merged tree: Rust 355 passed (`RUST_TEST_THREADS=1`), fmt
   clean; Python 108; helper and agents smoke; packaging; default plus all 28
   named previews. Helper and plugin install together (new status keys).
+
+## Agent instances per community — October 1
+
+Branch `agent-instances` (not merged or installed; no relay, keyring, systemd
+or real agent state touched; synthetic fixtures and loopback relays only).
+Builds step 2 of "Agents belong to a community": one agent (one identity) in
+several communities, following the design above; decisions it left open are
+marked **Decided**.
+
+- **Store version 2** (`docs/AGENTS_SERVICE.md` "Store version 2"): an agent
+  keeps its definition, identity and attestation once, and `instances[]`, one
+  per community (`relay`, `primary`, `rooms`, `workspace`, `startAtLogin`,
+  `published`, `memberRooms`, `publishedAt`, `lastError`). A version 1 store
+  is wrapped on load, once: the relay migration first, then each persona
+  becomes one primary instance with every field as it was; the store is
+  validated, the version 1 bytes kept in `personas.v1.json`, the version 2
+  store written atomically, all before use; any failure refuses the store and
+  writes nothing more. **Decided:** keep that backup (a downgrade needs it:
+  older helpers refuse version 2).
+- **Names.** Primary instance: `omarchy-buzz-agent-<id>.service` and
+  workspace `<id>` (vClaude's running unit and workspace are its primary
+  instance's); others `<id>-<h>`, `h` = first 12 hex of SHA-256 of the
+  canonical relay. `unit::checked_unit` accepts exactly those two forms.
+  **Decided:** `primary` is stored, not derived from position, so leaving the
+  first community does not rename the others' units; the default workspace of
+  every instance is named by the same key (the design's `<id>-<h>` for
+  further instances, the legacy `<id>` for the primary).
+- **Requests.** `enroll_agent_in {agentId, relay, rooms}` (relay = the active
+  community, 1–8 rooms verified there; refusals: unknown or never-enrolled
+  agent, already there, four instances, unverified rooms → `agent_invalid`;
+  another community or no catalog → `relay_unavailable`; an attestation not
+  the current owner's → `enroll_failed`). **Decided:** no zero-room instance,
+  even with `answersDms` (no membership this service made or can verify
+  there). **Decided:** a failed publication keeps the instance unpublished
+  for a retry with `enroll_agent {agentId, relay}` rather than rolling it
+  back (acknowledged 9000s are recorded). Optional `relay` on `start_agent`,
+  `stop_agent`, `set_start_at_login`, `enroll_agent` and `update_agent`
+  (rooms/workspace of that instance; definition edits republish in every
+  community and harness/answering changes stop every running instance).
+  `leave_agent_community {agentId, relay}`: 9001 per room, unit removed,
+  instance dropped, workspace and 30175/30177 kept; never the last.
+  `delete_agent` leaves every community's rooms and removes every unit; the
+  key goes only with `forget: true`. **Decided:** at most 4 instances per
+  agent — the largest valid store (16 × 4, every field at its limit) is
+  1 013 060 bytes of the 1 MiB bound.
+- **Status.** Each agent gains `instances: [{relay, community, rooms, unit
+  (name), startAtLogin, published, lastError, state}]` (20 agent keys, 8 per
+  instance); top-level fields stay the first instance's. **Decided:** the
+  instance workspace is not reported (the panel edits only the first
+  community's workspace and shows the others' default path).
+- **Panel.** An agent is listed and managed in every community it has an
+  instance in (the sidebar no longer looks only at its first); others stay
+  under "In other communities" as "· in <communities>". The editor edits the
+  current community's rooms (requests name its relay), and lists
+  **Communities**: each instance's state, rooms (names for this community's
+  verified rooms, short ids otherwise), Start/Stop for the other communities
+  (this one's are the editor's buttons), **Retry enrollment** for this
+  community when unpublished, and a confirmed **Leave <community>** while
+  there are two or more ("Its only community cannot be left; delete the agent
+  instead."). **Add to <community>** (with this community's verified rooms)
+  shows for an enrolled agent with no instance here when the helper is
+  authenticated here and the agent service's active relay is this one.
+- Evidence: Rust `store_tests` (wrap with and without `relay`, a realistic
+  running vClaude-like record keeping its unit name, workspace, rooms,
+  memberships and byte-identical unit file; backup; failed wrap writes
+  nothing; instance rules and names; worst-case size), `unit_tests` (suffixed
+  names accepted, eight malformed ones refused; a further instance's argv and
+  `Description=`), `request` tests (new shapes, malformed rooms/relays),
+  `service_tests` (two loopback relays: every refusal, the join's exact
+  events with the same identity and that community's owner key, per-instance
+  start/stop/start-at-login/rooms, definition republication in both, leaving
+  the primary, the last refused, a new suffixed instance, delete across both
+  with `forget`; a failed join kept and retried; a version 1 store with a
+  running unit keeps being managed under the same unit name), status keys and
+  the 1 MiB worst case with instances; `tests/agents_smoke.py` (version 2
+  store, wrap with backup and unit names, instances reported and left,
+  refusals); `scripts/preview --agents` (instance frame validation, an agent
+  in two communities listed here, Communities list, Add gating) and
+  `--communities` (Add to second end to end, an agent in two communities
+  listed under both, Leave with confirmation, the last kept).
+- Not verified: the wrap against the installed store and vClaude's real unit
+  (never read here), a real relay accepting a kind 9000 for an agent key that
+  was first admitted elsewhere, two units of one identity running at once
+  against two relays, and the installed shell. Update the helper and plugin
+  together: an older panel refuses `instances`; an older helper refuses a
+  version 2 store (restore `personas.v1.json` before downgrading).
