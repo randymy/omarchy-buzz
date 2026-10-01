@@ -27,7 +27,8 @@ and four user units (messaging service/socket and agent-manager service/socket),
 plus `scripts/agent-login` under `~/.local/share/omarchy-buzz/scripts/`.
 A sidecar detects accidental corruption; it does not prove
 who created the package. Only install an artifact you built or obtained through
-a trusted, independently verified channel. No download is performed.
+a trusted, independently verified channel. `install` performs no download;
+`fetch` (below) downloads from this project's GitHub Releases.
 `--dry-run` checks package structure and previews installed paths without running
 the new binary. Actual installation first runs its bounded `--version` command
 from a private temporary directory and checks the reported version and Buzz pin;
@@ -85,6 +86,35 @@ ordinary uninstall: it records request/event bindings used to prevent duplicate
 publication. Its lock is released when the helper exits. Ledger failure disables
 sending while read-only connectivity remains available. No message bodies or
 private keys are stored there.
+
+## Install a release
+
+Releases on <https://github.com/randymy/omarchy-buzz/releases> carry prebuilt
+helper packages for ARM64 (`aarch64`) and x86-64 (`x86_64`). From a checkout of
+the matching tag (the installer checks the package against the checkout's
+version, Buzz pins and reviewed scripts):
+
+```bash
+python3 scripts/helper-install fetch --dry-run 0.0.21
+python3 scripts/helper-install fetch 0.0.21
+```
+
+`fetch` downloads only this machine's `omarchy-buzz-<version>-linux-<arch>.tar.gz`
+and its `.sha256.json` sidecar into `~/.cache/omarchy-buzz/helper/releases/<version>/`
+(HTTPS only, redirects only to GitHub's asset hosts, bounded sizes, a 60-second
+limit; the files are saved owner-readable and never made executable), then runs
+the same checks and installation as `install`. To verify a release by hand,
+download its assets into one directory, including
+`omarchy-buzz-<version>-checksums.txt`, and run (add `--ignore-missing` if you
+downloaded only some of them):
+
+```bash
+sha256sum -c omarchy-buzz-0.0.21-checksums.txt
+```
+
+The checksums and sidecars detect corruption; the assets are not signed, so
+they do not prove who built them. Each release's `build-<arch>.json` names the
+source commit and workflow run of its binary.
 
 ## Agent manager installation scope
 
