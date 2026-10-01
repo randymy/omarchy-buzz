@@ -42,11 +42,17 @@ FocusScope {
     id: joinBox
     property var service: null
     property bool showOpenRooms: false
+    // The welcome pane shows open rooms and the invite field as separate
+    // blocks; its copies carry their own object names (prefix "buzzWelcome").
+    property bool showInvite: true
+    property string prefix: "buzz"
+    property string inviteCaption: "Join with an invite"
     Layout.fillWidth: true
     spacing: Style.space(6)
     Text {
       Layout.fillWidth: true
-      text: "Join with an invite"
+      visible: joinBox.showInvite
+      text: joinBox.inviteCaption
       textFormat: Text.PlainText
       elide: Text.ElideRight
       color: Color.foreground
@@ -56,10 +62,11 @@ FocusScope {
     }
     RowLayout {
       Layout.fillWidth: true
+      visible: joinBox.showInvite
       spacing: Style.space(6)
       Ui.TextField {
         id: inviteField
-        objectName: "buzzInviteInput"
+        objectName: joinBox.prefix + "InviteInput"
         Layout.fillWidth: true
         verticalPadding: Style.space(4)
         maximumLength: 4096
@@ -68,7 +75,7 @@ FocusScope {
         onAccepted: if (joinBox.service) joinBox.service.redeemInvite(text)
       }
       Ui.Button {
-        objectName: "buzzInviteRedeem"
+        objectName: joinBox.prefix + "InviteRedeem"
         text: "Redeem"
         tooltipText: "Check this invite with your relay"
         fontSize: Style.font.caption
@@ -79,9 +86,9 @@ FocusScope {
       }
     }
     Text {
-      objectName: "buzzInviteStatus"
+      objectName: joinBox.prefix + "InviteStatus"
       Layout.fillWidth: true
-      visible: text !== ""
+      visible: joinBox.showInvite && text !== ""
       text: joinBox.service ? joinBox.service.inviteLabel : ""
       textFormat: Text.PlainText
       wrapMode: Text.WordWrap
@@ -91,10 +98,10 @@ FocusScope {
     }
     ColumnLayout {
       id: policyBox
-      objectName: "buzzJoinPolicy"
+      objectName: joinBox.prefix + "JoinPolicy"
       Layout.fillWidth: true
       spacing: Style.space(4)
-      visible: !!joinBox.service && joinBox.service.policyShown
+      visible: joinBox.showInvite && !!joinBox.service && joinBox.service.policyShown
       readonly property var policy: joinBox.service && joinBox.service.policyShown ? joinBox.service.joinSetup.joinPolicy : null
       Text {
         Layout.fillWidth: true
@@ -113,7 +120,7 @@ FocusScope {
         contentWidth: availableWidth
         Text {
           id: policyText
-          objectName: "buzzJoinPolicyText"
+          objectName: joinBox.prefix + "JoinPolicyText"
           width: parent.width
           text: policyBox.policy ? (policyBox.policy.text || "(No text was provided.)") : ""
           textFormat: Text.PlainText
@@ -137,7 +144,7 @@ FocusScope {
         font.pixelSize: Style.font.caption
       }
       Ui.Button {
-        objectName: "buzzInviteAccept"
+        objectName: joinBox.prefix + "InviteAccept"
         text: "I accept"
         tooltipText: "Accept these terms and join the community"
         fontSize: Style.font.caption
@@ -148,7 +155,7 @@ FocusScope {
       }
     }
     ColumnLayout {
-      objectName: "buzzOpenRooms"
+      objectName: joinBox.prefix + "OpenRooms"
       Layout.fillWidth: true
       spacing: Style.space(2)
       visible: joinBox.showOpenRooms && !!joinBox.service && joinBox.service.openRoomsAvailable
@@ -166,7 +173,7 @@ FocusScope {
           font.pixelSize: Style.font.caption
         }
         Ui.Button {
-          objectName: "buzzOpenRoomsRefresh"
+          objectName: joinBox.prefix + "OpenRoomsRefresh"
           text: "↻"
           tooltipText: "Refresh open rooms"
           horizontalPadding: Style.space(6)
@@ -191,7 +198,7 @@ FocusScope {
         model: joinBox.service ? joinBox.service.openRooms : []
         delegate: RowLayout {
           required property var modelData
-          objectName: "buzzOpenRoom"
+          objectName: joinBox.prefix + "OpenRoom"
           readonly property string roomId: modelData.id
           Layout.fillWidth: true
           spacing: Style.space(4)
@@ -208,7 +215,7 @@ FocusScope {
             MouseArea { id: openRoomHover; anchors.fill: parent; hoverEnabled: true; acceptedButtons: Qt.NoButton }
           }
           Ui.Button {
-            objectName: "buzzOpenRoomJoin"
+            objectName: joinBox.prefix + "OpenRoomJoin"
             text: "Join"
             tooltipText: "Join #" + modelData.name + " now; open rooms need no approval"
             fontSize: Style.font.caption
@@ -220,7 +227,7 @@ FocusScope {
         }
       }
       Text {
-        objectName: "buzzOpenRoomsStatus"
+        objectName: joinBox.prefix + "OpenRoomsStatus"
         Layout.fillWidth: true
         visible: text !== ""
         text: joinBox.service ? joinBox.service.openRoomsLabel : ""
@@ -233,7 +240,7 @@ FocusScope {
       }
     }
     Text {
-      objectName: "buzzRoomActionStatus"
+      objectName: joinBox.prefix + "RoomActionStatus"
       Layout.fillWidth: true
       visible: joinBox.showOpenRooms && text !== ""
       text: joinBox.service ? joinBox.service.roomActionLabel : ""
@@ -533,11 +540,18 @@ FocusScope {
     unset: "Not set up", offline: "Offline"})[accountState]
   readonly property color accountStateColor: ({online: "#3fb950", connecting: "#d29922", offline: Color.urgent})[accountState] || Color.muted
   readonly property bool myKeyKnown: !!service && /^[a-f0-9]{64}$/.test(service.identity)
-  // My roster name when a verified roster lists me, else "Me".
-  readonly property string myName: {
-    if (!myKeyKnown || service.recipientsState !== "snapshot") return "Me"
+  // My roster name when a verified roster lists me; otherwise my key's short
+  // form, as message authors without a profile name are shown ("Me" only in
+  // sample data, which has no key).
+  readonly property bool myNameKnown: {
+    if (!myKeyKnown || service.recipientsState !== "snapshot") return false
     var entry = service.recipientEntries.find(function(item) { return item.key === root.service.identity })
-    return entry && entry.name.trim() ? entry.name.trim() : "Me"
+    return !!entry && entry.name.trim() !== ""
+  }
+  readonly property string myName: {
+    if (!myKeyKnown) return "Me"
+    if (!myNameKnown) return service.identity.slice(0, 12) + "…"
+    return service.recipientEntries.find(function(item) { return item.key === root.service.identity }).name.trim()
   }
   readonly property string accountName: accountState === "online" || accountState === "sample" ? myName : "Not connected"
   readonly property string communityHost: service && service.relay ? service.relay.replace(/^wss?:\/\//, "").replace(/\/$/, "") : ""
@@ -574,8 +588,55 @@ FocusScope {
   }
   function switchCommunity(relay) {
     closeAccountMenu()
-    return !!service && service.switchCommunity(relay)
+    if (!service) return false
+    var target = service.communityEntries.find(function(entry) { return entry.relay === relay }) || null
+    menuSwitchPending = true
+    var sent = service.switchCommunity(relay)
+    menuSwitchPending = sent && !service.sampleMode
+    // Sample data switches at once (presentation only).
+    if (sent && service.sampleMode && target) showArrival("Switched to " + target.name + ".")
+    return sent
   }
+  // After a join or a switch chosen from the menu: one dismissible line at the
+  // top of the room pane, gone after a few seconds or on any navigation.
+  // Switches nobody chose here (startup, leaving the active community) say nothing.
+  property bool menuSwitchPending: false
+  property string arrivalText: ""
+  property int arrivalTimeout: 8000
+  property string arrivalRoom: ""
+  function showArrival(text) {
+    arrivalText = text
+    arrivalRoom = service ? service.selectedRoomId : ""
+    arrivalTimer.interval = arrivalTimeout
+    arrivalTimer.restart()
+  }
+  function dismissArrival() {
+    arrivalTimer.stop()
+    arrivalText = ""
+  }
+  Timer { id: arrivalTimer; interval: 8000; onTriggered: root.arrivalText = "" }
+  onSubViewOpenChanged: if (subViewOpen) dismissArrival()
+  onThreadOpenChanged: if (threadOpen) dismissArrival()
+  Connections {
+    target: root.service
+    function onCommunityArrived(kind, name) {
+      if (kind === "joined") root.showArrival("You joined " + name + ".")
+      else if (kind === "switched" && root.menuSwitchPending) root.showArrival("Switched to " + name + ".")
+      root.menuSwitchPending = false
+    }
+    // Choosing another room is navigation; the first room a new community
+    // selects by itself (from none) is not.
+    function onSelectedRoomIdChanged() {
+      var now = root.service.selectedRoomId
+      if (root.arrivalText !== "" && root.arrivalRoom !== "" && now !== root.arrivalRoom) root.dismissArrival()
+      root.arrivalRoom = now
+    }
+  }
+  // The active community lists no joined room: a welcome pane replaces the
+  // empty room view, with the open rooms, the invite field and the switcher.
+  readonly property bool welcomeShown: connected && !!service && !service.sampleMode && service.noRoomsJoined
+    && service.selectedRoom === null
+  readonly property string welcomeName: service && service.activeCommunity ? service.activeCommunity.name : communityHost
   Connections {
     target: root.service
     function onCommunityRequestDone(kind, ok) {
@@ -583,6 +644,7 @@ FocusScope {
       if (kind === "join" && ok && root.communityView !== "" && !root.service.policyShown) root.backToRooms()
       if (kind === "rename" && ok) root.renamingRelay = ""
       if (kind === "leave") root.leavingRelay = ""
+      if (kind === "switch" && !ok) root.menuSwitchPending = false
     }
     // The terms were accepted and the claim answered: back to the rooms.
     function onJoinSetupChanged() {
@@ -1412,7 +1474,8 @@ FocusScope {
             cursorShape: Qt.PointingHandCursor
             onClicked: { accountControl.forceActiveFocus(); accountControl.activate() }
           }
-          readonly property string tooltipText: root.accountName + " · " + root.accountStateLabel
+          readonly property string tooltipText: (root.myKeyKnown && !root.myNameKnown && root.accountState === "online"
+              ? "No profile name on this community yet" : root.accountName) + " · " + root.accountStateLabel
             + (root.myPresenceLabel !== "" ? " · " + root.myPresenceLabel : "")
             + (statusEmojiBadge.visible ? " · " + root.myStatusLine : "")
             + (root.myKeyKnown ? " · " + root.service.identity.slice(0, 8) + "…" : "")
@@ -2055,11 +2118,52 @@ FocusScope {
         Layout.fillHeight: true
         Layout.preferredWidth: Style.space(400)
         spacing: Style.space(8)
+        // You joined … / Switched to …: dismissible, and gone after a few seconds.
+        Rectangle {
+          objectName: "buzzCommunityArrival"
+          visible: root.arrivalText !== ""
+          Layout.fillWidth: true
+          implicitHeight: arrivalRow.implicitHeight + Style.space(10)
+          radius: Style.cornerRadius
+          color: Util.alpha("#3fb950", 0.14)
+          border.color: Util.alpha("#3fb950", 0.5)
+          border.width: Math.max(1, Style.space(1))
+          RowLayout {
+            id: arrivalRow
+            anchors.fill: parent
+            anchors.leftMargin: Style.space(8)
+            anchors.rightMargin: Style.space(4)
+            spacing: Style.space(6)
+            Text {
+              objectName: "buzzCommunityJoined"
+              Layout.fillWidth: true
+              text: root.arrivalText
+              textFormat: Text.PlainText
+              wrapMode: Text.WordWrap
+              color: Color.foreground
+              font.family: Style.font.family
+              font.pixelSize: Style.font.body
+            }
+            Ui.Button {
+              objectName: "buzzCommunityJoinedDismiss"
+              text: "✕"
+              tooltipText: "Dismiss"
+              horizontalPadding: Style.space(6)
+              verticalPadding: Style.space(1)
+              focusable: true
+              onClicked: root.dismissArrival()
+            }
+          }
+        }
         RowLayout {
+          visible: !root.welcomeShown
           Layout.fillWidth: true
           spacing: Style.space(8)
           Text {
-            text: root.service && root.service.selectedRoom ? root.service.roomTitle(root.service.selectedRoom) : "Connect Buzz"
+            objectName: "buzzRoomTitle"
+            // "Connect Buzz" belongs to setup only; a connected community
+            // without rooms shows the welcome pane instead of this row.
+            text: root.service && root.service.selectedRoom ? root.service.roomTitle(root.service.selectedRoom) : root.connected ? "" : "Connect Buzz"
             textFormat: Text.PlainText
             elide: Text.ElideRight
             Layout.maximumWidth: Style.space(260)
@@ -2280,9 +2384,92 @@ FocusScope {
           }
           PublicKeyRow { service: root.service }
         }
+        // Welcome to a community with no joined room yet: what to do next.
+        Controls.ScrollView {
+          id: welcomeScroll
+          objectName: "buzzWelcomePane"
+          visible: root.welcomeShown
+          Layout.fillWidth: true
+          Layout.fillHeight: true
+          Layout.preferredHeight: Style.space(80)
+          contentWidth: availableWidth
+          clip: true
+          ColumnLayout {
+            width: welcomeScroll.availableWidth
+            spacing: Style.space(8)
+            Text {
+              objectName: "buzzWelcomeTitle"
+              Layout.fillWidth: true
+              Layout.topMargin: Style.space(6)
+              text: "Welcome to " + root.welcomeName
+              textFormat: Text.PlainText
+              wrapMode: Text.WordWrap
+              color: Color.foreground
+              font.family: Style.font.family
+              font.pixelSize: Style.font.body * 1.4
+              font.bold: true
+            }
+            Text {
+              objectName: "buzzWelcomeHost"
+              Layout.fillWidth: true
+              Layout.topMargin: -Style.space(6)
+              visible: root.communityHost !== "" && root.communityHost !== root.welcomeName
+              text: root.communityHost
+              textFormat: Text.PlainText
+              elide: Text.ElideMiddle
+              color: Color.foreground
+              opacity: 0.6
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+            }
+            Text {
+              objectName: "buzzWelcomeLead"
+              Layout.fillWidth: true
+              text: "Pick a room to get started."
+              textFormat: Text.PlainText
+              wrapMode: Text.WordWrap
+              color: Color.foreground
+              font.family: Style.font.family
+              font.pixelSize: Style.font.body
+            }
+            JoinCommunity {
+              objectName: "buzzWelcomeRooms"
+              service: root.service
+              prefix: "buzzWelcome"
+              showInvite: false
+              showOpenRooms: true
+            }
+            Rectangle {
+              Layout.fillWidth: true
+              Layout.topMargin: Style.space(4)
+              implicitHeight: Math.max(1, Style.space(1))
+              color: Util.alpha(Color.foreground, 0.14)
+            }
+            JoinCommunity {
+              objectName: "buzzWelcomeInvite"
+              visible: !!root.service && root.service.joinAvailable
+              service: root.service
+              prefix: "buzzWelcome"
+              inviteCaption: "Have an invite? Paste it below"
+            }
+            Ui.Button {
+              objectName: "buzzWelcomeSwitch"
+              visible: !!root.service && root.service.communitiesShown
+              text: "Switch community"
+              tooltipText: "Open the account menu to choose or join another community"
+              fontSize: Style.font.caption
+              horizontalPadding: Style.space(4)
+              verticalPadding: Style.space(2)
+              opacity: 0.8
+              focusable: true
+              onClicked: root.openAccountMenu()
+            }
+          }
+        }
         BuzzScroll {
           id: historyScroll
           objectName: "buzzHistoryScroll"
+          visible: !root.welcomeShown
           Layout.fillWidth: true
           Layout.fillHeight: true
           // The viewport takes the space left over; its content never sizes the panel.

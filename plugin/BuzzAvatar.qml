@@ -25,7 +25,10 @@ Text {
   readonly property bool colored: AnsiArt.isAnsi(art)
   readonly property var thumbnail: colored ? AnsiArt.thumbnailFor(art, 6, 12, brightness) : null
   readonly property bool usesColor: colored && !!thumbnail && thumbnail.rows > 0
-  readonly property string shownArt: colored ? "" : Identicon.normalizeArt(art)
+  // Plain art as stored, without leading blank lines: pasted art often starts
+  // with an empty line, which pushed the drawing below the row it sits in.
+  // (Render only: the stored form is unchanged, so saved files stay valid.)
+  readonly property string shownArt: colored ? "" : Identicon.normalizeArt(art).replace(/^(?:[^\S\n]*\n)+/, "")
   readonly property bool usesArt: shownArt !== "" || usesColor
   readonly property string keyColor: Identicon.color(key)
   // Three lines of five full blocks: the same advance and height as any identicon.
