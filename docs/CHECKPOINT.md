@@ -3063,3 +3063,18 @@ was open, with the in-page "Back to rooms" link too easy to miss.
   "rejected" to "ignored beside a good event" (14 presence tests, full
   suite 328). Verified against the real relay: every room and the DM read
   cleanly (peers 1, 3, 4, 1), no failures.
+
+## Marketplace update request and draft v0.0.24 — October 1
+
+- Filed omacom/omarchy-plugin-marketplace#9501 on the maintainer's word:
+  "Verify and publish a newer upstream commit", `community.buzz` at
+  `7d5faf24eb6f6784f8db5790de4b5016d7fefafa`, manual setup kept. The bots
+  passed validation (preview detected at this commit) and the baseline is
+  `review-required` with the same capability set accepted for the original
+  listing (remote-build, service-management, installer, privilege — the
+  clock-skew help text naming `sudo systemctl restart systemd-timesyncd` —
+  package-manager) and no findings; awaiting a maintainer's
+  `approved-and-verified`.
+- Draft `v0.0.22` deleted; draft `v0.0.24` cut from the same commit
+  (release run 36821877929, ten assets), unpublished until the maintainer
+  publishes it.
