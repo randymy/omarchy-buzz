@@ -2840,3 +2840,19 @@ upstream references are to the pinned Buzz `781d3951`. Presence
   the exact new argv from a transient unit carrying every restriction of
   `omarchy-buzz-agents.service`: `OK`, exit 0. `service_tests` assert the new
   argv including the `--setenv` entries; `docs/AGENTS_SERVICE.md` updated.
+
+## Marketplace preview card — October 1
+
+- The listing showed the marketplace's fallback image ("No supported root
+  preview detected"). `SUBMISSION.md` upstream: one optional root
+  `preview.png|jpg|jpeg|webp|avif`, ≤ 50 MB and ≤ 40 megapixels; the
+  marketplace strips metadata and derives the card and detail images itself.
+- Added `preview.png` (1600×900, 59 KB): original text art — a block-letter
+  BUZZ wordmark and a small bee in yellow on the shell's dark background,
+  "for Omarchy" and a one-line feature list — rendered by
+  `scripts/render-preview` from `assets/preview/wordmark.txt` and `bee.txt`
+  with ImageMagick and JetBrainsMono Nerd Font. No Block artwork or logo is
+  used; the maintainer owns the asset as the submission checklist requires.
+- The listing picks it up only through the marketplace's "verify or update a
+  listed plugin" form (newer-commit path: fresh validation, security
+  baseline and maintainer approval); until then the card stays as listed.
