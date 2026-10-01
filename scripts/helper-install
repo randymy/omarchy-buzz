@@ -43,6 +43,32 @@ RECORD = ".local/share/omarchy-buzz/installed.json"
 MAX_RECORD = 64 * 1024
 MAX_ARCHIVE = 32 * 1024 * 1024
 MAX_BINARY = 24 * 1024 * 1024
+# The two Buzz crates and where each may come from (as scripts/package-helper
+# checks them; kept in step by tests/helper_install.py). `buzz-sdk` is the
+# official upstream pin; `buzz-ws-client` is the reviewed bounded-connection
+# revision from the maintainer's fork until upstream merges it.
+BUZZ_SOURCES = {
+    "buzz-sdk": ("https://github.com/block/buzz",),
+    "buzz-ws-client": ("https://github.com/block/buzz", "https://github.com/randymy/buzz"),
+}
+
+
+def check_buzz_pins(root, cargo):
+    """Both Buzz pins are 40-hex revisions from an allowed source and equal the
+    constants in compatibility.rs. Returns (sdk revision, ws-client revision)."""
+    compatibility = (root / "helper/src/compatibility.rs").read_text()
+    revisions = []
+    for name, constant in (("buzz-sdk", "BUZZ_REVISION"), ("buzz-ws-client", "WS_CLIENT_REVISION")):
+        dependency = cargo["dependencies"][name]
+        revision = dependency.get("rev")
+        if (dependency.get("git") not in BUZZ_SOURCES[name]
+                or not isinstance(revision, str) or not re.fullmatch(r"[0-9a-f]{40}", revision)):
+            raise ValueError(f"{name} must pin a revision of an allowed Buzz source")
+        match = re.search(constant + r'\s*:\s*&str\s*=\s*"([0-9a-f]{40})"', compatibility)
+        if not match or match[1] != revision:
+            raise ValueError(f"{name} pin and {constant} must match")
+        revisions.append(revision)
+    return tuple(revisions)
 
 
 def regular(path):
@@ -169,13 +195,13 @@ def read_package(archive, sidecar):
         raise ValueError("package architecture differs from this machine")
     manifest = json.loads((ROOT / "manifest.json").read_text())
     cargo = tomllib.loads((ROOT / "helper/Cargo.toml").read_text())
-    pins = [cargo["dependencies"][name]["rev"] for name in ("buzz-sdk", "buzz-ws-client")]
-    compatibility = (ROOT / "helper/src/compatibility.rs").read_text()
-    pin = re.search(r'BUZZ_REVISION\s*:\s*&str\s*=\s*"([0-9a-f]{40})"', compatibility)
+    try:
+        pins = check_buzz_pins(ROOT, cargo)
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError("package does not match checkout version and Buzz pin") from error
     if (metadata["helperVersion"] != manifest.get("version")
             or metadata["helperVersion"] != cargo["package"]["version"]
-            or pins[0] != pins[1] or pin is None
-            or metadata["backendRevision"] != pins[0] or metadata["backendRevision"] != pin[1]):
+            or metadata["backendRevision"] != pins[0]):
         raise ValueError("package does not match checkout version and Buzz pin")
     for name in REVIEWED:
         if content[name] != (ROOT / name).read_bytes():

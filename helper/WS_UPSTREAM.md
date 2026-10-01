@@ -1,6 +1,33 @@
-# Unresolved upstream WebSocket resource limits
+# Upstream WebSocket resource limits
 
-The pinned `buzz-ws-client` revision is
+## Adopted, 2026-09-30 (release 0.0.21)
+
+The helper's `buzz-ws-client` now comes from the reviewed revision behind
+draft PR block/buzz#7976: `randymy/buzz` at
+`7c752971a815af63ba94a3086c4a2c867a129e30` (the PR's single commit on upstream
+`8519db1`; the client's manifest and every dependency version are identical to
+the pinned upstream's, and the client files it patches were unchanged between
+`781d395` and that base). `buzz-sdk` stays at the official pin
+`781d39510cf23cfe224e8f521ae06a23377e06de`. The helper passes explicit budgets
+(`auth::connection_options`): 20 s connect, 40 s authentication (inside the
+existing 45 s outer deadline), 10 s write, 5 s close, 256 KiB per frame and
+per message (events the helper accepts are at most 64 KiB), 128 buffered
+messages and 2 MiB buffered wire bytes during `AUTH`/`OK` waits. Passing a
+budget closes the socket with the new category `relay_resource_limit`
+(retried on the network budget; the panel explains it).
+
+Demonstrated in `helper/src/auth_wire_tests.rs` through the production
+`connect_identity` seam against a loopback relay: a flood of 1 KB `NOTICE`
+frames before `AUTH`, one frame over the per-frame budget (rejected before
+JSON), and a flood of 100 KiB frames while the client waits for its `OK`. Each
+is rejected with `relay_resource_limit` in under five seconds, and the relay's
+writes stop within the budget plus loopback socket buffers (`SOCKET_SLACK`),
+where an unbounded client would have absorbed everything written for the whole
+authentication wait. This closes the release gate below; the history is kept.
+
+## History: the unpatched client (releases through 0.0.20)
+
+The pinned `buzz-ws-client` revision was
 `781d39510cf23cfe224e8f521ae06a23377e06de`. The helper retains upstream
 NIP-42/protocol/signing; it has not copied or forked its connection implementation.
 

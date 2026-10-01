@@ -2,7 +2,7 @@ use crate::{
     config,
     protocol::{Command, History, Status, Thread},
 };
-use buzz_ws_client::{NostrWsConnection, RelayMessage, WsClientError};
+use buzz_ws_client::{ConnectionOptions, NostrWsConnection, RelayMessage, WsClientError};
 use tokio::{
     sync::{mpsc, watch},
     time::{timeout, Duration},
@@ -84,9 +84,31 @@ fn category(e: &WsClientError) -> &'static str {
         WsClientError::AuthFailed(_) => "auth_rejected",
         WsClientError::Timeout | WsClientError::NoAuthChallenge => "relay_timeout",
         WsClientError::ConnectionClosed | WsClientError::WebSocket(_) => "relay_unavailable",
+        WsClientError::ResourceLimit => "relay_resource_limit",
         _ => "relay_protocol_error",
     }
 }
+/// The connection's transport and replay budgets. Every frame the relay
+/// sends is capped before it is parsed, and frames buffered while the client
+/// waits for `AUTH` or an `OK` are counted and bounded; passing a budget
+/// closes the socket with `relay_resource_limit`. Events the helper accepts
+/// are at most `live::MAX_EVENT_BYTES` (64 KiB), so a 256 KiB frame leaves
+/// room for the relay envelope and anything it may legitimately add.
+pub(crate) fn connection_options() -> ConnectionOptions {
+    ConnectionOptions {
+        connect_timeout: Duration::from_secs(20),
+        authentication_timeout: Duration::from_secs(40),
+        write_timeout: Duration::from_secs(10),
+        close_timeout: Duration::from_secs(5),
+        max_frame_bytes: MAX_FRAME_BYTES,
+        max_message_bytes: MAX_FRAME_BYTES,
+        max_buffered_messages: MAX_BUFFERED_MESSAGES,
+        max_buffered_bytes: MAX_BUFFERED_BYTES,
+    }
+}
+pub(crate) const MAX_FRAME_BYTES: usize = 256 * 1024;
+pub(crate) const MAX_BUFFERED_MESSAGES: usize = 128;
+pub(crate) const MAX_BUFFERED_BYTES: usize = 2 * 1024 * 1024;
 pub(crate) async fn connect_identity(
     relay: &str,
     keys: &nostr::Keys,
@@ -102,7 +124,12 @@ pub(crate) async fn connect_attested(
 ) -> Result<NostrWsConnection, &'static str> {
     match timeout(
         Duration::from_secs(45),
-        NostrWsConnection::connect_authenticated(relay, keys, auth_tag),
+        NostrWsConnection::connect_authenticated_with_options(
+            relay,
+            keys,
+            auth_tag,
+            connection_options(),
+        ),
     )
     .await
     {
@@ -234,8 +261,10 @@ impl Backoff {
         self.clock_skew = false;
     }
     fn delay(&mut self, error: &str) -> Option<Duration> {
-        let retryable = matches!(error, "relay_timeout" | "relay_unavailable" | "clock_skew")
-            || (error == "auth_rejected" && self.reauth_rejected);
+        let retryable = matches!(
+            error,
+            "relay_timeout" | "relay_unavailable" | "relay_resource_limit" | "clock_skew"
+        ) || (error == "auth_rejected" && self.reauth_rejected);
         if !retryable || self.failures >= 5 {
             self.reauth_rejected = false;
             self.clock_skew = false;

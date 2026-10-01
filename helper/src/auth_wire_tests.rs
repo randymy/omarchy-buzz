@@ -148,3 +148,125 @@ async fn consumed_auth_notification_is_available_for_reauthentication() {
         .unwrap();
     server.await.unwrap();
 }
+
+// Pre-authentication floods are rejected within fixed budgets (the reviewed
+// client revision; `connection_options`). Each test measures what the relay
+// managed to write before the helper closed the socket. Loopback socket
+// buffers on both ends absorb some megabytes beyond the client's budget, so
+// the demonstrated bound is "budget plus `SOCKET_SLACK`", far below what an
+// unbounded client would take over an authentication wait, and the rejection
+// must arrive long before that wait would expire.
+const SOCKET_SLACK: usize = 8 * 1024 * 1024;
+
+/// Writes `frame` until the peer goes away; returns frames and bytes written.
+async fn flood(ws: &mut WebSocketStream<TcpStream>, frame: String, limit: usize) -> (usize, usize) {
+    let mut frames = 0;
+    let mut bytes = 0;
+    while frames < limit {
+        if ws.send(Message::Text(frame.clone().into())).await.is_err() {
+            break;
+        }
+        frames += 1;
+        bytes += frame.len();
+    }
+    (frames, bytes)
+}
+
+#[tokio::test]
+async fn small_frame_flood_before_auth_is_rejected_within_the_replay_budget() {
+    let _network_fixture = crate::NETWORK_TEST_LOCK.lock().await;
+    let (listener, url) = listener().await;
+    let keys = Keys::generate();
+    // Unrelated NOTICE frames the client must buffer while it waits for AUTH.
+    let frame = json!(["NOTICE", "x".repeat(1000)]).to_string();
+    let server = tokio::spawn(async move {
+        let (tcp, _) = listener.accept().await.unwrap();
+        let mut ws = accept_async(tcp).await.unwrap();
+        flood(&mut ws, frame, 1_000_000).await
+    });
+    let started = std::time::Instant::now();
+    let result = timeout(Duration::from_secs(10), connect_identity(&url, &keys))
+        .await
+        .unwrap();
+    assert_eq!(result.as_ref().err().copied(), Some("relay_resource_limit"));
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "took {:?}",
+        started.elapsed()
+    );
+    let (frames, bytes) = server.await.unwrap();
+    eprintln!(
+        "small-frame flood: relay wrote {frames} frames / {bytes} bytes in {:?}",
+        started.elapsed()
+    );
+    assert!(
+        frames > MAX_BUFFERED_MESSAGES && bytes < MAX_BUFFERED_BYTES + SOCKET_SLACK,
+        "relay wrote {frames} frames / {bytes} bytes"
+    );
+}
+
+#[tokio::test]
+async fn oversized_frame_before_auth_is_rejected_before_parsing() {
+    let _network_fixture = crate::NETWORK_TEST_LOCK.lock().await;
+    let (listener, url) = listener().await;
+    let keys = Keys::generate();
+    let server = tokio::spawn(async move {
+        let (tcp, _) = listener.accept().await.unwrap();
+        let mut ws = accept_async(tcp).await.unwrap();
+        // One frame just over the per-frame budget; it never reaches JSON.
+        let frame = format!("[\"NOTICE\",\"{}\"]", "y".repeat(MAX_FRAME_BYTES + 1));
+        let _ = ws.send(Message::Text(frame.into())).await;
+        // Whatever follows is irrelevant: the client has closed.
+        let (frames, _) = flood(&mut ws, json!(["NOTICE", "after"]).to_string(), 10_000).await;
+        frames
+    });
+    let result = timeout(Duration::from_secs(10), connect_identity(&url, &keys))
+        .await
+        .unwrap();
+    assert_eq!(result.as_ref().err().copied(), Some("relay_resource_limit"));
+    let after = server.await.unwrap();
+    eprintln!("oversized frame: relay wrote {after} frames after it");
+    assert!(
+        after < 10_000,
+        "relay kept writing {after} frames after the oversized one"
+    );
+}
+
+#[tokio::test]
+async fn byte_flood_during_auth_wait_is_rejected_within_the_byte_budget() {
+    let _network_fixture = crate::NETWORK_TEST_LOCK.lock().await;
+    let (listener, url) = listener().await;
+    let keys = Keys::generate();
+    let public = keys.public_key();
+    let server_url = url.clone();
+    // Frames under the per-frame budget but heavy enough that the byte budget
+    // trips before the message count does.
+    let frame = json!(["NOTICE", "z".repeat(100 * 1024)]).to_string();
+    let server = tokio::spawn(async move {
+        let (tcp, _) = listener.accept().await.unwrap();
+        let mut ws = accept_async(tcp).await.unwrap();
+        send(&mut ws, json!(["AUTH", "flood-challenge"])).await;
+        let _ = auth_event(&mut ws, &server_url, "flood-challenge", public).await;
+        // The client now waits for its OK; the relay floods instead.
+        flood(&mut ws, frame, 1_000_000).await
+    });
+    let started = std::time::Instant::now();
+    let result = timeout(Duration::from_secs(10), connect_identity(&url, &keys))
+        .await
+        .unwrap();
+    assert_eq!(result.as_ref().err().copied(), Some("relay_resource_limit"));
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "took {:?}",
+        started.elapsed()
+    );
+    let (frames, bytes) = server.await.unwrap();
+    eprintln!(
+        "byte flood: relay wrote {frames} frames / {bytes} bytes in {:?}",
+        started.elapsed()
+    );
+    assert!(
+        frames < MAX_BUFFERED_MESSAGES && bytes < MAX_BUFFERED_BYTES + SOCKET_SLACK,
+        "relay wrote {frames} frames / {bytes} bytes"
+    );
+}

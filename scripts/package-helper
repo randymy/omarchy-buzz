@@ -36,6 +36,33 @@ def run_metadata(binary):
     return json.loads(result.stdout)
 
 
+# The two Buzz crates and where each may come from. `buzz-sdk` is the official
+# upstream pin; `buzz-ws-client` is the reviewed bounded-connection revision
+# from the maintainer's fork until upstream merges it (helper/WS_UPSTREAM.md).
+BUZZ_SOURCES = {
+    "buzz-sdk": ("https://github.com/block/buzz",),
+    "buzz-ws-client": ("https://github.com/block/buzz", "https://github.com/randymy/buzz"),
+}
+
+
+def check_buzz_pins(root, cargo):
+    """Both Buzz pins are 40-hex revisions from an allowed source and equal the
+    constants in compatibility.rs. Returns (sdk revision, ws-client revision)."""
+    compatibility = (root / "helper/src/compatibility.rs").read_text()
+    revisions = []
+    for name, constant in (("buzz-sdk", "BUZZ_REVISION"), ("buzz-ws-client", "WS_CLIENT_REVISION")):
+        dependency = cargo["dependencies"][name]
+        revision = dependency.get("rev")
+        if (dependency.get("git") not in BUZZ_SOURCES[name]
+                or not isinstance(revision, str) or not re.fullmatch(r"[0-9a-f]{40}", revision)):
+            raise ValueError(f"{name} must pin a revision of an allowed Buzz source")
+        match = re.search(constant + r'\s*:\s*&str\s*=\s*"([0-9a-f]{40})"', compatibility)
+        if not match or match[1] != revision:
+            raise ValueError(f"{name} pin and {constant} must match")
+        revisions.append(revision)
+    return tuple(revisions)
+
+
 def validated_metadata(root, value):
     if not isinstance(value, dict):
         raise ValueError("version output must be a JSON object")
@@ -46,12 +73,8 @@ def validated_metadata(root, value):
         raise ValueError("unsafe package version")
     if manifest["version"] != version or value.get("helperVersion") != version:
         raise ValueError("plugin, crate and binary versions must match")
-    revisions = [cargo["dependencies"][name]["rev"] for name in ("buzz-sdk", "buzz-ws-client")]
-    if revisions[0] != revisions[1] or not re.fullmatch(r"[0-9a-f]{40}", revisions[0]):
-        raise ValueError("Buzz dependency pins must match")
-    compatibility = (root / "helper/src/compatibility.rs").read_text()
-    match = re.search(r'BUZZ_REVISION\s*:\s*&str\s*=\s*"([0-9a-f]{40})"', compatibility)
-    if not match or match[1] != revisions[0] or value.get("backendRevision") != revisions[0]:
+    revisions = check_buzz_pins(root, cargo)
+    if value.get("backendRevision") != revisions[0]:
         raise ValueError("binary and source Buzz revisions must match")
     if type(value.get("protocolVersion")) is not int or value["protocolVersion"] != 1:
         raise ValueError("unsupported helper protocol version")

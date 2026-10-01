@@ -2597,3 +2597,34 @@ unavailable model failed silently on the agent's first turn. Contract in
 
 - Live verdict (maintainer, 18:20 CDT): Browse… from the window opened the
   portal dialog and the chosen file attached — "it worked".
+
+## Bounded WebSocket client adopted (`relay_resource_limit`) — September 30
+
+- Marketplace issue omacom/omarchy-plugin-marketplace#9414: the reviewer asked
+  for a dependency revision with enforced frame/message and replay-buffer
+  limits and a demonstration of bounded rejection of pre-authentication
+  floods, since the pinned `buzz-ws-client` buffers unrelated relay messages
+  without bound while it waits for `AUTH`/`OK` (`helper/WS_UPSTREAM.md`).
+- `helper/Cargo.toml` takes `buzz-ws-client` from the maintainer's fork at
+  the reviewed commit behind draft PR block/buzz#7976 (same manifest and
+  dependency versions as the pin; `buzz-sdk` unchanged).
+  `auth::connection_options` sets the budgets (256 KiB frame/message, 128
+  messages / 2 MiB buffered, 20/40/10/5 s deadlines);
+  `WsClientError::ResourceLimit` maps to the new connection category
+  `relay_resource_limit` (13 categories; retried on the network budget; the
+  panel's category list and setup text updated; the Rust/QML parity test
+  covers the list).
+- `auth_wire_tests.rs`: three loopback flood tests through `connect_identity`
+  (small-frame flood before AUTH, oversized frame, 100 KiB flood during the OK
+  wait) assert the category, rejection under five seconds and the relay's
+  writes stopping within budget plus `SOCKET_SLACK` (8 MiB of loopback socket
+  buffering, stated in the test).
+- The maintainer ran `cargo update -p buzz-ws-client` (one package changed,
+  ten unchanged). Measured on this machine (`--nocapture`): small-frame flood
+  — the relay wrote 254 frames / 257 302 bytes before the socket closed, in
+  1.9 ms (budget 128 messages); byte flood during the OK wait — 24 frames /
+  2 457 912 bytes in 16.5 ms (budget 2 MiB); oversized frame — 125 small
+  frames absorbed by socket buffers after it, then closed. Full helper suite
+  301 passed (`RUST_TEST_THREADS=1`), `cargo fmt --check` clean, helper and
+  agents smoke tests, `--bridge` and default previews pass, read-only relay
+  check unchanged. Released as 0.0.21.

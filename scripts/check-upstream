@@ -22,16 +22,32 @@ def revision(value):
     return value
 
 
+# `buzz-ws-client` may instead come from the maintainer's fork at the reviewed
+# bounded-connection revision (helper/WS_UPSTREAM.md); that pin is recorded as
+# WS_CLIENT_REVISION, checked here and never advanced by this tool.
+FORK = "https://github.com/randymy/buzz"
+
+
 def pins(root):
+    """The official pins this tool advances: (pattern, revision) for buzz-sdk
+    and, only while it is on the official source, buzz-ws-client."""
     text = (root / "helper/Cargo.toml").read_text()
     found = []
     for name in ("buzz-sdk", "buzz-ws-client"):
         pattern = rf'(?m)^({re.escape(name)}\s*=\s*\{{[^\n]*git\s*=\s*"https://github.com/block/buzz"[^\n]*rev\s*=\s*")([0-9a-f]{{40}})("[^\n]*\}}\s*)$'
         matches = list(re.finditer(pattern, text))
-        if len(matches) != 1:
-            raise ValueError(f"expected exactly one pinned official {name} dependency")
-        found.append((pattern, matches[0].group(2)))
-    if found[0][1] != found[1][1]:
+        if len(matches) == 1:
+            found.append((pattern, matches[0].group(2)))
+            continue
+        if name == "buzz-ws-client" and len(matches) == 0:
+            fork = rf'(?m)^buzz-ws-client\s*=\s*\{{[^\n]*git\s*=\s*"{re.escape(FORK)}"[^\n]*rev\s*=\s*"([0-9a-f]{{40}})"[^\n]*\}}\s*$'
+            on_fork = list(re.finditer(fork, text))
+            compatibility = (root / "helper/src/compatibility.rs").read_text()
+            recorded = re.findall(r'pub const WS_CLIENT_REVISION:\s*&str\s*=\s*"([0-9a-f]{40})"\s*;', compatibility)
+            if len(on_fork) == 1 and recorded == [on_fork[0].group(1)]:
+                continue
+        raise ValueError(f"expected exactly one pinned official {name} dependency")
+    if len({revision for _, revision in found}) != 1:
         raise ValueError("Buzz dependency revisions disagree")
     compatibility = (root / "helper/src/compatibility.rs").read_text()
     runtime = re.findall(r'pub const BUZZ_REVISION:\s*&str\s*=\s*"([0-9a-f]{40})"\s*;', compatibility)
@@ -103,7 +119,7 @@ def upstream():
     return revision(data.decode("ascii").strip())
 
 
-def validate_lock(data, expected_revision):
+def validate_lock(data, expected_revision, ws_client_revision=None):
     revision(expected_revision)
     if len(data) > 2 * 1024 * 1024:
         raise ValueError("oversized Cargo.lock")
@@ -113,9 +129,19 @@ def validate_lock(data, expected_revision):
     expected_source = f"git+https://github.com/block/buzz?rev={expected_revision}#{expected_revision}"
     for name in ("buzz-sdk", "buzz-ws-client", "buzz-core"):
         entries = [p for p in document["package"] if p.get("name") == name]
-        if len(entries) != 1 or entries[0].get("source") != expected_source:
+        allowed = {expected_source}
+        if name == "buzz-ws-client" and ws_client_revision:
+            allowed = {f"git+{FORK}?rev={ws_client_revision}#{ws_client_revision}"}
+        if len(entries) != 1 or entries[0].get("source") not in allowed:
             raise ValueError(f"Cargo.lock must contain exactly one official {name} at the candidate revision")
     return hashlib.sha256(data).hexdigest()
+
+
+def fork_ws_client_revision(root):
+    """The fork revision buzz-ws-client is pinned to, or None when official."""
+    text = (root / "helper/Cargo.toml").read_text()
+    match = re.search(rf'(?m)^buzz-ws-client\s*=\s*\{{[^\n]*git\s*=\s*"{re.escape(FORK)}"[^\n]*rev\s*=\s*"([0-9a-f]{{40}})"', text)
+    return match.group(1) if match else None
 
 
 def self_test():
@@ -156,6 +182,19 @@ def self_test():
                 pass
         assert before == (manifest.read_bytes(), compat.read_bytes())
         assert not list((root / "helper").glob(".upstream-*"))
+        # buzz-ws-client on the fork: left alone when WS_CLIENT_REVISION records it, refused otherwise.
+        forked = f'buzz-sdk = {{ git = "https://github.com/block/buzz", rev = "{old}" }}\nbuzz-ws-client = {{ git = "{FORK}", rev = "{new}" }}\n'
+        manifest.write_text(forked)
+        compat.write_text(f'pub const BUZZ_REVISION: &str = "{old}";\npub const WS_CLIENT_REVISION: &str = "{new}";\n')
+        assert [r for _, r in pins(root)[1]] == [old]
+        apply(root, new)
+        assert f'rev = "{new}"' in manifest.read_text() and FORK in manifest.read_text()
+        compat.write_text(f'pub const BUZZ_REVISION: &str = "{new}";\n')
+        try:
+            pins(root)
+            raise AssertionError("unrecorded fork pin accepted")
+        except ValueError:
+            pass
     source = f"git+https://github.com/block/buzz?rev={new}#{new}"
     lock = 'version = 4\n' + ''.join(f'[[package]]\nname = "{name}"\nversion = "0.1.0"\nsource = "{source}"\n' for name in ("buzz-sdk", "buzz-ws-client", "buzz-core"))
     assert validate_lock(lock.encode(), new) == hashlib.sha256(lock.encode()).hexdigest()
@@ -168,7 +207,17 @@ def self_test():
             raise AssertionError("invalid candidate lock accepted")
         except ValueError:
             pass
-    print("PASS: offline pins, revision rejection, atomic rollback, candidate lock identity/digest")
+    fork_source = f"git+{FORK}?rev={old}#{old}"
+    forked_lock = lock.replace(f'name = "buzz-ws-client"\nversion = "0.1.0"\nsource = "{source}"', f'name = "buzz-ws-client"\nversion = "0.1.0"\nsource = "{fork_source}"', 1)
+    assert forked_lock != lock
+    assert validate_lock(forked_lock.encode(), new, old) == hashlib.sha256(forked_lock.encode()).hexdigest()
+    for invalid, ws in ((forked_lock, None), (forked_lock, new), (lock, old)):
+        try:
+            validate_lock(invalid.encode(), new, ws)
+            raise AssertionError("mismatched ws-client lock accepted")
+        except ValueError:
+            pass
+    print("PASS: offline pins, revision rejection, atomic rollback, candidate lock identity/digest, fork-pinned ws-client")
 
 
 def main():
@@ -186,7 +235,7 @@ def main():
     if args.validate_lock:
         with (ROOT / "helper/Cargo.lock").open("rb") as lock:
             data = lock.read(2 * 1024 * 1024 + 1)
-        digest = validate_lock(data, args.validate_lock)
+        digest = validate_lock(data, args.validate_lock, fork_ws_client_revision(ROOT))
         print(json.dumps({"revision": args.validate_lock, "lock_sha256": digest}))
         return
     if args.apply:

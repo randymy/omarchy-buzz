@@ -8,14 +8,20 @@ import json
 from pathlib import Path
 import tarfile
 import tempfile
+import tomllib
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 VERSION = json.loads((ROOT / "manifest.json").read_text())["version"]
-loader = importlib.machinery.SourceFileLoader("package_helper", str(ROOT / "scripts/package-helper"))
-spec = importlib.util.spec_from_loader(loader.name, loader)
-module = importlib.util.module_from_spec(spec)
-loader.exec_module(module)
+def load(name, path):
+    loader = importlib.machinery.SourceFileLoader(name, str(path))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+module = load("package_helper", ROOT / "scripts/package-helper")
 
 
 class Packaging(unittest.TestCase):
@@ -81,6 +87,34 @@ class Packaging(unittest.TestCase):
             (root / "manifest.json").write_text(json.dumps(manifest))
             with self.assertRaises(ValueError):
                 module.validated_metadata(root, good)
+
+    def test_ws_client_pin_source_and_constant(self):
+        """The ws-client pin must be a revision of an allowed source and equal
+        WS_CLIENT_REVISION; the installer applies the same rule."""
+        good = {"helperVersion": VERSION, "protocolVersion": 1, "backendRevision": "781d39510cf23cfe224e8f521ae06a23377e06de"}
+        installer = load("helper_install_pins", ROOT / "scripts/helper-install")
+        self.assertEqual(installer.BUZZ_SOURCES, module.BUZZ_SOURCES)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for name in ("manifest.json", "helper/Cargo.toml", "helper/src/compatibility.rs"):
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes((ROOT / name).read_bytes())
+            cargo = root / "helper/Cargo.toml"
+            original = cargo.read_text()
+            ws_line = next(line for line in original.splitlines() if line.startswith("buzz-ws-client = "))
+            ws_revision = ws_line.split('rev = "')[1].split('"')[0]
+            for broken in (ws_line.replace(ws_revision, "0" * 40),
+                           ws_line.replace("github.com/randymy/buzz", "github.com/someone-else/buzz"),
+                           ws_line.replace('rev = "' + ws_revision + '"', 'branch = "main"')):
+                cargo.write_text(original.replace(ws_line, broken, 1))
+                with self.assertRaises((ValueError, KeyError)):
+                    module.validated_metadata(root, good)
+                with self.assertRaises((ValueError, KeyError)):
+                    installer.check_buzz_pins(root, tomllib.loads(cargo.read_text()))
+            cargo.write_text(original)
+            self.assertEqual(module.check_buzz_pins(root, tomllib.loads(original)),
+                             (good["backendRevision"], ws_revision))
 
 
 if __name__ == "__main__":

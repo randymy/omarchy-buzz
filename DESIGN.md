@@ -22,6 +22,7 @@ The first useful release provides joined stream rooms, recent conversation, safe
 | --- | --- | --- |
 | [Omarchy](https://github.com/omacom/omarchy/tree/7b336b1b0da722e7bb864a7136f91e784ef731bf) | `7b336b1b0da722e7bb864a7136f91e784ef731bf` | Fresh default-branch clone in `../omarchy`; source `version` says `4.0.0.alpha`. |
 | [Buzz](https://github.com/block/buzz/tree/781d39510cf23cfe224e8f521ae06a23377e06de) | `781d39510cf23cfe224e8f521ae06a23377e06de` | Fresh default-branch clone in `../buzz`; workspace version `0.1.0`, Rust minimum `1.88.0`. Version alone is insufficient to identify this rapidly changing interface. |
+| Buzz WebSocket client (maintainer's fork) | `7c752971a815af63ba94a3086c4a2c867a129e30` | `buzz-ws-client` only: the reviewed commit behind draft PR block/buzz#7976 (bounded frames, replay queue and deadlines) on upstream `8519db1`; manifest and dependency versions equal the pinned upstream's. See `helper/WS_UPSTREAM.md`. |
 | Downstream project (primary repo) | fetched `origin/dev`: `1a455281aa94c1b9652e0f04b3216c6b35fc1c6f` | Existing checkout stays at `86b8282ba8fa9129188266abb8963173db22d659`. Overlay is identical across those revisions. Existing untracked `.claude/worktrees/` preserved. |
 | Downstream project (local service) | `e28f59d84572cd21042f13342e8665acb9d64317` | Local HEAD equals refreshed `origin/main`; clean checkout. |
 | Downstream project (Windows companion) | `d013e461fafd761825e932851532ffa6c734a711` | Local HEAD equals refreshed `origin/main`; clean checkout. |

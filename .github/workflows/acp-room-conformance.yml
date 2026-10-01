@@ -45,10 +45,12 @@ jobs:
           import os, re, tomllib
           from pathlib import Path
           cargo = tomllib.loads(Path('helper/Cargo.toml').read_text())
-          pins = [cargo['dependencies'][name]['rev'] for name in ('buzz-sdk', 'buzz-ws-client')]
-          assert pins[0] == pins[1] and re.fullmatch('[0-9a-f]{40}', pins[0])
+          # The relay source is the official buzz-sdk pin; buzz-ws-client may
+          # be the reviewed bounded-connection revision (helper/WS_UPSTREAM.md).
+          sdk = cargo['dependencies']['buzz-sdk']
+          assert sdk['git'] == 'https://github.com/block/buzz' and re.fullmatch('[0-9a-f]{40}', sdk['rev'])
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
-              output.write('revision=' + pins[0] + '\n')
+              output.write('revision=' + sdk['rev'] + '\n')
           PY
       - name: Check out the exact upstream relay source
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2

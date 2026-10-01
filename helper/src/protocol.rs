@@ -769,7 +769,7 @@ impl Catalog {
 /// refuses a frame with any other one, so a new entry needs a panel update.
 /// `clock_skew` is a rejected authentication with a clock offset of at least
 /// `clock::THRESHOLD` seconds.
-pub const CONNECTION_CATEGORIES: [&str; 12] = [
+pub const CONNECTION_CATEGORIES: [&str; 13] = [
     "identity_access_pending",
     "identity_missing",
     "identity_locked",
@@ -779,6 +779,7 @@ pub const CONNECTION_CATEGORIES: [&str; 12] = [
     "clock_skew",
     "relay_timeout",
     "relay_unavailable",
+    "relay_resource_limit",
     "relay_protocol_error",
     "config_unavailable",
     "invalid_config",

@@ -1,13 +1,17 @@
 [package]
 name = "omarchy-buzz"
-version = "0.0.20"
+version = "0.0.21"
 edition = "2021"
 rust-version = "1.95"
 license = "Apache-2.0"
 
 [dependencies]
 buzz-sdk = { git = "https://github.com/block/buzz", rev = "781d39510cf23cfe224e8f521ae06a23377e06de" }
-buzz-ws-client = { git = "https://github.com/block/buzz", rev = "781d39510cf23cfe224e8f521ae06a23377e06de" }
+# The WebSocket client comes from the reviewed revision behind upstream draft
+# PR block/buzz#7976 (bounded frames, replay queue and deadlines); see
+# helper/WS_UPSTREAM.md. Its manifest and dependency versions equal the
+# pinned upstream's; only the client source differs.
+buzz-ws-client = { git = "https://github.com/randymy/buzz", rev = "7c752971a815af63ba94a3086c4a2c867a129e30" }
 nostr = { version = "0.44", features = ["nip44", "nip98"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util", "io-std", "signal"] }
 serde = { version = "1", features = ["derive"] }

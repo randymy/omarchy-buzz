@@ -425,6 +425,8 @@ Item {
     ? "Install a matching Buzz plugin and helper release, restart the helper service, then Retry. Updating the Omarchy plugin alone does not replace its helper. Your existing identity stays in the secret store."
     : (category === "config_unavailable" || category === "invalid_config")
     ? "Check your local helper configuration, then Retry. Credentials do not belong in that file."
+    : category === "relay_resource_limit"
+    ? "The relay sent more than this client accepts before sign-in finished (oversized or too many messages), so the connection was closed. The helper retries for a short while on its own; if it keeps happening, the relay may be misbehaving."
     : category === "clock_skew" && connection !== "authenticated"
     ? "This computer's clock disagrees with the relay's, so the relay refuses its sign-in. This often happens after the machine was suspended. On Omarchy run sudo systemctl restart systemd-timesyncd (or check timedatectl), then Retry. The helper keeps trying for a short while on its own."
     : (connection === "identity_locked" || category === "identity_access_pending")
@@ -1848,7 +1850,7 @@ Item {
     }
     var state = frame.status
     var states = ["unconfigured", "connecting", "authenticated", "identity_locked", "disconnected", "unavailable"]
-    var categories = ["identity_access_pending", "identity_missing", "identity_locked", "identity_invalid", "identity_unavailable", "auth_rejected", "clock_skew", "relay_timeout", "relay_unavailable", "relay_protocol_error", "config_unavailable", "invalid_config"]
+    var categories = ["identity_access_pending", "identity_missing", "identity_locked", "identity_invalid", "identity_unavailable", "auth_rejected", "clock_skew", "relay_timeout", "relay_unavailable", "relay_resource_limit", "relay_protocol_error", "config_unavailable", "invalid_config"]
     if (states.indexOf(state.connection) === -1
         || (state.category !== null && categories.indexOf(state.category) === -1)
         || !validClockSkew(state.clockSkewSeconds)

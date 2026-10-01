@@ -35,7 +35,7 @@ conflict explicitly rather than assuming an old milestone is current.
 | Plugin/helper version | `0.0.12` (installed September 30, 2026, 07:14 CDT); 0.0.9–0.0.11 were installed briefly the previous evening |
 | Helper binary | `~/.local/bin/omarchy-buzz`; SHA256 `15408fe56624fcd2b16f7c23ed1085cba3dca072a78a5e6e63313b66488996de` |
 | Helper build | [ARM64 run 36712850154](https://github.com/randymy/omarchy-buzz/actions/runs/36712850154), source `44c3e2c589e4ad868df6c599a8d262b77c59fdf6`; after installation the live subscription was observed primed on the real relay (`history.live=true` for the selected room); each new binary is first run read-only in a private short-path runtime directory against the real relay (`scratchpad/check010.py` pattern: authenticated, 4 stream rooms, no rejection) before installation; rollback backup `~/.local/share/omarchy-buzz/backups/20260930T121404.583817Z` |
-| Buzz dependency | Official upstream `781d39510cf23cfe224e8f521ae06a23377e06de`; do not silently advance the pin |
+| Buzz dependency | `buzz-sdk`: official upstream `781d39510cf23cfe224e8f521ae06a23377e06de`; `buzz-ws-client`: the reviewed revision behind draft PR block/buzz#7976 (`randymy/buzz` `7c75297`, see `helper/WS_UPSTREAM.md`); do not silently advance either pin |
 | Agent runtime | Stock Buzz ACP, Codex ACP `2.0.0`, native Codex `0.158.0`; [stock build 36639519388](https://github.com/randymy/omarchy-buzz/actions/runs/36639519388) |
 | Host | ARM64 Omarchy VM; installed Omarchy package reported `4.0.3-1`; see DESIGN for source/package distinction |
 | Supervision | `omarchy-buzz.service` active/running, socket active/enabled; `omarchy-buzz-codex.service` active/running, static and manually started |
