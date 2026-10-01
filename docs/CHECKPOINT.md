@@ -2632,3 +2632,99 @@ unavailable model failed silently on the agent's first turn. Contract in
 - Installed 0.0.21 on the maintainer's machine (helper SHA256
   `a4017c4b…`, run 36798105802); the panel authenticated through the bounded
   client at once, bundles `ready`, one shell restart.
+
+## Update your status (`user_status`) — October 1
+
+Branch `user-status` (not merged or installed; no real relay contacted, no
+real status published). Design brief: [PRESENCE_MAP.md](PRESENCE_MAP.md) §6;
+upstream references are to the pinned Buzz `781d3951`. Presence
+(online/away, kind 20001) is not part of this change.
+
+- What: Buzz Desktop's account popover entry. The account menu gains
+  **Update your status** directly above Settings (`buzzAccountStatus`),
+  showing the current status (emoji + text) or the placeholder; it opens a
+  compact view in the Settings style (`buzzStatusView`): text field (200
+  characters), a free emoji field, 12 preset emoji chips, **Clear after**
+  1 hour / 4 hours / 1 day / 1 week, **Set status**, **Clear status** and a
+  failure line from a fixed message map. An accepted change closes the view;
+  Escape or **‹ Back to rooms** return to the room unchanged. The account
+  control shows the status emoji next to the name (tooltip: emoji and text).
+  Others' status emoji (tooltip: text) follows message author names, DM rows
+  (the partner, when the open room's roster includes them), new-DM candidates
+  and the composer's recipient picker — all from the verified roster
+  projection; no new timer or subscription.
+- Helper (`helper/src/user_status.rs`, capability `user_status`, 19th):
+  `set_status {id: UUID, text, emoji?, expiresInHours?}` and `clear_status
+  {id: UUID}`. Shape checks in `protocol.rs` (text ≤ 1024 bytes, no NUL;
+  emoji a non-empty string ≤ 128 bytes, never null; hours a number, never
+  null; neither field allowed on any other request), exact bounds in
+  `user_status::check` → `status_invalid`: text ≤ 200 bytes after trim, no
+  controls or bidi; emoji 1–8 scalar values with no ASCII, controls,
+  whitespace, bidi, zero-width or private-use characters and not starting
+  with a joiner/modifier, or `:[A-Za-z0-9_+-]{1,32}:`; hours 1–168 (default
+  24); text or emoji required (clearing is `clear_status`). The event is
+  pinned `buzz_sdk::build_user_status` (trimmed content, `["d","general"]`,
+  optional `["emoji", e]`) plus Desktop's `["expiration", "<now + hours ×
+  3600>"]` (`relayClientSession.ts:388-394`); clear is the empty replacement
+  with the `d` tag only. Signed with the helper's identity, sent with
+  `send_raw`, resolved only by the relay's `OK` for that exact event id
+  (15 s, then unknown). One publication at a time and at most one per 5 s
+  process-wide (`status_rate_limited`; a reconnect does not reset it).
+  Categories: `status_invalid`, `status_rate_limited`, `status_rejected`,
+  `relay_unavailable` (not authenticated, or no answer: the relay may have
+  stored it).
+- Reads: `QueryRequest::UserStatuses {authors ≤ 20}` →
+  `{"kinds":[30315],"authors":[…],"#d":["general"],"limit":n}`, one batched
+  read added to `recipients::fetch` after the profile reads; its failure
+  leaves statuses unknown, never "none". `recipients::status()` is the only
+  verification routine: signature, kind 30315, exactly one `d` tag
+  `general`, author inside the verified roster, `created_at` at most 60 s
+  ahead — any failure rejects the whole read. Per author the newest
+  `created_at` wins, the lower id on a tie (NIP-01; Desktop's
+  `statusVersionIsAtLeast`); it counts as none when expired (`expiration`
+  ≤ now; the relay never expires 30315), when an `emoji`/`expiration` tag is
+  malformed or repeated, or when empty after the text is sanitized like
+  `name()` (controls and bidi → spaces, ≤ 200 bytes). An accepted
+  publication passes through the same routine.
+- Status frame: each `recipients.entries[]` gains `status: {text, emoji} |
+  null`; new `userStatus: {state: unavailable|ready|sending|failed, mine:
+  {text, emoji, expiresAt} | null, category}`. The own status comes from the
+  roster read (which includes this identity), is set from the accepted event
+  at once, and is confirmed by a single own read one second after each
+  accepted set/clear (retried up to three times on failure). Expiry is
+  re-evaluated locally on each joined-room check (about every 30 s) for the
+  own status and the shown roster. Deviation from the brief: there is no
+  periodic recipients refresh in the helper, so the own status is unknown
+  (`unavailable`) until the first roster read of a session; a first-session
+  own read was tried and removed because it would add an unscripted query to
+  every existing fixture's exact request sequence.
+- Panel (`Service.qml`): strict validation of `userStatus` and of each
+  roster `status` (exact keys, state enum, category map, bounded text, the
+  same emoji rule), `canSetStatus`, `setStatus(text, emoji, hours)` (hours
+  only 1/4/24/168), `clearStatus()`, `userStatusLabel`/`userStatusMessages`
+  (named so because `statusLabel` is the connection line), sample mode shows
+  a fixture status and publishes nothing; the capability list now allows 19.
+- Evidence (synthetic only): Rust unit tests for the builder shape against
+  the pinned SDK, every input bound, the emoji rule, the rate gate, the
+  publisher (exact-ID `OK`, reject, unknown, one at a time) and the
+  verification routine (forged signature, wrong kind, `d` missing/other/
+  repeated/extra, outside the roster, future, newest and tie order, expired,
+  malformed tags, sanitization); query body/scope; protocol shapes; IPC
+  gating (`statuses_need_an_authenticated_session_and_one_at_a_time`); and
+  `status_integration` through the production observer on the loopback
+  fixture: exactly one signed 30315 with `d`/`emoji`/`expiration` tags,
+  acknowledged on its exact `OK`, the 5 s gate, the roster read carrying both
+  members' statuses, the empty clear, `status_rejected`, and an unanswered
+  publication becoming `failed`/`relay_unavailable` after 15 s. Full helper
+  suite 314 passed, 2 ignored (`RUST_TEST_THREADS=1`), `cargo fmt --check`
+  clean; `helper_smoke.py` (now also the unconfigured `set_status`/
+  `clear_status` refusals and the `userStatus` default), `helper_send_ipc.py`,
+  `helper_activation.py` and the 108 Python unit tests pass; every
+  `scripts/preview` mode passes, including the new `--status`
+  (`tests/Status.qml` + `tests/status_fixture.py`) and `--bridge`.
+- Not verified: any publication or read on a real relay (scope
+  `UsersWrite`, the relay's answer text, NIP-33 replacement on tie), Buzz
+  Desktop showing a status set here (and the reverse), custom-emoji
+  `:shortcode:` images (shown as text here), and the visual result on the
+  installed shell. A panel older than this one refuses a helper announcing 19
+  capabilities: update both together.

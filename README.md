@@ -39,6 +39,8 @@ Selected-room history refreshes about five seconds after a request finishes. A s
 
 **Alerts: on** (Settings → Notifications) enables generic notifications for new observed activity outside the visible conversation. This default-off preference survives shell restarts and applies across communities. Alerts contain no message text or room names. Initial snapshots, own messages, and edited/unavailable rows do not alert. These are best-effort hints, not a delivery guarantee.
 
+**Update your status** (account menu, above Settings) sets or clears the same text-and-emoji status Buzz Desktop shows (1 hour to 1 week); the helper signs and publishes it, verifies every status it reads, and others' status emoji appears beside their names in the open room. Update the helper and plugin together (`user_status`).
+
 Enrollment verifies the relay's signing identity before saving a human key and rejects the server signing key. The relay must be reachable. Update helper and plugin together: 0.0.5 adds `room_activity` and `agent_profiles` capabilities. See [ACP readiness](docs/ACP_READINESS.md) for the remaining real-agent launch blockers.
 
 The helper owns identity access through Linux Secret Service. Enrollment uses hidden terminal input; QML receives bounded presentation data and never identity keys. Missing or failed helpers leave the panel usable with setup instructions and Retry. Authentication is not a claim that room synchronization works.
