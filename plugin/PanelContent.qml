@@ -1305,7 +1305,8 @@ FocusScope {
               font.pixelSize: Style.font.caption
             }
             Repeater {
-              // Agents of the community shown here; the others are listed below.
+              // Agents with an instance in the community shown here (in any
+              // position, not only their first); the others are listed below.
               model: root.agentsVisible ? root.agentService.currentAgents : []
               delegate: RowLayout {
                 required property var modelData
@@ -1378,8 +1379,9 @@ FocusScope {
                   readonly property string agentId: modelData.id
                   Layout.fillWidth: true
                   clip: true
-                  text: modelData.name + " · in " + modelData.community
-                  tooltipText: modelData.name + " · enrolled in " + modelData.community + " · switch to that community to manage it"
+                  text: modelData.name + " · in " + root.agentService.communityNames(modelData)
+                  tooltipText: modelData.name + " · enrolled in " + root.agentService.communityNames(modelData)
+                    + (root.agentService.canAddToCurrent(modelData) ? " · open it to add it here" : " · switch to that community to manage it")
                   fontSize: Style.font.caption
                   leftAlign: true
                   focusable: true

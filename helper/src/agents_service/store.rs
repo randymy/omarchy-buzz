@@ -19,6 +19,9 @@ const DESCRIPTION_CHARS: usize = 256;
 pub const INSTRUCTIONS_BYTES: usize = 16 * 1024;
 const MODEL_CHARS: usize = 64;
 const MAX_ROOMS: usize = 8;
+/// Communities one agent can be enrolled in ("instances"). Bounded so that the
+/// store (1 MiB) and a status frame stay within their limits in the worst case.
+pub const MAX_INSTANCES: usize = 4;
 /// Acknowledged memberships, including dropped rooms still to be left.
 pub const MAX_MEMBER_ROOMS: usize = 64;
 const PATH_BYTES: usize = 1024;
@@ -80,14 +83,16 @@ impl Paths {
     pub fn workspaces(&self) -> PathBuf {
         self.state.join("omarchy-buzz-room-workspaces")
     }
-    pub fn default_workspace(&self, id: &str) -> PathBuf {
-        self.workspaces().join(id)
+    /// The default workspace of an instance (`key`: `Persona::key`).
+    pub fn default_workspace(&self, key: &str) -> PathBuf {
+        self.workspaces().join(key)
     }
     pub fn units_dir(&self) -> PathBuf {
         self.config.join("systemd/user")
     }
-    pub fn unit_file(&self, id: &str) -> PathBuf {
-        self.units_dir().join(unit_name(id))
+    /// The unit file of an instance (`key`: `Persona::key`).
+    pub fn unit_file(&self, key: &str) -> PathBuf {
+        self.units_dir().join(unit_name(key))
     }
     pub fn bundle(&self, harness: &str) -> PathBuf {
         self.data.join(format!("omarchy-buzz/agent-{harness}"))
@@ -101,12 +106,26 @@ impl Paths {
     }
 }
 
-pub fn unit_name(id: &str) -> String {
-    format!("omarchy-buzz-agent-{id}.service")
+/// The unit of an instance (`key`: `Persona::key`): `omarchy-buzz-agent-<id>.service`
+/// for the agent's primary instance, `omarchy-buzz-agent-<id>-<h>.service` for
+/// the others.
+pub fn unit_name(key: &str) -> String {
+    format!("omarchy-buzz-agent-{key}.service")
 }
 
-/// One persona. Fields after `start_at_login` are service-private: they never
-/// appear in IPC status frames and never in a published managed-agent record.
+/// The first 12 hex digits of SHA-256 of a canonical relay: the suffix that
+/// names an agent's unit and default workspace in a further community.
+pub fn relay_hash(relay: &str) -> String {
+    use nostr::hashes::{sha256, Hash};
+    sha256::Hash::hash(relay.as_bytes()).to_string()[..12].to_owned()
+}
+
+/// One agent in one community: the agent's definition and identity with one
+/// of its instances. The store keeps `Agent` records (version 2); this flat
+/// form is how every path (unit, enrollment, workspace rules) sees one
+/// instance, and the shape of a version 1 store's records. Fields after
+/// `start_at_login` are service-private: they never appear in IPC status
+/// frames and never in a published managed-agent record.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Persona {
@@ -144,14 +163,177 @@ pub struct Persona {
     /// `created_at` of the last kind 30175/30177 publication (monotonic).
     pub published_at: u64,
     pub last_error: Option<String>,
+    /// The instance's unit and default workspace are named by the agent id
+    /// alone (the instance the agent was created with, or a version 1
+    /// record); otherwise by `<id>-<relay_hash>`. Not part of a version 1
+    /// record.
+    #[serde(skip)]
+    pub primary: bool,
+}
+
+/// The agent's membership in one community (store version 2).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Instance {
+    pub relay: String,
+    /// Named without a relay suffix (see `Persona::primary`).
+    pub primary: bool,
+    pub rooms: Vec<String>,
+    pub workspace: String,
+    pub start_at_login: bool,
+    pub published: bool,
+    pub member_rooms: Vec<String>,
+    pub published_at: u64,
+    pub last_error: Option<String>,
+}
+
+/// One agent (store version 2): definition and identity, shared by every
+/// community it is enrolled in, and one instance per community.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Agent {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub instructions: String,
+    pub harness: String,
+    pub model: String,
+    pub acp_command: String,
+    pub respond_to: String,
+    pub answers_dms: bool,
+    pub identity: Option<String>,
+    pub auth_tag: Option<String>,
+    pub instances: Vec<Instance>,
+}
+
+impl Agent {
+    /// A new agent from its first instance's flat form.
+    pub fn from_persona(p: Persona) -> Self {
+        let mut agent = Self {
+            id: p.id.clone(),
+            name: String::new(),
+            description: String::new(),
+            instructions: String::new(),
+            harness: String::new(),
+            model: String::new(),
+            acp_command: String::new(),
+            respond_to: String::new(),
+            answers_dms: false,
+            identity: None,
+            auth_tag: None,
+            instances: Vec::new(),
+        };
+        agent.absorb(p);
+        agent
+    }
+    /// One instance in flat form.
+    pub fn view(&self, i: &Instance) -> Persona {
+        Persona {
+            id: self.id.clone(),
+            name: self.name.clone(),
+            description: self.description.clone(),
+            instructions: self.instructions.clone(),
+            harness: self.harness.clone(),
+            model: self.model.clone(),
+            acp_command: self.acp_command.clone(),
+            rooms: i.rooms.clone(),
+            respond_to: self.respond_to.clone(),
+            workspace: i.workspace.clone(),
+            identity: self.identity.clone(),
+            start_at_login: i.start_at_login,
+            answers_dms: self.answers_dms,
+            relay: i.relay.clone(),
+            auth_tag: self.auth_tag.clone(),
+            published: i.published,
+            member_rooms: i.member_rooms.clone(),
+            published_at: i.published_at,
+            last_error: i.last_error.clone(),
+            primary: i.primary,
+        }
+    }
+    /// The first instance: the default of every request that names no relay,
+    /// and the top-level `relay`/`community` of status.
+    pub fn first(&self) -> Persona {
+        self.view(&self.instances[0])
+    }
+    pub fn instance(&self, relay: &str) -> Option<&Instance> {
+        self.instances.iter().find(|i| i.relay == relay)
+    }
+    pub fn persona(&self, relay: &str) -> Option<Persona> {
+        self.instance(relay).map(|i| self.view(i))
+    }
+    pub fn personas(&self) -> Vec<Persona> {
+        self.instances.iter().map(|i| self.view(i)).collect()
+    }
+    /// Takes the definition and identity from `p`, and the instance of
+    /// `p.relay` (added at the end when the agent has none there yet).
+    pub fn absorb(&mut self, p: Persona) {
+        let instance = Instance {
+            relay: p.relay,
+            primary: p.primary,
+            rooms: p.rooms,
+            workspace: p.workspace,
+            start_at_login: p.start_at_login,
+            published: p.published,
+            member_rooms: p.member_rooms,
+            published_at: p.published_at,
+            last_error: p.last_error,
+        };
+        self.name = p.name;
+        self.description = p.description;
+        self.instructions = p.instructions;
+        self.harness = p.harness;
+        self.model = p.model;
+        self.acp_command = p.acp_command;
+        self.respond_to = p.respond_to;
+        self.answers_dms = p.answers_dms;
+        self.identity = p.identity;
+        self.auth_tag = p.auth_tag;
+        match self
+            .instances
+            .iter_mut()
+            .find(|i| i.relay == instance.relay)
+        {
+            Some(slot) => *slot = instance,
+            None => self.instances.push(instance),
+        }
+    }
+    /// Every instance passes the persona rules; 1–4 instances in distinct
+    /// communities with distinct unit names, at most one primary; an agent
+    /// without an identity has exactly one (it is added elsewhere only once
+    /// enrolled).
+    pub fn valid(&self) -> bool {
+        let views = self.personas();
+        let relays: std::collections::BTreeSet<&str> =
+            self.instances.iter().map(|i| i.relay.as_str()).collect();
+        let keys: std::collections::BTreeSet<String> = views.iter().map(Persona::key).collect();
+        (1..=MAX_INSTANCES).contains(&self.instances.len())
+            && relays.len() == self.instances.len()
+            && keys.len() == self.instances.len()
+            && self.instances.iter().filter(|i| i.primary).count() <= 1
+            && (self.identity.is_some() || self.instances.len() == 1)
+            && views.iter().all(Persona::valid)
+    }
 }
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct File {
+struct FileV1 {
     version: u32,
     agents: Vec<Persona>,
 }
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct File {
+    version: u32,
+    agents: Vec<Agent>,
+}
+/// Only the version, to choose the file's shape.
+#[derive(Deserialize)]
+struct Version {
+    version: u32,
+}
+pub const STORE_VERSION: u32 = 2;
 
 pub fn canonical_uuid(value: &str) -> bool {
     uuid::Uuid::parse_str(value).is_ok_and(|id| id.to_string() == value)
@@ -215,6 +397,15 @@ pub fn canonical_path(value: &str) -> bool {
 }
 
 impl Persona {
+    /// What names this instance's unit and default workspace: the agent id
+    /// for the primary instance, else `<id>-<first 12 hex of SHA-256(relay)>`.
+    pub fn key(&self) -> String {
+        if self.primary {
+            self.id.clone()
+        } else {
+            format!("{}-{}", self.id, relay_hash(&self.relay))
+        }
+    }
     /// Field rules independent of the filesystem.
     pub fn valid(&self) -> bool {
         uuid::Uuid::parse_str(&self.id)
@@ -333,24 +524,28 @@ pub fn write_private(path: &Path, bytes: &[u8]) -> Result<(), &'static str> {
 
 pub struct Store {
     path: PathBuf,
-    pub agents: Vec<Persona>,
+    pub agents: Vec<Agent>,
 }
 impl Store {
     /// Loads the store, or an empty one if the file does not exist yet. Any
-    /// invalid content is refused rather than repaired; a persona without a
-    /// `relay` is refused (see `open_with` for the migration).
+    /// invalid content is refused rather than repaired; a version 1 persona
+    /// without a `relay` is refused (see `open_with` for the migration).
     #[cfg(test)]
     pub fn open(paths: &Paths) -> Result<Self, &'static str> {
         Self::open_with(paths, || None)
     }
-    /// `open`, migrating personas written before `relay` existed. Each such
-    /// persona gets the relay its generated unit file names (`--relay` in the
-    /// `ExecStart` of `omarchy-buzz-agent-<id>.service`, read only), else
-    /// `first_community()` (the configuration's first community, asked at most
-    /// once). A unit file that exists but is unsafe or names no single valid
-    /// relay, or no relay at all, refuses the store (`store_invalid`); the
-    /// migrated store is validated like any other and written back once,
-    /// atomically, before it is used (a failed write refuses it too).
+    /// `open`, wrapping a version 1 store into version 2 (one primary
+    /// instance per persona: same relay, rooms, workspace and unit name).
+    /// Version 1 personas written before `relay` existed first get the relay
+    /// their generated unit file names (`--relay` in the `ExecStart` of
+    /// `omarchy-buzz-agent-<id>.service`, read only), else
+    /// `first_community()` (the configuration's first community, asked at
+    /// most once). A unit file that exists but is unsafe or names no single
+    /// valid relay, or no relay at all, refuses the store (`store_invalid`).
+    /// The wrapped store is validated like any other; the version 1 bytes are
+    /// kept in `personas.v1.json` and the version 2 store is written once,
+    /// atomically, before it is used (a failed write refuses it, nothing
+    /// else is changed).
     pub fn open_with(
         paths: &Paths,
         first_community: impl FnOnce() -> Option<String>,
@@ -371,34 +566,22 @@ impl Store {
             return Err("store_invalid");
         }
         let bytes = fs::read(&path).map_err(|_| "store_unavailable")?;
-        let file: File = serde_json::from_slice(&bytes).map_err(|_| "store_invalid")?;
-        if file.version != 1 {
-            return Err("store_invalid");
-        }
-        let mut store = Self {
-            path,
-            agents: file.agents,
-        };
-        let migrate = store.agents.iter().any(|a| a.relay.is_empty());
-        if migrate {
-            let mut fallback = Some(first_community);
-            let mut first: Option<Option<String>> = None;
-            for persona in store.agents.iter_mut().filter(|a| a.relay.is_empty()) {
-                persona.relay = match unit_relay(paths, &persona.id)? {
-                    Some(relay) => relay,
-                    None => {
-                        if first.is_none() {
-                            first = Some(fallback.take().and_then(|f| f()));
-                        }
-                        first.clone().flatten().ok_or("store_invalid")?
-                    }
-                };
+        let version: Version = serde_json::from_slice(&bytes).map_err(|_| "store_invalid")?;
+        let (agents, wrapped) = match version.version {
+            1 => (wrap_v1(paths, &bytes, first_community)?, true),
+            STORE_VERSION => {
+                let file: File = serde_json::from_slice(&bytes).map_err(|_| "store_invalid")?;
+                (file.agents, false)
             }
-        }
+            _ => return Err("store_invalid"),
+        };
+        let store = Self { path, agents };
         if !store.consistent() {
             return Err("store_invalid");
         }
-        if migrate {
+        if wrapped {
+            write_private(&paths.store_dir().join("personas.v1.json"), &bytes)
+                .map_err(|_| "store_unavailable")?;
             store.save().map_err(|_| "store_unavailable")?;
         }
         Ok(store)
@@ -415,25 +598,62 @@ impl Store {
         self.agents.len() <= MAX_AGENTS
             && ids.len() == self.agents.len()
             && unique_identities.len() == identities.len()
-            && self.agents.iter().all(Persona::valid)
+            && self.agents.iter().all(Agent::valid)
     }
     pub fn save(&self) -> Result<(), &'static str> {
         if !self.consistent() {
             return Err("agent_invalid");
         }
         let bytes = serde_json::to_vec_pretty(&File {
-            version: 1,
+            version: STORE_VERSION,
             agents: self.agents.clone(),
         })
         .map_err(|_| "store_unavailable")?;
         write_private(&self.path, &bytes)
     }
-    pub fn get(&self, id: &str) -> Option<&Persona> {
+    pub fn get(&self, id: &str) -> Option<&Agent> {
         self.agents.iter().find(|a| a.id == id)
     }
-    pub fn get_mut(&mut self, id: &str) -> Option<&mut Persona> {
+    pub fn get_mut(&mut self, id: &str) -> Option<&mut Agent> {
         self.agents.iter_mut().find(|a| a.id == id)
     }
+    /// Every instance of every agent, in flat form.
+    pub fn personas(&self) -> Vec<Persona> {
+        self.agents.iter().flat_map(Agent::personas).collect()
+    }
+}
+
+/// A version 1 store's personas, each wrapped into an agent with one
+/// primary instance (after the `relay` migration of `open_with`).
+fn wrap_v1(
+    paths: &Paths,
+    bytes: &[u8],
+    first_community: impl FnOnce() -> Option<String>,
+) -> Result<Vec<Agent>, &'static str> {
+    let file: FileV1 = serde_json::from_slice(bytes).map_err(|_| "store_invalid")?;
+    let mut personas = file.agents;
+    let mut fallback = Some(first_community);
+    let mut first: Option<Option<String>> = None;
+    for persona in personas.iter_mut().filter(|a| a.relay.is_empty()) {
+        persona.relay = match unit_relay(paths, &persona.id)? {
+            Some(relay) => relay,
+            None => {
+                if first.is_none() {
+                    first = Some(fallback.take().and_then(|f| f()));
+                }
+                first.clone().flatten().ok_or("store_invalid")?
+            }
+        };
+    }
+    Ok(personas
+        .into_iter()
+        .map(|mut persona| {
+            // The unit (`omarchy-buzz-agent-<id>.service`) and workspace a
+            // version 1 agent already has stay its own.
+            persona.primary = true;
+            Agent::from_persona(persona)
+        })
+        .collect())
 }
 
 /// Generated unit files are small; anything larger was not written here.
@@ -511,8 +731,10 @@ pub fn unit_relay(paths: &Paths, id: &str) -> Result<Option<String>, &'static st
 fn overlaps(a: &Path, b: &Path) -> bool {
     a.starts_with(b) || b.starts_with(a)
 }
-/// Workspace rules from the contract. `own` is the persona's id; `others` are
-/// the other personas. Returns `workspace_refused` for every refusal.
+/// Workspace rules from the contract. `own` is the instance's key
+/// (`Persona::key`); `others` are the other instances, of this agent and of
+/// every other one: each instance is a separate agent for these rules.
+/// Returns `workspace_refused` for every refusal.
 pub fn check_workspace(
     paths: &Paths,
     workspace: &str,
@@ -543,7 +765,7 @@ pub fn check_workspace(
     if forbidden.iter().any(|root| overlaps(path, root)) {
         return Err(REFUSED);
     }
-    // Nothing under ~/.local/state/omarchy-buzz*, except this persona's own
+    // Nothing under ~/.local/state/omarchy-buzz*, except this instance's own
     // default workspace. Containing a state directory is refused as well.
     let default = paths.default_workspace(own);
     for state in [paths.home.join(".local/state"), paths.state.clone()] {
@@ -563,7 +785,7 @@ pub fn check_workspace(
     }
     if others
         .iter()
-        .any(|other| other.id != own && overlaps(path, Path::new(&other.workspace)))
+        .any(|other| other.key() != own && overlaps(path, Path::new(&other.workspace)))
     {
         return Err(REFUSED);
     }
@@ -572,10 +794,10 @@ pub fn check_workspace(
     }
     Ok(())
 }
-/// Creates the default workspace at 0700 if absent. Its parent is created at
+/// Creates the default workspace of an instance (`key`) at 0700 if absent. Its parent is created at
 /// 0700 when missing; an existing parent is never changed, but must be an
 /// unlinked directory of this user that others cannot write.
-pub fn create_default_workspace(paths: &Paths, id: &str) -> Result<PathBuf, &'static str> {
+pub fn create_default_workspace(paths: &Paths, key: &str) -> Result<PathBuf, &'static str> {
     let parent = paths.workspaces();
     if fs::symlink_metadata(&parent).is_err() {
         ensure_private_directory(&parent).map_err(|_| "workspace_refused")?;
@@ -584,7 +806,7 @@ pub fn create_default_workspace(paths: &Paths, id: &str) -> Result<PathBuf, &'st
     if !unlinked(&parent) || !m.is_dir() || m.uid() != uid() || m.mode() & 0o022 != 0 {
         return Err("workspace_refused");
     }
-    let path = paths.default_workspace(id);
+    let path = paths.default_workspace(key);
     match fs::DirBuilder::new().mode(0o700).create(&path) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}

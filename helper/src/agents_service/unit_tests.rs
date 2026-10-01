@@ -189,11 +189,23 @@ fn unit_control_argv_is_fixed_and_names_are_checked() {
             unit.as_str()
         ]
     );
+    // A further community's instance: the id and 12 lowercase hex digits.
+    let suffixed = format!("omarchy-buzz-agent-{ID}-0123456789ab.service");
+    assert_eq!(op_argv(Op::Start, &suffixed).unwrap()[3], suffixed);
+    assert_eq!(show_argv(&suffixed).unwrap()[4], suffixed);
     for bad in [
         "omarchy-buzz.service",
         "omarchy-buzz-agent-x.service",
         "omarchy-buzz-agent-3f2b8c1e-5d4a-4b6e-9c7d-0a1b2c3d4e5f.service; rm -rf ~",
         "--now",
+        "omarchy-buzz-agent-3f2b8c1e-5d4a-4b6e-9c7d-0a1b2c3d4e5f-0123456789AB.service",
+        "omarchy-buzz-agent-3f2b8c1e-5d4a-4b6e-9c7d-0a1b2c3d4e5f-0123456789a.service",
+        "omarchy-buzz-agent-3f2b8c1e-5d4a-4b6e-9c7d-0a1b2c3d4e5f-0123456789abc.service",
+        "omarchy-buzz-agent-3f2b8c1e-5d4a-4b6e-9c7d-0a1b2c3d4e5f_0123456789ab.service",
+        "omarchy-buzz-agent-3f2b8c1e-5d4a-4b6e-9c7d-0a1b2c3d4e5f-0123456789ag.service",
+        "omarchy-buzz-agent-3F2B8C1E-5d4a-4b6e-9c7d-0a1b2c3d4e5f-0123456789ab.service",
+        "omarchy-buzz-agent-3f2b8c1e-5d4a-4b6e-9c7d-0a1b2c3d4e5f-é123456789a.service",
+        "omarchy-buzz-agent-0123456789ab-3f2b8c1e-5d4a-4b6e-9c7d-0a1b2c3d4e5f.service",
     ] {
         assert!(op_argv(Op::Start, bad).is_err(), "{bad}");
         assert!(show_argv(bad).is_err(), "{bad}");
@@ -280,4 +292,47 @@ fn the_launch_relay_is_the_personas_own_community() {
         "{text}"
     );
     assert!(!text.contains(RELAY));
+}
+
+#[test]
+fn a_further_communitys_instance_renders_its_own_unit() {
+    let mut p = enrolled();
+    p.relay = "wss://second.example/".into();
+    p.primary = false;
+    p.rooms = vec![ROOM_B.into()];
+    p.workspace = format!(
+        "/home/example/.local/state/omarchy-buzz-room-workspaces/{ID}-{}",
+        store::relay_hash("wss://second.example/")
+    );
+    let key = p.key();
+    assert_eq!(
+        key,
+        format!("{ID}-{}", store::relay_hash("wss://second.example/"))
+    );
+    let rendered = render(&example_paths(), &p, OWNER).unwrap();
+    assert!(rendered.contains(&format!("Description=Buzz for Omarchy agent {key}\n")));
+    let argv = exec_argv(&example_paths(), &p, OWNER).unwrap();
+    let after = |flag: &str| argv[argv.iter().position(|w| w == flag).unwrap() + 1].clone();
+    assert_eq!(after("--relay"), "wss://second.example/");
+    assert_eq!(after("--workspace"), p.workspace);
+    assert_eq!(after("--room"), ROOM_B);
+    assert_eq!(argv.iter().filter(|w| *w == "--room").count(), 1);
+    // The identity, attestation and instructions are the agent's, shared by
+    // every instance.
+    assert_eq!(after("--identity"), AGENT);
+    assert_eq!(
+        after("--auth-tag"),
+        format!("/home/example/.local/state/omarchy-buzz/agents/{ID}/auth-tag.json")
+    );
+    assert_eq!(
+        after("--instructions"),
+        format!("/home/example/.local/state/omarchy-buzz/agents/{ID}/instructions.md")
+    );
+    // The primary instance's rendering is unchanged (the golden file).
+    let mut primary = p.clone();
+    primary.primary = true;
+    assert!(render(&example_paths(), &primary, OWNER)
+        .unwrap()
+        .contains(&format!("Description=Buzz for Omarchy agent {ID}\n")));
+    assert!(op_argv(Op::Start, &store::unit_name(&key)).is_ok());
 }

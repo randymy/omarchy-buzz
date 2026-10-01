@@ -131,7 +131,7 @@ pub fn render(paths: &Paths, persona: &Persona, owner: &str) -> Result<String, &
         }
     }
     Ok(TEMPLATE
-        .replace("@AGENT_ID@", &persona.id)
+        .replace("@AGENT_ID@", &persona.key())
         .replace("@EXEC_START@", &exec))
 }
 
@@ -152,12 +152,30 @@ impl Op {
         }
     }
 }
-fn checked_unit(unit: &str) -> Result<&str, &'static str> {
-    let id = unit
+/// Exactly the generated names: `omarchy-buzz-agent-<uuid>.service` (an
+/// agent's primary instance) or `omarchy-buzz-agent-<uuid>-<12 lowercase
+/// hex>.service` (`store::relay_hash`, a further community).
+pub(crate) fn checked_unit(unit: &str) -> Result<&str, &'static str> {
+    let key = unit
         .strip_prefix("omarchy-buzz-agent-")
         .and_then(|rest| rest.strip_suffix(".service"))
         .ok_or("unit_failed")?;
-    if store::canonical_uuid(id) {
+    let (id, suffix) = match key.len() {
+        36 => (key, None),
+        49 => match (key.get(..36), key.get(36..)) {
+            (Some(id), Some(suffix)) => (id, Some(suffix)),
+            _ => return Err("unit_failed"),
+        },
+        _ => return Err("unit_failed"),
+    };
+    let suffix_ok = suffix.is_none_or(|s| {
+        s.len() == 13
+            && s.starts_with('-')
+            && s[1..]
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    });
+    if store::canonical_uuid(id) && suffix_ok {
         Ok(unit)
     } else {
         Err("unit_failed")

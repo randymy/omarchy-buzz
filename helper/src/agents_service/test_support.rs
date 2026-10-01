@@ -85,6 +85,7 @@ pub fn persona(id: &str, workspace: &str) -> Persona {
         member_rooms: Vec::new(),
         published_at: 0,
         last_error: None,
+        primary: true,
     }
 }
 

@@ -92,7 +92,9 @@ ShellRoot {
           harness: "claude-code", model: "", acpCommand: "buzz-acp", rooms: [test.room], respondTo: "owner-only",
           workspace: "/home/fixture/.local/state/omarchy-buzz-room-workspaces/" + test.agentId, identity: "c".repeat(64),
           enrolled: true, unit: "inactive", startAtLogin: false, answersDms: false, published: true, lastError: null,
-          relay: "wss://fixture.example/", community: "Fixture"}],
+          relay: "wss://fixture.example/", community: "Fixture",
+          instances: [{relay: "wss://fixture.example/", community: "Fixture", rooms: [test.room],
+            unit: "omarchy-buzz-agent-" + test.agentId + ".service", startAtLogin: false, published: true, lastError: null, state: "inactive"}]}],
         pending: null, modelProbe: {agentId: null, state: "idle", model: "", detail: null}, activeRelay: "wss://fixture.example/"}})
   }
   function composerField() { return one("buzzComposer") }

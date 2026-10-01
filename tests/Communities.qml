@@ -62,15 +62,20 @@ ShellRoot {
   FileView { id: agentsRecord; path: Quickshell.env("BUZZ_SEND_RECORD").replace(/send-record\.json$/, "agents-record.json"); blockLoading: true; printErrors: false }
   function agentRequests() { agentsRecord.reload(); try { return JSON.parse(agentsRecord.text()).requests } catch (_) { return [] } }
   function texts(name) { return shown(name).map(function(item) { return item.text }) }
-  // Agents belong to the community they were created in: the current one's are
-  // listed and editable, the others muted and read-only with only their own
-  // rooms, and a direct message with an agent exists only in its community.
+  // Agents are enrolled in one or more communities: those with an instance in
+  // the current one (first or not) are listed and editable, the others muted
+  // and read-only with only their own rooms, and a direct message with an
+  // agent exists only in the community where it was opened.
   function expectAgents(current, other, dms) {
-    check(JSON.stringify(texts("buzzAgentRow")) === JSON.stringify([current + " · stopped"]), "Current agents wrong: " + texts("buzzAgentRow"))
-    check(JSON.stringify(texts("buzzAgentOtherRow")) === JSON.stringify([other]), "Other agents wrong: " + texts("buzzAgentOtherRow"))
-    check(one("buzzAgentsOtherHeading").text === "In other communities", "Other heading missing")
+    check(JSON.stringify(texts("buzzAgentRow")) === JSON.stringify(current.map(function(name) { return name + " · stopped" })),
+      "Current agents wrong: " + texts("buzzAgentRow"))
+    check(JSON.stringify(texts("buzzAgentOtherRow")) === JSON.stringify(other), "Other agents wrong: " + texts("buzzAgentOtherRow"))
+    check(shown("buzzAgentsOtherHeading").length === (other.length ? 1 : 0), "Other heading wrong")
     check(JSON.stringify(texts("buzzDmRow")) === JSON.stringify(dms), "Direct messages wrong: " + texts("buzzDmRow"))
   }
+  function openAgent(name) { shown("buzzAgentRow").concat(shown("buzzAgentOtherRow")).filter(function(row) { return row.text.indexOf(name + " · ") === 0 })[0].clicked() }
+  function instanceLabels() { return texts("buzzAgentInstanceLabel") }
+  function agentEntry(name) { return service.agents.agents.find(function(entry) { return entry.name === name }) }
   function editorRooms() { return shown("buzzAgentRoom").map(function(box) { return (box.checked ? "x " : "  ") + box.text }) }
   function rowFor(relay) {
     return shown("buzzCommunityRow").filter(function(row) { return row.relay === relay })[0]
@@ -152,14 +157,44 @@ ShellRoot {
             && service.agents.available && service.agents.activeRelay === test.second) {
           // The agent service followed the switch (asked again for status).
           check(test.agentRequests().length >= 2, "No subscribe after the switch: " + test.agentRequests())
-          test.expectAgents("Night bot", "vClaude · in first", [])
-          test.shown("buzzAgentOtherRow")[0].clicked()
+          // Both bot is enrolled here first and in the first community too.
+          test.expectAgents(["Night bot", "Both bot"], ["vClaude · in first"], [])
+          test.openAgent("vClaude")
           var remote = findNamed(view, "buzzAgentEditor", [])[0]
           check(remote.readOnly && one("buzzAgentCommunity").text === "Community: first"
-            && one("buzzAgentOtherCommunity").text === "Enrolled in first. Switch to that community to manage it.", "vClaude not read-only here")
+            && one("buzzAgentOtherCommunity").text === "Enrolled in first. Switch to that community to manage it, or add it to second below.",
+            "vClaude not read-only here: " + one("buzzAgentOtherCommunity").text)
           check(shown("buzzAgentSave").length === 0 && shown("buzzAgentStart").length === 0 && shown("buzzAgentDelete").length === 0, "Actions offered for another community's agent")
           check(JSON.stringify(test.editorRooms()) === JSON.stringify(["x Room aaaaaaaa…"]), "vClaude's rooms shown with this community's: " + test.editorRooms())
-          test.shown("buzzAgentRow")[0].clicked()
+          check(JSON.stringify(test.instanceLabels()) === JSON.stringify(["first · stopped"]), "vClaude's communities wrong: " + test.instanceLabels())
+          // Add to this community, with this community's verified rooms.
+          check(JSON.stringify(texts("buzzAgentAddRoom")) === JSON.stringify(["# night-shift"]) && !one("buzzAgentAddToCommunity").enabled
+            && one("buzzAgentAddToCommunity").text === "Add to second", "Add to second wrong: " + texts("buzzAgentAddRoom"))
+          click("buzzAgentAddRoom")
+          click("buzzAgentAddToCommunity")
+          test.stage = 50
+        } else if (test.stage === 50 && service.agents.requestState === "done" && test.agentEntry("vClaude").instances.length === 2) {
+          var added = test.agentRequests().filter(function(r) { return r.type === "enroll_agent_in" })
+          // The record file may still be reloading; it is read again shortly.
+          if (!added.length && test.ticks < 270) return
+          check(added.length === 1 && JSON.stringify(Object.keys(added[0]).sort()) === JSON.stringify(["agentId", "id", "instanceId", "relay", "rooms", "type", "version"])
+            && added[0].relay === test.second && JSON.stringify(added[0].rooms) === JSON.stringify(["bbbbbbbb-0000-4000-8000-0000000000b1"]),
+            "enroll_agent_in shape wrong: " + JSON.stringify(added))
+          // Now listed here, editable with this community's rooms; both communities listed.
+          test.expectAgents(["vClaude", "Night bot", "Both bot"], [], [])
+          var vclaude = findNamed(view, "buzzAgentEditor", [])[0]
+          check(!vclaude.readOnly && one("buzzAgentCommunity").text === "Community: second" && shown("buzzAgentAddSection").length === 0,
+            "vClaude not managed here after Add")
+          check(JSON.stringify(test.editorRooms()) === JSON.stringify(["x # night-shift"]), "vClaude's rooms here wrong: " + test.editorRooms())
+          check(JSON.stringify(test.instanceLabels()) === JSON.stringify(["first · stopped", "second (this community) · stopped"]),
+            "vClaude's communities wrong: " + test.instanceLabels())
+          check(JSON.stringify(texts("buzzAgentLeave")) === JSON.stringify(["Leave first", "Leave second"]), "Leave buttons wrong: " + texts("buzzAgentLeave"))
+          // The first community's instance is started from here, by its own relay.
+          check(JSON.stringify(shown("buzzAgentInstanceStart").map(function(b) { return b.relay })) === JSON.stringify([test.first]), "Per-community Start wrong")
+          test.openAgent("Both bot")
+          check(one("buzzAgentCommunity").text === "Community: second" && JSON.stringify(test.instanceLabels())
+            === JSON.stringify(["second (this community) · stopped", "first · stopped"]), "Both bot's communities wrong: " + test.instanceLabels())
+          test.shown("buzzAgentRow")[1].clicked()
           check(!findNamed(view, "buzzAgentEditor", [])[0].readOnly && one("buzzAgentCommunity").text === "Community: second", "Night bot not editable here")
           check(JSON.stringify(test.editorRooms()) === JSON.stringify(["x # night-shift"]), "Night bot's rooms wrong: " + test.editorRooms())
           view.closeAgentEditor()
@@ -178,11 +213,35 @@ ShellRoot {
           // The room chosen earlier in this community comes back.
           check(service.selectedRoomId === "aaaaaaaa-0000-4000-8000-0000000000f2", "Room memory not per community: " + service.selectedRoomId)
           // Back in vClaude's community: it is listed and editable with this community's rooms, and its DM is here.
-          test.expectAgents("vClaude", "Night bot · in second", ["vClaude"])
-          test.shown("buzzAgentRow")[0].clicked()
+          // Both bot is listed here too, though this is not its first community.
+          test.expectAgents(["vClaude", "Both bot"], ["Night bot · in second"], ["vClaude"])
+          test.openAgent("vClaude")
           check(!findNamed(view, "buzzAgentEditor", [])[0].readOnly && one("buzzAgentCommunity").text === "Community: first", "vClaude not editable in its community")
           check(JSON.stringify(test.editorRooms()) === JSON.stringify(["x # general", "  # random"]), "vClaude's rooms not this community's: " + test.editorRooms())
           check(shown("buzzAgentSave").length === 1 && shown("buzzAgentDelete").length === 1, "vClaude's actions missing in its community")
+          test.openAgent("Both bot")
+          var both = findNamed(view, "buzzAgentEditor", [])[0]
+          check(!both.readOnly && one("buzzAgentCommunity").text === "Community: first"
+            && JSON.stringify(test.editorRooms()) === JSON.stringify(["  # general", "x # random"]), "Both bot's rooms here wrong: " + test.editorRooms())
+          // Its workspace here is its own default, named like its unit; not edited from here.
+          check(shown("buzzAgentWorkspace").length === 0 && one("buzzAgentInstanceWorkspace").text.indexOf("omarchy-buzz-room-workspaces/77777777-7777-4777-8777-777777777777-") !== -1,
+            "Second community's workspace offered for editing")
+          // Leave the second community (its first): confirmed by a second click.
+          var leaveSecond = shown("buzzAgentLeave").filter(function(b) { return b.relay === test.second })[0]
+          leaveSecond.clicked()
+          check(leaveSecond.text === "Confirm leave second" && !test.agentRequests().some(function(r) { return r.type === "leave_agent_community" }),
+            "Leave sent on the first click")
+          leaveSecond.clicked()
+          test.stage = 60
+        } else if (test.stage === 60 && service.agents.requestState === "done" && test.agentEntry("Both bot").instances.length === 1) {
+          var left = test.agentRequests().filter(function(r) { return r.type === "leave_agent_community" })
+          if (!left.length && test.ticks < 270) return
+          check(left.length === 1 && JSON.stringify(Object.keys(left[0]).sort()) === JSON.stringify(["agentId", "id", "instanceId", "relay", "type", "version"])
+            && left[0].relay === test.second, "leave_agent_community shape wrong: " + JSON.stringify(left))
+          test.expectAgents(["vClaude", "Both bot"], ["Night bot · in second"], ["vClaude"])
+          check(JSON.stringify(test.instanceLabels()) === JSON.stringify(["first (this community) · stopped"]) && shown("buzzAgentLeave").length === 0
+            && shown("buzzAgentLastCommunity").length === 1, "Both bot's last community could be left: " + test.instanceLabels())
+          check(!service.agents.leaveCommunity("77777777-7777-4777-8777-777777777777", test.first), "Service sent a leave for the last community")
           view.closeAgentEditor()
           view.openAccountMenu()
           click("buzzAccountCreateCommunity")
@@ -251,7 +310,7 @@ ShellRoot {
           var rename = sent.filter(function(r) { return r.type === "rename_community" })[0]
           check(JSON.stringify(Object.keys(rename).sort()) === JSON.stringify(["id", "name", "relay", "type", "version"]) && rename.relay === test.second,
             "Rename shape wrong")
-          console.log("PASS: first setup joins from an invite link and redeems it after the identity; menu Communities block; Join and Create views with Desktop's copy, gating, failures and the buzz.xyz step; terms accepted; switching keeps each community's room; agents listed by their own community, others read-only with only their rooms, an agent's DM only in its community; rename; leave with confirmation, next community active, already-absent notice, last community kept; sample communities")
+          console.log("PASS: first setup joins from an invite link and redeems it after the identity; menu Communities block; Join and Create views with Desktop's copy, gating, failures and the buzz.xyz step; terms accepted; switching keeps each community's room; agents listed in every community they are enrolled in (an agent in two communities under either), others read-only with only their rooms and their communities, Add to this community with its verified rooms, Leave one community with confirmation and never the last, an agent's DM only in its community; rename; leave with confirmation, next community active, already-absent notice, last community kept; sample communities")
           Qt.quit()
         }
       } catch (error) { console.error(error.message); Qt.exit(1) }

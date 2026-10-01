@@ -48,6 +48,12 @@ pub struct Request {
     pub forget: Option<bool>,
     pub enabled: Option<bool>,
     pub harness: Option<String>,
+    /// The community (canonical relay) of one of the agent's instances, or
+    /// of a new one for `enroll_agent_in`. Optional where a request defaults
+    /// to the agent's first instance.
+    pub relay: Option<String>,
+    /// The rooms of a new instance (`enroll_agent_in`).
+    pub rooms: Option<Vec<String>>,
 }
 
 fn keys(value: &serde_json::Value) -> Vec<&str> {
@@ -91,24 +97,42 @@ pub fn parse(bytes: &[u8]) -> Result<Request, Option<String>> {
     {
         return Err(refuse());
     }
-    let allowed: &[&str] = match r.kind.as_str() {
-        "subscribe" => &[],
-        "create_agent" => &["fields"],
-        "update_agent" => &["agentId", "fields"],
-        "delete_agent" => &["agentId", "forget"],
-        "enroll_agent" | "start_agent" | "stop_agent" | "probe_model" => &["agentId"],
-        "set_start_at_login" => &["agentId", "enabled"],
-        "sign_in" | "refresh_bundle" => &["harness"],
+    // Permitted keys, then the optional ones among them (every other
+    // permitted key is required).
+    let (allowed, optional): (&[&str], &[&str]) = match r.kind.as_str() {
+        "subscribe" => (&[], &[]),
+        "create_agent" => (&["fields"], &[]),
+        // `relay` names the instance whose rooms or workspace change
+        // (default: the first); definition fields apply to every instance.
+        "update_agent" => (&["agentId", "fields", "relay"], &["relay"]),
+        "delete_agent" => (&["agentId", "forget"], &["forget"]),
+        "enroll_agent" | "start_agent" | "stop_agent" => (&["agentId", "relay"], &["relay"]),
+        "probe_model" => (&["agentId"], &[]),
+        "set_start_at_login" => (&["agentId", "enabled", "relay"], &["relay"]),
+        "enroll_agent_in" => (&["agentId", "relay", "rooms"], &[]),
+        "leave_agent_community" => (&["agentId", "relay"], &[]),
+        "sign_in" | "refresh_bundle" => (&["harness"], &[]),
         _ => return Err(refuse()),
     };
     let present: Vec<&str> = keys(&raw)
         .into_iter()
         .filter(|k| !matches!(*k, "version" | "id" | "type" | "instanceId"))
         .collect();
-    // Every permitted key is required, except `forget` (defaults to false).
-    let required = allowed.iter().filter(|k| **k != "forget");
+    let required = allowed.iter().filter(|k| !optional.contains(k));
     if present.iter().any(|k| !allowed.contains(k))
         || required.clone().any(|k| !present.contains(k))
+    {
+        return Err(refuse());
+    }
+    if r.relay
+        .as_deref()
+        .is_some_and(|relay| crate::config::canonical_relay(relay).as_deref() != Ok(relay))
+    {
+        return Err(refuse());
+    }
+    if r.rooms
+        .as_deref()
+        .is_some_and(|rooms| !store::valid_rooms(rooms))
     {
         return Err(refuse());
     }
@@ -140,6 +164,8 @@ mod tests {
     use super::*;
     const ID: &str = "00000000-0000-4000-8000-000000000001";
     const AGENT: &str = "00000000-0000-4000-8000-0000000000a1";
+    const RELAY: &str = "wss://relay.example/";
+    const ROOM: &str = "00000000-0000-4000-8000-0000000000b1";
     fn frame(extra: serde_json::Value) -> Vec<u8> {
         let mut v = serde_json::json!({"version":1,"id":ID,"instanceId":"1-2"});
         v.as_object_mut()
@@ -169,6 +195,14 @@ mod tests {
             serde_json::json!({"type":"sign_in","harness":"codex"}),
             serde_json::json!({"type":"refresh_bundle","harness":"claude-code"}),
             serde_json::json!({"type":"probe_model","agentId":AGENT}),
+            // Instances (communities) of one agent.
+            serde_json::json!({"type":"enroll_agent_in","agentId":AGENT,"relay":RELAY,"rooms":[ROOM]}),
+            serde_json::json!({"type":"leave_agent_community","agentId":AGENT,"relay":RELAY}),
+            serde_json::json!({"type":"start_agent","agentId":AGENT,"relay":RELAY}),
+            serde_json::json!({"type":"stop_agent","agentId":AGENT,"relay":RELAY}),
+            serde_json::json!({"type":"enroll_agent","agentId":AGENT,"relay":RELAY}),
+            serde_json::json!({"type":"set_start_at_login","agentId":AGENT,"enabled":false,"relay":RELAY}),
+            serde_json::json!({"type":"update_agent","agentId":AGENT,"fields":{"rooms":[ROOM]},"relay":RELAY}),
         ] {
             let r = parse(&frame(extra.clone())).unwrap_or_else(|_| panic!("{extra}"));
             assert_eq!(r.id, ID);
@@ -222,6 +256,23 @@ mod tests {
             serde_json::json!({"type":"probe_model","agentId":AGENT,"model":"opus"}),
             serde_json::json!({"type":"probe_model","agentId":AGENT,"harness":"codex"}),
             serde_json::json!({"type":"probe_model","agentId":AGENT,"command":"claude -p"}),
+            serde_json::json!({"type":"probe_model","agentId":AGENT,"relay":RELAY}),
+            serde_json::json!({"type":"delete_agent","agentId":AGENT,"relay":RELAY}),
+            serde_json::json!({"type":"create_agent","fields":full_fields(),"relay":RELAY}),
+            // `enroll_agent_in` needs a canonical relay and 1–8 distinct rooms.
+            serde_json::json!({"type":"enroll_agent_in","agentId":AGENT,"relay":RELAY}),
+            serde_json::json!({"type":"enroll_agent_in","agentId":AGENT,"rooms":[ROOM]}),
+            serde_json::json!({"type":"enroll_agent_in","agentId":AGENT,"relay":RELAY,"rooms":[]}),
+            serde_json::json!({"type":"enroll_agent_in","agentId":AGENT,"relay":RELAY,"rooms":[ROOM,ROOM]}),
+            serde_json::json!({"type":"enroll_agent_in","agentId":AGENT,"relay":RELAY,"rooms":vec![ROOM; 9]}),
+            serde_json::json!({"type":"enroll_agent_in","agentId":AGENT,"relay":RELAY,"rooms":["general"]}),
+            serde_json::json!({"type":"enroll_agent_in","agentId":AGENT,"relay":"wss://Relay.example","rooms":[ROOM]}),
+            serde_json::json!({"type":"enroll_agent_in","agentId":AGENT,"relay":"ws://relay.example/","rooms":[ROOM]}),
+            serde_json::json!({"type":"enroll_agent_in","agentId":AGENT,"relay":RELAY,"rooms":[ROOM],"workspace":"/tmp"}),
+            serde_json::json!({"type":"leave_agent_community","agentId":AGENT}),
+            serde_json::json!({"type":"leave_agent_community","agentId":AGENT,"relay":RELAY,"forget":true}),
+            serde_json::json!({"type":"start_agent","agentId":AGENT,"relay":"relay.example"}),
+            serde_json::json!({"type":"stop_agent","agentId":AGENT,"rooms":[ROOM]}),
         ] {
             assert_eq!(
                 parse(&frame(extra.clone())).unwrap_err(),

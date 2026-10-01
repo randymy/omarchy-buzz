@@ -43,7 +43,9 @@ Item {
   readonly property var errorCategories: ["agent_invalid", "agent_busy", "agent_limit", "harness_missing", "bundle_stale",
     "not_signed_in", "enroll_failed", "unit_failed", "workspace_refused", "relay_unavailable"]
   readonly property var mutatingTypes: ["create_agent", "update_agent", "delete_agent", "enroll_agent", "start_agent",
-    "stop_agent", "set_start_at_login", "sign_in", "refresh_bundle", "probe_model"]
+    "stop_agent", "set_start_at_login", "sign_in", "refresh_bundle", "probe_model", "enroll_agent_in", "leave_agent_community"]
+  // One agent can be enrolled in up to this many communities (its instances).
+  readonly property int maxInstances: 4
   readonly property var pendingDetails: ["model_not_for_harness"]
   // Model names per harness, as the service checks them (agents_service/models.rs).
   readonly property var modelAliases: ({"claude-code": ["opus", "sonnet", "haiku", "fable"], codex: []})
@@ -189,14 +191,33 @@ Item {
   Component.onCompleted: loadAvatars()
   function agent(id) { return agents.find(function(entry) { return entry.id === id }) || null }
 
-  // Agents belong to the community they were created in (`relay`). The panel's
-  // active community is the one the main helper shows; the service's own
-  // `activeRelay` stands in while the helper has none.
+  // An agent is enrolled in one or more communities: its `instances`, the
+  // first one first (the top-level relay, rooms and state repeat it). The
+  // panel's active community is the one the main helper shows; the service's
+  // own `activeRelay` stands in while the helper has none.
   function relayKey(value) { return typeof value === "string" ? value.toLowerCase().replace(/\/+$/, "") : "" }
   readonly property string currentRelay: mainService && !mainService.sampleMode && typeof mainService.relay === "string"
     && mainService.relay !== "" ? mainService.relay : activeRelay
-  function inCurrentCommunity(entry) {
-    return !!entry && currentRelay !== "" && relayKey(entry.relay) === relayKey(currentRelay)
+  // The agent's instance in a community, or null.
+  function instanceIn(entry, relay) {
+    if (!entry || !entry.instances || relay === "") return null
+    return entry.instances.find(function(instance) { return root.relayKey(instance.relay) === root.relayKey(relay) }) || null
+  }
+  function currentInstance(entry) { return instanceIn(entry, currentRelay) }
+  function isFirstInstance(entry, instance) { return !!entry && !!instance && entry.instances[0] === instance }
+  // An agent is listed (and managed) in every community it has an instance in.
+  function inCurrentCommunity(entry) { return !!currentInstance(entry) }
+  function communityNames(entry) { return entry ? entry.instances.map(function(instance) { return instance.community }).join(", ") : "" }
+  // The current community's canonical relay as the agent service names it,
+  // when the service and the helper agree on it; else "".
+  readonly property string currentCanonicalRelay: activeRelay !== "" && relayKey(activeRelay) === relayKey(currentRelay) ? activeRelay : ""
+  // The main helper is signed in to the current community: its rooms are verified there.
+  readonly property bool currentAuthenticated: !!mainService && !mainService.sampleMode && !mainService.sessionFailed
+    && mainService.connection === "authenticated" && currentRelay !== "" && relayKey(mainService.relay) === relayKey(currentRelay)
+  // "Add to <current community>": enrolled, not there yet, helper signed in there, room for another instance.
+  function canAddToCurrent(entry) {
+    return !!entry && entry.enrolled && !currentInstance(entry) && currentAuthenticated && currentCanonicalRelay !== ""
+      && entry.instances.length < maxInstances
   }
   readonly property var currentAgents: agents.filter(function(entry) { return root.inCurrentCommunity(entry) })
   readonly property var otherAgents: agents.filter(function(entry) { return !root.inCurrentCommunity(entry) })
@@ -209,10 +230,13 @@ Item {
     var member = currentAgents.length ? currentAgents[0] : null
     return member ? member.community : currentRelay.replace(/^wss?:\/\//, "").replace(/\/$/, "")
   }
-  function statusWord(entry) {
+  // The agent's state here: its instance in the current community (`instance`
+  // when given), else its first.
+  function statusWord(entry, instance) {
     if (!entry) return ""
     if (!entry.enrolled) return "not enrolled"
-    return ({active: "running", inactive: "stopped", failed: "failed"})[entry.unit] || "unknown"
+    var shown = instance || currentInstance(entry)
+    return ({active: "running", inactive: "stopped", failed: "failed"})[shown ? shown.state : entry.unit] || "unknown"
   }
   function categorySentence(category) {
     return ({
@@ -236,7 +260,8 @@ Item {
     return ({create_agent: "Creating agent", update_agent: "Saving agent", delete_agent: "Deleting agent",
       enroll_agent: "Enrolling agent", start_agent: "Starting agent", stop_agent: "Stopping agent",
       set_start_at_login: "Changing start at login", sign_in: "Opening sign-in",
-      refresh_bundle: "Refreshing harness bundle", probe_model: "Testing model"})[type] || "Agent request"
+      refresh_bundle: "Refreshing harness bundle", probe_model: "Testing model",
+      enroll_agent_in: "Adding agent to community", leave_agent_community: "Leaving community"})[type] || "Agent request"
   }
   // One line for the editor: this panel's request first, then the service's own.
   readonly property string statusLabel: {
@@ -365,8 +390,36 @@ Item {
   function communityValue(value) {
     return typeof value === "string" && value.length >= 1 && value.length <= 2048 && !!value.trim() && !unsafeText(value)
   }
+  readonly property var unitStates: ["active", "inactive", "failed", "unknown"]
+  // One instance: its own unit name (`omarchy-buzz-agent-<id>[-<12 hex>].service`).
+  function validatedInstance(value, id) {
+    if (!exactKeys(value, "community,lastError,published,relay,rooms,startAtLogin,state,unit") || !relayValue(value.relay)
+        || !communityValue(value.community) || !roomsShapeValid(value.rooms) || typeof value.unit !== "string"
+        || !/^omarchy-buzz-agent-[a-f0-9-]{36}(-[a-f0-9]{12})?\.service$/.test(value.unit) || value.unit.slice(19, 55) !== id
+        || typeof value.startAtLogin !== "boolean" || typeof value.published !== "boolean"
+        || (value.lastError !== null && errorCategories.indexOf(value.lastError) === -1)
+        || unitStates.indexOf(value.state) === -1) return null
+    return {relay: value.relay, community: value.community, rooms: value.rooms.slice(), unit: value.unit,
+      startAtLogin: value.startAtLogin, published: value.published, lastError: value.lastError, state: value.state}
+  }
+  function validatedInstances(value, entry) {
+    if (!Array.isArray(value) || value.length < 1 || value.length > maxInstances) return null
+    var result = []
+    for (var i = 0; i < value.length; i++) {
+      var instance = validatedInstance(value[i], entry.id)
+      if (!instance || result.some(function(other) { return root.relayKey(other.relay) === root.relayKey(instance.relay) || other.unit === instance.unit }))
+        return null
+      result.push(instance)
+    }
+    // The top level repeats the first instance; an agent without an identity has only one.
+    var first = result[0]
+    if (first.relay !== entry.relay || first.community !== entry.community || JSON.stringify(first.rooms) !== JSON.stringify(entry.rooms)
+        || first.startAtLogin !== entry.startAtLogin || first.published !== entry.published || first.lastError !== entry.lastError
+        || first.state !== entry.unit || (!entry.enrolled && result.length !== 1)) return null
+    return result
+  }
   function validatedAgent(entry) {
-    if (!exactKeys(entry, "acpCommand,answersDms,community,description,enrolled,harness,id,identity,instructions,lastError,model,name,published,relay,respondTo,rooms,startAtLogin,unit,workspace")
+    if (!exactKeys(entry, "acpCommand,answersDms,community,description,enrolled,harness,id,identity,instances,instructions,lastError,model,name,published,relay,respondTo,rooms,startAtLogin,unit,workspace")
         || !relayValue(entry.relay) || !communityValue(entry.community)
         || !uuidV4(entry.id) || nameProblem(entry.name) || descriptionProblem(entry.description)
         || instructionsProblem(entry.instructions) || harnessIds.indexOf(entry.harness) === -1
@@ -377,11 +430,13 @@ Item {
         || ["active", "inactive", "failed", "unknown"].indexOf(entry.unit) === -1
         || typeof entry.startAtLogin !== "boolean" || typeof entry.published !== "boolean" || typeof entry.answersDms !== "boolean"
         || (entry.lastError !== null && errorCategories.indexOf(entry.lastError) === -1)) return null
+    var instances = validatedInstances(entry.instances, entry)
+    if (!instances) return null
     return {id: entry.id, name: entry.name, description: entry.description, instructions: entry.instructions,
       harness: entry.harness, model: entry.model, acpCommand: entry.acpCommand, rooms: entry.rooms.slice(),
       respondTo: entry.respondTo, workspace: entry.workspace, identity: entry.identity, enrolled: entry.enrolled,
       unit: entry.unit, startAtLogin: entry.startAtLogin, answersDms: entry.answersDms, published: entry.published, lastError: entry.lastError,
-      relay: entry.relay, community: entry.community}
+      relay: entry.relay, community: entry.community, instances: instances}
   }
   function validatedAgents(value) {
     if (!Array.isArray(value) || value.length > 16) return null
@@ -551,36 +606,62 @@ Item {
     copy.acpCommand = "buzz-acp"
     return mutate({type: "create_agent", fields: copy}, "")
   }
-  // Only agents of the current community are managed here; the others are
-  // shown read-only until their community is active again.
+  // Only agents with an instance in the current community are managed here;
+  // the others are shown read-only until one of their communities is active
+  // again (or until they are added to this one).
   function manageable(id) { return inCurrentCommunity(agent(id)) }
+  // The saved fields as the current community's instance has them (its rooms).
+  function savedFields(entry) {
+    var instance = currentInstance(entry)
+    return entry && instance ? Object.assign({}, entry, {rooms: instance.rooms}) : entry
+  }
+  // Definition fields apply to every community; rooms and the workspace to the
+  // current one, named by `relay`. Another community's workspace is not edited here.
   function updateAgent(id, fields) {
-    if (!manageable(id) || fieldsProblem(fields, false, agent(id))) return false
-    return mutate({type: "update_agent", agentId: id, fields: copyFields(fields)}, id)
+    var entry = agent(id), instance = currentInstance(entry)
+    if (!manageable(id) || fieldsProblem(fields, false, savedFields(entry))) return false
+    if (fields.hasOwnProperty("workspace") && !isFirstInstance(entry, instance)) return false
+    return mutate({type: "update_agent", agentId: id, fields: copyFields(fields), relay: instance.relay}, id)
   }
   function deleteAgent(id, forget) {
     if (!manageable(id) || typeof forget !== "boolean") return false
     return mutate({type: "delete_agent", agentId: id, forget: forget}, id)
   }
+  // The instance a request acts on: the one in `relay`, else the current community's.
+  function targetInstance(entry, relay) { return typeof relay === "string" && relay !== "" ? instanceIn(entry, relay) : currentInstance(entry) }
+  // Creates the identity (an agent never enrolled), or retries publication of
+  // the current community's instance after a failure.
   function enrollAgent(id) {
-    var entry = agent(id)
-    if (!manageable(id) || entry.enrolled) return false
-    return mutate({type: "enroll_agent", agentId: id}, id)
+    var entry = agent(id), instance = currentInstance(entry)
+    if (!manageable(id) || (entry.enrolled && instance.published)) return false
+    return mutate({type: "enroll_agent", agentId: id, relay: instance.relay}, id)
   }
-  function startAgent(id) {
-    var entry = agent(id)
-    if (!manageable(id) || !entry.enrolled || entry.unit === "active" || bundleStale(entry.harness)) return false
-    return mutate({type: "start_agent", agentId: id}, id)
+  function startAgent(id, relay) {
+    var entry = agent(id), instance = targetInstance(entry, relay)
+    if (!manageable(id) || !instance || !entry.enrolled || !instance.published || instance.state === "active" || bundleStale(entry.harness)) return false
+    return mutate({type: "start_agent", agentId: id, relay: instance.relay}, id)
   }
-  function stopAgent(id) {
-    var entry = agent(id)
-    if (!manageable(id) || entry.unit !== "active") return false
-    return mutate({type: "stop_agent", agentId: id}, id)
+  function stopAgent(id, relay) {
+    var entry = agent(id), instance = targetInstance(entry, relay)
+    if (!manageable(id) || !instance || instance.state !== "active") return false
+    return mutate({type: "stop_agent", agentId: id, relay: instance.relay}, id)
   }
-  function setStartAtLogin(id, enabled) {
+  function setStartAtLogin(id, enabled, relay) {
+    var entry = agent(id), instance = targetInstance(entry, relay)
+    if (!manageable(id) || !instance || typeof enabled !== "boolean" || instance.startAtLogin === enabled) return false
+    return mutate({type: "set_start_at_login", agentId: id, enabled: enabled, relay: instance.relay}, id)
+  }
+  // The same agent (identity, instructions) in the current community, with 1–8 of its verified rooms.
+  function enrollAgentIn(id, rooms) {
     var entry = agent(id)
-    if (!manageable(id) || typeof enabled !== "boolean" || entry.startAtLogin === enabled) return false
-    return mutate({type: "set_start_at_login", agentId: id, enabled: enabled}, id)
+    if (!canAddToCurrent(entry) || roomsProblem(rooms)) return false
+    return mutate({type: "enroll_agent_in", agentId: id, relay: currentCanonicalRelay, rooms: rooms.slice()}, id)
+  }
+  // Leaves one community (its rooms, unit and instance); never the last one.
+  function leaveCommunity(id, relay) {
+    var entry = agent(id), instance = instanceIn(entry, relay)
+    if (!manageable(id) || !instance || entry.instances.length < 2) return false
+    return mutate({type: "leave_agent_community", agentId: id, relay: instance.relay}, id)
   }
   function signIn(harnessId) {
     var entry = harness(harnessId)

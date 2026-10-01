@@ -73,7 +73,10 @@ ShellRoot {
         harness: "claude-code", model: "", acpCommand: "buzz-acp", rooms: ["aaaaaaaa-0000-4000-8000-0000000000f1"],
         respondTo: "owner-only", workspace: "/home/fixture/.local/state/omarchy-buzz-room-workspaces/" + id,
         identity: identity, enrolled: identity !== null, unit: "inactive", startAtLogin: false, answersDms: false,
-        published: identity !== null, lastError: null, relay: test.first, community: "first"}
+        published: identity !== null, lastError: null, relay: test.first, community: "first",
+        instances: [{relay: test.first, community: "first", rooms: ["aaaaaaaa-0000-4000-8000-0000000000f1"],
+          unit: "omarchy-buzz-agent-" + id + ".service", startAtLogin: false, published: identity !== null, lastError: null,
+          state: "inactive"}]}
     }
     return JSON.stringify({version: 1, type: "hello", id: null, instanceId: "welcome-agents", capabilities: ["agent_manager"],
       status: {harnesses: [{id: "claude-code", bundle: "ready", signedIn: true}, {id: "codex", bundle: "ready", signedIn: true}],
