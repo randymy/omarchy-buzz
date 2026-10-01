@@ -286,5 +286,7 @@ the Settings avatar loader from a synthetic `.ans` fixture; set `BUZZ_ANSI_CAPTU
 `--notification-preference`, `--agents` (the Agents section against a fake agent
 service), `--settings` (the account control, its menu and the settings view;
 set `BUZZ_SETTINGS_CAPTURE_DIR` to also save `account-menu.png` and
-`settings-view.png`), `--presentation` (needs Wayland) and `--bridge` (needs
+`settings-view.png`), `--navigation` (header Back to rooms, × and the Escape
+order; set `BUZZ_NAVIGATION_CAPTURE_DIR` to also save `navigation-rooms.png`
+and `navigation-agent.png`), `--presentation` (needs Wayland) and `--bridge` (needs
 `BUZZ_TEST_HELPER` set to a built helper).
