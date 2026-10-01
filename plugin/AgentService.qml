@@ -21,6 +21,8 @@ Item {
   property bool capabilitySupported: false
   property var harnesses: []
   property var agents: []
+  // The agent service's view of the active community (its configuration), or "".
+  property string activeRelay: ""
   property var pending: null
   // The service's last model probe: {agentId, state, model, detail}; idle has no agent.
   property var modelProbe: ({agentId: null, state: "idle", model: "", detail: null})
@@ -159,6 +161,12 @@ Item {
   Connections {
     target: root.mainService
     function onNotificationSettingsDirReadyChanged() { root.writeAvatars() }
+    // Another community became active: ask for status again, so the service's
+    // own `activeRelay` follows the configuration it reads.
+    function onRelayChanged() { root.resubscribe() }
+  }
+  function resubscribe() {
+    if (available && bridge.running && instanceId !== "") write({type: "subscribe"})
   }
   FileView {
     id: avatarsFile
@@ -180,6 +188,27 @@ Item {
   // blockLoading makes text() wait for the file, so art is there on first render.
   Component.onCompleted: loadAvatars()
   function agent(id) { return agents.find(function(entry) { return entry.id === id }) || null }
+
+  // Agents belong to the community they were created in (`relay`). The panel's
+  // active community is the one the main helper shows; the service's own
+  // `activeRelay` stands in while the helper has none.
+  function relayKey(value) { return typeof value === "string" ? value.toLowerCase().replace(/\/+$/, "") : "" }
+  readonly property string currentRelay: mainService && !mainService.sampleMode && typeof mainService.relay === "string"
+    && mainService.relay !== "" ? mainService.relay : activeRelay
+  function inCurrentCommunity(entry) {
+    return !!entry && currentRelay !== "" && relayKey(entry.relay) === relayKey(currentRelay)
+  }
+  readonly property var currentAgents: agents.filter(function(entry) { return root.inCurrentCommunity(entry) })
+  readonly property var otherAgents: agents.filter(function(entry) { return !root.inCurrentCommunity(entry) })
+  // The current community's local name: the helper's list, else an agent of it, else its host.
+  readonly property string currentCommunityName: {
+    if (currentRelay === "") return ""
+    var listed = mainService && mainService.communityEntries ? mainService.communityEntries.find(function(entry) {
+      return root.relayKey(entry.relay) === root.relayKey(root.currentRelay) }) : null
+    if (listed && listed.name) return listed.name
+    var member = currentAgents.length ? currentAgents[0] : null
+    return member ? member.community : currentRelay.replace(/^wss?:\/\//, "").replace(/\/$/, "")
+  }
   function statusWord(entry) {
     if (!entry) return ""
     if (!entry.enrolled) return "not enrolled"
@@ -220,10 +249,12 @@ Item {
     return ""
   }
 
-  // Room choices: the main helper's verified joined rooms (not direct messages).
+  // Room choices: the main helper's verified joined rooms (not direct messages),
+  // which are the current community's. An agent of another community has none here.
   readonly property var roomChoices: mainService && !mainService.sampleMode && !mainService.sessionFailed
     && mainService.connection === "authenticated" && ["partial", "ready"].indexOf(mainService.catalogState) !== -1
     ? mainService.streamRooms.map(function(room) { return {id: room.id, name: room.name} }) : []
+  function roomChoicesFor(entry) { return !entry || inCurrentCommunity(entry) ? roomChoices : [] }
 
   // Shared field rules, applied to what the service reports and to what is sent.
   function uuidValue(value) { return typeof value === "string" && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(value) }
@@ -327,8 +358,16 @@ Item {
     }
     return result
   }
+  // A canonical relay as the service reports it: ws(s)://host[:port]/ only.
+  function relayValue(value) {
+    return typeof value === "string" && value.length <= 2048 && /^wss?:\/\/[^\/\s?#@]+\/$/.test(value) && !unsafeText(value)
+  }
+  function communityValue(value) {
+    return typeof value === "string" && value.length >= 1 && value.length <= 2048 && !!value.trim() && !unsafeText(value)
+  }
   function validatedAgent(entry) {
-    if (!exactKeys(entry, "acpCommand,answersDms,description,enrolled,harness,id,identity,instructions,lastError,model,name,published,respondTo,rooms,startAtLogin,unit,workspace")
+    if (!exactKeys(entry, "acpCommand,answersDms,community,description,enrolled,harness,id,identity,instructions,lastError,model,name,published,relay,respondTo,rooms,startAtLogin,unit,workspace")
+        || !relayValue(entry.relay) || !communityValue(entry.community)
         || !uuidV4(entry.id) || nameProblem(entry.name) || descriptionProblem(entry.description)
         || instructionsProblem(entry.instructions) || harnessIds.indexOf(entry.harness) === -1
         || modelProblem(entry.model) || entry.acpCommand !== "buzz-acp" || !roomsShapeValid(entry.rooms)
@@ -341,7 +380,8 @@ Item {
     return {id: entry.id, name: entry.name, description: entry.description, instructions: entry.instructions,
       harness: entry.harness, model: entry.model, acpCommand: entry.acpCommand, rooms: entry.rooms.slice(),
       respondTo: entry.respondTo, workspace: entry.workspace, identity: entry.identity, enrolled: entry.enrolled,
-      unit: entry.unit, startAtLogin: entry.startAtLogin, answersDms: entry.answersDms, published: entry.published, lastError: entry.lastError}
+      unit: entry.unit, startAtLogin: entry.startAtLogin, answersDms: entry.answersDms, published: entry.published, lastError: entry.lastError,
+      relay: entry.relay, community: entry.community}
   }
   function validatedAgents(value) {
     if (!Array.isArray(value) || value.length > 16) return null
@@ -372,19 +412,21 @@ Item {
     return {agentId: value.agentId, state: value.state, model: value.model, detail: value.detail}
   }
   function validatedStatus(value) {
-    if (!exactKeys(value, "agents,harnesses,modelProbe,pending")) return null
+    if (!exactKeys(value, "activeRelay,agents,harnesses,modelProbe,pending")
+        || (value.activeRelay !== null && !relayValue(value.activeRelay))) return null
     var harnessList = validatedHarnesses(value.harnesses)
     var agentList = validatedAgents(value.agents)
     var pendingView = validatedPending(value.pending)
     var probe = validatedModelProbe(value.modelProbe)
     if (!harnessList || !agentList || !pendingView || !probe) return null
-    return {harnesses: harnessList, agents: agentList, pending: pendingView.value, modelProbe: probe}
+    return {activeRelay: value.activeRelay || "", harnesses: harnessList, agents: agentList, pending: pendingView.value, modelProbe: probe}
   }
 
   function clearData() {
     capabilitySupported = false
     if (harnesses.length) harnesses = []
     if (agents.length) agents = []
+    activeRelay = ""
     pending = null
     modelProbe = {agentId: null, state: "idle", model: "", detail: null}
   }
@@ -450,6 +492,7 @@ Item {
     capabilitySupported = true
     if (!sameProjection(harnesses, status.harnesses)) harnesses = status.harnesses
     if (!sameProjection(agents, status.agents)) agents = status.agents
+    if (activeRelay !== status.activeRelay) activeRelay = status.activeRelay
     if (!sameProjection(pending, status.pending)) pending = status.pending
     if (!sameProjection(modelProbe, status.modelProbe)) modelProbe = status.modelProbe
     var view = status.pending
@@ -501,38 +544,42 @@ Item {
     return copy
   }
   function createAgent(fields) {
-    if (agents.length >= 16 || fieldsProblem(fields, true)) return false
+    // A new agent joins the current community, which the service must also see as active.
+    if (agents.length >= 16 || currentRelay === "" || fieldsProblem(fields, true)) return false
     var copy = copyFields(fields)
     if (!copy.hasOwnProperty("startAtLogin")) copy.startAtLogin = false
     copy.acpCommand = "buzz-acp"
     return mutate({type: "create_agent", fields: copy}, "")
   }
+  // Only agents of the current community are managed here; the others are
+  // shown read-only until their community is active again.
+  function manageable(id) { return inCurrentCommunity(agent(id)) }
   function updateAgent(id, fields) {
-    if (!agent(id) || fieldsProblem(fields, false, agent(id))) return false
+    if (!manageable(id) || fieldsProblem(fields, false, agent(id))) return false
     return mutate({type: "update_agent", agentId: id, fields: copyFields(fields)}, id)
   }
   function deleteAgent(id, forget) {
-    if (!agent(id) || typeof forget !== "boolean") return false
+    if (!manageable(id) || typeof forget !== "boolean") return false
     return mutate({type: "delete_agent", agentId: id, forget: forget}, id)
   }
   function enrollAgent(id) {
     var entry = agent(id)
-    if (!entry || entry.enrolled) return false
+    if (!manageable(id) || entry.enrolled) return false
     return mutate({type: "enroll_agent", agentId: id}, id)
   }
   function startAgent(id) {
     var entry = agent(id)
-    if (!entry || !entry.enrolled || entry.unit === "active" || bundleStale(entry.harness)) return false
+    if (!manageable(id) || !entry.enrolled || entry.unit === "active" || bundleStale(entry.harness)) return false
     return mutate({type: "start_agent", agentId: id}, id)
   }
   function stopAgent(id) {
     var entry = agent(id)
-    if (!entry || entry.unit !== "active") return false
+    if (!manageable(id) || entry.unit !== "active") return false
     return mutate({type: "stop_agent", agentId: id}, id)
   }
   function setStartAtLogin(id, enabled) {
     var entry = agent(id)
-    if (!entry || typeof enabled !== "boolean" || entry.startAtLogin === enabled) return false
+    if (!manageable(id) || typeof enabled !== "boolean" || entry.startAtLogin === enabled) return false
     return mutate({type: "set_start_at_login", agentId: id, enabled: enabled}, id)
   }
   function signIn(harnessId) {
@@ -553,7 +600,7 @@ Item {
   function canProbeModel(id) {
     var entry = agent(id)
     var state = entry ? harness(entry.harness) : null
-    return !!entry && entry.model !== "" && !harnessModelProblem(entry.model, entry.harness)
+    return manageable(id) && entry.model !== "" && !harnessModelProblem(entry.model, entry.harness)
       && !!state && state.bundle === "ready" && state.signedIn === true
   }
   function probeModel(id) {

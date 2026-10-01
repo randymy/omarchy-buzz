@@ -19,6 +19,12 @@ ColumnLayout {
 
   readonly property bool creating: agentId === ""
   readonly property var entry: agents && !creating ? agents.agent(agentId) : null
+  // An agent belongs to the community it was created in. One of another
+  // community is shown read-only: its rooms are not this community's, and the
+  // service checks rooms only in the active community.
+  readonly property bool readOnly: !!entry && !agents.inCurrentCommunity(entry)
+  readonly property string communityName: entry ? entry.community : agents ? agents.currentCommunityName : ""
+  readonly property var roomChoices: agents ? agents.roomChoicesFor(entry) : []
   property string draftName: ""
   property string draftDescription: ""
   property string draftInstructions: ""
@@ -94,7 +100,7 @@ ColumnLayout {
     || shownBrightness !== agents.avatarBrightnessFor(agentId))
   readonly property bool dirty: creating || serviceChanged || artChanged
   // Art alone is saved locally and needs no agent service request.
-  readonly property bool canSave: !!agents && (creating || !!entry)
+  readonly property bool canSave: !!agents && (creating || !!entry) && !readOnly
     && (creating || serviceChanged ? agents.canMutate && problem === "" : artChanged)
   readonly property var harnessState: agents ? agents.harness(entry ? entry.harness : draftHarness) : null
   readonly property bool bundleStale: !!harnessState && harnessState.bundle === "stale"
@@ -127,13 +133,13 @@ ColumnLayout {
     var copy = draftRooms.slice()
     var index = copy.indexOf(id)
     if (index !== -1) copy.splice(index, 1)
-    else if (copy.length < 8 && agents.roomChoices.some(function(room) { return room.id === id })) copy.push(id)
+    else if (copy.length < 8 && roomChoices.some(function(room) { return room.id === id })) copy.push(id)
     else return false
     draftRooms = copy
     return true
   }
   function requestDelete() {
-    if (!entry || !agents.canMutate) return false
+    if (!entry || readOnly || !agents.canMutate) return false
     if (!deleteArmed) { deleteArmed = true; disarm.restart(); return true }
     deleteArmed = false
     return agents.deleteAgent(agentId, false)
@@ -194,6 +200,19 @@ ColumnLayout {
         + (root.entry.published ? " · published" : "") : "Not saved"
     }
   }
+  Caption {
+    objectName: "buzzAgentCommunity"
+    visible: root.communityName !== ""
+    text: "Community: " + root.communityName
+  }
+  Caption {
+    objectName: "buzzAgentOtherCommunity"
+    visible: root.readOnly
+    opacity: 0.8
+    text: "Enrolled in " + (root.entry ? root.entry.community : "") + ". Switch to that community to manage it."
+    wrapMode: Text.WordWrap
+    elide: Text.ElideNone
+  }
 
   Controls.ScrollView {
     Layout.fillWidth: true
@@ -204,6 +223,8 @@ ColumnLayout {
     ColumnLayout {
       width: parent.width
       spacing: Style.space(4)
+      // Read-only for an agent of another community: nothing here can change it.
+      enabled: !root.readOnly
       Caption { text: "Name" }
       Ui.TextField {
         id: nameField
@@ -393,7 +414,7 @@ ColumnLayout {
         elide: Text.ElideNone
       }
       RowLayout {
-        visible: !!root.entry
+        visible: !!root.entry && !root.readOnly
         spacing: Style.space(6)
         Ui.Button {
           objectName: "buzzProbeModel"
@@ -422,16 +443,18 @@ ColumnLayout {
       }
       Caption {
         text: "Rooms · " + root.draftRooms.length + " of up to 8"
-          + (root.agents && root.agents.roomChoices.length === 0 ? " · no verified rooms available" : "")
+          + (root.readOnly ? " · in " + root.communityName
+            : root.roomChoices.length === 0 ? " · no verified rooms available" : "")
       }
       Repeater {
         // Verified rooms, then any saved room the helper no longer lists so it can be removed.
         model: {
           if (!root.agents) return []
-          var choices = root.agents.roomChoices.map(function(room) { return {id: room.id, label: "# " + room.name, verified: true} })
+          // Only this agent's community's verified rooms (none for another community).
+          var choices = root.roomChoices.map(function(room) { return {id: room.id, label: "# " + room.name, verified: true} })
           root.draftRooms.forEach(function(id) {
             if (!choices.some(function(room) { return room.id === id }))
-              choices.push({id: id, label: "Unverified room " + id.slice(0, 8) + "…", verified: false})
+              choices.push({id: id, label: (root.readOnly ? "Room " : "Unverified room ") + id.slice(0, 8) + "…", verified: false})
           })
           return choices
         }
@@ -555,6 +578,7 @@ ColumnLayout {
     spacing: Style.space(6)
     Ui.Button {
       objectName: "buzzAgentSave"
+      visible: !root.readOnly
       text: root.creating ? "Create" : "Save"
       bordered: true
       fontSize: Style.font.caption
@@ -565,7 +589,7 @@ ColumnLayout {
     }
     Ui.Button {
       objectName: "buzzAgentEnroll"
-      visible: !!root.entry && !root.entry.enrolled
+      visible: !!root.entry && !root.entry.enrolled && !root.readOnly
       text: "Enroll"
       tooltipText: "Create the agent's identity and add it to its rooms"
       fontSize: Style.font.caption
@@ -576,7 +600,7 @@ ColumnLayout {
     }
     Ui.Button {
       objectName: "buzzAgentStart"
-      visible: !!root.entry && root.entry.enrolled && root.entry.unit !== "active"
+      visible: !!root.entry && root.entry.enrolled && root.entry.unit !== "active" && !root.readOnly
       text: "Start"
       tooltipText: root.bundleStale ? "Harness bundle needs a refresh" : ""
       fontSize: Style.font.caption
@@ -587,7 +611,7 @@ ColumnLayout {
     }
     Ui.Button {
       objectName: "buzzRefreshBundle"
-      visible: root.bundleStale
+      visible: root.bundleStale && !root.readOnly
       text: "Refresh bundle"
       tooltipText: "Replace the harness bundle's launcher scripts with the installed ones"
       fontSize: Style.font.caption
@@ -598,7 +622,7 @@ ColumnLayout {
     }
     Ui.Button {
       objectName: "buzzAgentStop"
-      visible: !!root.entry && root.entry.unit === "active"
+      visible: !!root.entry && root.entry.unit === "active" && !root.readOnly
       text: "Stop"
       fontSize: Style.font.caption
       focusable: true
@@ -608,7 +632,7 @@ ColumnLayout {
     }
     Ui.Button {
       objectName: "buzzAgentSignIn"
-      visible: !!root.harnessState && root.harnessState.signedIn === false
+      visible: !!root.harnessState && root.harnessState.signedIn === false && !root.readOnly
       text: "Sign in to " + (root.harnessState ? root.agents.harnessLabel(root.harnessState.id) : "")
       tooltipText: "Opens a terminal for the harness's own sign-in"
       fontSize: Style.font.caption
@@ -619,7 +643,7 @@ ColumnLayout {
     }
     Ui.Button {
       objectName: "buzzAgentDelete"
-      visible: !!root.entry
+      visible: !!root.entry && !root.readOnly
       text: root.deleteArmed ? "Confirm delete" : "Delete"
       tooltipText: "Stops and removes the agent; its identity stays in the secret store"
       fontSize: Style.font.caption

@@ -59,6 +59,19 @@ ShellRoot {
     button.clicked()
   }
   function requests() { record.reload(); return JSON.parse(record.text()).requests }
+  FileView { id: agentsRecord; path: Quickshell.env("BUZZ_SEND_RECORD").replace(/send-record\.json$/, "agents-record.json"); blockLoading: true; printErrors: false }
+  function agentRequests() { agentsRecord.reload(); try { return JSON.parse(agentsRecord.text()).requests } catch (_) { return [] } }
+  function texts(name) { return shown(name).map(function(item) { return item.text }) }
+  // Agents belong to the community they were created in: the current one's are
+  // listed and editable, the others muted and read-only with only their own
+  // rooms, and a direct message with an agent exists only in its community.
+  function expectAgents(current, other, dms) {
+    check(JSON.stringify(texts("buzzAgentRow")) === JSON.stringify([current + " · stopped"]), "Current agents wrong: " + texts("buzzAgentRow"))
+    check(JSON.stringify(texts("buzzAgentOtherRow")) === JSON.stringify([other]), "Other agents wrong: " + texts("buzzAgentOtherRow"))
+    check(one("buzzAgentsOtherHeading").text === "In other communities", "Other heading missing")
+    check(JSON.stringify(texts("buzzDmRow")) === JSON.stringify(dms), "Direct messages wrong: " + texts("buzzDmRow"))
+  }
+  function editorRooms() { return shown("buzzAgentRoom").map(function(box) { return (box.checked ? "x " : "  ") + box.text }) }
   function rowFor(relay) {
     return shown("buzzCommunityRow").filter(function(row) { return row.relay === relay })[0]
   }
@@ -106,6 +119,7 @@ ShellRoot {
           check(service.joinSetup.state === "joined" && service.pendingInviteInput === "", "Invite not redeemed after the identity")
           check(service.selectedRoomId === "aaaaaaaa-0000-4000-8000-0000000000f1", "First room not selected")
           service.selectRoom("aaaaaaaa-0000-4000-8000-0000000000f2")
+          service.agents.retry()
           // Account menu: the current community, no others yet, Join and Create.
           view.openAccountMenu()
           check(one("buzzAccountCommunityName").text === "✓ first" && one("buzzAccountCommunityHost").text === "first.example", "Current community wrong")
@@ -134,7 +148,21 @@ ShellRoot {
           check(view.subView === "join-community", "A refusal left the view")
           type("buzzCommunityInput", "buzzCommunityJoin", "https://second.example")
           test.stage = 5
-        } else if (test.stage === 5 && view.subView === "" && service.relay === test.second && service.catalogState === "ready") {
+        } else if (test.stage === 5 && view.subView === "" && service.relay === test.second && service.catalogState === "ready"
+            && service.agents.available && service.agents.activeRelay === test.second) {
+          // The agent service followed the switch (asked again for status).
+          check(test.agentRequests().length >= 2, "No subscribe after the switch: " + test.agentRequests())
+          test.expectAgents("Night bot", "vClaude · in first", [])
+          test.shown("buzzAgentOtherRow")[0].clicked()
+          var remote = findNamed(view, "buzzAgentEditor", [])[0]
+          check(remote.readOnly && one("buzzAgentCommunity").text === "Community: first"
+            && one("buzzAgentOtherCommunity").text === "Enrolled in first. Switch to that community to manage it.", "vClaude not read-only here")
+          check(shown("buzzAgentSave").length === 0 && shown("buzzAgentStart").length === 0 && shown("buzzAgentDelete").length === 0, "Actions offered for another community's agent")
+          check(JSON.stringify(test.editorRooms()) === JSON.stringify(["x Room aaaaaaaa…"]), "vClaude's rooms shown with this community's: " + test.editorRooms())
+          test.shown("buzzAgentRow")[0].clicked()
+          check(!findNamed(view, "buzzAgentEditor", [])[0].readOnly && one("buzzAgentCommunity").text === "Community: second", "Night bot not editable here")
+          check(JSON.stringify(test.editorRooms()) === JSON.stringify(["x # night-shift"]), "Night bot's rooms wrong: " + test.editorRooms())
+          view.closeAgentEditor()
           // Joined and switched: back to the rooms of the new community.
           check(service.selectedRoomId === "bbbbbbbb-0000-4000-8000-0000000000b1", "Second community's room not selected")
           service.selectRoom("bbbbbbbb-0000-4000-8000-0000000000b1")
@@ -145,9 +173,17 @@ ShellRoot {
           others[0].clicked()
           check(!view.accountMenuOpen, "Menu stayed open after switching")
           test.stage = 6
-        } else if (test.stage === 6 && service.relay === test.first && service.catalogState === "ready") {
+        } else if (test.stage === 6 && service.relay === test.first && service.catalogState === "ready"
+            && service.agents.activeRelay === test.first) {
           // The room chosen earlier in this community comes back.
           check(service.selectedRoomId === "aaaaaaaa-0000-4000-8000-0000000000f2", "Room memory not per community: " + service.selectedRoomId)
+          // Back in vClaude's community: it is listed and editable with this community's rooms, and its DM is here.
+          test.expectAgents("vClaude", "Night bot · in second", ["vClaude"])
+          test.shown("buzzAgentRow")[0].clicked()
+          check(!findNamed(view, "buzzAgentEditor", [])[0].readOnly && one("buzzAgentCommunity").text === "Community: first", "vClaude not editable in its community")
+          check(JSON.stringify(test.editorRooms()) === JSON.stringify(["x # general", "  # random"]), "vClaude's rooms not this community's: " + test.editorRooms())
+          check(shown("buzzAgentSave").length === 1 && shown("buzzAgentDelete").length === 1, "vClaude's actions missing in its community")
+          view.closeAgentEditor()
           view.openAccountMenu()
           click("buzzAccountCreateCommunity")
           check(view.subView === "create-community" && one("buzzHeaderPlace").text === "Create a new community", "Create view header wrong")
@@ -215,7 +251,7 @@ ShellRoot {
           var rename = sent.filter(function(r) { return r.type === "rename_community" })[0]
           check(JSON.stringify(Object.keys(rename).sort()) === JSON.stringify(["id", "name", "relay", "type", "version"]) && rename.relay === test.second,
             "Rename shape wrong")
-          console.log("PASS: first setup joins from an invite link and redeems it after the identity; menu Communities block; Join and Create views with Desktop's copy, gating, failures and the buzz.xyz step; terms accepted; switching keeps each community's room; rename; leave with confirmation, next community active, already-absent notice, last community kept; sample communities")
+          console.log("PASS: first setup joins from an invite link and redeems it after the identity; menu Communities block; Join and Create views with Desktop's copy, gating, failures and the buzz.xyz step; terms accepted; switching keeps each community's room; agents listed by their own community, others read-only with only their rooms, an agent's DM only in its community; rename; leave with confirmation, next community active, already-absent notice, last community kept; sample communities")
           Qt.quit()
         }
       } catch (error) { console.error(error.message); Qt.exit(1) }

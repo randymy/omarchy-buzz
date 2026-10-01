@@ -14,6 +14,7 @@ ShellRoot {
   readonly property string roomB: "22222222-2222-4222-8222-222222222222"
   readonly property string agentId: "33333333-3333-4333-8333-333333333333"
   readonly property string createdId: "55555555-5555-4555-9555-555555555555"
+  readonly property string remoteId: "66666666-6666-4666-8666-666666666666"
   Buzz.Service {
     id: service
     autoConnect: false
@@ -147,7 +148,8 @@ ShellRoot {
   function persona(overrides) {
     var value = {id: agentId, name: "Fixture agent", description: "", instructions: "", harness: "codex", model: "",
       acpCommand: "buzz-acp", rooms: [roomA], respondTo: "owner-only", workspace: "/home/fixture/w", identity: "b".repeat(64),
-      enrolled: true, unit: "inactive", startAtLogin: false, answersDms: false, published: true, lastError: null}
+      enrolled: true, unit: "inactive", startAtLogin: false, answersDms: false, published: true, lastError: null,
+      relay: "wss://fixture.example/", community: "Fixture"}
     return Object.assign(value, overrides || {})
   }
   function agentFrame(type, capabilities, status) {
@@ -155,8 +157,8 @@ ShellRoot {
   }
   readonly property var idleProbe: ({agentId: null, state: "idle", model: "", detail: null})
   function validStatus(agents, pending, probe) {
-    return {harnesses: [{id: "codex", bundle: "ready", signedIn: true}], agents: agents || [persona()], pending: pending || null,
-      modelProbe: probe || idleProbe}
+    return {activeRelay: "wss://fixture.example/", harnesses: [{id: "codex", bundle: "ready", signedIn: true}], agents: agents || [persona()],
+      pending: pending || null, modelProbe: probe || idleProbe}
   }
   function probeState(state, detail, overrides) {
     return Object.assign({agentId: agentId, state: state, model: "gpt-5.5", detail: detail}, overrides || {})
@@ -179,8 +181,18 @@ ShellRoot {
     if (!agents.acceptFrame(agentFrame("hello", ["agent_manager"], validStatus())) || !agents.available
         || one(offlineView, "buzzAgentsHeading").text !== "Agents" || shown(offlineView, "buzzAgentsUnavailable").length)
       throw new Error("Valid agent service hello refused")
+    // Agents are grouped by community: the helper's relay decides which is current.
+    if (!agents.acceptFrame(agentFrame("status", ["agent_manager"], Object.assign(validStatus([persona(),
+        persona({id: test.createdId, name: "Elsewhere agent", relay: "wss://elsewhere.example/", community: "Elsewhere"})]), {activeRelay: null})))
+        || agents.activeRelay !== "" || agents.currentRelay !== "wss://fixture.example/"
+        || agents.currentAgents.length !== 1 || agents.otherAgents.length !== 1 || agents.otherAgents[0].id !== test.createdId
+        || one(offlineView, "buzzAgentOtherRow").text !== "Elsewhere agent · in Elsewhere"
+        || one(offlineView, "buzzAgentsOtherHeading").text !== "In other communities"
+        || agents.startAgent(test.createdId) || agents.deleteAgent(test.createdId, false) || agents.updateAgent(test.createdId, {name: "x"})
+        || agents.probeModel(test.createdId) || agents.setStartAtLogin(test.createdId, true))
+      throw new Error("Agents of another community not grouped or not read-only")
     // A stale bundle is a documented state; its refusal category is known.
-    if (!agents.acceptFrame(agentFrame("status", ["agent_manager"], {harnesses: [{id: "codex", bundle: "stale", signedIn: true}],
+    if (!agents.acceptFrame(agentFrame("status", ["agent_manager"], {activeRelay: "wss://fixture.example/", harnesses: [{id: "codex", bundle: "stale", signedIn: true}],
         agents: [persona()], pending: {requestId: "00000000-0000-4000-8000-000000000008", type: "start_agent", state: "failed", category: "bundle_stale", detail: null},
         modelProbe: idleProbe}))
         || !agents.bundleStale("codex") || agents.startAgent(test.agentId)
@@ -231,12 +243,26 @@ ShellRoot {
       agentFrame("status", ["agent_manager"], validStatus()),
       agentFrame("hello", ["agent_manager"], {harnesses: [], agents: []}),
       agentFrame("hello", ["agent_manager"], Object.assign(validStatus(), {extra: true})),
-      agentFrame("hello", ["agent_manager"], {harnesses: [{id: "goose", bundle: "ready", signedIn: true}], agents: [], pending: null, modelProbe: idleProbe}),
-      agentFrame("hello", ["agent_manager"], {harnesses: [{id: "codex", bundle: "ready", signedIn: "yes"}], agents: [], pending: null, modelProbe: idleProbe}),
-      agentFrame("hello", ["agent_manager"], {harnesses: [{id: "codex", bundle: "outdated", signedIn: true}], agents: [], pending: null, modelProbe: idleProbe}),
-      agentFrame("hello", ["agent_manager"], {harnesses: [{id: "codex", bundle: "ready", signedIn: true}, {id: "codex", bundle: "missing", signedIn: null}], agents: [], pending: null, modelProbe: idleProbe}),
+      agentFrame("hello", ["agent_manager"], {harnesses: [{id: "goose", bundle: "ready", signedIn: true}], agents: [], pending: null, modelProbe: idleProbe, activeRelay: null}),
+      agentFrame("hello", ["agent_manager"], {harnesses: [{id: "codex", bundle: "ready", signedIn: "yes"}], agents: [], pending: null, modelProbe: idleProbe, activeRelay: null}),
+      agentFrame("hello", ["agent_manager"], {harnesses: [{id: "codex", bundle: "outdated", signedIn: true}], agents: [], pending: null, modelProbe: idleProbe, activeRelay: null}),
+      agentFrame("hello", ["agent_manager"], {harnesses: [{id: "codex", bundle: "ready", signedIn: true}, {id: "codex", bundle: "missing", signedIn: null}], agents: [], pending: null, modelProbe: idleProbe, activeRelay: null}),
       // The model probe: present, exact, a known state and sentence, never raw output.
-      agentFrame("hello", ["agent_manager"], {harnesses: [], agents: [], pending: null}),
+      agentFrame("hello", ["agent_manager"], {harnesses: [], agents: [], pending: null, activeRelay: null}),
+      // Communities: the active relay is present (or null) and canonical; each
+      // agent names its community's canonical relay and a printable name.
+      agentFrame("hello", ["agent_manager"], (function() { var v = validStatus(); delete v.activeRelay; return v })()),
+      agentFrame("hello", ["agent_manager"], Object.assign(validStatus(), {activeRelay: "wss://fixture.example"})),
+      agentFrame("hello", ["agent_manager"], Object.assign(validStatus(), {activeRelay: ""})),
+      agentFrame("hello", ["agent_manager"], validStatus([(function() { var p = persona(); delete p.relay; return p })()])),
+      agentFrame("hello", ["agent_manager"], validStatus([(function() { var p = persona(); delete p.community; return p })()])),
+      agentFrame("hello", ["agent_manager"], validStatus([persona({relay: "https://fixture.example/"})])),
+      agentFrame("hello", ["agent_manager"], validStatus([persona({relay: "wss://fixture.example/room"})])),
+      agentFrame("hello", ["agent_manager"], validStatus([persona({relay: "wss://user@fixture.example/"})])),
+      agentFrame("hello", ["agent_manager"], validStatus([persona({relay: null})])),
+      agentFrame("hello", ["agent_manager"], validStatus([persona({community: ""})])),
+      agentFrame("hello", ["agent_manager"], validStatus([persona({community: "Evil\u202eteam"})])),
+      agentFrame("hello", ["agent_manager"], validStatus([persona({community: 7})])),
       agentFrame("hello", ["agent_manager"], validStatus(null, null, Object.assign({}, idleProbe, {output: "OK"}))),
       agentFrame("hello", ["agent_manager"], validStatus(null, null, probeState("failed", "Error: 401 {\"token\":\"x\"}"))),
       agentFrame("hello", ["agent_manager"], validStatus(null, null, probeState("ok", null))),
@@ -307,7 +333,30 @@ ShellRoot {
           if (rows.length !== 1 || rows[0].text !== "Fixture agent · stopped") throw new Error("Agent row wrong: " + rows.map(function(r) { return r.text }))
           test.one(view, "buzzNewAgent")
           if (test.shown(view, "buzzAgentEditor").length) throw new Error("Editor open before it was asked for")
+          // An agent of another community: listed below, muted, read-only.
+          var other = test.one(view, "buzzAgentOtherRow")
+          if (test.one(view, "buzzAgentsOtherHeading").text !== "In other communities" || other.text !== "Remote agent · in Elsewhere"
+              || other.parent.opacity >= 1)
+            throw new Error("Other community's agent not listed apart: " + other.text)
+          other.clicked()
+          var remoteEditor = test.findNamed(view, "buzzAgentEditor", [])[0]
+          if (!remoteEditor.readOnly || test.one(view, "buzzAgentCommunity").text !== "Community: Elsewhere"
+              || test.one(view, "buzzAgentOtherCommunity").text !== "Enrolled in Elsewhere. Switch to that community to manage it.")
+            throw new Error("Read-only editor does not name the agent's community")
+          ;["buzzAgentSave", "buzzAgentStart", "buzzAgentStop", "buzzAgentEnroll", "buzzAgentDelete", "buzzProbeModel", "buzzRefreshBundle", "buzzAgentSignIn"].forEach(function(name) {
+            if (test.shown(view, name).length) throw new Error("Read-only editor offers " + name)
+          })
+          // Its room list is its own community's saved rooms, never this community's.
+          var remoteRooms = test.shown(view, "buzzAgentRoom")
+          if (remoteRooms.length !== 1 || remoteRooms[0].roomId !== "99999999-9999-4999-8999-999999999999" || !remoteRooms[0].checked
+              || remoteRooms[0].text !== "Room 99999999…" || test.one(view, "buzzAgentName").enabled)
+            throw new Error("Read-only editor room list not scoped: " + remoteRooms.map(function(r) { return r.text }))
+          if (remoteEditor.save() || remoteEditor.requestDelete() || agents.stopAgent(test.remoteId) || agents.updateAgent(test.remoteId, {name: "x"}))
+            throw new Error("An agent of another community could be changed")
           rows[0].clicked()
+          if (test.one(view, "buzzAgentCommunity").text !== "Community: Fixture" || test.shown(view, "buzzAgentOtherCommunity").length
+              || test.findNamed(view, "buzzAgentEditor", [])[0].readOnly)
+            throw new Error("Current community's agent not editable or community line wrong")
           test.one(view, "buzzAgentEditor")
           if (test.shown(view, "buzzHistoryScroll").length) throw new Error("Room view still shown beside the editor")
           if (test.one(view, "buzzAgentName").text !== "Fixture agent" || test.one(view, "buzzAgentInstructions").text !== "Answer briefly.")
@@ -338,6 +387,8 @@ ShellRoot {
           test.one(view, "buzzNewAgent").clicked()
           if (test.one(view, "buzzAgentTitle").text !== "New agent" || test.one(view, "buzzAgentName").text !== "")
             throw new Error("New agent editor is not empty")
+          if (test.one(view, "buzzAgentCommunity").text !== "Community: Fixture")
+            throw new Error("New agent editor does not name the community it joins")
           if (test.one(view, "buzzAgentSave").enabled) throw new Error("Create enabled for an empty agent")
           var newEditor = test.findNamed(view, "buzzAgentEditor", [])[0]
           if (test.one(view, "buzzAgentAvatarArt").text !== "" || newEditor.artPreview.usesArt
@@ -489,7 +540,7 @@ ShellRoot {
               || !test.shown(view, "buzzHistoryScroll").length || agents.requestState !== "unknown")
             throw new Error("Malformed status did not end the agent session")
           test.validationCases()
-          console.log("PASS: Agents section lists the service's agents, edits, creates, starts and shows refusals; one request at a time; malformed frames end the session; no agent_manager hides the section; pasted avatar art is clipped, previewed, kept locally and restored, colored art from a file is previewed, brightened, saved and cleared, damaged avatar files fail closed; the direct message toggle round-trips and notes the restart; a stale harness bundle holds Start until Refresh bundle makes it ready; model alias chips fill the field, models of the other harness are refused, Test model probes only a saved model and shows each probe state as a fixed sentence")
+          console.log("PASS: Agents section lists the service's agents, edits, creates, starts and shows refusals; one request at a time; malformed frames end the session; no agent_manager hides the section; pasted avatar art is clipped, previewed, kept locally and restored, colored art from a file is previewed, brightened, saved and cleared, damaged avatar files fail closed; the direct message toggle round-trips and notes the restart; a stale harness bundle holds Start until Refresh bundle makes it ready; model alias chips fill the field, models of the other harness are refused, Test model probes only a saved model and shows each probe state as a fixed sentence; agents of another community are listed apart, open read-only with their community named and only their own rooms, and refuse every change")
           Qt.quit()
         }
       } catch (error) { console.error(error.message); Qt.exit(1) }

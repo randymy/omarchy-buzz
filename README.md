@@ -43,6 +43,8 @@ Selected-room history refreshes about five seconds after a request finishes. A s
 
 **Join an existing community** (account menu → Communities, and the first setup step) takes the community URL or invite link you received, as Buzz Desktop does: the helper checks the relay, claims an invite with your one identity (NIP-98, the relay's terms shown first when it has them), adds the community and switches to it. Other communities are listed in the account menu (click one to switch; each keeps its own last room), and Settings → **Communities** renames them or offers **Leave community** (with a confirmation; your identity stays, and the last community cannot be left). Update the helper and plugin together (`communities`).
 
+**Agents belong to a community.** An agent is created in, enrolled in and always runs against the community that was active when you created it, even after you switch: the Agents section lists the current community's agents, and the others under "In other communities" (read-only; switch to that community to edit, start or stop one). Agents saved before this change are bound to the community their running unit already uses, else to your first community. Update the helper and plugin together.
+
 **Create a new community** opens buzz.xyz in your browser, where Buzz communities are created (this panel cannot create one itself), then joins the new community from the URL or invite link you paste.
 
 **Update your status** (account menu, above Settings) sets or clears the same text-and-emoji status Buzz Desktop shows (1 hour to 1 week); the helper signs and publishes it, verifies every status it reads, and others' status emoji appears beside their names in the open room. Update the helper and plugin together (`user_status`).
