@@ -1278,6 +1278,7 @@ FocusScope {
                 }
                 readonly property var partnerStatus: root.service ? root.service.authorStatus(root.dmPartner(modelData)) : null
                 Ui.Button {
+                  objectName: "buzzDmRow"
                   Layout.fillWidth: true
                   clip: true
                   text: modelData.name + (parent.partnerStatus ? " " + root.service.statusEmojiText(parent.partnerStatus) : "")
@@ -1304,7 +1305,8 @@ FocusScope {
               font.pixelSize: Style.font.caption
             }
             Repeater {
-              model: root.agentsVisible ? root.agentService.agents : []
+              // Agents of the community shown here; the others are listed below.
+              model: root.agentsVisible ? root.agentService.currentAgents : []
               delegate: RowLayout {
                 required property var modelData
                 Layout.fillWidth: true
@@ -1342,6 +1344,49 @@ FocusScope {
               focusable: true
               selected: root.agentEditorShown && root.agentEditorId === ""
               onClicked: root.openAgentEditor("")
+            }
+            Text {
+              objectName: "buzzAgentsOtherHeading"
+              visible: root.agentsVisible && root.agentService.otherAgents.length > 0
+              Layout.fillWidth: true
+              text: "In other communities"
+              textFormat: Text.PlainText
+              elide: Text.ElideRight
+              color: Color.foreground
+              opacity: 0.45
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+            }
+            Repeater {
+              // Muted and read-only: no Start or direct message here; the
+              // editor explains where the agent can be managed.
+              model: root.agentsVisible ? root.agentService.otherAgents : []
+              delegate: RowLayout {
+                required property var modelData
+                Layout.fillWidth: true
+                spacing: Style.space(4)
+                opacity: 0.55
+                BuzzAvatar {
+                  key: root.agentService.avatarKey(modelData)
+                  name: modelData.name
+                  art: root.agentService.avatarArtFor(modelData.id)
+                  brightness: root.agentService.avatarBrightnessFor(modelData.id)
+                  pixelSize: root.sidebarAvatarSize
+                }
+                Ui.Button {
+                  objectName: "buzzAgentOtherRow"
+                  readonly property string agentId: modelData.id
+                  Layout.fillWidth: true
+                  clip: true
+                  text: modelData.name + " · in " + modelData.community
+                  tooltipText: modelData.name + " · enrolled in " + modelData.community + " · switch to that community to manage it"
+                  fontSize: Style.font.caption
+                  leftAlign: true
+                  focusable: true
+                  selected: root.agentEditorShown && root.agentEditorId === modelData.id
+                  onClicked: root.openAgentEditor(modelData.id)
+                }
+              }
             }
             Text {
               objectName: "buzzAgentsUnavailable"

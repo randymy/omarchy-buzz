@@ -127,6 +127,12 @@ pub struct Persona {
     /// before this field existed load it as false.
     #[serde(default)]
     pub answers_dms: bool,
+    /// The canonical relay of the community this agent belongs to: it is
+    /// created (and enrolled) in the active community and stays bound to it
+    /// when another community becomes active. A store written before this
+    /// field existed is migrated once on load (`Store::open_with`).
+    #[serde(default)]
+    pub relay: String,
     /// The owner's NIP-OA `auth` tag JSON for `identity` (public, not secret).
     pub auth_tag: Option<String>,
     /// True only after the relay's `OK` for every enrollment publication.
@@ -222,6 +228,7 @@ impl Persona {
             && valid_rooms(&self.rooms)
             && RESPOND_TO.contains(&self.respond_to.as_str())
             && canonical_path(&self.workspace)
+            && crate::config::canonical_relay(&self.relay).as_deref() == Ok(self.relay.as_str())
             && self.identity.as_deref().is_none_or(canonical_key)
             && (self.identity.is_some() || (self.auth_tag.is_none() && !self.published))
             && self.auth_tag.as_deref().is_none_or(|tag| {
@@ -330,8 +337,24 @@ pub struct Store {
 }
 impl Store {
     /// Loads the store, or an empty one if the file does not exist yet. Any
-    /// invalid content is refused rather than repaired.
+    /// invalid content is refused rather than repaired; a persona without a
+    /// `relay` is refused (see `open_with` for the migration).
+    #[cfg(test)]
     pub fn open(paths: &Paths) -> Result<Self, &'static str> {
+        Self::open_with(paths, || None)
+    }
+    /// `open`, migrating personas written before `relay` existed. Each such
+    /// persona gets the relay its generated unit file names (`--relay` in the
+    /// `ExecStart` of `omarchy-buzz-agent-<id>.service`, read only), else
+    /// `first_community()` (the configuration's first community, asked at most
+    /// once). A unit file that exists but is unsafe or names no single valid
+    /// relay, or no relay at all, refuses the store (`store_invalid`); the
+    /// migrated store is validated like any other and written back once,
+    /// atomically, before it is used (a failed write refuses it too).
+    pub fn open_with(
+        paths: &Paths,
+        first_community: impl FnOnce() -> Option<String>,
+    ) -> Result<Self, &'static str> {
         ensure_private_directory(&paths.store_dir())?;
         let path = paths.store_file();
         let m = match fs::symlink_metadata(&path) {
@@ -349,12 +372,34 @@ impl Store {
         }
         let bytes = fs::read(&path).map_err(|_| "store_unavailable")?;
         let file: File = serde_json::from_slice(&bytes).map_err(|_| "store_invalid")?;
-        let store = Self {
+        if file.version != 1 {
+            return Err("store_invalid");
+        }
+        let mut store = Self {
             path,
             agents: file.agents,
         };
-        if file.version != 1 || !store.consistent() {
+        let migrate = store.agents.iter().any(|a| a.relay.is_empty());
+        if migrate {
+            let mut fallback = Some(first_community);
+            let mut first: Option<Option<String>> = None;
+            for persona in store.agents.iter_mut().filter(|a| a.relay.is_empty()) {
+                persona.relay = match unit_relay(paths, &persona.id)? {
+                    Some(relay) => relay,
+                    None => {
+                        if first.is_none() {
+                            first = Some(fallback.take().and_then(|f| f()));
+                        }
+                        first.clone().flatten().ok_or("store_invalid")?
+                    }
+                };
+            }
+        }
+        if !store.consistent() {
             return Err("store_invalid");
+        }
+        if migrate {
+            store.save().map_err(|_| "store_unavailable")?;
         }
         Ok(store)
     }
@@ -388,6 +433,78 @@ impl Store {
     }
     pub fn get_mut(&mut self, id: &str) -> Option<&mut Persona> {
         self.agents.iter_mut().find(|a| a.id == id)
+    }
+}
+
+/// Generated unit files are small; anything larger was not written here.
+const UNIT_BYTES: u64 = 64 * 1024;
+
+/// The words of a generated `ExecStart=` line: every word double-quoted with
+/// `\\`, `\"`, `%%` and `$$` escapes (`unit::quote`). Anything else is `None`.
+fn unquote_words(line: &str) -> Option<Vec<String>> {
+    let mut words = Vec::new();
+    let mut chars = line.chars();
+    loop {
+        match chars.next() {
+            None => return Some(words),
+            Some('"') => {}
+            Some(_) => return None,
+        }
+        let mut word = String::new();
+        loop {
+            match chars.next()? {
+                '"' => break,
+                '\\' => match chars.next()? {
+                    c @ ('\\' | '"') => word.push(c),
+                    _ => return None,
+                },
+                '%' if chars.next()? == '%' => word.push('%'),
+                '$' if chars.next()? == '$' => word.push('$'),
+                '%' | '$' => return None,
+                c => word.push(c),
+            }
+        }
+        words.push(word);
+        match chars.next() {
+            None => return Some(words),
+            Some(' ') => {}
+            Some(_) => return None,
+        }
+    }
+}
+
+/// The relay recorded in an agent's generated unit file, read only: `None`
+/// when there is no unit file; `store_invalid` when one exists but is not a
+/// user-owned, unlinked regular file of at most 64 KiB with exactly one
+/// `ExecStart=` line holding exactly one canonical `--relay <url>`.
+pub fn unit_relay(paths: &Paths, id: &str) -> Result<Option<String>, &'static str> {
+    const INVALID: &str = "store_invalid";
+    let path = paths.unit_file(id);
+    let m = match fs::symlink_metadata(&path) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(INVALID),
+    };
+    if !m.is_file() || m.uid() != uid() || m.len() > UNIT_BYTES || !unlinked(&path) {
+        return Err(INVALID);
+    }
+    let text = fs::read_to_string(&path).map_err(|_| INVALID)?;
+    let mut exec = text.lines().filter_map(|l| l.strip_prefix("ExecStart="));
+    let (Some(line), None) = (exec.next(), exec.next()) else {
+        return Err(INVALID);
+    };
+    let words = unquote_words(line).ok_or(INVALID)?;
+    let mut relays = words
+        .windows(2)
+        .filter(|pair| pair[0] == "--relay")
+        .map(|pair| pair[1].clone());
+    match (relays.next(), relays.next()) {
+        (Some(relay), None)
+            if crate::config::canonical_relay(&relay).as_deref() == Ok(relay.as_str()) =>
+        {
+            Ok(Some(relay))
+        }
+        _ => Err(INVALID),
     }
 }
 

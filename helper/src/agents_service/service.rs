@@ -69,6 +69,11 @@ pub struct AgentView {
     pub answers_dms: bool,
     pub published: bool,
     pub last_error: Option<String>,
+    /// The canonical relay of the agent's community.
+    pub relay: String,
+    /// That community's local name from the configuration, or the relay's
+    /// host when the configuration no longer lists it.
+    pub community: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -108,6 +113,8 @@ impl Default for ModelProbe {
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Status {
+    /// The configuration's active community, or null when none is configured.
+    pub active_relay: Option<String>,
     pub harnesses: Vec<HarnessView>,
     pub agents: Vec<AgentView>,
     pub pending: Option<Pending>,
@@ -168,7 +175,13 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> 
 
 impl Service {
     pub fn open(paths: Paths, deps: Deps, config: ConfigLoader) -> Result<Arc<Self>, &'static str> {
-        let store = Store::open(&paths)?;
+        // Personas saved before agents belonged to a community are bound to
+        // the relay of their unit file, else to the first community.
+        let store = Store::open_with(&paths, || {
+            config()
+                .ok()
+                .and_then(|c| c.communities.first().map(|c| c.relay.clone()))
+        })?;
         let harnesses = store::HARNESSES
             .iter()
             .map(|id| HarnessView {
@@ -210,6 +223,15 @@ impl Service {
     }
     /// Recomputes and republishes status (always notifies subscribers).
     pub fn publish(&self) {
+        // Read before taking any lock: the loader reads the configuration file.
+        let config = (self.config)().ok();
+        let community = |relay: &str| {
+            config
+                .as_ref()
+                .and_then(|c| c.community(relay))
+                .map(|c| c.name.clone())
+                .unwrap_or_else(|| crate::config::host(relay))
+        };
         let store = self.store.lock().unwrap();
         let units = self.units.lock().unwrap();
         let agents = store
@@ -238,9 +260,12 @@ impl Service {
                 answers_dms: p.answers_dms,
                 published: p.published,
                 last_error: p.last_error.clone(),
+                relay: p.relay.clone(),
+                community: community(&p.relay),
             })
             .collect();
         let status = Status {
+            active_relay: config.as_ref().and_then(|c| c.relay.clone()),
             harnesses: self.harnesses.lock().unwrap().clone(),
             agents,
             pending: self.pending.lock().unwrap().clone(),
@@ -400,16 +425,42 @@ impl Service {
         }
     }
 
-    fn scope(&self) -> Result<(String, String), &'static str> {
-        let config = (self.config)().map_err(|_| "relay_unavailable")?;
-        match (config.relay, config.identity) {
-            (Some(relay), Some(owner)) => Ok((relay, owner)),
-            _ => Err("relay_unavailable"),
-        }
+    fn load_config(&self) -> Result<Config, &'static str> {
+        (self.config)().map_err(|_| "relay_unavailable")
     }
-    async fn verify_rooms(&self, rooms: &[String]) -> Result<(), &'static str> {
-        let (relay, owner) = self.scope()?;
-        let joined = self.deps.rooms.joined_rooms(&relay, &owner).await?;
+    /// The owner: one identity for every community.
+    fn owner(&self) -> Result<String, &'static str> {
+        self.load_config()?.identity.ok_or("relay_unavailable")
+    }
+    /// The community a new agent belongs to: the active one, which the
+    /// configuration must list.
+    fn active_community(&self) -> Result<String, &'static str> {
+        let config = self.load_config()?;
+        config
+            .relay
+            .clone()
+            .filter(|relay| config.identity.is_some() && config.community(relay).is_some())
+            .ok_or("relay_unavailable")
+    }
+    /// The owner keys' configuration for one community (Secret Service keeps
+    /// the owner secret under `relay|identity` per community).
+    fn owner_config(&self, relay: &str) -> Result<Config, &'static str> {
+        Ok(Config {
+            relay: Some(relay.to_owned()),
+            identity: Some(self.owner()?),
+            communities: Vec::new(),
+        })
+    }
+    /// Rooms are checked against the helper's verified catalog, which exists
+    /// only for the active community: an agent of another community cannot
+    /// have its rooms checked until that community is active again.
+    async fn verify_rooms(&self, relay: &str, rooms: &[String]) -> Result<(), &'static str> {
+        let config = self.load_config()?;
+        let owner = config.identity.clone().ok_or("relay_unavailable")?;
+        if config.relay.as_deref() != Some(relay) {
+            return Err("relay_unavailable");
+        }
+        let joined = self.deps.rooms.joined_rooms(relay, &owner).await?;
         if rooms.iter().all(|room| joined.contains(room)) {
             Ok(())
         } else {
@@ -469,6 +520,7 @@ impl Service {
         if self.store.lock().unwrap().agents.len() >= store::MAX_AGENTS {
             return Err("agent_limit");
         }
+        let relay = self.active_community()?;
         let id = uuid::Uuid::new_v4().to_string();
         let mut persona = Persona {
             id: id.clone(),
@@ -485,6 +537,7 @@ impl Service {
             identity: None,
             start_at_login: fields.start_at_login.ok_or("agent_invalid")?,
             answers_dms: fields.answers_dms.ok_or("agent_invalid")?,
+            relay,
             auth_tag: None,
             published: false,
             member_rooms: Vec::new(),
@@ -498,7 +551,7 @@ impl Service {
         if !models::valid_for(&persona.harness, &persona.model) {
             return Err(self.refuse_model());
         }
-        self.verify_rooms(&persona.rooms).await?;
+        self.verify_rooms(&persona.relay, &persona.rooms).await?;
         persona.workspace = self.workspace(&requested, &id)?;
         self.commit(persona)
     }
@@ -555,7 +608,7 @@ impl Service {
             return Err(self.refuse_model());
         }
         if new.rooms != old.rooms {
-            self.verify_rooms(&new.rooms).await?;
+            self.verify_rooms(&old.relay, &new.rooms).await?;
         }
         if let Some(requested) = requested {
             new.workspace = self.workspace(&requested, id)?;
@@ -612,13 +665,9 @@ impl Service {
             return Ok(());
         }
         let agent = nostr::PublicKey::from_hex(&identity).map_err(|_| "agent_invalid")?;
-        let (relay, owner_hex) = self.scope()?;
+        let relay = persona.relay.clone();
+        let config = self.owner_config(&relay)?;
         let keyring = self.deps.keyring.clone();
-        let config = Config {
-            relay: Some(relay.clone()),
-            identity: Some(owner_hex),
-            communities: Vec::new(),
-        };
         let owner = blocking(move || keyring.owner_keys(&config)).await;
         let Ok(owner) = owner else {
             let mut persona = persona;
@@ -719,14 +768,10 @@ impl Service {
 
     async fn enroll(&self, id: &str) -> Result<(), &'static str> {
         let mut persona = self.persona(id)?;
-        let (relay, owner_hex) = self.scope()?;
-        self.verify_rooms(&persona.rooms).await?;
+        let relay = persona.relay.clone();
+        self.verify_rooms(&relay, &persona.rooms).await?;
+        let config = self.owner_config(&relay)?;
         let keyring = self.deps.keyring.clone();
-        let config = Config {
-            relay: Some(relay.clone()),
-            identity: Some(owner_hex.clone()),
-            communities: Vec::new(),
-        };
         let owner = blocking(move || keyring.owner_keys(&config))
             .await
             .map_err(|_| "enroll_failed")?;
@@ -777,14 +822,10 @@ impl Service {
     /// Republishes an enrolled agent's records after an edit.
     async fn publish_records(&self, id: &str) -> Result<(), &'static str> {
         let persona = self.persona(id)?;
-        let (relay, owner_hex) = self.scope()?;
+        let relay = persona.relay.clone();
         let identity = persona.identity.clone().ok_or("agent_invalid")?;
+        let config = self.owner_config(&relay)?;
         let keyring = self.deps.keyring.clone();
-        let config = Config {
-            relay: Some(relay.clone()),
-            identity: Some(owner_hex),
-            communities: Vec::new(),
-        };
         let keys = blocking(move || {
             Ok::<_, &'static str>((keyring.owner_keys(&config)?, keyring.agent_keys(&identity)?))
         })
@@ -840,8 +881,8 @@ impl Service {
 
     /// Renders and installs the unit file, then reloads systemd.
     async fn install_unit(&self, persona: &Persona) -> Result<(), &'static str> {
-        let (relay, owner) = self.scope()?;
-        let text = unit::render(&self.paths, persona, &relay, &owner)?;
+        let owner = self.owner()?;
+        let text = unit::render(&self.paths, persona, &owner)?;
         self.write_private_files(persona)
             .map_err(|_| "unit_failed")?;
         let dir = self.paths.units_dir();

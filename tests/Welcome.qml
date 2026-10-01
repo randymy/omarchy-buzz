@@ -73,16 +73,20 @@ ShellRoot {
         harness: "claude-code", model: "", acpCommand: "buzz-acp", rooms: ["aaaaaaaa-0000-4000-8000-0000000000f1"],
         respondTo: "owner-only", workspace: "/home/fixture/.local/state/omarchy-buzz-room-workspaces/" + id,
         identity: identity, enrolled: identity !== null, unit: "inactive", startAtLogin: false, answersDms: false,
-        published: identity !== null, lastError: null}
+        published: identity !== null, lastError: null, relay: test.first, community: "first"}
     }
     return JSON.stringify({version: 1, type: "hello", id: null, instanceId: "welcome-agents", capabilities: ["agent_manager"],
       status: {harnesses: [{id: "claude-code", bundle: "ready", signedIn: true}, {id: "codex", bundle: "ready", signedIn: true}],
         agents: [persona(test.bareAgent, "vBare", "c".repeat(64)), persona(test.artAgent, "vClaude", "d".repeat(64))],
-        pending: null, modelProbe: {agentId: null, state: "idle", model: "", detail: null}}})
+        pending: null, modelProbe: {agentId: null, state: "idle", model: "", detail: null}, activeRelay: test.first}})
   }
+  // Both agents belong to the first community: listed there, and under "In
+  // other communities" elsewhere, with the same avatar either way.
   function agentAvatar(name) {
-    var rows = shown("buzzAgentRow").filter(function(row) { return row.text.indexOf(name + " ·") === 0 })
+    var rowName = service.relay === test.first ? "buzzAgentRow" : "buzzAgentOtherRow"
+    var rows = shown(rowName).filter(function(row) { return row.text.indexOf(name + " ·") === 0 })
     check(rows.length === 1, "Agent row missing: " + name)
+    check(rowName === "buzzAgentRow" || rows[0].text === name + " · in first", "Other community's agent row wrong: " + rows[0].text)
     var avatars = findNamed(rows[0].parent, "buzzAvatar", [])
     check(avatars.length === 1, "Agent avatar missing: " + name)
     return avatars[0]

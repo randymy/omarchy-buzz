@@ -33,7 +33,8 @@ async fn session() -> Session {
                 relay: Some("ws://127.0.0.1:9/".into()),
                 identity: Some(owner.clone()),
                 communities: Vec::new(),
-            })
+            }
+            .normalized())
         }),
     )
     .unwrap();

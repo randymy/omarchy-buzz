@@ -45,6 +45,7 @@ installation and identity administration for this one component.
 | `identity` | agent public key once enrolled; the private key lives only in Secret Service (`omarchy-buzz.room-agent.v1` / account = public key) |
 | `startAtLogin` | boolean, maps to `systemctl --user enable` |
 | `answersDms` | boolean, default false: launch without a room filter so the agent also answers direct messages (see Units) |
+| `relay` | canonical relay (`config::canonical_relay`) of the community the agent belongs to: the active community when it was created, never changed afterwards (see "Agents belong to a community") |
 
 ## IPC (line-delimited JSON, same envelope style as the helper)
 
@@ -61,17 +62,23 @@ Frames from the service have exactly the keys
 
 ```
 status: {
+  activeRelay: string|null,
   harnesses: [{id:"claude-code"|"codex", bundle:"ready"|"stale"|"missing", signedIn:true|false|null}],
   agents: [{id,name,description,instructions,harness,model,acpCommand,rooms,respondTo,workspace,
             identity|null, enrolled:bool, unit:"active"|"inactive"|"failed"|"unknown",
-            startAtLogin:bool, answersDms:bool, published:bool, lastError:string|null}],
+            startAtLogin:bool, answersDms:bool, published:bool, lastError:string|null,
+            relay:string, community:string}],
   pending: {requestId,type,state:"working"|"done"|"failed",category:string|null,detail:string|null} | null,
   modelProbe: {agentId:uuid|null, state:"idle"|"running"|"ok"|"unavailable"|"not_signed_in"|"failed",
                model:string, detail:string|null}
 }
 ```
 
-Each agent has exactly those 17 keys; `id` is a lowercase UUID v4; `enrolled`
+Each agent has exactly those 19 keys (`relay` and `community` added October 1);
+`activeRelay` is the configuration's active community (canonical relay) or null
+when none is configured; an agent's `relay` is its own community's canonical
+relay and `community` that community's local name from the configuration, or
+the relay's `host[:port]` when the configuration no longer lists it; `id` is a lowercase UUID v4; `enrolled`
 is true only with a non-null `identity`; at most 16 agents. `pending.type` is
 one of the ten mutating types; `category` is non-null exactly when `state` is
 `failed`; `detail` (added with the model check) is null or, only when `failed`,
@@ -125,6 +132,44 @@ categories `agent_invalid`, `agent_busy`, `agent_limit`, `harness_missing`,
 `not_signed_in`, `enroll_failed`, `unit_failed`, `workspace_refused`,
 `relay_unavailable`. At most 16 personas. One mutating request at a time. Rooms
 are stream-room UUIDs from the helper's verified catalog.
+
+### Agents belong to a community (added October 1, branch `agent-community`)
+
+An agent belongs to the community it was created in: `create_agent` binds the
+new persona to the configuration's active community (`relay`), and refuses
+with `relay_unavailable` when there is no identity, no active relay or the
+community list does not name it. The binding never changes. Every path uses
+the persona's `relay`, never the active one: the rooms check, enrollment and
+every republication (kind 30175/30177/9000/9001/0 on that relay, with the
+owner key Secret Service keeps for that community, account
+`<relay>|<identity>`), the unit's `--relay`, start at login, stop, and the
+kind 9001 removals of `delete_agent`. Only the owner identity comes from the
+configuration (one identity for every community). Rooms can be checked only
+in the helper's verified catalog, which exists for the active community only:
+`update_agent` changing `rooms` and `enroll_agent` refuse an agent of another
+community with `relay_unavailable` (nothing is asked of the catalog) until
+that community is active again; start, stop, start at login, republishing
+edits, `probe_model` (which never uses a relay) and `delete_agent` work for
+any agent. The panel lists the active community's agents and shows the others
+read-only under "In other communities" (see CHECKPOINT).
+
+**Migration.** A store written before `relay` existed is migrated once when
+the service opens it (`Store::open_with`). Each persona without `relay` gets:
+1. the relay its generated unit file names: `--relay <url>` in the only
+   `ExecStart=` line of `~/.config/systemd/user/omarchy-buzz-agent-<id>.service`,
+   read only (never changed), with every word in the generator's quoting
+   (`"…"`, `\\`, `\"`, `%%`, `$$`); the file must be a user-owned, unlinked
+   regular file of at most 64 KiB naming exactly one canonical relay;
+2. otherwise the configuration's first community (`communities[0]`; the
+   configuration is read at most once, and only when needed).
+
+A unit file that exists but fails those rules, or a persona with neither, is
+refused (`store_invalid`): the service does not open and nothing is written,
+so the next start tries again. The migrated store passes the same validation
+as any other and is written back once, atomically (0600, temporary file,
+fsync, rename, directory fsync) before it is used; a failed write refuses it
+(`store_unavailable`). A persona that already has a `relay` is never changed,
+whatever its unit file says.
 
 ### Model check (added September 30, branch `model-check`)
 
@@ -225,7 +270,7 @@ argv array, no shell):
 ```
 ~/.local/share/omarchy-buzz/agent-<harness>/launcher/room-agent --harness <claude-code|codex>
   --profile ~/.local/state/omarchy-buzz-agent-preview/<harness> --workspace <ws>
-  --bundle ~/.local/share/omarchy-buzz/agent-<harness> --relay <ws(s)://origin>
+  --bundle ~/.local/share/omarchy-buzz/agent-<harness> --relay <the persona's relay>
   (--room <uuid> [--room <uuid> … up to 8] | --answers-dms) --owner <hex> --identity <hex>
   --respond-to <owner-only|mentions> --auth-tag <file> [--instructions <file>]
   [--model <name>]
@@ -267,12 +312,14 @@ clients, idle exit after 30 s unless a request is still running).
   `harness`; `model`; `acpCommand` = `buzz-acp`; 1–8 unique canonical room
   UUIDs, all present in the helper's verified catalog (read from the helper's
   own `control.sock`: authenticated, catalog `partial`/`ready`, same relay and
-  owner, stream rooms only; otherwise `relay_unavailable`); `respondTo`.
+  owner, stream rooms only; otherwise `relay_unavailable`); `respondTo`;
+  `relay` canonical (and, on create and on a rooms check, the active relay).
 - Store: `$XDG_STATE_HOME/omarchy-buzz/agents/personas.json`, 0600 in a 0700
   directory, replaced atomically (temporary file, fsync, rename, directory
   fsync), ≤ 1 MiB, unknown keys refused (a missing `answersDms`, from a store
   written before that field, loads as false), a group/other-readable or invalid file
-  refused rather than repaired. Unique ids and identities, at most 16.
+  refused rather than repaired; a missing `relay` is migrated once, see
+  "Agents belong to a community". Unique ids and identities, at most 16.
 - Workspace: absolute and normalized (no `.`, `..`, repeated or trailing
   separators, control characters), an existing directory with no symlinked
   component, owned by the user, with no group/other permission bits (the same

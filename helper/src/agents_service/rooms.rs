@@ -87,15 +87,20 @@ impl RoomSource for HelperCatalog {
     }
 }
 
-/// Synthetic room list for tests and fake-control mode.
-pub struct FixedRooms(pub Mutex<Result<Vec<String>, &'static str>>);
+/// Synthetic room list for tests and fake-control mode. The relays asked
+/// for are recorded in the second field.
+pub struct FixedRooms(
+    pub Mutex<Result<Vec<String>, &'static str>>,
+    pub Mutex<Vec<String>>,
+);
 impl FixedRooms {
     pub fn new(rooms: Vec<String>) -> Self {
-        Self(Mutex::new(Ok(rooms)))
+        Self(Mutex::new(Ok(rooms)), Mutex::new(Vec::new()))
     }
 }
 impl RoomSource for FixedRooms {
-    fn joined_rooms<'a>(&'a self, _relay: &'a str, _owner: &'a str) -> RoomsFuture<'a> {
+    fn joined_rooms<'a>(&'a self, relay: &'a str, _owner: &'a str) -> RoomsFuture<'a> {
+        self.1.lock().unwrap().push(relay.to_owned());
         let rooms = self.0.lock().unwrap().clone();
         Box::pin(async move { rooms })
     }

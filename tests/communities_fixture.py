@@ -9,6 +9,11 @@ a new generation with the old relay's state cleared. First setup saves the
 invite link's relay without an identity (`pendingInvite`); the panel creates
 the identity and redeems the invite. A community with terms is switched to
 and left awaiting `accept_invite`. No secret exists anywhere in this fixture.
+
+Run as `agents-bridge` it is the agent service instead: one agent enrolled in
+the first community (with a direct message there) and one in the second; its
+`activeRelay` is the relay the helper side last reported (a file beside the
+send record), re-read on every `subscribe`. Only `subscribe` is expected.
 """
 import json
 import os
@@ -35,6 +40,60 @@ IDLE_SETUP = {"state": "idle", "inviteCode": None, "joinPolicy": None, "claim": 
 NO_OPEN = {"state": "unavailable", "rooms": [], "category": None}
 IDLE_ACTION = {"state": "idle", "action": None, "requestId": None, "roomId": None, "category": None}
 NO_CATALOG = {"state": "unavailable", "rooms": [], "category": None}
+VCLAUDE = "33333333-3333-4333-8333-333333333333"
+NIGHT_BOT = "44444444-4444-4444-8444-444444444444"
+VCLAUDE_KEY = "c" * 64
+NIGHT_KEY = "d" * 64
+DM_ROOM = "dddddddd-0000-4000-8000-0000000000d1"
+
+
+def side_file(name):
+    return os.path.join(os.path.dirname(os.environ["BUZZ_SEND_RECORD"]), name)
+
+
+def agents_bridge():
+    instance = "communities-agents"
+    requests = []
+
+    def persona(agent_id, name, key, relay, community, rooms):
+        return {"id": agent_id, "name": name, "description": "", "instructions": "", "harness": "codex", "model": "",
+                "acpCommand": "buzz-acp", "rooms": rooms, "respondTo": "owner-only",
+                "workspace": "/home/fixture/.local/state/omarchy-buzz-room-workspaces/" + agent_id, "identity": key,
+                "enrolled": True, "unit": "inactive", "startAtLogin": False, "answersDms": True, "published": True,
+                "lastError": None, "relay": relay, "community": community}
+
+    agents = [persona(VCLAUDE, "vClaude", VCLAUDE_KEY, "wss://first.example/", "first", [ROOMS["wss://first.example/"][0][0]]),
+              persona(NIGHT_BOT, "Night bot", NIGHT_KEY, "wss://second.example/", "second", [ROOMS["wss://second.example/"][0][0]])]
+
+    def emit(kind="status", request_id=None):
+        try:
+            with open(side_file("active-relay.json"), encoding="utf-8") as source:
+                active = json.load(source)
+        except FileNotFoundError:
+            active = None
+        print(json.dumps({"version": 1, "type": kind, "id": request_id, "instanceId": instance,
+                          "capabilities": ["agent_manager"],
+                          "status": {"activeRelay": active,
+                                     "harnesses": [{"id": "codex", "bundle": "ready", "signedIn": True}],
+                                     "agents": agents, "pending": None,
+                                     "modelProbe": {"agentId": None, "state": "idle", "model": "", "detail": None}}}),
+              flush=True)
+
+    emit("hello")
+    for line in sys.stdin:
+        request = json.loads(line)
+        assert request["type"] == "subscribe" and request["instanceId"] == instance, request
+        assert sorted(request) == ["id", "instanceId", "type", "version"], request
+        requests.append(request["type"])
+        with open(side_file("agents-record.json.tmp"), "w", encoding="utf-8") as output:
+            json.dump({"requests": requests}, output)
+        os.replace(side_file("agents-record.json.tmp"), side_file("agents-record.json"))
+        emit(request_id=request["id"])
+
+
+if sys.argv[1:] == ["agents-bridge"]:
+    agents_bridge()
+    sys.exit(0)
 assert sys.argv[1:] == ["ui-bridge"]
 record = {"requests": []}
 entries = []  # [relay, name]
@@ -61,6 +120,10 @@ def communities():
 
 
 def emit(kind="status", request_id=None):
+    # What the agent service would read from the configuration.
+    with open(side_file("active-relay.json.tmp"), "w", encoding="utf-8") as output:
+        json.dump(status["relay"], output)
+    os.replace(side_file("active-relay.json.tmp"), side_file("active-relay.json"))
     print(json.dumps({"version": 1, "type": kind, "id": request_id, "instanceId": INSTANCE,
                       "generation": status["generation"], "capabilities": CAPABILITIES,
                       "status": dict(status, communities=communities())}), flush=True)
@@ -79,9 +142,13 @@ def ready(**extra):
 
 
 def rooms(relay):
-    return {"state": "ready", "category": None, "rooms": [
-        {"id": room, "name": name, "description": "", "kind": "stream", "participants": [], "hidden": False}
-        for room, name in ROOMS[relay]]}
+    listed = [{"id": room, "name": name, "description": "", "kind": "stream", "participants": [], "hidden": False}
+              for room, name in ROOMS[relay]]
+    # The direct message with vClaude exists only in its own community.
+    if relay == "wss://first.example/":
+        listed.append({"id": DM_ROOM, "name": "vClaude", "description": "", "kind": "dm",
+                       "participants": sorted([IDENTITY, VCLAUDE_KEY]), "hidden": False})
+    return {"state": "ready", "category": None, "rooms": listed}
 
 
 def activate(relay, connection="authenticated", category=None):

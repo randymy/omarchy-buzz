@@ -14,6 +14,10 @@ ROOM_B = "22222222-2222-4222-8222-222222222222"
 SELF = "a" * 64
 AGENT = "33333333-3333-4333-8333-333333333333"
 CREATED = "55555555-5555-4555-9555-555555555555"
+# An agent enrolled in another community: listed read-only, never requested.
+REMOTE = "66666666-6666-4666-8666-666666666666"
+REMOTE_ROOM = "99999999-9999-4999-8999-999999999999"
+RELAY = "wss://fixture.invalid/"
 FIELDS = ["acpCommand", "answersDms", "description", "harness", "instructions", "model", "name", "respondTo",
           "rooms", "startAtLogin", "workspace"]
 
@@ -55,7 +59,13 @@ def agents_service():
     agents = [{"id": AGENT, "name": "Fixture agent", "description": "Synthetic persona", "instructions": "Answer briefly.",
                "harness": "codex", "model": "", "acpCommand": "buzz-acp", "rooms": [ROOM_A], "respondTo": "owner-only",
                "workspace": "/home/fixture/.local/state/omarchy-buzz-room-workspaces/" + AGENT, "identity": "b" * 64,
-               "enrolled": True, "unit": "inactive", "startAtLogin": False, "answersDms": False, "published": True, "lastError": None}]
+               "enrolled": True, "unit": "inactive", "startAtLogin": False, "answersDms": False, "published": True, "lastError": None,
+               "relay": RELAY, "community": "Fixture"},
+              {"id": REMOTE, "name": "Remote agent", "description": "", "instructions": "",
+               "harness": "codex", "model": "", "acpCommand": "buzz-acp", "rooms": [REMOTE_ROOM], "respondTo": "owner-only",
+               "workspace": "/home/fixture/.local/state/omarchy-buzz-room-workspaces/" + REMOTE, "identity": "e" * 64,
+               "enrolled": True, "unit": "active", "startAtLogin": True, "answersDms": False, "published": True,
+               "lastError": None, "relay": "wss://elsewhere.invalid/", "community": "Elsewhere"}]
     state = {"pending": None, "probe": {"agentId": None, "state": "idle", "model": "", "detail": None}, "probes": 0}
     # Probe results in order: a model the provider does not offer, then one it does.
     probe_results = [("unavailable", "The provider does not offer this model to this account."),
@@ -71,7 +81,7 @@ def agents_service():
     def emit(kind="status", request_id=None):
         print(json.dumps({"version": 1, "type": kind, "id": request_id, "instanceId": instance,
                           "capabilities": ["agent_manager"],
-                          "status": {"harnesses": harnesses, "agents": agents, "pending": state["pending"],
+                          "status": {"activeRelay": RELAY, "harnesses": harnesses, "agents": agents, "pending": state["pending"],
                                      "modelProbe": state["probe"]}}), flush=True)
 
     def working(request):
@@ -112,7 +122,7 @@ def agents_service():
                            "workspace": fields["workspace"] or "/home/fixture/.local/state/omarchy-buzz-room-workspaces/" + CREATED,
                            "identity": None, "enrolled": False, "unit": "inactive",
                            "startAtLogin": fields["startAtLogin"], "answersDms": fields["answersDms"],
-                           "published": False, "lastError": None})
+                           "published": False, "lastError": None, "relay": RELAY, "community": "Fixture"})
             done(request)
         elif kind == "update_agent":
             assert sorted(request) == ["agentId", "fields", "id", "instanceId", "type", "version"] and request["agentId"] == AGENT

@@ -31,7 +31,7 @@ fn enrolled() -> Persona {
 
 #[test]
 fn renders_the_reviewed_template_exactly() {
-    let rendered = render(&example_paths(), &enrolled(), RELAY, OWNER).unwrap();
+    let rendered = render(&example_paths(), &enrolled(), OWNER).unwrap();
     assert_eq!(rendered, include_str!("testdata/agent.service"));
 }
 
@@ -39,9 +39,9 @@ fn renders_the_reviewed_template_exactly() {
 fn answering_dms_renders_no_room_filter() {
     let mut p = enrolled();
     p.answers_dms = true;
-    let rendered = render(&example_paths(), &p, RELAY, OWNER).unwrap();
+    let rendered = render(&example_paths(), &p, OWNER).unwrap();
     assert_eq!(rendered, include_str!("testdata/agent-dms.service"));
-    let argv = exec_argv(&example_paths(), &p, RELAY, OWNER).unwrap();
+    let argv = exec_argv(&example_paths(), &p, OWNER).unwrap();
     assert!(!argv
         .iter()
         .any(|w| w == "--room" || w == ROOM_A || w == ROOM_B));
@@ -55,7 +55,7 @@ fn exec_start_is_the_contract_argv() {
     let paths = example_paths();
     let mut p = enrolled();
     assert_eq!(
-        exec_argv(&paths, &p, RELAY, OWNER).unwrap(),
+        exec_argv(&paths, &p, OWNER).unwrap(),
         [
             "/home/example/.local/share/omarchy-buzz/agent-codex/launcher/room-agent",
             "--harness",
@@ -91,7 +91,7 @@ fn exec_start_is_the_contract_argv() {
     p.respond_to = "mentions".into();
     p.instructions.clear();
     p.model.clear();
-    let argv = exec_argv(&paths, &p, RELAY, OWNER).unwrap();
+    let argv = exec_argv(&paths, &p, OWNER).unwrap();
     assert_eq!(
         argv[0],
         "/home/example/.local/share/omarchy-buzz/agent-claude-code/launcher/room-agent"
@@ -120,25 +120,31 @@ fn refuses_unrenderable_scopes() {
     let p = enrolled();
     let mut unenrolled = p.clone();
     unenrolled.identity = None;
-    assert!(exec_argv(&paths, &unenrolled, RELAY, OWNER).is_err());
+    assert!(exec_argv(&paths, &unenrolled, OWNER).is_err());
     let mut unattested = p.clone();
     unattested.auth_tag = None;
     assert!(
-        exec_argv(&paths, &unattested, RELAY, OWNER).is_err(),
+        exec_argv(&paths, &unattested, OWNER).is_err(),
         "an enrolled agent always carries its attestation"
     );
     let other_owner = "f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9";
     assert!(
-        exec_argv(&paths, &p, RELAY, other_owner).is_err(),
+        exec_argv(&paths, &p, other_owner).is_err(),
         "the attestation must be the current owner's"
     );
-    assert!(
-        exec_argv(&paths, &p, RELAY, AGENT).is_err(),
-        "owner equals agent"
-    );
-    assert!(exec_argv(&paths, &p, "wss://relay.example/path", OWNER).is_err());
-    assert!(exec_argv(&paths, &p, "http://relay.example/", OWNER).is_err());
-    assert!(exec_argv(&paths, &p, RELAY, "not-a-key").is_err());
+    assert!(exec_argv(&paths, &p, AGENT).is_err(), "owner equals agent");
+    // The relay is the persona's own and must be canonical.
+    for relay in [
+        "wss://relay.example/path",
+        "http://relay.example/",
+        "wss://Relay.example",
+        "",
+    ] {
+        let mut other = p.clone();
+        other.relay = relay.into();
+        assert!(exec_argv(&paths, &other, OWNER).is_err(), "{relay}");
+    }
+    assert!(exec_argv(&paths, &p, "not-a-key").is_err());
 }
 
 #[test]
@@ -146,7 +152,7 @@ fn every_word_is_quoted_against_systemd_expansion() {
     let paths = example_paths();
     let mut p = enrolled();
     p.workspace = "/home/example/a b/%h/$HOME/\"q\"/back\\slash".into();
-    let text = render(&paths, &p, RELAY, OWNER).unwrap();
+    let text = render(&paths, &p, OWNER).unwrap();
     let exec = text.lines().find(|l| l.starts_with("ExecStart=")).unwrap();
     assert!(
         exec.contains(r#""/home/example/a b/%%h/$$HOME/\"q\"/back\\slash""#),
@@ -257,4 +263,21 @@ fn bounded_runs_never_use_a_shell_and_time_out() {
         false
     )
     .is_err());
+}
+
+#[test]
+fn the_launch_relay_is_the_personas_own_community() {
+    let paths = example_paths();
+    let mut p = enrolled();
+    p.relay = "wss://second.example/".into();
+    let argv = exec_argv(&paths, &p, OWNER).unwrap();
+    let at = argv.iter().position(|w| w == "--relay").unwrap();
+    assert_eq!(argv[at + 1], "wss://second.example/");
+    assert_eq!(argv.iter().filter(|w| *w == "--relay").count(), 1);
+    let text = render(&paths, &p, OWNER).unwrap();
+    assert!(
+        text.contains(r#""--relay" "wss://second.example/""#),
+        "{text}"
+    );
+    assert!(!text.contains(RELAY));
 }

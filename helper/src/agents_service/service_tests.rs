@@ -17,6 +17,8 @@ struct Fixture {
     spawner: Arc<FakeSpawner>,
     rooms: Arc<FixedRooms>,
     owner: nostr::Keys,
+    /// What the configuration loader returns; tests switch communities here.
+    config: Arc<Mutex<Config>>,
     service: Arc<Service>,
     serial: std::cell::Cell<u32>,
 }
@@ -33,11 +35,15 @@ fn fixture(relay_url: &str) -> Fixture {
     ]));
     let owner = nostr::Keys::generate();
     *keyring.owner.lock().unwrap() = Some(owner.clone());
-    let config = Config {
-        relay: Some(relay_url.into()),
-        identity: Some(owner.public_key().to_hex()),
-        communities: Vec::new(),
-    };
+    let config = Arc::new(Mutex::new(
+        Config {
+            relay: Some(relay_url.into()),
+            identity: Some(owner.public_key().to_hex()),
+            communities: Vec::new(),
+        }
+        .normalized(),
+    ));
+    let loader = config.clone();
     let service = Service::open(
         home.paths.clone(),
         Deps {
@@ -46,7 +52,7 @@ fn fixture(relay_url: &str) -> Fixture {
             spawner: spawner.clone(),
             rooms: rooms.clone(),
         },
-        Box::new(move || Ok(config.clone())),
+        Box::new(move || Ok(loader.lock().unwrap().clone())),
     )
     .unwrap();
     Fixture {
@@ -56,6 +62,7 @@ fn fixture(relay_url: &str) -> Fixture {
         spawner,
         rooms,
         owner,
+        config,
         service,
         serial: std::cell::Cell::new(0),
     }
@@ -360,7 +367,6 @@ async fn enroll_start_stop_login_and_delete_through_fakes() {
         unit::render(
             &f.home.paths,
             &f.stored(&id),
-            &relay.url,
             &f.owner.public_key().to_hex()
         )
         .unwrap()
@@ -770,7 +776,8 @@ async fn delete_skips_memberships_of_a_previous_owner() {
         relay: Some(relay.url.clone()),
         identity: Some(owner.public_key().to_hex()),
         communities: Vec::new(),
-    };
+    }
+    .normalized();
     let service = Service::open(
         f.home.paths.clone(),
         Deps {
@@ -1023,7 +1030,13 @@ async fn status_frames_have_exactly_the_contract_shape_and_fit_the_bound() {
     assert_eq!(frame["capabilities"], serde_json::json!(["agent_manager"]));
     assert_eq!(
         keys(&frame["status"]),
-        ["agents", "harnesses", "modelProbe", "pending"]
+        [
+            "activeRelay",
+            "agents",
+            "harnesses",
+            "modelProbe",
+            "pending"
+        ]
     );
     assert_eq!(
         frame["status"]["modelProbe"],
@@ -1038,6 +1051,7 @@ async fn status_frames_have_exactly_the_contract_shape_and_fit_the_bound() {
         [
             "acpCommand",
             "answersDms",
+            "community",
             "description",
             "enrolled",
             "harness",
@@ -1048,6 +1062,7 @@ async fn status_frames_have_exactly_the_contract_shape_and_fit_the_bound() {
             "model",
             "name",
             "published",
+            "relay",
             "respondTo",
             "rooms",
             "startAtLogin",
@@ -1071,7 +1086,10 @@ async fn status_frames_have_exactly_the_contract_shape_and_fit_the_bound() {
     agent.description = "\u{10FFFF}".repeat(256);
     agent.rooms = vec![ROOM_A.into(); 8];
     agent.workspace = format!("/{}", "w".repeat(1023));
+    agent.relay = format!("wss://{}/", "r".repeat(2030));
+    agent.community = "\u{10FFFF}".repeat(16);
     worst.agents = vec![agent; 16];
+    worst.active_relay = Some(format!("wss://{}/", "r".repeat(2030)));
     let bytes =
         serde_json::to_vec(&envelope("status", Some(&id), &"i".repeat(128), &worst)).unwrap();
     assert!(
@@ -1432,4 +1450,283 @@ async fn probe_model_is_gated_and_runs_the_launcher_in_probe_mode() {
         .await
         .unwrap();
     assert_eq!(probe(&f), ModelProbe::default());
+}
+
+/// Two communities, `first` active: names "Alpha" and "Beta".
+fn two_communities(f: &Fixture, first: &str, second: &str) {
+    let mut config = f.config.lock().unwrap();
+    config.relay = Some(first.into());
+    config.communities = vec![
+        crate::config::Community {
+            relay: first.into(),
+            name: "Alpha".into(),
+            joined_at: 1,
+        },
+        crate::config::Community {
+            relay: second.into(),
+            name: "Beta".into(),
+            joined_at: 2,
+        },
+    ];
+}
+fn switch_to(f: &Fixture, relay: &str) {
+    f.config.lock().unwrap().relay = Some(relay.into());
+    f.service.publish();
+}
+fn kinds(relay: &crate::agents_service::test_support::Relay) -> Vec<u16> {
+    relay
+        .seen
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|s| s.event.kind.as_u16())
+        .collect()
+}
+
+#[tokio::test]
+async fn agents_stay_bound_to_the_community_they_were_created_in() {
+    let _network_fixture = crate::NETWORK_TEST_LOCK.lock().await;
+    let alpha = relay(|_| Answer::Accept, false).await;
+    let beta = relay(|_| Answer::Accept, false).await;
+    let f = fixture(&alpha.url);
+    two_communities(&f, &alpha.url, &beta.url);
+    let id = f
+        .create(serde_json::json!({"model":"gpt-5.5"}))
+        .await
+        .unwrap();
+    // Created in, and bound to, the active community.
+    assert_eq!(f.stored(&id).relay, alpha.url);
+    let view = f.agent(&id);
+    assert_eq!(
+        (view.relay.as_str(), view.community.as_str()),
+        (alpha.url.as_str(), "Alpha")
+    );
+    assert_eq!(
+        f.service.snapshot().active_relay.as_deref(),
+        Some(alpha.url.as_str())
+    );
+    assert_eq!(*f.rooms.1.lock().unwrap(), [alpha.url.clone()]);
+    f.run(serde_json::json!({"type":"enroll_agent","agentId":id}))
+        .await
+        .unwrap();
+    assert_eq!(kinds(&alpha), [30175, 30177, 9000, 0]);
+    assert!(kinds(&beta).is_empty());
+    assert!(f
+        .keyring
+        .owner_relays
+        .lock()
+        .unwrap()
+        .iter()
+        .all(|r| r == &alpha.url));
+
+    // The maintainer switches to the second community.
+    switch_to(&f, &beta.url);
+    let status = f.service.snapshot();
+    assert_eq!(status.active_relay.as_deref(), Some(beta.url.as_str()));
+    assert_eq!(
+        (f.agent(&id).relay, f.agent(&id).community),
+        (alpha.url.clone(), "Alpha".to_string())
+    );
+    f.keyring.owner_relays.lock().unwrap().clear();
+
+    // Start, start at login: the unit names the agent's own relay.
+    f.ready("codex");
+    f.run(serde_json::json!({"type":"start_agent","agentId":id}))
+        .await
+        .unwrap();
+    let unit_text = std::fs::read_to_string(f.home.paths.unit_file(&id)).unwrap();
+    assert!(
+        unit_text.contains(&format!("\"--relay\" \"{}\"", alpha.url)),
+        "{unit_text}"
+    );
+    assert!(!unit_text.contains(&beta.url));
+    let argv = unit::exec_argv(
+        &f.home.paths,
+        &f.stored(&id),
+        &f.owner.public_key().to_hex(),
+    )
+    .unwrap();
+    let at = argv.iter().position(|w| w == "--relay").unwrap();
+    assert_eq!(argv[at + 1], alpha.url);
+    std::fs::remove_file(f.home.paths.unit_file(&id)).unwrap();
+    f.run(serde_json::json!({"type":"set_start_at_login","agentId":id,"enabled":true}))
+        .await
+        .unwrap();
+    assert!(std::fs::read_to_string(f.home.paths.unit_file(&id))
+        .unwrap()
+        .contains(&format!("\"--relay\" \"{}\"", alpha.url)));
+    f.run(serde_json::json!({"type":"stop_agent","agentId":id}))
+        .await
+        .unwrap();
+    assert_eq!(f.agent(&id).unit, "inactive");
+
+    // A republishing edit goes to the agent's relay with that community's
+    // owner key, never to the active one.
+    f.run(serde_json::json!({"type":"update_agent","agentId":id,"fields":{"name":"Renamed"}}))
+        .await
+        .unwrap();
+    assert_eq!(kinds(&alpha), [30175, 30177, 9000, 0, 30175, 30177, 0]);
+    assert!(kinds(&beta).is_empty());
+    assert!(f.agent(&id).published);
+    assert_eq!(*f.keyring.owner_relays.lock().unwrap(), [alpha.url.clone()]);
+
+    // Rooms can only be checked in the active community's verified catalog:
+    // changing them (or enrolling again) waits for a switch back; nothing is
+    // asked of the other community's catalog.
+    f.rooms.1.lock().unwrap().clear();
+    assert_eq!(
+        f.run(serde_json::json!({"type":"update_agent","agentId":id,"fields":{"rooms":[ROOM_B]}}))
+            .await,
+        Err("relay_unavailable")
+    );
+    assert_eq!(f.stored(&id).rooms, [ROOM_A]);
+    assert_eq!(
+        f.run(serde_json::json!({"type":"enroll_agent","agentId":id}))
+            .await,
+        Err("relay_unavailable")
+    );
+    assert!(f.rooms.1.lock().unwrap().is_empty());
+
+    // The model probe takes no relay at all and runs whatever is active.
+    *f.spawner.probe_answer.lock().unwrap() = Some((Some(0), "OK\n".into()));
+    f.run(serde_json::json!({"type":"probe_model","agentId":id}))
+        .await
+        .unwrap();
+    assert_eq!(probe(&f).state, "ok");
+    let (probe_argv, _) = f.spawner.probes.lock().unwrap()[0].clone();
+    assert!(!probe_argv
+        .iter()
+        .any(|w| w == "--relay" || w == &alpha.url || w == &beta.url));
+
+    // A new agent belongs to the now active community.
+    let second = f.create(serde_json::json!({})).await.unwrap();
+    assert_eq!(f.stored(&second).relay, beta.url);
+    assert_eq!(f.agent(&second).community, "Beta");
+    assert_eq!(*f.rooms.1.lock().unwrap(), [beta.url.clone()]);
+    f.run(serde_json::json!({"type":"enroll_agent","agentId":second}))
+        .await
+        .unwrap();
+    assert_eq!(kinds(&beta), [30175, 30177, 9000, 0]);
+
+    // Back in the first community, rooms can change again.
+    switch_to(&f, &alpha.url);
+    f.run(
+        serde_json::json!({"type":"update_agent","agentId":id,"fields":{"rooms":[ROOM_A, ROOM_B]}}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(kinds(&alpha).last(), Some(&0));
+    assert!(kinds(&alpha).ends_with(&[30175, 30177, 9000, 0]));
+
+    // Deleting leaves the agent's own community's rooms, wherever we are.
+    switch_to(&f, &beta.url);
+    let before = kinds(&beta).len();
+    f.run(serde_json::json!({"type":"delete_agent","agentId":id}))
+        .await
+        .unwrap();
+    assert_eq!(&kinds(&alpha)[kinds(&alpha).len() - 2..], [9001, 9001]);
+    assert_eq!(kinds(&beta).len(), before);
+
+    // A community the configuration no longer lists is named by its host.
+    f.config
+        .lock()
+        .unwrap()
+        .communities
+        .retain(|c| c.relay != beta.url);
+    f.config.lock().unwrap().relay = Some(alpha.url.clone());
+    f.service.publish();
+    assert_eq!(f.agent(&second).community, crate::config::host(&beta.url));
+}
+
+#[tokio::test]
+async fn create_needs_a_listed_active_community_and_an_identity() {
+    let f = fixture(UNREACHABLE);
+    // The active relay is not in the community list.
+    f.config.lock().unwrap().communities.clear();
+    assert_eq!(
+        f.create(serde_json::json!({})).await,
+        Err("relay_unavailable")
+    );
+    // No identity.
+    *f.config.lock().unwrap() = Config {
+        relay: Some(UNREACHABLE.into()),
+        identity: None,
+        communities: Vec::new(),
+    }
+    .normalized();
+    assert_eq!(
+        f.create(serde_json::json!({})).await,
+        Err("relay_unavailable")
+    );
+    // No configuration at all: status says so.
+    *f.config.lock().unwrap() = Config::default();
+    assert_eq!(
+        f.create(serde_json::json!({})).await,
+        Err("relay_unavailable")
+    );
+    f.service.publish();
+    assert_eq!(f.service.snapshot().active_relay, None);
+    assert!(f.service.snapshot().agents.is_empty());
+    assert!(f.rooms.1.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn opening_the_service_migrates_personas_to_the_first_community() {
+    let f = fixture(UNREACHABLE);
+    let id = f.create(serde_json::json!({})).await.unwrap();
+    // As written before personas had a relay.
+    let mut value: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(f.home.paths.store_file()).unwrap()).unwrap();
+    value["agents"][0].as_object_mut().unwrap().remove("relay");
+    std::fs::write(
+        f.home.paths.store_file(),
+        serde_json::to_vec(&value).unwrap(),
+    )
+    .unwrap();
+    // The configuration's first community, even when another is active.
+    two_communities(&f, "wss://first.example/", "wss://second.example/");
+    f.config.lock().unwrap().relay = Some("wss://second.example/".into());
+    let config = f.config.clone();
+    let service = Service::open(
+        f.home.paths.clone(),
+        Deps {
+            control: f.control.clone(),
+            keyring: f.keyring.clone(),
+            spawner: f.spawner.clone(),
+            rooms: f.rooms.clone(),
+        },
+        Box::new(move || Ok(config.lock().unwrap().clone())),
+    )
+    .unwrap();
+    let agent = service.snapshot().agents[0].clone();
+    assert_eq!(agent.id, id);
+    assert_eq!(
+        (agent.relay.as_str(), agent.community.as_str()),
+        ("wss://first.example/", "Alpha")
+    );
+    assert_eq!(
+        service.snapshot().active_relay.as_deref(),
+        Some("wss://second.example/")
+    );
+    assert_eq!(
+        store::Store::open(&f.home.paths).unwrap().agents[0].relay,
+        "wss://first.example/"
+    );
+    // Without any community the old store is refused, not guessed at.
+    std::fs::write(
+        f.home.paths.store_file(),
+        serde_json::to_vec(&value).unwrap(),
+    )
+    .unwrap();
+    let opened = Service::open(
+        f.home.paths.clone(),
+        Deps {
+            control: f.control.clone(),
+            keyring: f.keyring.clone(),
+            spawner: f.spawner.clone(),
+            rooms: f.rooms.clone(),
+        },
+        Box::new(|| Ok(Config::default())),
+    );
+    assert_eq!(opened.err(), Some("store_invalid"));
 }

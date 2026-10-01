@@ -3308,3 +3308,124 @@ step after joining".
   can leave a crashed mode's `quickshell` behind, which then fails later
   modes (`--ansi-art`, `--navigation`, `--settings` here); each passes alone
   once the stray instance is killed by PID.
+
+## Agents belong to a community — October 1
+
+Branch `agent-community` (not merged or installed; no relay, keyring, systemd
+or real agent state touched; synthetic fixtures and loopback relays only).
+Found live: after the maintainer joined a second community and switched to
+it, the agent manager's `scope()` returned the *active* community's relay, so
+any create, start, update or probe would have bound an agent to a relay where
+it was never enrolled, and the editor offered the wrong community's rooms.
+The running unit of the one real agent (vClaude) is still correct only
+because it was generated before the switch.
+
+- **Record.** Persona gains `relay`, the canonical relay of the community the
+  agent belongs to: the active one when it is created (refused with
+  `relay_unavailable` when there is no identity or the configuration does not
+  list the active relay), never changed afterwards. `scope()` is gone: every
+  path takes the persona's `relay` — rooms check, enrollment, republication
+  (30175/30177/9000/9001/0) with that community's owner key
+  (`<relay>|<identity>`), unit `--relay` (`unit::exec_argv` no longer takes a
+  relay argument), start at login, the 9001 removals of `delete_agent`; only
+  the owner identity comes from the configuration. `probe_model` never used a
+  relay and still does not. Rooms are checked only in the helper's verified
+  catalog, which exists for the active community: a rooms change or
+  `enroll_agent` of another community's agent is refused with
+  `relay_unavailable` until it is active again (nothing is asked of the
+  catalog); start, stop, start at login, republishing edits, the probe and
+  delete work for any agent.
+- **Migration** (`Store::open_with`, once, when the service opens): a persona
+  without `relay` takes the `--relay` of its generated unit file
+  (`omarchy-buzz-agent-<id>.service`, read only: user-owned, unlinked,
+  regular, ≤ 64 KiB, exactly one `ExecStart=` in the generator's quoting,
+  exactly one canonical relay), else the configuration's first community
+  (asked at most once). An unsafe or ambiguous unit file, or no community,
+  refuses the store (`store_invalid`, nothing written, the next start tries
+  again); the migrated store is validated and written back atomically before
+  use. For this machine: vClaude's unit names the first community, which is
+  also the first listed, so both rules give the same relay.
+- **IPC.** Status gains `activeRelay` (string or null); each agent gains
+  `relay` and `community` (the configuration's local name, or `host[:port]`
+  when it is no longer listed): 19 keys. No new request.
+- **Panel.** The Agents section lists the agents of the community the helper
+  shows; the others follow under a muted **In other communities** heading as
+  "vClaude · in <community>" with no Start or direct message. Their editor is
+  read-only: "Community: <name>", "Enrolled in <community>. Switch to that
+  community to manage it.", no Save/Enroll/Start/Stop/Test/Delete, fields
+  disabled, only the agent's own saved rooms ("Room 1234abcd…"), and every
+  mutation is refused in `AgentService` as well. Every editor names its
+  community (a new agent's: the current one), and the room picker offers only
+  that community's verified rooms. The current community is the main
+  helper's relay (the agent service's `activeRelay` when the helper has
+  none); the panel re-sends `subscribe` to the agent service when the active
+  community changes so `activeRelay` follows. A direct message with an agent
+  exists only in the community where it was opened (the helper's catalog is
+  per community), which `--communities` now shows.
+- Evidence: Rust `store_tests` (field rule, migration from a real generated
+  unit file plus the first community with a single configuration read,
+  idempotence, unit file untouched, a persona's own relay kept, eight unsafe or
+  ambiguous unit files and a symlink refused with the store untouched, the
+  quoting parser), `unit_tests` (launch relay is the persona's; bad relays
+  refused), `service_tests` (two loopback relays: create binds to the active
+  community, enrollment on it only; after a switch the unit, start at login,
+  republication and owner-key lookups use the agent's relay, rooms change and
+  re-enroll refused without asking the catalog, the probe has no relay, a new
+  agent binds to the new community, delete leaves the agent's own rooms,
+  unlisted community shown by host; create refused without a listed active
+  community or identity; the service migrating a store through its config
+  loader; status keys), `tests/agents_smoke.py` (relay round trip; a store
+  without `relay` migrated from a unit file and from the first community),
+  `scripts/preview --agents` (grouping, read-only editor, room scoping, 12
+  new refused frames) and `--communities` (agent service following the
+  switch both ways, room lists per community, the DM row only in vClaude's
+  community); `--welcome` and `--navigation` fixtures updated.
+- Not verified: the migration against the installed store and vClaude's real
+  unit file (by design: never read here), the installed shell, and a real
+  relay. Update the helper and the plugin together: an older panel refuses
+  the new status keys, and an older service's frames lack them.
+
+### Not built: "Add to this community" (step 2) — design
+
+`enroll_agent_in {agentId, relay}` (the same agent identity in a second
+community) needs a persona-record redesign that would touch every path this
+section just bound to one relay, so it stops here. Design:
+
+- **Record (store version 2).** A persona keeps the definition and identity
+  (`id`, `name`, `description`, `instructions`, `harness`, `model`,
+  `acpCommand`, `respondTo`, `answersDms`, `identity`, `authTag`) and gains
+  `instances: [{relay, rooms, workspace, startAtLogin, published,
+  memberRooms, publishedAt, lastError}]`; version 1 is wrapped into one
+  instance on load (atomic, once, as above). Relays unique per persona,
+  identities still unique across personas.
+- **Units and workspaces.** The first instance keeps
+  `omarchy-buzz-agent-<id>.service` (vClaude's running unit keeps its name);
+  others are `omarchy-buzz-agent-<id>-<h>.service`, `h` = the first 12 hex
+  digits of SHA-256 of the canonical relay; `unit::checked_unit` accepts
+  exactly those two forms. Default workspace `…/omarchy-buzz-room-workspaces/
+  <id>-<h>`; the workspace rules treat instances as separate agents. The
+  attestation and instructions files are shared: the NIP-OA tag binds owner
+  and agent, not a relay.
+- **Requests.** `enroll_agent_in {agentId, relay, rooms}` — the contract
+  sketch has no `rooms`, but an instance needs 1–8 rooms verified in that
+  community's catalog, so the relay must be the active one and the rooms come
+  from the editor (`answersDms` alone could allow none; that is a separate
+  decision). It admits the agent key there (kind 9000 per room with the
+  owner's key for that community, the existing `enroll.rs` path), publishes
+  30175/30177 and the kind-0 profile there, and creates the instance.
+  `start_agent`, `stop_agent`, `set_start_at_login` and a rooms `update_agent`
+  gain an optional `relay` (default: the first instance);
+  `leave_agent_community {agentId, relay}` removes one instance (9001 per
+  room, unit removed); `delete_agent` removes all and forgets the key only
+  with the last.
+- **Status.** Each agent gains `instances: [{relay, community, rooms, unit,
+  startAtLogin, published, lastError}]`; the top-level `relay`/`community`
+  stay the first instance's for compatibility.
+- **Panel.** The editor's **Communities** list shows the instances; **Add to
+  <active community>** appears when the agent is enrolled, has no instance
+  there and the main helper is authenticated there (the owner is a member).
+- **Shared key, trade-off.** One Secret Service entry for every community:
+  the agent is the same pubkey everywhere (recognizable, one avatar, one
+  attestation), but a leaked key speaks in every community at once and a
+  revocation must reach every relay; per-community keys would isolate that
+  at the cost of separate identities and attestations.
