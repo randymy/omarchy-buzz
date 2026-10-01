@@ -144,7 +144,7 @@ async fn scenario(select_background_before_denial: bool) {
             }
             ws_task.abort();
         });
-        let config = config::Config { relay: Some(origin.clone()), identity: Some(public.to_hex()) };
+        let config = config::Config { relay: Some(origin.clone()), identity: Some(public.to_hex()), communities: Vec::new() };
         let (tx, mut status) = watch::channel(Status::new(&config));
         let (commands, mut command_rx) = mpsc::channel(4);
         let mut conn = connect_identity(&origin, &user).await.unwrap();

@@ -8,6 +8,7 @@ mod attachments;
 mod auth;
 mod catalog;
 mod clock;
+mod communities;
 mod compatibility;
 mod config;
 mod dm_open;

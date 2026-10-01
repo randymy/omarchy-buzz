@@ -2,6 +2,7 @@
 """Isolated, unconfigured process smoke check; requires an already built helper."""
 
 import json
+import re
 import os
 from pathlib import Path
 import selectors
@@ -48,7 +49,7 @@ def status(frame, kind):
     assert frame["status"]["identity"] is None, frame
     assert frame["status"]["relay"] is None, frame
     assert frame["status"]["clockSkewSeconds"] is None, frame
-    assert frame["capabilities"] == ["connection_status", "room_catalog", "room_history", "message_send", "thread_send", "room_recipients", "history_auto_refresh", "room_activity", "agent_profiles", "thread_replies", "thread_summaries", "dm_open", "older_history", "live_updates", "setup_assist", "community_join", "invite_mint", "attachments", "user_status", "presence"], frame
+    assert frame["capabilities"] == ["connection_status", "room_catalog", "room_history", "message_send", "thread_send", "room_recipients", "history_auto_refresh", "room_activity", "agent_profiles", "thread_replies", "thread_summaries", "dm_open", "older_history", "live_updates", "setup_assist", "community_join", "invite_mint", "attachments", "user_status", "presence", "communities"], frame
     assert frame["status"]["catalog"]["state"] == "unavailable", frame
     assert frame["status"]["catalog"]["rooms"] == [], frame
     assert frame["status"]["history"] == {
@@ -182,7 +183,10 @@ def main():
                 client.settimeout(5)
                 client.connect(str(endpoint))
                 frames = Frames(client.fileno())
-                status(frames.read(), "hello")
+                hello = frames.read()
+                status(hello, "hello")
+                assert hello["status"]["communities"] == {"state": "ready", "active": None, "entries": [], "category": None,
+                                                          "pendingInvite": False, "notice": None}, hello
                 for index, url in enumerate(("http://relay.invalid", "ws://relay.invalid", "wss://user@relay.invalid")):
                     client.sendall(json.dumps({"version": 1, "id": f"relay{index}", "type": "set_relay", "url": url}).encode() + b"\n")
                     error = frames.matching(f"relay{index}")
@@ -213,8 +217,31 @@ def main():
                 client.sendall(json.dumps(presence).encode() + b"\n")
                 error = frames.matching(presence["id"])
                 assert error["type"] == "error" and error["category"] == "relay_unavailable", error
+                # Communities: refused by fixed category before any network or write.
+                scope = {"generation": hello["generation"], "instanceId": hello["instanceId"]}
+                stale = {"version": 1, "id": "00000000-0000-4000-8000-000000000006", "type": "join_community",
+                         "input": "https://relay.invalid", "generation": hello["generation"] + 7, "instanceId": hello["instanceId"]}
+                invalid = {"version": 1, "id": "00000000-0000-4000-8000-000000000007", "type": "join_community",
+                           "input": "not a link", **scope}
+                # A bare code needs a community; joins are at least five seconds apart.
+                again = {"version": 1, "id": "00000000-0000-4000-8000-000000000008", "type": "join_community",
+                         "input": "v2.AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8", **scope}
+                switch = {"version": 1, "id": "00000000-0000-4000-8000-000000000009", "type": "switch_community",
+                          "relay": "wss://relay.invalid/", **scope}
+                rename = {"version": 1, "id": "00000000-0000-4000-8000-00000000000a", "type": "rename_community",
+                          "relay": "wss://relay.invalid/", "name": "Team"}
+                leave = {"version": 1, "id": "00000000-0000-4000-8000-00000000000b", "type": "leave_community",
+                         "relay": "wss://relay.invalid/", **scope}
+                for payload, category in ((stale, "join_busy"), (invalid, "join_invalid"), (again, "join_rate_limited"),
+                                          (switch, "community_unknown"), (rename, "community_unknown"), (leave, "relay_unavailable")):
+                    client.sendall(json.dumps(payload).encode() + b"\n")
+                    error = frames.matching(payload["id"])
+                    assert error["type"] == "error" and error["category"] == category, (payload["type"], error)
+                assert not list((base / "config").rglob("*")), "refused community request wrote configuration"
                 client.sendall(request("status0", "get_snapshot"))
                 snapshot = frames.matching("status0")["status"]
+                assert snapshot["communities"] == {"state": "failed", "active": None, "entries": [], "category": "community_unknown",
+                                                   "pendingInvite": False, "notice": None}, snapshot["communities"]
                 assert snapshot["userStatus"]["state"] == "unavailable"
                 assert snapshot["presence"]["state"] == "unavailable"
                 # No relay yet: nothing to create an identity for.
@@ -232,14 +259,16 @@ def main():
                 error = frames.matching("create1")
                 assert error["type"] == "error" and error["category"] == "relay_unavailable", error
                 config_file = base / "config/omarchy-buzz/config.toml"
-                assert config_file.read_text() == 'relay = "ws://127.0.0.1:1/"\n', config_file.read_text()
+                saved = config_file.read_text()
+                assert re.fullmatch(r'version = 2\nactiveRelay = "ws://127\.0\.0\.1:1/"\n\n\[\[communities\]\]\n'
+                                    r'relay = "ws://127\.0\.0\.1:1/"\nname = "Local Dev"\njoinedAt = [0-9]+\n', saved), saved
                 assert stat.S_IMODE(config_file.stat().st_mode) == 0o600
 
             assert daemon.poll() is None, "bad clients killed daemon"
             daemon.send_signal(signal.SIGTERM)
             assert daemon.wait(timeout=5) == 0, "SIGTERM did not stop daemon cleanly"
             assert not endpoint.exists(), "standalone daemon left its socket behind"
-            print("PASS: unconfigured hello/status, malformed and oversized requests, bridge EOF, setup assist refusals and relay save, invite, room action and status refusals, SIGTERM socket cleanup")
+            print("PASS: unconfigured hello/status, malformed and oversized requests, bridge EOF, setup assist refusals and relay save, invite, room action, status and community refusals, SIGTERM socket cleanup")
         finally:
             for process in reversed(processes):
                 stop(process)

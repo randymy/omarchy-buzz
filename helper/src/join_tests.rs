@@ -515,6 +515,7 @@ fn joined_status(keys: &Keys) -> Status {
     let config = crate::config::Config {
         relay: Some("wss://relay.example/".into()),
         identity: Some(keys.public_key().to_hex()),
+        communities: Vec::new(),
     };
     let mut status = Status::new(&config);
     status.connection = "authenticated".into();

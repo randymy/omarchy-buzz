@@ -180,7 +180,12 @@ fn apply_loaded_config(
                     s.upload = Default::default();
                     s.user_status = crate::protocol::UserStatusView::unavailable(None);
                     s.presence = crate::protocol::PresenceView::unavailable();
+                    s.communities = crate::communities::view(&c);
                 }
+                // A rename or a removed inactive community changes only the list.
+                let listed = crate::communities::view(&c);
+                s.communities.active = listed.active;
+                s.communities.entries = listed.entries;
             });
             Ok(c)
         }
@@ -357,6 +362,21 @@ pub(crate) async fn offline_command(
             // A new member reconnects at once: its identity may now authenticate.
             return invite_redeemed(result, reply, tx);
         }
+        Command::Community(request, generation, reply) => {
+            if reply.is_closed() {
+                return false;
+            }
+            if generation.is_some_and(|g| g != tx.borrow().generation) {
+                let _ = reply.send(Some("join_busy"));
+                return false;
+            }
+            community_started(tx, request.state());
+            let result =
+                crate::communities::perform(setup, request, session.map(|(_, keys)| keys)).await;
+            let claimed = result.as_ref().is_ok_and(|d| d.claimed);
+            // A switch, or new membership of this relay, reconnects at once.
+            return community_done(result, reply, tx, setup) || claimed;
+        }
         Command::RoomAction(_, _, _, reply)
         | Command::MintInvite(_, _, reply)
         | Command::DownloadAttachment(_, _, reply)
@@ -490,6 +510,53 @@ fn invite_redeemed(
     });
     let _ = reply.send(category);
     category.is_none()
+}
+fn community_started(tx: &watch::Sender<Status>, state: &str) {
+    publish_status(tx, |s| {
+        s.communities.state = state.into();
+        s.communities.category = None;
+        s.communities.notice = None;
+        s.communities.pending_invite = false;
+    });
+}
+/// Publishes a finished community request (the saved list, a new generation
+/// when the active relay changed, an invite's terms to accept) before
+/// answering. True when the active relay changed: the caller reconnects.
+fn community_done(
+    result: Result<crate::communities::Done, &'static str>,
+    reply: tokio::sync::oneshot::Sender<Option<&'static str>>,
+    tx: &watch::Sender<Status>,
+    setup: &crate::setup::Setup,
+) -> bool {
+    let done = match result {
+        Ok(done) => done,
+        Err(category) => {
+            publish_status(tx, |s| {
+                s.communities.state = "failed".into();
+                s.communities.category = Some(category.into());
+            });
+            let _ = reply.send(Some(category));
+            return false;
+        }
+    };
+    let before = tx.borrow().generation;
+    let _ = apply_loaded_config(tx, setup.load());
+    let renewed = tx.borrow().generation != before;
+    publish_status(tx, |s| {
+        // An invite minted for another relay is not shown again.
+        if renewed {
+            s.invites = Default::default();
+        }
+        s.communities.state = "ready".into();
+        s.communities.category = None;
+        s.communities.pending_invite = done.pending_invite;
+        s.communities.notice = done.notice.map(str::to_owned);
+        if let Some((code, policy)) = done.policy {
+            s.setup = crate::join::awaiting(code, Some(policy));
+        }
+    });
+    let _ = reply.send(None);
+    done.switched
 }
 /// Publishes a saved setup change before answering, so the status frame that
 /// follows the reply already carries the new relay or public identity. A
@@ -693,6 +760,7 @@ async fn observe_connection(
         backoff,
         policy,
         &mut crate::sending::Sender::new(None),
+        &crate::setup::Setup::unavailable(),
     )
     .await
 }
@@ -706,6 +774,7 @@ async fn observe_sending(
     backoff: &mut Backoff,
     policy: FreshnessPolicy,
     sender: &mut crate::sending::Sender,
+    setup: &crate::setup::Setup,
 ) -> ConnectionExit {
     // A DM open cannot outlive its connection: its answer would arrive on this socket.
     let mut opener = crate::dm_open::Opener::default();
@@ -731,6 +800,7 @@ async fn observe_sending(
         &mut actions,
         &mut statuses,
         &mut presence,
+        setup,
     )
     .await;
     if statuses.unknown() {
@@ -761,6 +831,12 @@ async fn observe_sending(
             s.upload.state = "failed".into();
             s.upload.category = Some("relay_unavailable".into());
         }
+        // A community request runs with the connection's key and ends with it;
+        // the next configuration load shows what was saved.
+        if crate::communities::busy(&s.communities) {
+            s.communities.state = "failed".into();
+            s.communities.category = Some("relay_unavailable".into());
+        }
     });
     // Every exit (Retry, shutdown, failure) closes the live subscription first,
     // under a short deadline; a dead socket is dropped by the caller anyway.
@@ -790,8 +866,19 @@ async fn observe_inner(
     actions: &mut crate::join::RoomActions,
     statuses: &mut crate::user_status::Publisher,
     presence: &mut crate::presence::Publisher,
+    setup: &crate::setup::Setup,
 ) -> ConnectionExit {
     let mut pending: Option<String> = None;
+    // `communities`: one join, switch, rename or leave at a time beside the
+    // connection; NIP-11 name hints for listed communities read once.
+    let mut community_jobs = tokio::task::JoinSet::new();
+    let mut hint_jobs = tokio::task::JoinSet::new();
+    if let Ok(c) = setup.load() {
+        let relays = crate::communities::unhinted(&c);
+        if !relays.is_empty() {
+            hint_jobs.spawn(crate::communities::fetch_hints(relays));
+        }
+    }
     // `presence`: one verified read of the shown roster and DM partners at a
     // time, on the joined-room check cycle (and when the roster or the panel's
     // first preference arrives), never before the panel asked for presence.
@@ -1333,6 +1420,13 @@ async fn observe_inner(
                     let _=reply.send(None);
                     if first {spawn_presence!();}
                 },
+                Some(Command::Community(request,generation,reply))=> {
+                    if reply.is_closed() {continue;}
+                    if !community_jobs.is_empty() || generation.is_some_and(|g|g!=tx.borrow().generation) {let _=reply.send(Some("join_busy"));continue;}
+                    community_started(tx,request.state());
+                    let setup=setup.clone();let keys=keys.clone();
+                    community_jobs.spawn(async move {(crate::communities::perform(&setup,request,Some(&keys)).await,reply)});
+                },
                 Some(Command::PresenceDetach)=> {
                     presence.detach();
                     presence_jobs.abort_all();presence_jobs=tokio::task::JoinSet::new();presence_ticket=presence_ticket.wrapping_add(1);
@@ -1471,6 +1565,21 @@ async fn observe_inner(
                     (ticket,generation,room,root,result)
                 });
             },
+            result=community_jobs.join_next(), if !community_jobs.is_empty()=> {
+                match result {
+                    Some(Ok((result,reply)))=> {
+                        let claimed=result.as_ref().is_ok_and(|d|d.claimed);
+                        if community_done(result,reply,tx,setup) {backoff.reset(); update(tx,"connecting",None); return ConnectionExit::Retry;}
+                        if claimed && fresh {
+                            // New membership of this relay: re-check joined rooms now.
+                            jobs.abort_all();catalog_due=tokio::time::Instant::now();open_after_catalog=true;
+                        }
+                    },
+                    // A panicked request proves nothing; its reply was dropped (unknown).
+                    _=>publish_status(tx,|s|{s.communities.state="failed".into();s.communities.category=Some("relay_unavailable".into());}),
+                }
+            },
+            _=hint_jobs.join_next(), if !hint_jobs.is_empty()=> {publish_status(tx,|s|crate::communities::refresh_hints(&mut s.communities));},
             result=invite_jobs.join_next(), if !invite_jobs.is_empty()=> {
                 match result {
                     Some(Ok((crate::join::InviteStep::Checked(checked),reply)))=>invite_checked(checked,reply,tx),
@@ -2307,7 +2416,7 @@ async fn connect_and_observe(
         }
     };
     let exit = observe_sending(
-        &mut conn, keys, relay, relay_pin, tx, retry, backoff, policy, sender,
+        &mut conn, keys, relay, relay_pin, tx, retry, backoff, policy, sender, setup,
     )
     .await;
     // A timed-out socket is dropped before backoff; graceful close is only
@@ -2333,6 +2442,7 @@ mod reload_tests {
         config::Config {
             relay: relay.map(str::to_owned),
             identity: identity.map(str::to_owned),
+            communities: Vec::new(),
         }
     }
     #[test]

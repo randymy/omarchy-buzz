@@ -139,6 +139,19 @@ async fn client(
                         else {Some("setup_not_allowed")}};
                     if let Some(category)=refused {write(&mut out,&serde_json::json!({"version":1,"type":"error","id":r.id,"category":category,"instanceId":instance})).await?;continue;}
                 }
+                if matches!(r.kind.as_str(),"join_community"|"switch_community"|"rename_community"|"leave_community") {
+                    // One community change at a time, never under a send, a DM open, an
+                    // upload or an invite still running, and only in the scope it was made in.
+                    let refused={let current=status.borrow();
+                        let scoped=r.kind!="rename_community";
+                        if scoped && (r.instance_id.as_deref()!=Some(instance.as_str()) || r.generation!=Some(current.generation)) {Some("join_busy")}
+                        else if crate::communities::busy(&current.communities) || current.connection=="connecting" || current.category.as_deref()==Some("identity_access_pending") {Some("join_busy")}
+                        else if scoped && (matches!(current.delivery.state.as_str(),"sending"|"unknown") || matches!(current.dm_open.state.as_str(),"sending"|"unknown")
+                            || current.upload.state=="uploading" || matches!(current.setup.state.as_str(),"checking"|"claiming")) {Some("join_busy")}
+                        else if r.kind=="leave_community" && current.identity.is_none() {Some("relay_unavailable")}
+                        else {None}};
+                    if let Some(category)=refused {write(&mut out,&serde_json::json!({"version":1,"type":"error","id":r.id,"category":category,"instanceId":instance})).await?;continue;}
+                }
                 if r.kind=="mint_invite" {
                     // Minting needs a working session: the relay checks the owner or admin role.
                     let refused={let current=status.borrow();
@@ -181,9 +194,10 @@ async fn client(
                 let room_action=r.kind=="join_room" || r.kind=="leave_room";
                 let user_status=r.kind=="set_status" || r.kind=="clear_status";
                 let media=matches!(r.kind.as_str(),"download_attachment"|"thumbnail_attachment"|"open_download"|"upload_attachment"|"remove_pending_attachment");
+                let community=matches!(r.kind.as_str(),"join_community"|"switch_community"|"rename_community"|"leave_community");
                 // A setup reply that never arrives is not a refusal; the next
                 // status frame shows whether the change was saved.
-                let unknown=if r.kind=="open_dm" {"dm_open_unknown"} else if user_status || r.kind=="set_presence" {"relay_unavailable"} else if setup || room_action || media {"setup_busy"} else {"delivery_unknown"};
+                let unknown=if r.kind=="open_dm" {"dm_open_unknown"} else if user_status || r.kind=="set_presence" {"relay_unavailable"} else if community {"join_busy"} else if setup || room_action || media {"setup_busy"} else {"delivery_unknown"};
                 let command=match r.kind.as_str() {
                     "retry_connection"=>Some(protocol::Command::Retry),
                     "fetch_recent"=>Some(protocol::Command::FetchRecent(r.room_id.clone().unwrap())),
@@ -217,14 +231,22 @@ async fn client(
                     "set_presence"=>{let (reply,receiver)=tokio::sync::oneshot::channel();send_reply=Some(receiver);
                         let mode=r.mode.as_deref().and_then(crate::presence::Mode::parse).expect("checked by protocol::request");
                         Some(protocol::Command::SetPresence(mode,r.active.unwrap_or(false),reply))},
+                    "join_community"|"switch_community"|"rename_community"|"leave_community"=>{let (reply,receiver)=tokio::sync::oneshot::channel();send_reply=Some(receiver);
+                        let request=match r.kind.as_str() {
+                            "join_community"=>crate::communities::Request::Join(r.input.clone().unwrap()),
+                            "switch_community"=>crate::communities::Request::Switch(r.relay.clone().unwrap()),
+                            "rename_community"=>crate::communities::Request::Rename(r.relay.clone().unwrap(),r.name.clone().unwrap()),
+                            _=>crate::communities::Request::Leave(r.relay.clone().unwrap()),
+                        };
+                        Some(protocol::Command::Community(request,r.generation,reply))},
                     "remove_pending_attachment"=>{let (reply,receiver)=tokio::sync::oneshot::channel();send_reply=Some(receiver);Some(protocol::Command::RemovePendingAttachment(r.hash.clone().unwrap(),reply))},
                     _=>None,
                 };
-                if let Some(command)=command {if retry.try_send(command).is_err() {write(&mut out,&serde_json::json!({"version":1,"type":"error","id":r.id,"category":if setup || room_action {"setup_busy"} else if media {"setup_busy"} else if user_status {"status_rate_limited"} else {"request_busy"},"instanceId":instance})).await?;continue;}}
+                if let Some(command)=command {if retry.try_send(command).is_err() {write(&mut out,&serde_json::json!({"version":1,"type":"error","id":r.id,"category":if community {"join_busy"} else if setup || room_action {"setup_busy"} else if media {"setup_busy"} else if user_status {"status_rate_limited"} else {"request_busy"},"instanceId":instance})).await?;continue;}}
                 if let Some(reply)=send_reply {
                     // Relay discovery (up to 13 s), a Secret Service write and an invite's
                     // three HTTP requests (10 s each) take longer than a send.
-                    let category=send_result(reply,Duration::from_secs(if setup {60} else if media {10} else {5}),unknown).await;
+                    let category=send_result(reply,Duration::from_secs(if community {120} else if setup {60} else if media {10} else {5}),unknown).await;
                     if let Some(category)=category {write(&mut out,&serde_json::json!({"version":1,"type":"error","id":r.id,"category":category,"instanceId":instance})).await?;continue;}
                 }
                 if r.kind=="subscribe" { subscribed=true; }
@@ -538,6 +560,7 @@ mod setup_tests {
         let configured = config::Config {
             relay: Some(origin.clone()),
             identity: None,
+            communities: Vec::new(),
         };
         config::save_to(&dir, &configured).unwrap();
         let (tx, rx) = watch::channel(Status::new(&configured));
@@ -930,6 +953,7 @@ mod setup_tests {
         let configured = config::Config {
             relay: Some(relay.clone()),
             identity: Some(keys.public_key().to_hex()),
+            communities: Vec::new(),
         };
         let mut status = Status::new(&configured);
         status.connection = "disconnected".into();
