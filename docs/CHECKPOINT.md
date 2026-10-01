@@ -2812,3 +2812,9 @@ upstream references are to the pinned Buzz `781d3951`. Presence
 - Live verdict (maintainer, October 1, ~22:00 CDT, 0.0.22 installed): "status
   works" — the first real kind-30315 publish from the account menu was
   accepted by the relay and shown back in the panel.
+
+- `release.yml` ran for the first time on the maintainer's word (run
+  36807823465, from `main` at 0.0.22): preflight, both native builds, package
+  verification and the release job all passed; draft release `v0.0.22` holds
+  all ten assets with generated notes. Publishing the draft is the
+  maintainer's action on GitHub; the tag appears on publication.

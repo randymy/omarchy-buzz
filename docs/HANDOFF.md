@@ -162,7 +162,12 @@ real upload or download had been exercised at this line's writing.
 
 No branch is in progress; all worktrees are removed.
 
-Resume order: finish the draft release `v0.0.22` (`release.yml` run 36807823465, started on the maintainer's word; the maintainer publishes it on GitHub) → a real **Test model**
+Draft release `v0.0.22` exists (run 36807823465, ten assets); the maintainer
+publishes it on GitHub when wanted. Branch in progress: `presence` (worktree
+`~/Projects/omarchy-buzz-presence`, Opus builder): kind-20001 heartbeat and
+relay-signed presence reads per `docs/PRESENCE_MAP.md` §4.
+
+Resume order: merge `presence` when green → release 0.0.23 → a real **Test model**
 run on `vClaude` from the panel (then adjust the patterns in
 `helper/src/agents_service/models.rs` if the sentence is wrong) →
 presence/"Update your status" → community distribution (x86-64 package,
