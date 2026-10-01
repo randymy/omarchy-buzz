@@ -3044,3 +3044,22 @@ was open, with the in-page "Back to rooms" link too easy to miss.
   in the icon's yellow (`#e3d62e`). The Buzz name and icon are Block's; the
   plugin remains independent, as the README says. The earlier hand-drawn bee
   is gone. `scripts/render-preview` rebuilds it.
+
+## Presence reads tolerate subject-less relay events (0.0.24) — October 1
+
+- 0.0.23 installed and live: helper 0.0.24-to-be's predecessor logged
+  `presence read failed: presence_invalid` every 30 s on the maintainer's
+  relay. A private-runtime diagnostic (temporary local `eprintln`, not
+  committed) showed the relay answering a three-subject read with three
+  relay-signed kind-20001 events, valid signatures, one of them with **no
+  `p` tag** beside two correct ones. Both the pinned relay source and
+  upstream main's `synthesize_presence` always tag, so that relay runs
+  another build; the origin of the extra event is unknown.
+- `presence::verify` now ignores a relay-signed event that names no usable
+  subject (no, several, bare, non-canonical or short `p`) or a subject it
+  was not asked for, and still rejects the whole read on a bad signature,
+  another kind or a non-relay signer. The closed world holds: only asked-for
+  subjects are ever shown. `presence_tests` move those six cases from
+  "rejected" to "ignored beside a good event" (14 presence tests, full
+  suite 328). Verified against the real relay: every room and the DM read
+  cleanly (peers 1, 3, 4, 1), no failures.

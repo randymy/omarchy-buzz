@@ -275,13 +275,18 @@ fn canonical_hex(value: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 /// States for `subjects` from a presence read, failing closed: any event with a
-/// bad signature, another kind, a signer other than the relay's pinned NIP-11
-/// `self` key, not exactly one canonical `p` tag, or a subject outside
-/// `subjects` rejects the whole read. A subject the relay returned nothing for
-/// is offline (an empty snapshot is authoritative, `bridge.rs:2545-2548`); a
-/// stale event (`created_at` more than `FRESH_SECS` from now) is offline; one
-/// with unrecognised content leaves its subject unknown (absent from the map).
-/// A self-signed peer event is never used here (Desktop trusts a `p` subject
+/// bad signature, another kind or a signer other than the relay's pinned
+/// NIP-11 `self` key rejects the whole read. A relay-signed event that names
+/// no usable subject (no `p` tag, several, a non-canonical one) or a subject
+/// outside `subjects` is ignored: it is not a forgery, and the maintainer's
+/// relay was seen returning one subject-less relay-signed event beside the
+/// expected ones (the pinned source always tags, so that relay runs another
+/// build); ignoring keeps the closed world, since only asked-for subjects are
+/// ever shown. A subject the relay returned nothing for is offline (an empty
+/// snapshot is authoritative, `bridge.rs:2545-2548`); a stale event
+/// (`created_at` more than `FRESH_SECS` from now) is offline; one with
+/// unrecognised content leaves its subject unknown (absent from the map). A
+/// self-signed peer event is never used here (Desktop trusts a `p` subject
 /// only from the relay, `presence.ts:3-6`).
 pub fn verify(
     relay: &PublicKey,
@@ -300,10 +305,10 @@ pub fn verify(
             .filter(|t| t.as_slice().first().is_some_and(|v| v == "p"));
         let subject = match (p.next().map(|t| t.as_slice()), p.next()) {
             (Some([_, subject, ..]), None) if canonical_hex(subject) => subject.clone(),
-            _ => return Err("presence_invalid"),
+            _ => continue,
         };
         if !subjects.contains(&subject) {
-            return Err("presence_invalid");
+            continue;
         }
         if newest
             .get(&subject)

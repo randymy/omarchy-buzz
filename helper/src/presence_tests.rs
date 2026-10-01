@@ -321,6 +321,27 @@ fn verification_rejects_every_unverified_shape() {
             snapshot(&key(8), "online", &[&["p", &a]], NOW),
         ),
         (
+            "wrong kind",
+            EventBuilder::new(Kind::Custom(40902), "online")
+                .tags([Tag::parse(["p", a.as_str()]).unwrap()])
+                .sign_with_keys(&relay)
+                .unwrap(),
+        ),
+    ];
+    for (name, event) in rejected {
+        // One bad event rejects the whole read, even beside a good one.
+        assert_eq!(
+            verify(&relay.public_key(), &subjects, &[good.clone(), event], NOW).err(),
+            Some("presence_invalid"),
+            "{name}"
+        );
+    }
+    // A relay-signed event naming no usable subject, or one that was not
+    // asked for, is ignored beside the good one: the maintainer's relay
+    // returned a subject-less relay-signed event with every read. The good
+    // event still counts and the unasked subject never appears.
+    let ignored = [
+        (
             "missing p",
             snapshot(&relay, "online", &[&["status", "online"]], NOW),
         ),
@@ -351,21 +372,17 @@ fn verification_rejects_every_unverified_shape() {
                 NOW,
             ),
         ),
-        (
-            "wrong kind",
-            EventBuilder::new(Kind::Custom(40902), "online")
-                .tags([Tag::parse(["p", a.as_str()]).unwrap()])
-                .sign_with_keys(&relay)
-                .unwrap(),
-        ),
     ];
-    for (name, event) in rejected {
-        // One bad event rejects the whole read, even beside a good one.
+    for (name, event) in ignored {
+        let read = verify(&relay.public_key(), &subjects, &[event, good.clone()], NOW)
+            .unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert_eq!(read.get(&a), Some(&"online"), "{name}");
         assert_eq!(
-            verify(&relay.public_key(), &subjects, &[good.clone(), event], NOW).err(),
-            Some("presence_invalid"),
+            read.get(&sam.public_key().to_hex()),
+            Some(&"offline"),
             "{name}"
         );
+        assert_eq!(read.len(), 2, "{name}: an unasked subject appeared");
     }
     // Stale (either direction beyond 240 s): offline, not the content.
     for at in [NOW - FRESH_SECS - 1, NOW + FRESH_SECS + 1] {
