@@ -3190,3 +3190,20 @@ community**. One identity for every community, as Desktop.
   same membership, and the rendered menu on the installed shell. A panel
   older than this one refuses a helper announcing 21 capabilities: update
   both together.
+
+## Release 0.0.25 — October 1
+
+- Merges `communities` (`b7d695b`). Before the merge, the main checkout held
+  uncommitted work by a Codex agent the maintainer had started and then
+  stopped (a single-relay `switch_community` with capability
+  `community_switch`, 13 files); on the maintainer's word it was parked on a
+  branch, found to be a subset of the merged feature, and deleted.
+- `tests/agents_smoke.py` now writes a format-2 config fixture (the old
+  format-1 fixture was migrated on load and left `config.v1.toml`, which the
+  test's write check did not expect).
+- Verified on the merged tree: Rust 348 passed (`RUST_TEST_THREADS=1`), fmt
+  clean; Python unittest 108; helper and agents smoke; package, installer,
+  verify-package, notices; default plus all 27 named preview modes green.
+  Capabilities are now 21 (`communities`); helper and plugin install together.
+  The installed `config.toml` (format 1) will be migrated on first start,
+  with `config.v1.toml` kept beside it.

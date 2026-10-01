@@ -102,7 +102,11 @@ def main():
             (base / name).mkdir(mode=0o700)
         (base / "config/omarchy-buzz").mkdir(mode=0o700)
         config = base / "config/omarchy-buzz/config.toml"
-        config.write_text('relay = "ws://127.0.0.1:9/"\nidentity = "%s"\n' % OWNER)
+        # Format 2 (a community list); a format-1 file would be migrated and
+        # leave a config.v1.toml backup beside it, which the write check below
+        # would then have to expect.
+        config.write_text('version = 2\nidentity = "%s"\nactiveRelay = "ws://127.0.0.1:9/"\n\n'
+                          '[[communities]]\nrelay = "ws://127.0.0.1:9/"\nname = "Smoke"\njoinedAt = 1\n' % OWNER)
         config.chmod(0o600)
         # Do not inherit keyring/session bus, credential, logging, or activation env.
         env = {
