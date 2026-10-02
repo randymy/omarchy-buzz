@@ -24,6 +24,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import platform
 import shlex
 import shutil
 import stat
@@ -35,7 +36,11 @@ HARNESSES = ('codex', 'claude-code')
 PROFILE_DIRS = ('home', 'provider', 'config', 'data', 'cache', 'state')
 CREDENTIAL = {'codex': 'auth.json', 'claude-code': '.credentials.json'}
 CONFIG_ENV = {'codex': 'CODEX_HOME', 'claude-code': 'CLAUDE_CONFIG_DIR'}
-NATIVE = {'codex': 'adapter/node_modules/@openai/codex-linux-arm64/vendor/aarch64-unknown-linux-musl/bin/codex',
+CODEX_PLATFORMS = {'aarch64': ('linux-arm64', 'aarch64-unknown-linux-musl'),
+                   'x86_64': ('linux-x64', 'x86_64-unknown-linux-musl')}
+_CODEX = CODEX_PLATFORMS.get({'arm64': 'aarch64', 'amd64': 'x86_64'}.get(platform.machine(), platform.machine()),
+                             CODEX_PLATFORMS['aarch64'])
+NATIVE = {'codex': 'adapter/node_modules/@openai/codex-%s/vendor/%s/bin/codex' % _CODEX,
           'claude-code': 'claude/claude'}
 FLOATING = 'omarchy-launch-floating-terminal-with-presentation'
 

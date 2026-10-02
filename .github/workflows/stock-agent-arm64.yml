@@ -1,14 +1,20 @@
-name: Manual stock ARM64 room-agent binaries
+name: Manual stock room-agent binaries (ARM64, x86-64)
 on:
   workflow_dispatch:
 permissions:
   contents: read
 concurrency:
-  group: stock-agent-arm64
+  group: stock-agent
   cancel-in-progress: false
 jobs:
   build:
-    runs-on: ubuntu-24.04-arm
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {runner: ubuntu-24.04-arm, arch: aarch64, name: arm64}
+          - {runner: ubuntu-24.04, arch: x86_64, name: x86_64}
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     env:
       CARGO_BUILD_JOBS: '2'
@@ -31,12 +37,12 @@ jobs:
           path: |
             ${{ runner.temp }}/buzz-cargo
             ${{ runner.temp }}/agent-target
-          key: stock-agent-arm64-781d395-v1
+          key: stock-agent-${{ matrix.name }}-781d395-v1
           restore-keys: |
-            buzz-agent-arm64-ordinary-v2-
+            buzz-agent-${{ matrix.name }}-ordinary-v2-
       - name: Install native build dependencies
         run: |
-          test "$(uname -m)" = aarch64
+          test "$(uname -m)" = "${{ matrix.arch }}"
           rustup toolchain install 1.95.0 --profile minimal
           sudo apt-get update
           sudo apt-get install -y pkg-config libssl-dev libdbus-1-dev protobuf-compiler
@@ -49,6 +55,8 @@ jobs:
           "$RUNNER_TEMP/agent-target/debug/buzz-acp" --help > "$RUNNER_TEMP/acp-help.txt"
           "$RUNNER_TEMP/agent-target/debug/buzz" --help > "$RUNNER_TEMP/cli-help.txt"
       - name: Stage private-test artifacts and provenance
+        env:
+          ARCH: ${{ matrix.arch }}
         run: |
           mkdir -p stock-agent/bin
           cp "$RUNNER_TEMP/agent-target/debug/buzz-acp" "$RUNNER_TEMP/agent-target/debug/buzz" "$RUNNER_TEMP/agent-target/debug/buzz-admin" stock-agent/bin/
@@ -60,14 +68,14 @@ jobs:
           data={'developmentArtifact':True,'productionInstalled':False,'patchesApplied':[],
                 'sourceRevision':subprocess.check_output(['git','-C','buzz','rev-parse','HEAD'],text=True).strip(),
                 'workflowRevision':os.environ['GITHUB_SHA'],'runId':os.environ['GITHUB_RUN_ID'],
-                'architecture':'aarch64','files':{}}
+                'architecture':os.environ['ARCH'],'files':{}}
           for path in sorted(root.rglob('*')):
               if path.is_file():data['files'][str(path.relative_to(root))]=hashlib.sha256(path.read_bytes()).hexdigest()
           (root/'build.json').write_text(json.dumps(data,indent=2)+'\n')
           PY
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: stock-agent-arm64
+          name: stock-agent-${{ matrix.name }}
           path: stock-agent
           retention-days: 14
       - uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25
@@ -76,4 +84,4 @@ jobs:
           path: |
             ${{ runner.temp }}/buzz-cargo
             ${{ runner.temp }}/agent-target
-          key: stock-agent-arm64-781d395-v1
+          key: stock-agent-${{ matrix.name }}-781d395-v1

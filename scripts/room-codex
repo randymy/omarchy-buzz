@@ -1,2 +1,5 @@
 #!/bin/sh
-exec /opt/agent/adapter/node_modules/@openai/codex-linux-arm64/vendor/aarch64-unknown-linux-musl/bin/codex -c forced_login_method=chatgpt "$@"
+case "$(uname -m)" in
+  x86_64) exec /opt/agent/adapter/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex -c forced_login_method=chatgpt "$@" ;;
+  *) exec /opt/agent/adapter/node_modules/@openai/codex-linux-arm64/vendor/aarch64-unknown-linux-musl/bin/codex -c forced_login_method=chatgpt "$@" ;;
+esac

@@ -82,28 +82,35 @@ An agent runs from a self-contained bundle in
 pinned, hash-checked inputs. Run it **from the plugin checkout** (it needs the
 checkout's `packaging/` and `LICENSE`). It never replaces an existing bundle.
 
-**ARM64 only.** The script refuses any Buzz binary, Node or Claude CLI that is
-not ARM64 (`buzz_binary_not_arm64`, `node_not_arm64`, `claude_cli_not_arm64`),
-and the Codex pin is the `linux-arm64` package. On x86-64 you can chat, but you
-cannot build a bundle without a source change to the pins.
+**ARM64 and x86-64.** Bundles are built for the machine's own architecture,
+and `bundle.json` records it (a bundle without that field predates x86-64
+support and is ARM64). The script refuses a Buzz binary, Node or Claude CLI
+built for another architecture (`buzz_binary_wrong_architecture`,
+`node_wrong_architecture`, `claude_cli_wrong_architecture`), a CI artifact
+whose `build.json` names another architecture (`buzz_architecture_mismatch`),
+and a bundle assembled elsewhere (`bundle_architecture_mismatch`).
 
 You need, already on disk:
 
 - **Official Buzz binaries** `buzz-acp`, `buzz`, `buzz-admin` at Buzz
-  `781d395`: the `bin/` of the `stock-agent-arm64` artifact from the repository's
-  manual workflow "Manual stock ARM64 room-agent binaries" (kept 14 days). With
-  its `build.json` beside `bin/`, that file must name `781d395` and no patches;
-  without it, the files must match the hashes of run 36639519388.
-- **Node `v22.23.3`** for ARM64 (the script runs `node --version`), and its
-  `npm-cli.js` for the locked adapter install.
+  `781d395`: the `bin/` of the `stock-agent-arm64` or `stock-agent-x86_64`
+  artifact from the repository's manual workflow "Manual stock room-agent
+  binaries (ARM64, x86-64)" (kept 14 days). With its `build.json` beside `bin/`,
+  that file must name `781d395`, no patches and this machine's architecture.
+  Without it, ARM64 files must match the hashes of run 36639519388; x86-64 has
+  no pinned run yet, so it needs the artifact's `build.json`.
+- **Node `v22.23.3`** for this architecture (the script runs `node --version`),
+  and its `npm-cli.js` for the locked adapter install. The official
+  `node-v22.23.3-linux-arm64` or `-linux-x64` tarball from nodejs.org has both.
 - **Claude Code only:** Claude Code **exactly 2.1.280**. The default path is the
   mise install, `~/.local/share/mise/installs/claude/latest/claude`; another file
-  can be given with `--claude-cli`. The script checks its SHA-256
-  (`92f2b4fd…45a2`), so **any other Claude Code version fails** with
-  `claude_cli_unpinned`.
+  can be given with `--claude-cli`. The script checks its SHA-256 (ARM64
+  `92f2b4fd…45a2`, x86-64 `1e08503d…925b`, the `claude` binary in
+  `@anthropic-ai/claude-agent-sdk-linux-arm64`/`-linux-x64` 0.3.280), so **any
+  other Claude Code version fails** with `claude_cli_unpinned`.
 
 Codex needs no separate CLI: its native binary comes in the pinned npm packages
-(`@openai/codex` 0.158.0). `--npm-ci` runs a locked `npm ci --ignore-scripts`
+(`@openai/codex` 0.158.0 and its `linux-arm64` or `linux-x64` native package). `--npm-ci` runs a locked `npm ci --ignore-scripts`
 against registry.npmjs.org; it is the only step that downloads.
 
 ```bash
