@@ -97,8 +97,8 @@ You need, already on disk:
   artifact from the repository's manual workflow "Manual stock room-agent
   binaries (ARM64, x86-64)" (kept 14 days). With its `build.json` beside `bin/`,
   that file must name `781d395`, no patches and this machine's architecture.
-  Without it, ARM64 files must match the hashes of run 36639519388; x86-64 has
-  no pinned run yet, so it needs the artifact's `build.json`.
+  Without it, the files must match the hashes of run 36639519388 (ARM64) or
+  37077396263 (x86-64).
 - **Node `v22.23.3`** for this architecture (the script runs `node --version`),
   and its `npm-cli.js` for the locked adapter install. The official
   `node-v22.23.3-linux-arm64` or `-linux-x64` tarball from nodejs.org has both.

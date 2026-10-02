@@ -63,8 +63,12 @@ BUZZ = {  # official upstream, unchanged; per-architecture CI runs of the stock-
                        'buzz': '54aa3ad0bd672d36ca03747390fc1f41df5cb454545d5424d2d20329588433c3',
                        'buzz-admin': '7fc7ef31dfdbdfe425cbca1280e406e4dce96c44baba28b67536557f72804c80'},
         },
-        # No pinned run yet: only a CI artifact's build.json is accepted.
-        'x86_64': {'run': None, 'sha256': {'buzz-acp': None, 'buzz': None, 'buzz-admin': None}},
+        'x86_64': {  # run 37077396263, workflow revision 2063bbc
+            'run': '37077396263',
+            'sha256': {'buzz-acp': 'dec2deff76acef4cb283854fc9aa83532e6bc2a3711746e7fefbbf2c0e76eeb0',
+                       'buzz': 'a662b0be1e5ae3bd6c0737b297cbd21016ac9eb713c3723e56a18edf7dcace55',
+                       'buzz-admin': '74d94235ec5df35558673119176a8f08b716f95873a32a401afbd6f4cf1900fe'},
+        },
     },
 }
 NODE_VERSION = 'v22.23.3'
