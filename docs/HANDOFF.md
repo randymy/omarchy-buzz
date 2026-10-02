@@ -110,24 +110,20 @@ Do not claim full live desktop acceptance solely from helper/socket tests.
 
 ## In flight at the September 30 evening stop (read before continuing)
 
-**Installed:** helper 0.0.25 (`a8b5eda`; communities — join by URL or
-invite onto a new relay with the same identity, switcher, rename, NIP-43
-leave; config format 2 with `config.v1.toml` backup; SHA256
-`6a5ce96d79fc9fe4bb937cdf1d43ea9a4e0409806f407493bb78b96e71d9f7e6`, run
-36927504391, rollback backup
-`~/.local/share/omarchy-buzz/backups/20261001T212451.554771Z`), live-verified:
-the maintainer joined a second community after being added as a member there
-from Desktop. Before that, helper 0.0.24 (`ad8cdc6`; SHA256
-`0afff9d40325cb4c55031a318987d5f6b28855588c441a11df14bb03f737cb24`, ARM64 run
-36819994489, rollback backup
-`~/.local/share/omarchy-buzz/backups/20261001T054453.461820Z`), both harness
-bundles `ready`, plugin at `ad8cdc6` after one clean shell restart. 0.0.23
-(presence, header navigation, probe as a transient service, preview card)
-and 0.0.24 (presence reads tolerate the maintainer's relay's subject-less
-relay-signed event) went in on October 1; "Update your status" is
-live-verified; presence reads show no failures on 0.0.24. The marketplace
-listing (`approved-and-verified`, snapshot `4692efa`) predates all of this;
-draft release `v0.0.22` exists on GitHub (unpublished). Capabilities: 20.
+**Installed:** helper 0.0.27 (`562709b`; SHA256
+`4267ee8354e8bc7f1ba2122fa5d3bfaee46101aa95fd8766d4c2179b62f9a962`, ARM64 run
+36943409699, rollback backup
+`~/.local/share/omarchy-buzz/backups/20261002T000437.113920Z`) and plugin
+`3a63500`, after 0.0.25 (communities), 0.0.26 (agents belong to a community)
+and 0.0.27 (one agent in several communities; `docs/AGENTS_QUICKSTART.md`)
+on October 1. Live-verified: a second, separately hosted community joined
+after the maintainer added the plugin's key as a member from Desktop; the
+welcome pane; `vClaude` added to a room of the second community through
+**Add to <community>** and answering there (its first-community instance was
+left through the editor, not re-added yet). The agent store is version 2
+(`personas.v1.json` backup); the config is format 2 (`config.v1.toml`
+backup). Capabilities: 21. The × closes only the overlay now; a window closes
+with Super+W.
 
 Two things from that install to know:
 
@@ -170,9 +166,18 @@ maintainer; draft release `v0.0.24` is unpublished. "Create a new community"
 is deliberately a buzz.xyz hand-off (Desktop creates on Builderlab's private
 API; `DESIGN.md`).
 
-Resume order: check #9501 → when it is promoted, consider a fresh update
-request plus a release for the then-current commit → next feature (Desktop
-parity candidates: reactions, edit/delete own messages, search).
+Open items: marketplace update #9501 (at `7d5faf2`) still awaits a
+maintainer; draft release `v0.0.24` is stale against 0.0.27 (cut a new draft
+for the commit that goes to the marketplace next). For a second person's
+machine (the maintainer named Frank, "FDAX"): agent bundles are ARM64-only
+today, and admitting an agent to a room needs room owner/admin rights —
+`docs/AGENTS_QUICKSTART.md` says what the owner must do. Ask which
+architecture that machine is before promising agents there.
+
+Resume order: hear the maintainer's verdict on the member re-read and the
+hidden × → x86-64 agent bundles if Frank's machine needs them → marketplace
+update + release for the then-current commit → next Desktop-parity feature
+(reactions, edit/delete own messages, search).
 run on `vClaude` from the panel (then adjust the patterns in
 `helper/src/agents_service/models.rs` if the sentence is wrong) →
 presence/"Update your status" → community distribution (x86-64 package,
