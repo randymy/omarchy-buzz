@@ -150,6 +150,10 @@ def build_command(profile, workspace, bundle, command, relay=None, bwrap="/usr/b
             "--tmpfs", "/tmp", "--dir", "/etc", "--dir", "/opt",
             "--dir", "/profile", "--ro-bind", str(bundle), "/opt/agent",
             "--bind", str(workspace), "/workspace"]
+    # x86-64 binaries name their loader as /lib64/ld-linux-x86-64.so.2; mirror
+    # the host's /lib64 link into /usr (aarch64 uses /lib, already linked).
+    if os.path.islink("/lib64") and os.readlink("/lib64").strip("/") in ("usr/lib", "usr/lib64"):
+        args += ["--symlink", os.readlink("/lib64").strip("/"), "/lib64"]
     # DNS and TLS trust are needed for provider traffic. Bind only these public
     # runtime files, never the host /etc, /run, home, keyring or session sockets.
     for source, target in (("/etc/resolv.conf", "/etc/resolv.conf"),
