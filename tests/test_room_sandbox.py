@@ -115,6 +115,22 @@ print(json.dumps({"outside": Path("%s").exists(), "host_home": Path(os.environ["
             finally:
                 os.close(fd)
 
+    def test_host_binaries_find_their_loader(self):
+        """x86-64 ELF interpreters live under /lib64; the sandbox must provide it."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            profile, workspace, bundle = (root / name for name in ("profile", "work", "bundle"))
+            for path in (profile, workspace, bundle, *(profile / n for n in module.PROFILE_DIRS)):
+                path.mkdir(mode=0o700)
+            module.validate(profile, workspace, bundle)
+            command = module.build_command(profile, workspace, bundle, ["/usr/bin/true"],
+                                           "ws://127.0.0.1:7777")
+            if os.path.islink("/lib64"):
+                self.assertIn(["--symlink", os.readlink("/lib64").strip("/"), "/lib64"],
+                              [command[i:i + 3] for i in range(len(command) - 2)])
+            result = subprocess.run(command, capture_output=True, text=True, timeout=15)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_rejects_linked_or_overlapping_mounts(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

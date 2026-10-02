@@ -3566,3 +3566,26 @@ marked **Decided**.
   navigation header-fit check measures the status text when × is hidden, and
   the main-window agent-header measurement moved one tick later (the same
   race the 720×500 check had).
+
+## Release 0.0.28 — October 2
+
+- Merges `x86_64-agent-bundle` (#4, `9af23d6`): harness bundles for x86-64 as
+  well as ARM64. Pins are per architecture (Claude Code 2.1.280 from
+  `claude-agent-sdk-linux-<arch>` 0.3.280, `@openai/codex` 0.158.0 native
+  package, stock Buzz binaries from runs 36639519388 for ARM64 and 37077396263
+  for x86-64), and `bundle.json` records `architecture` (absent = aarch64).
+  `agent-login` and `room-codex` choose the Codex binary by architecture, and
+  the stock-agent workflow builds both. Reported in #3.
+- `room-sandbox` links `/lib64` like the host. x86-64 binaries name their
+  loader `/lib64/ld-linux-x86-64.so.2`; without the link nothing could start
+  inside the agent sandbox on x86-64 (`execvp … No such file or directory`).
+  `--check` cannot detect this because it never starts the sandbox.
+- Includes `3a63500` (re-read room members after agent changes and unknown
+  authors).
+- Verified on x86-64 (Omarchy, the first non-ARM64 machine): Python 111 (adds
+  architecture, pin and `/lib64` loader tests), `helper_install.py`; a Claude
+  Code bundle assembled from the CI artifact reports `ready` and
+  `agent-login --dry-run` returns the terminal command. Not yet verified on
+  x86-64: sign-in through the panel, enrollment, start and a room reply; a
+  Codex bundle. The Rust suite, helper smoke and packaging for both
+  architectures run in the release workflow.
