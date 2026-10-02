@@ -9,6 +9,8 @@ import "plugin/AnsiArt.js" as AnsiArt
 ShellRoot {
   id: test
   property int stage: -1
+  // Membership-changing agent requests make the main service read the room's members again.
+  property int sequenceBeforeSave: 0
   property int ticks: 0
   readonly property string roomA: "11111111-1111-4111-8111-111111111111"
   readonly property string roomB: "22222222-2222-4222-8222-222222222222"
@@ -533,11 +535,16 @@ ShellRoot {
           dms.clicked()
           if (dms.text !== "Answers direct messages: on" || !test.one(view, "buzzAgentSave").enabled)
             throw new Error("Direct message toggle did not change the draft")
+          test.sequenceBeforeSave = service.requestSequence
           test.one(view, "buzzAgentSave").clicked()
           test.stage = 20
         } else if (test.stage === 20 && agents.requestState === "done" && agents.agent(test.agentId).answersDms === true) {
           if (test.one(view, "buzzAgentDms").text !== "Answers direct messages: on" || test.one(view, "buzzAgentSave").enabled)
             throw new Error("Saved direct message choice not shown")
+          // The update may have changed the agent's rooms: the room's members were read again.
+          if (service.requestSequence !== test.sequenceBeforeSave + 1
+              || service.recipientsState !== "snapshot" || service.recipientsRoomId !== service.selectedRoomId)
+            throw new Error("Members not read again exactly once after an agent update: requests " + (service.requestSequence - test.sequenceBeforeSave))
           if (test.one(view, "buzzAgentStart").enabled) throw new Error("Start enabled for a stale bundle")
           test.one(view, "buzzRefreshBundle").clicked()
           if (agents.requestState !== "working" || agents.refreshBundle("codex")) throw new Error("Refresh was not sent once")

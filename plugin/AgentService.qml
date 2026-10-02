@@ -38,6 +38,9 @@ Item {
   property string requestDetail: ""
   property var requestKnownIds: []
   signal agentCreated(string agentId)
+  // A request that changes which rooms an agent is a member of has finished:
+  // the open room's member list may now include or lack the agent.
+  signal membershipChanged()
 
   readonly property var harnessIds: ["claude-code", "codex"]
   readonly property var errorCategories: ["agent_invalid", "agent_busy", "agent_limit", "harness_missing", "bundle_stale",
@@ -561,6 +564,8 @@ Item {
         var added = agents.filter(function(entry) { return known.indexOf(entry.id) === -1 })
         if (added.length === 1) agentCreated(added[0].id)
       }
+      if (view.state === "done" && ["enroll_agent", "enroll_agent_in", "leave_agent_community", "delete_agent", "update_agent"].indexOf(requestType) !== -1)
+        membershipChanged()
     }
     if (frame.type === "hello" && bridge.running) write({type: "subscribe"})
     return true

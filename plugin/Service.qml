@@ -1995,6 +1995,21 @@ Item {
     var agent = agentProfiles.find(function(a) { return a.key === key })
     return agent ? "Self-described agent" : "Participant"
   }
+  // An author the room's member list does not know (someone who joined after
+  // it was read, or an agent just added): read the list again, at most once
+  // every 30 s per room, so names and the @ picker catch up without leaving.
+  property string unknownAuthorRoom: ""
+  Timer { id: unknownAuthorCooldown; interval: 30000 }
+  function noteUnknownAuthors(rows) {
+    if (!recipientsSupported || recipientsState !== "snapshot" || recipientsRoomId !== selectedRoomId || selectedRoomId === "") return
+    if (unknownAuthorCooldown.running && unknownAuthorRoom === selectedRoomId) return
+    var known = {}
+    for (var i = 0; i < recipientEntries.length; i++) known[recipientEntries[i].key] = true
+    if (!rows.some(function(row) { return typeof row.author === "string" && row.author !== "" && !known[row.author] })) return
+    unknownAuthorRoom = selectedRoomId
+    unknownAuthorCooldown.restart()
+    send("fetch_recipients", selectedRoomId)
+  }
   function messageAuthorName(key) {
     // Signed profile labels are presentation only; mentions still use exact keys.
     if (recipientsState === "snapshot" && recipientsRoomId === selectedRoomId && selectedRoomId !== "") {
@@ -2452,7 +2467,7 @@ Item {
     if (state.connection !== "authenticated" || !supportsHistory || ["loading", "unavailable"].indexOf(catalogState) !== -1) clearHistory()
     else if (history && history.roomId === selectedRoomId && selectedRoomId !== "") {
       if (!(history.state === "loading" && historyState === "snapshot")) {
-        if (!sameProjection(historyRows, history.rows)) historyRows = history.rows
+        if (!sameProjection(historyRows, history.rows)) { historyRows = history.rows; noteUnknownAuthors(historyRows) }
         historyState = history.state
         historyCategory = history.category
         historyHasMore = history.hasMore
@@ -2478,7 +2493,7 @@ Item {
       // Loading frames for a same-scope refresh carry an empty row list.
       // Keep the last validated snapshot visible until the refresh finishes.
       if (!(thread.state === "loading" && threadState === "snapshot")) {
-        if (!sameProjection(threadRows, thread.rows)) threadRows = thread.rows
+        if (!sameProjection(threadRows, thread.rows)) { threadRows = thread.rows; noteUnknownAuthors(threadRows) }
         threadState = thread.state
         threadCategory = thread.category
         threadHasMore = thread.hasMore
@@ -2696,6 +2711,9 @@ Item {
     mainService: root
     helperExecutable: root.helperExecutable
     autoConnect: root.autoConnect && !root.sampleMode
+    // An agent joined or left rooms: reload the open room's members so the
+    // @ picker and author names know it without leaving the room.
+    onMembershipChanged: if (root.recipientsSupported && root.selectedRoomId !== "" && root.connection === "authenticated") root.send("fetch_recipients", root.selectedRoomId)
   }
 
   Timer {

@@ -10,7 +10,7 @@ import "plugin" as Buzz
 
 ShellRoot {
   id: test
-  property int stage: 0
+  property real stage: 0
   property int ticks: 0
   property int closeRequests: 0
   readonly property string me: "b".repeat(64)
@@ -104,9 +104,13 @@ ShellRoot {
     // The room's title stays in the timeline row only; the header names no room.
     check(one("buzzHeaderTitle").text === "Buzz" && one("buzzHeaderPlace").text === "",
       label + ": header should show Buzz without the room: " + one("buzzHeaderPlace").text)
-    var close = one("buzzHeaderClose")
-    check(close.text === "×" && close.tooltipText === (view.threadOpen ? "Close Buzz" : "Close Buzz · Esc"),
-      label + ": close control wrong: " + close.text + " / " + close.tooltipText)
+    // × belongs to the overlay only; a normal window closes like any other (Super+W).
+    check(shown("buzzHeaderClose").length === (view.windowMode ? 0 : 1), label + ": × shown in window mode, or missing in the overlay")
+    if (!view.windowMode) {
+      var close = one("buzzHeaderClose")
+      check(close.text === "×" && close.tooltipText === (view.threadOpen ? "Close Buzz" : "Close Buzz · Esc"),
+        label + ": close control wrong: " + close.text + " / " + close.tooltipText)
+    }
     check(shown("buzzHistoryScroll").length === 1, label + ": room history not shown")
     check(shown("buzzClose").length === 0, label + ": the old Close · Esc button is still shown")
   }
@@ -119,24 +123,28 @@ ShellRoot {
     check(shown("buzzHeaderTitle").length === 0, name + ": Buzz title still shown beside Back")
     check(one("buzzHeaderPlace").text === title, name + ": header title " + one("buzzHeaderPlace").text + ", expected " + title)
     check(back.mapToItem(view, 0, 0).x < one("buzzHeaderPlace").mapToItem(view, 0, 0).x, name + ": title is not after Back")
-    var close = one("buzzHeaderClose")
-    check(close.text === "×" && close.tooltipText === "Close Buzz", name + ": close tooltip wrong: " + close.tooltipText)
+    if (!view.windowMode) {
+      var close = one("buzzHeaderClose")
+      check(close.text === "×" && close.tooltipText === "Close Buzz", name + ": close tooltip wrong: " + close.tooltipText)
+    } else check(shown("buzzHeaderClose").length === 0, name + ": × shown in window mode")
     check(shown("buzzHistoryScroll").length === 0, name + ": room history still shown")
     // Older in-page Back links are gone; the header is the one Back.
     var oldBacks = ["buzzSettingsBack", "buzzStatusBack", "buzzAgentBack"]
     oldBacks.forEach(function(old) { check(shown(old).length === 0, name + ": in-page " + old + " still shown") })
   }
-  // Header fits: nothing overlaps and × stays inside the panel.
+  // Header fits: nothing overlaps and the rightmost control (× in the overlay,
+  // the status text in a window) stays inside the panel.
   function expectHeaderFits(label, within) {
     var panel = within || view
-    var close = one("buzzHeaderClose", panel)
+    var close = shown("buzzHeaderClose", panel)[0] || one("buzzHeaderStatus", panel)
     var right = close.mapToItem(panel, close.width, 0).x
-    check(right <= panel.width, label + ": × outside the panel (" + right + " > " + panel.width + ")")
+    check(right <= panel.width, label + ": header runs outside the panel (" + right + " > " + panel.width + ")")
     // The leftmost header item: Back on a sub-view, the Buzz title on the room view.
     var title = shown("buzzHeaderBack", panel)[0] || one("buzzHeaderTitle", panel)
     var status = one("buzzHeaderStatus", panel)
+    var closeShown = shown("buzzHeaderClose", panel).length === 1
     check(title.width > 0 && title.mapToItem(panel, title.width, 0).x <= status.mapToItem(panel, 0, 0).x + 1
-      && status.mapToItem(panel, status.width, 0).x <= close.mapToItem(panel, 0, 0).x + 1, label + ": header items overlap")
+      && (!closeShown || status.mapToItem(panel, status.width, 0).x <= close.mapToItem(panel, 0, 0).x + 1), label + ": header items overlap")
     check(status.text.length > 0, label + ": header status text missing")
   }
   function backByClick(label) {
@@ -191,6 +199,9 @@ ShellRoot {
           click(test.shown("buzzAgentRow").filter(function(item) { return item.agentId === test.agentId })[0])
           test.expectSubView("agent", "vClaude")
           check(one("buzzAgentTitle").text === "vClaude", "Agent editor did not open")
+          test.stage = 2.5
+        } else if (test.stage === 2.5) {
+          // Measured one tick after opening: the header row lays out after the view swap.
           test.expectHeaderFits("agent")
           test.backByClick("agent")
           click("buzzNewAgent")
@@ -277,9 +288,13 @@ ShellRoot {
           test.composerField().forceActiveFocus()
           key(Qt.Key_Escape)
           check(test.closeRequests === 1, "Escape on the room view did not close Buzz")
+          // × exists only in the overlay; there it closes Buzz from any view.
           view.openSettings()
+          check(shown("buzzHeaderClose").length === 0, "× shown in window mode")
+          view.windowMode = false
           click("buzzHeaderClose")
-          check(test.closeRequests === 2, "× did not close Buzz from Settings")
+          check(test.closeRequests === 2, "× did not close Buzz from Settings in the overlay")
+          view.windowMode = true
           view.backToRooms()
           test.composerField().forceActiveFocus()
 

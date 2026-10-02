@@ -3545,3 +3545,24 @@ marked **Decided**.
   budget and passed 3/3 alone). Helper and plugin install together: an older
   panel refuses `instances`, an older helper refuses a version-2 store
   (downgrade = restore `personas.v1.json` first).
+
+## Members re-read after agent changes and for unknown authors; × only in the overlay — October 1
+
+- Live: vClaude answered in the second community (its first instance there),
+  but the panel showed the reply's author as the hex key and the `@` picker
+  did not know it: the room's member list is read when a room is opened and
+  nothing re-read it after the agent was added. Two re-reads now exist, both
+  only with `room_recipients`: `AgentService.membershipChanged` (after
+  `enroll_agent`, `enroll_agent_in`, `leave_agent_community`, `delete_agent`,
+  `update_agent` complete) makes `Service` fetch the open room's members
+  again; and `Service.noteUnknownAuthors` re-reads them when history or
+  thread rows carry an author the list does not know, at most once per 30 s
+  per room. `--agents` asserts exactly one extra request after an update;
+  `--author-names` covers the unknown-author rule and the capability gate.
+- Maintainer: "let's remove the × to close the Buzz plugin. The user can use
+  super + w like other windows." `buzzHeaderClose` is now visible only in the
+  overlay (no frame there); Esc from the room view still closes either
+  presentation. `--navigation` and `--settings` assert the rule; the
+  navigation header-fit check measures the status text when × is hidden, and
+  the main-window agent-header measurement moved one tick later (the same
+  race the 720×500 check had).

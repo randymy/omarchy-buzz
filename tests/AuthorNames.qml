@@ -28,7 +28,24 @@ ShellRoot {
         if (service.messageAuthorName(key) !== key.slice(0,12) + "…") throw new Error("Blank name displayed")
         service.clearRecipients()
         if (service.messageAuthorLabel(key) !== key.slice(0,12) + "…") throw new Error("Cleared profile retained")
-        console.log("PASS: message usernames, profile updates, agent labels and room-scoped fallback")
+        // An author the member list does not know makes the service read the list
+        // again (one request), but not twice within the cooldown, and not for a
+        // known author or without the capability.
+        service.recipientsSupported = true
+        service.recipientsRoomId = room
+        service.recipientsState = "snapshot"
+        service.recipientEntries = [{key:key,name:"Buzz Person"}]
+        var sent = service.requestSequence
+        service.noteUnknownAuthors([{author: key}])
+        if (service.requestSequence !== sent) throw new Error("Known author caused a member read")
+        service.noteUnknownAuthors([{author: "b".repeat(64)}])
+        service.noteUnknownAuthors([{author: "c".repeat(64)}])
+        if (service.unknownAuthorRoom !== room) throw new Error("Unknown author not noted")
+        service.recipientsSupported = false
+        service.unknownAuthorRoom = ""
+        service.noteUnknownAuthors([{author: "d".repeat(64)}])
+        if (service.unknownAuthorRoom !== "") throw new Error("Member read attempted without the capability")
+        console.log("PASS: message usernames, profile updates, agent labels, room-scoped fallback and a member re-read for unknown authors")
         Qt.quit()
       } catch (error) { console.error(error); Qt.exit(1) }
     }

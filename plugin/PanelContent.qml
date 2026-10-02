@@ -1044,9 +1044,13 @@ FocusScope {
         font.family: Style.font.family
         font.pixelSize: Style.font.caption
       }
+      // Only the overlay closes from here: a normal window has its own frame
+      // and closes like any other (Super+W on Omarchy); Esc from the room view
+      // still closes either presentation.
       Ui.Button {
         id: headerClose
         objectName: "buzzHeaderClose"
+        visible: !root.windowMode
         text: "×"
         tooltipText: root.subViewOpen || root.threadOpen ? "Close Buzz" : "Close Buzz · Esc"
         fontSize: Style.font.body * 1.3

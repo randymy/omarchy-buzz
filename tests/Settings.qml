@@ -93,7 +93,7 @@ ShellRoot {
         && typeof item.clicked === "function" && ["buzzSettingsAlerts", "buzzSettingsWindow", "buzzSettingsOverlay"].indexOf(item.objectName) === -1
     })
     check(moved.length === 0, "Header still shows moved controls: " + moved.map(function(item) { return item.text }).join(", "))
-    one("buzzHeaderClose")
+    check(shown("buzzHeaderClose").length === (view.windowMode ? 0 : 1), "× shown in window mode, or missing in the overlay")
   }
 
   Timer {

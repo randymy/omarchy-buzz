@@ -180,6 +180,9 @@ ShellRoot {
           check(added.length === 1 && JSON.stringify(Object.keys(added[0]).sort()) === JSON.stringify(["agentId", "id", "instanceId", "relay", "rooms", "type", "version"])
             && added[0].relay === test.second && JSON.stringify(added[0].rooms) === JSON.stringify(["bbbbbbbb-0000-4000-8000-0000000000b1"]),
             "enroll_agent_in shape wrong: " + JSON.stringify(added))
+          // This fixture has no room_recipients, so no member refetch is sent here
+          // (the --agents mode covers it); nothing else may be sent either.
+          check(test.requests().filter(function(r) { return r.type === "fetch_recipients" }).length === 0, "fetch_recipients sent without the capability")
           // Now listed here, editable with this community's rooms; both communities listed.
           test.expectAgents(["vClaude", "Night bot", "Both bot"], [], [])
           var vclaude = findNamed(view, "buzzAgentEditor", [])[0]
