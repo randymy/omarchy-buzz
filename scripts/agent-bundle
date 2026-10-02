@@ -33,6 +33,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import platform
 import shutil
 import stat
 import subprocess
@@ -46,25 +47,60 @@ HOME = Path.home()
 HARNESSES = ('codex', 'claude-code')
 SCHEMA = 1
 
-BUZZ = {  # official upstream, unchanged, ARM64 run 36639519388 (docs/evidence/stock-codex-room-2026-09-29.json)
+# Bundles are built for the host architecture. A bundle.json without an
+# `architecture` predates x86-64 support and is aarch64.
+MACHINES = {'aarch64': 'aarch64', 'arm64': 'aarch64', 'x86_64': 'x86_64', 'amd64': 'x86_64'}
+ELF_MACHINE = {'aarch64': 183, 'x86_64': 62}
+ARCH = MACHINES.get(platform.machine())
+LEGACY_ARCH = 'aarch64'
+
+BUZZ = {  # official upstream, unchanged; per-architecture CI runs of the stock-agent workflow
     'revision': '781d39510cf23cfe224e8f521ae06a23377e06de',
-    'run': '36639519388',
-    'sha256': {'buzz-acp': '9323cea933acf782a6976c1f4aa6484948de9876a70b1b3a11720e533daec4f4',
-               'buzz': '54aa3ad0bd672d36ca03747390fc1f41df5cb454545d5424d2d20329588433c3',
-               'buzz-admin': '7fc7ef31dfdbdfe425cbca1280e406e4dce96c44baba28b67536557f72804c80'},
+    'pins': {
+        'aarch64': {  # run 36639519388 (docs/evidence/stock-codex-room-2026-09-29.json)
+            'run': '36639519388',
+            'sha256': {'buzz-acp': '9323cea933acf782a6976c1f4aa6484948de9876a70b1b3a11720e533daec4f4',
+                       'buzz': '54aa3ad0bd672d36ca03747390fc1f41df5cb454545d5424d2d20329588433c3',
+                       'buzz-admin': '7fc7ef31dfdbdfe425cbca1280e406e4dce96c44baba28b67536557f72804c80'},
+        },
+        'x86_64': {  # run 37077396263, workflow revision 2063bbc
+            'run': '37077396263',
+            'sha256': {'buzz-acp': 'dec2deff76acef4cb283854fc9aa83532e6bc2a3711746e7fefbbf2c0e76eeb0',
+                       'buzz': 'a662b0be1e5ae3bd6c0737b297cbd21016ac9eb713c3723e56a18edf7dcace55',
+                       'buzz-admin': '74d94235ec5df35558673119176a8f08b716f95873a32a401afbd6f4cf1900fe'},
+        },
+    },
 }
 NODE_VERSION = 'v22.23.3'
-CLAUDE_CLI = {'version': '2.1.280',  # byte-identical to @anthropic-ai/claude-agent-sdk-linux-arm64 0.3.280
-              'sha256': '92f2b4fd05d0bdcf7b9a0d4e0ecef4a1e4b368b290cd8fd07cff9a50013f45a2'}
-CODEX_NATIVE = 'node_modules/@openai/codex-linux-arm64/vendor/aarch64-unknown-linux-musl/bin/codex'
+CLAUDE_CLI = {'version': '2.1.280',  # byte-identical to @anthropic-ai/claude-agent-sdk-linux-<arch> 0.3.280
+              'pins': {'aarch64': '92f2b4fd05d0bdcf7b9a0d4e0ecef4a1e4b368b290cd8fd07cff9a50013f45a2',
+                       'x86_64': '1e08503dbdf3c2cb0d706d32f3408277388d1c76ef108673e8fe42c1b322925b'}}
+CLAUDE_CLI['sha256'] = CLAUDE_CLI['pins'].get(ARCH)
+CODEX_PLATFORMS = {  # npm package suffix, Rust target, lock integrity, native binary SHA-256
+    'aarch64': ('linux-arm64', 'aarch64-unknown-linux-musl',
+                'sha512-T9AgGcoU7HNsxJ4prT/R9YvztyEmz9kWP/VlT2cbCop4PVwiqfG9YMJtLo4j2ScewvSaTl4sQFwla+fwGpoRZg==',
+                '0059c73b149a1433b634e26ad8a715e02717a9920665a9cc5676941db03c45cd'),
+    'x86_64': ('linux-x64', 'x86_64-unknown-linux-musl',
+               'sha512-mY12GZPM8TuOWVGxCyNV2NSA8t1uIupm9Nhu9VeQVEvvxBKN08U8bLH+vn7oISUHZPC8bwhROIbo/ZUxqV6XMg==',
+               '167c0148a849d2444f1b5a7fb5f8bb2de1de5ae13a2a504b833fc765980f5cd9'),
+}
+
+
+def codex_native(arch):
+    suffix, target, _, _ = CODEX_PLATFORMS[arch]
+    return f'node_modules/@openai/codex-{suffix}/vendor/{target}/bin/codex'
+
+
+_CODEX = CODEX_PLATFORMS.get(ARCH, CODEX_PLATFORMS[LEGACY_ARCH])
+CODEX_NATIVE = codex_native(ARCH or LEGACY_ARCH)
 ADAPTERS = {
     'codex': {
         'packages': {
             'node_modules/@agentclientprotocol/codex-acp': ('2.0.0', 'sha512-dho7RRXP+7Ur813qKgPVoAKjr4x3A8IcOoBOTYJRkcCNgcGraP5x3/5lPcZ0QgcVm0ErdYXRPYjwdSzvZHaKqw=='),
             'node_modules/@openai/codex': ('0.158.0', 'sha512-GBhcKpQmVLsCtEP5mUf6WFye6QQgTKotwsXrYPM0GFmEsoOSahik6hkf2FHabX9kZBl0Y0/PQowLu7uYMKT8dg=='),
-            'node_modules/@openai/codex-linux-arm64': ('0.158.0-linux-arm64', 'sha512-T9AgGcoU7HNsxJ4prT/R9YvztyEmz9kWP/VlT2cbCop4PVwiqfG9YMJtLo4j2ScewvSaTl4sQFwla+fwGpoRZg=='),
+            'node_modules/@openai/codex-' + _CODEX[0]: ('0.158.0-' + _CODEX[0], _CODEX[2]),
         },
-        'native': {CODEX_NATIVE: '0059c73b149a1433b634e26ad8a715e02717a9920665a9cc5676941db03c45cd'},
+        'native': {CODEX_NATIVE: _CODEX[3]},
         'entry': 'node_modules/@agentclientprotocol/codex-acp/dist/index.js',
         'exclude': (),
         'wrappers': {'codex-acp': 'room-codex-acp', 'codex': 'room-codex'},
@@ -117,10 +153,12 @@ def regular(path, category):
     return path
 
 
-def elf_arm64(path, category):
+def elf_host(path, category):
+    """A 64-bit ELF for this host's architecture."""
     with path.open('rb') as stream:
         head = stream.read(20)
-    if len(head) < 20 or head[:5] != b'\x7fELF\x02' or int.from_bytes(head[18:20], 'little') != 183:
+    if (len(head) < 20 or head[:5] != b'\x7fELF\x02' or
+            int.from_bytes(head[18:20], 'little') != ELF_MACHINE.get(ARCH)):
         raise Refused(category)
 
 
@@ -143,19 +181,22 @@ def buzz_binaries(directory):
     """Verify official Buzz binaries: CI build.json next to bin/, else the pinned run."""
     directory = directory.resolve()
     build = directory.parent / 'build.json'
-    expected = BUZZ['sha256']
-    provenance = {'revision': BUZZ['revision'], 'run': BUZZ['run'], 'source': 'pinned-hashes'}
+    pins = BUZZ['pins'][ARCH]
+    expected = pins['sha256']
+    provenance = {'revision': BUZZ['revision'], 'run': pins['run'], 'source': 'pinned-hashes'}
     if build.is_file() and not build.is_symlink():
         report = json.loads(build.read_text())
         if report.get('sourceRevision') != BUZZ['revision'] or report.get('patchesApplied') != []:
             raise Refused('buzz_revision_mismatch')
+        if report.get('architecture', LEGACY_ARCH) != ARCH:
+            raise Refused('buzz_architecture_mismatch')
         expected = {name: report.get('files', {}).get('bin/' + name) for name in expected}
         provenance = {'revision': BUZZ['revision'], 'run': str(report.get('runId')),
                       'workflowRevision': report.get('workflowRevision'), 'source': 'ci-build-json'}
     files = {}
     for name, sha in expected.items():
         path = regular(directory / name, 'buzz_binary_missing')
-        elf_arm64(path, 'buzz_binary_not_arm64')
+        elf_host(path, 'buzz_binary_wrong_architecture')
         if not sha or digest(path) != sha:
             raise Refused('buzz_binary_hash_mismatch')
         files[name] = path
@@ -165,7 +206,7 @@ def buzz_binaries(directory):
 
 def node_binary(path):
     regular(path, 'node_missing')
-    elf_arm64(path, 'node_not_arm64')
+    elf_host(path, 'node_wrong_architecture')
     result = subprocess.run([str(path), '--version'], capture_output=True, text=True, timeout=30,
                             env={'PATH': '/usr/bin:/bin'}, stdin=subprocess.DEVNULL)
     if result.returncode or result.stdout.strip() != NODE_VERSION:
@@ -176,7 +217,7 @@ def node_binary(path):
 def claude_cli(path):
     path = path.resolve()
     regular(path, 'claude_cli_missing')
-    elf_arm64(path, 'claude_cli_not_arm64')
+    elf_host(path, 'claude_cli_wrong_architecture')
     if digest(path) != CLAUDE_CLI['sha256']:
         raise Refused('claude_cli_unpinned')
     return path
@@ -337,7 +378,7 @@ def assemble(args):
         for relative, item in walk_bundle(staging):
             files[relative] = {'sha256': digest(item), 'bytes': item.stat().st_size,
                                'mode': format(stat.S_IMODE(item.stat().st_mode), '04o')}
-        record = {'schemaVersion': SCHEMA, 'harness': harness,
+        record = {'schemaVersion': SCHEMA, 'harness': harness, 'architecture': ARCH,
                   'assembledAt': datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds'),
                   'plugin': plugin_revision(), 'buzz': provenance, 'versions': versions,
                   'adapterSource': 'npm-ci' if args.npm_ci else 'prepared-tree',
@@ -378,6 +419,8 @@ def verify(bundle, harness):
         raise Refused('bundle_manifest_invalid') from exc
     if record.get('schemaVersion') != SCHEMA or not isinstance(files, dict) or not files:
         raise Refused('bundle_manifest_invalid')
+    if record.get('architecture', LEGACY_ARCH) != ARCH:
+        raise Refused('bundle_architecture_mismatch')
     if record.get('harness') != harness or record.get('entrypoints') != entrypoints(harness):
         raise Refused('bundle_harness_mismatch')
     launcher = []
@@ -533,7 +576,7 @@ def main():
                         "else this checkout's scripts/)")
     p.add_argument('--buzz-bin', type=Path, default=HOME / '.local/share/omarchy-buzz/stock-agent-codex/bin',
                    help='directory with official buzz-acp, buzz and buzz-admin (stock bundle bin/ or CI artifact bin/)')
-    p.add_argument('--node', type=Path, help=f'Node {NODE_VERSION} ARM64 binary (default: <buzz-bin>/node)')
+    p.add_argument('--node', type=Path, help=f'Node {NODE_VERSION} binary for this architecture (default: <buzz-bin>/node)')
     p.add_argument('--adapter', type=Path, help='prepared npm tree: package.json, package-lock.json, node_modules/')
     p.add_argument('--npm-ci', action='store_true', help='download the pinned adapter lock (network)')
     p.add_argument('--npm-cli', type=Path, help='npm-cli.js used with --npm-ci')
@@ -544,6 +587,9 @@ def main():
     if args.harness not in HARNESSES:
         print(json.dumps({'error': 'harness_unknown'}), file=sys.stderr)
         return 2
+    if ARCH is None:
+        print(json.dumps({'error': 'architecture_unsupported'}), file=sys.stderr)
+        return 1
     if args.output is None:
         args.output = default_bundle(args.harness)
     scripts = args.scripts if args.scripts is not None else default_scripts()

@@ -25,7 +25,12 @@ def load(name):
 
 bundle_tool = load("agent-bundle")
 login_tool = load("agent-login")
-ELF = b"\x7fELF\x02\x01\x01\x00" + b"\x00" * 8 + b"\x02\x00\xb7\x00" + b"synthetic"
+def elf(arch):
+    return b"\x7fELF\x02\x01\x01\x00" + b"\x00" * 8 + b"\x02\x00" + bytes([bundle_tool.ELF_MACHINE[arch], 0]) + b"synthetic"
+
+
+OTHER_ARCH = {"aarch64": "x86_64", "x86_64": "aarch64"}[bundle_tool.ARCH]
+ELF = elf(bundle_tool.ARCH)
 
 
 def sha(data):
@@ -38,7 +43,7 @@ def run(script, *args, env=None):
 
 
 def synthetic_ci_artifact(root):
-    """CI artifact layout (stock-agent/bin + build.json) with synthetic ARM64 ELF files."""
+    """CI artifact layout (stock-agent/bin + build.json) with synthetic host-architecture ELF files."""
     artifact = root / "stock-agent"
     (artifact / "bin").mkdir(parents=True)
     files = {}
@@ -50,6 +55,7 @@ def synthetic_ci_artifact(root):
     (artifact / "LICENSE").write_text("synthetic license\n")
     (artifact / "build.json").write_text(json.dumps({
         "sourceRevision": bundle_tool.BUZZ["revision"], "patchesApplied": [], "runId": "1",
+        "architecture": bundle_tool.ARCH,
         "workflowRevision": "0" * 40, "files": files}))
     return artifact / "bin"
 
@@ -143,6 +149,45 @@ class BundleAssembly(unittest.TestCase):
             bundle_tool.check(bundle, "codex")
         self.assertEqual(sorted(p.name for p in self.root.iterdir() if p.name.startswith(".")), [])
 
+    def test_architecture_is_checked_and_recorded(self):
+        bundle = self.assemble("claude-code")
+        self.assertEqual(json.loads((bundle / "bundle.json").read_text())["architecture"], bundle_tool.ARCH)
+        # A bundle.json from before x86-64 support has no architecture and is aarch64.
+        record = json.loads((bundle / "bundle.json").read_text())
+        del record["architecture"]
+        (bundle / "bundle.json").write_text(json.dumps(record))
+        if bundle_tool.ARCH == bundle_tool.LEGACY_ARCH:
+            bundle_tool.check(bundle, "claude-code")
+        else:
+            with self.assertRaisesRegex(bundle_tool.Refused, "bundle_architecture_mismatch"):
+                bundle_tool.check(bundle, "claude-code")
+        record["architecture"] = OTHER_ARCH
+        (bundle / "bundle.json").write_text(json.dumps(record))
+        with self.assertRaisesRegex(bundle_tool.Refused, "bundle_architecture_mismatch"):
+            bundle_tool.check(bundle, "claude-code")
+        foreign = self.root / "foreign-claude"
+        foreign.write_bytes(elf(OTHER_ARCH) + b"claude")
+        with self.assertRaisesRegex(bundle_tool.Refused, "claude_cli_wrong_architecture"):
+            self.assemble("claude-code", output=self.root / "agent-foreign", claude_cli=foreign)
+        artifact = synthetic_ci_artifact(self.root / "ci-foreign")
+        build = artifact.parent / "build.json"
+        build.write_text(json.dumps(dict(json.loads(build.read_text()), architecture=OTHER_ARCH)))
+        with self.assertRaisesRegex(bundle_tool.Refused, "buzz_architecture_mismatch"):
+            self.assemble("codex", output=self.root / "agent-foreign-buzz", buzz_bin=artifact)
+
+    def test_pins_cover_both_architectures(self):
+        lock = json.loads((SCRIPTS.parent / "packaging/agent-codex/package-lock.json").read_text())["packages"]
+        for arch, (suffix, _, integrity, native_sha) in bundle_tool.CODEX_PLATFORMS.items():
+            package = "node_modules/@openai/codex-" + suffix
+            self.assertEqual(lock[package]["version"], "0.158.0-" + suffix)
+            self.assertEqual(lock[package]["integrity"], integrity)
+            self.assertTrue(bundle_tool.codex_native(arch).startswith(package + "/vendor/"))
+            self.assertRegex(native_sha, "^[0-9a-f]{64}$")
+            self.assertRegex(bundle_tool.CLAUDE_CLI["pins"][arch], "^[0-9a-f]{64}$")
+            self.assertIn(arch, bundle_tool.BUZZ["pins"])
+        self.assertEqual(login_tool.NATIVE["codex"], "adapter/" + bundle_tool.CODEX_NATIVE)
+        self.assertIn(bundle_tool.CODEX_NATIVE.removeprefix("node_modules/"), (SCRIPTS / "room-codex").read_text())
+
     def test_codex_bundle_layout(self):
         bundle = self.assemble("codex")
         self.assertEqual((bundle / "bin/codex-acp").read_bytes(), (SCRIPTS / "room-codex-acp").read_bytes())
@@ -223,7 +268,7 @@ class BundleCheck(unittest.TestCase):
                        "mode": format(item.stat().st_mode & 0o777, "04o")}
                  for rel, item in bundle_tool.walk_bundle(bundle) if rel != "bundle.json"}
         (bundle / "bundle.json").write_text(json.dumps({
-            "schemaVersion": 1, "harness": harness, "entrypoints": bundle_tool.entrypoints(harness),
+            "schemaVersion": 1, "harness": harness, "architecture": bundle_tool.ARCH, "entrypoints": bundle_tool.entrypoints(harness),
             "files": files}))
 
     def check(self, bundle, harness="codex", scripts=None):
