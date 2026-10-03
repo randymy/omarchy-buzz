@@ -4,6 +4,7 @@ import QtQuick.Controls as Controls
 import qs.Ui as Ui
 import qs.Commons
 import "AnsiArt.js" as AnsiArt
+import "PlainText.js" as PlainText
 
 FocusScope {
   id: root
@@ -24,7 +25,7 @@ FocusScope {
       font.family: Style.font.family
       font.pixelSize: Style.font.body
       Controls.ToolTip.visible: keyHover.containsMouse
-      Controls.ToolTip.text: keyRow.service ? keyRow.service.identity : ""
+      Controls.ToolTip.text: PlainText.tip(keyRow.service ? keyRow.service.identity : "")
       MouseArea { id: keyHover; anchors.fill: parent; hoverEnabled: true; acceptedButtons: Qt.NoButton }
     }
     Ui.Button {
@@ -211,7 +212,7 @@ FocusScope {
             font.family: Style.font.family
             font.pixelSize: Style.font.caption
             Controls.ToolTip.visible: openRoomHover.containsMouse && modelData.description !== ""
-            Controls.ToolTip.text: modelData.description
+            Controls.ToolTip.text: PlainText.tip(modelData.description)
             MouseArea { id: openRoomHover; anchors.fill: parent; hoverEnabled: true; acceptedButtons: Qt.NoButton }
           }
           Ui.Button {
@@ -297,7 +298,7 @@ FocusScope {
         font.family: Style.font.family
         font.pixelSize: Style.font.caption
         Controls.ToolTip.visible: linkHover.containsMouse
-        Controls.ToolTip.text: linkRow.link
+        Controls.ToolTip.text: PlainText.tip(linkRow.link)
         MouseArea { id: linkHover; anchors.fill: parent; hoverEnabled: true; acceptedButtons: Qt.NoButton }
       }
       Ui.Button {
@@ -1117,7 +1118,7 @@ FocusScope {
           font.family: Style.font.family
           font.pixelSize: Style.font.caption
           Controls.ToolTip.visible: relayHover.containsMouse && text !== ""
-          Controls.ToolTip.text: root.service ? (root.service.relay || root.service.viewModel.community) + " · " + root.service.catalogLabel : ""
+          Controls.ToolTip.text: PlainText.tip(root.service ? (root.service.relay || root.service.viewModel.community) + " · " + root.service.catalogLabel : "")
           MouseArea {
             id: relayHover
             anchors.fill: parent
@@ -1334,7 +1335,7 @@ FocusScope {
               font.family: Style.font.family
               font.pixelSize: Style.font.caption
               Controls.ToolTip.visible: dmStatusHover.containsMouse && truncated
-              Controls.ToolTip.text: text
+              Controls.ToolTip.text: PlainText.tip(text)
               MouseArea {
                 id: dmStatusHover
                 anchors.fill: parent
@@ -1611,7 +1612,7 @@ FocusScope {
             + (root.myKeyKnown ? " · " + root.service.identity.slice(0, 8) + "…" : "")
           Controls.ToolTip.visible: accountArea.containsMouse && !root.accountMenuOpen
           Controls.ToolTip.delay: 400
-          Controls.ToolTip.text: tooltipText
+          Controls.ToolTip.text: PlainText.tip(tooltipText)
         }
       }
 
@@ -2314,7 +2315,7 @@ FocusScope {
             font.family: Style.font.family
             font.pixelSize: Style.font.caption
             Controls.ToolTip.visible: historyHover.containsMouse && truncated
-            Controls.ToolTip.text: text
+            Controls.ToolTip.text: PlainText.tip(text)
             MouseArea {
               id: historyHover
               anchors.fill: parent
@@ -2920,7 +2921,7 @@ FocusScope {
               ? root.service.activeCommunity.relay : root.service && root.service.relay ? root.service.relay : "No community yet"
             Controls.ToolTip.visible: communityHover.containsMouse
             Controls.ToolTip.delay: 400
-            Controls.ToolTip.text: tooltipText
+            Controls.ToolTip.text: PlainText.tip(tooltipText)
             MouseArea { id: communityHover; anchors.fill: parent; hoverEnabled: true; acceptedButtons: Qt.NoButton }
             RowLayout {
               id: menuCommunityRow

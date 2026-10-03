@@ -3,6 +3,7 @@ import QtQuick.Controls as Controls
 import qs.Commons
 import "Identicon.js" as Identicon
 import "AnsiArt.js" as AnsiArt
+import "PlainText.js" as PlainText
 
 // A small monospace avatar: the key's identicon, or bounded pasted art when set.
 // Presentation only; the key is a public key or a persona id, never a secret.
@@ -77,7 +78,7 @@ Text {
   Controls.ToolTip.visible: hover.containsMouse && Controls.ToolTip.text !== ""
   Controls.ToolTip.text: {
     var prefix = Identicon.digits(key) ? key.slice(0, 8) + "…" : ""
-    return [name, prefix].filter(function(part) { return part !== "" }).join(" · ")
+    return PlainText.tip([name, prefix].filter(function(part) { return part !== "" }).join(" · "))
   }
   MouseArea {
     id: hover

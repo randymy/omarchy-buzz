@@ -9,6 +9,7 @@ import QtTest
 import Quickshell
 import Quickshell.Io
 import "plugin" as Buzz
+import "plugin/PlainText.js" as PlainText
 
 ShellRoot {
   id: test
@@ -100,6 +101,15 @@ ShellRoot {
     })
     // Sample data shows a fixture status and publishes nothing.
     check(sample.myStatus && sample.myStatus.emoji === "🧭" && sample.authorStatus("Alex").emoji === "🗓️", "Sample status missing")
+    // Tooltips render AutoText: a member's status with markup must reach them escaped,
+    // shown literally, never as an image that fetches a remote host on hover.
+    var beacon = '<img src="https://tracker.example/p.png"> Out & about'
+    check(service.validatedRecipients(roster({text: beacon, emoji: null}), true).entries[0].status.text === beacon,
+      "Markup status was not accepted as plain text")
+    var shownTip = PlainText.tip(beacon)
+    check(shownTip.indexOf("<img") === -1 && shownTip.indexOf("&lt;img src=&quot;https://tracker.example/p.png&quot;&gt; Out &amp; about") !== -1,
+      "Tooltip text is not escaped: " + shownTip)
+    check(PlainText.tip("") === "" && PlainText.tip(null) === "" && PlainText.tip(undefined) === "", "Empty tooltip is not empty")
     check(!sample.canSetStatus && !sample.setStatus("x", "", 24), "Sample mode can publish a status")
   }
   Timer {

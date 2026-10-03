@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls as Controls
 import qs.Commons
+import "PlainText.js" as PlainText
 
 // A small presence dot (`presence`): green online, amber away, grey offline.
 // Presentation only; the state is a verified projection from the helper, and
@@ -23,7 +24,7 @@ Rectangle {
   border.color: Color.background
   border.width: Math.max(1, Style.space(1))
   Controls.ToolTip.visible: dotHover.containsMouse
-  Controls.ToolTip.text: label
+  Controls.ToolTip.text: PlainText.tip(label)
   MouseArea {
     id: dotHover
     anchors.fill: parent
