@@ -159,6 +159,8 @@ struct Discovery {
     // None answers the relay information request with an error.
     rooms: Option<Vec<String>>,
     gate: Option<(oneshot::Sender<()>, oneshot::Receiver<()>)>,
+    // The relay information names another signing key.
+    changed: bool,
 }
 struct Script {
     next: std::collections::VecDeque<Discovery>,
@@ -475,12 +477,18 @@ async fn recheck_fixture_every(first: Option<Discovery>, catalog: Duration) -> R
                     let step = script.lock().unwrap().next.pop_front();
                     match step {
                         None => ok(&json!({"self": signer.to_hex()}).to_string()),
-                        Some(Discovery { rooms, gate }) => {
+                        Some(Discovery {
+                            rooms,
+                            gate,
+                            changed,
+                        }) => {
                             if let Some((started, release)) = gate {
                                 let _ = started.send(());
                                 let _ = release.await;
                             }
                             match rooms {
+                                _ if changed => ok(&json!({"self": Keys::generate().public_key().to_hex()})
+                                    .to_string()),
                                 Some(rooms) => {
                                     script.lock().unwrap().joined = rooms;
                                     ok(&json!({"self": signer.to_hex()}).to_string())
@@ -633,6 +641,7 @@ fn held(rooms: Option<Vec<String>>) -> (Discovery, oneshot::Receiver<()>, onesho
         Discovery {
             rooms,
             gate: Some((started_tx, release_rx)),
+            changed: false,
         },
         started,
         release,
@@ -717,6 +726,7 @@ enum Outcome {
     RemoveSelected,
     RemoveOther,
     Fail,
+    IdentityChanged,
 }
 async fn background_check(outcome: Outcome) {
     let _network_fixture = crate::NETWORK_TEST_LOCK.lock().await;
@@ -728,9 +738,10 @@ async fn background_check(outcome: Outcome) {
             Outcome::Same => Some(vec![a.clone(), b.clone()]),
             Outcome::RemoveSelected => Some(vec![b.clone()]),
             Outcome::RemoveOther => Some(vec![a.clone()]),
-            Outcome::Fail => None,
+            Outcome::Fail | Outcome::IdentityChanged => None,
         };
-        let (step, started, release) = held(after);
+        let (mut step, started, release) = held(after);
+        step.changed = outcome == Outcome::IdentityChanged;
         f.script.lock().unwrap().next.push_back(step);
         timeout(Duration::from_secs(5), started)
             .await
@@ -764,7 +775,9 @@ async fn background_check(outcome: Outcome) {
         assert!(retained(&f.status.borrow(), &a, &b, &root));
         release.send(()).unwrap();
         match outcome {
-            Outcome::Same => {
+            // A relay that is only unavailable for one check proves nothing
+            // about membership: the last verified views stay.
+            Outcome::Same | Outcome::Fail => {
                 // The next check has started, so the held one was published.
                 timeout(
                     Duration::from_secs(5),
@@ -831,12 +844,12 @@ async fn background_check(outcome: Outcome) {
                 );
                 assert!(s.activity.iter().all(|entry| entry.room_id == a));
             }
-            Outcome::Fail => {
+            Outcome::IdentityChanged => {
                 let s = snapshot(&mut f.status, |s| s.catalog.state == "unavailable").await;
                 assert!(s.catalog.rooms.is_empty());
                 assert_eq!(
                     s.catalog.category.as_deref(),
-                    Some("room_catalog_unavailable")
+                    Some("relay_identity_changed")
                 );
                 assert_eq!(s.history.state, "unavailable");
                 assert!(s.history.room_id.is_none() && s.history.rows.is_empty());
@@ -871,8 +884,38 @@ async fn removed_other_room_clears_only_its_roster() {
 }
 
 #[tokio::test]
-async fn failed_background_room_check_clears_dependent_views() {
+async fn unavailable_background_room_check_keeps_published_views() {
     background_check(Outcome::Fail).await;
+}
+
+#[tokio::test]
+async fn background_room_check_with_changed_relay_identity_clears_dependent_views() {
+    background_check(Outcome::IdentityChanged).await;
+}
+
+#[test]
+fn only_timeouts_and_unavailable_relays_keep_a_catalog() {
+    for transient in [
+        "discovery_timeout",
+        "discovery_unavailable",
+        "query_timeout",
+        "query_unavailable",
+        "query_rate_limited",
+        "query_busy",
+    ] {
+        assert!(catalog_transient(transient), "{transient}");
+    }
+    for lost in [
+        "query_access_denied",
+        "query_auth_rejected",
+        "relay_identity_changed",
+        "discovery_signer_unavailable",
+        "catalog_invalid_signature",
+        "catalog_untrusted_author",
+        "query_invalid_response",
+    ] {
+        assert!(!catalog_transient(lost), "{lost}");
+    }
 }
 
 #[tokio::test]

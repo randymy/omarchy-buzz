@@ -1120,6 +1120,10 @@ pub struct Status {
     pub generation: u64,
     /// One of `CONNECTION_CATEGORIES`, or none.
     pub category: Option<String>,
+    /// True while an automatic reconnection is scheduled or under way
+    /// (`disconnected` or `connecting` after a retried failure); `category`
+    /// still names that failure. Never true while `authenticated`.
+    pub reconnecting: bool,
     /// Last measured `relay − local` clock offset in seconds (HTTP `Date`),
     /// bounded to ±`clock::BOUND`; none until measured on this relay.
     /// Informational only: nothing is ever adjusted with it.
@@ -1154,6 +1158,7 @@ impl Status {
             relay: c.relay.clone(),
             generation: 1,
             category: None,
+            reconnecting: false,
             clock_skew_seconds: None,
             catalog: Catalog::unavailable(None),
             history: History::unavailable(None, None),

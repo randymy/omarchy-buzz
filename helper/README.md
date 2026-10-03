@@ -29,8 +29,13 @@ Socket is `XDG_RUNTIME_DIR/omarchy-buzz/control.sock`; parent is 0700, socket
 malicious processes. A standalone daemon refuses an existing socket; remove a
 stale socket manually only after confirming no daemon owns it. An inherited
 socket must use that exact path and permissions. Without `--keep-running`, the
-daemon exits after 30 seconds without a UI client. Authentication errors require
-an explicit retry. Retry reloads configuration after setup. A pending keyring operation must finish before a queued reload; repeated Retry does not create duplicate keyring requests.
+daemon exits after 30 seconds without a UI client. A lost relay connection
+(timeout, unreachable relay, resource limit, protocol error) is retried without
+limit: 1, 2, 4… seconds up to 30, each jittered by up to 25 % and never above
+30, with `status.reconnecting` true meanwhile. The delays start over only after
+60 seconds of fresh session. A rejected re-authentication or clock skew is
+retried at most five times; a rejected first authentication, invalid
+configuration and identity errors require an explicit retry. Retry reloads configuration after setup. A pending keyring operation must finish before a queued reload; repeated Retry does not create duplicate keyring requests.
 
 Protocol version 1 requests are JSON lines with `version`, `id`, `type`;
 allowed types are `get_snapshot`, `subscribe`, `retry_connection`, and
@@ -83,7 +88,12 @@ claiming support there.
 
 Room discovery uses signed metadata and the configured relay’s NIP-11 `self`
 identity, pinned for the daemon lifetime. Periodic exact-ID COUNT responses
-bound connection freshness. Recent history uses a signed NIP-CW query with
+bound connection freshness; a relay's `CLOSED` refusal of that probe (busy,
+rate-limited) also answers it and keeps the session, except `auth-required:`,
+which reconnects. Undecodable relay frames on an authenticated connection are
+dropped. A joined-room re-check that only times out or finds the relay
+unavailable keeps the last verified catalog and its views; a denial, a changed
+relay identity or an invalid answer clears them. Recent history uses a signed NIP-CW query with
 whole-page limits and verified bounds, edits and deletions; uncertain authority
 hides affected content. A valid snapshot does not prove relay completeness.
 Explicit room refresh, reauthentication, scope change and disconnection clear history.
