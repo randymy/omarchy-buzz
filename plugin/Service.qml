@@ -1014,9 +1014,17 @@ Item {
     roomChangeNoted = action.requestId
     if (action.action === "create") { joinTarget = action.roomId; createPolls = 4; createPoll.restart() }
     else if (["details", "topic", "add_member", "remove_member"].indexOf(action.action) !== -1) {
+      // Mentions and author names read the recipients list, not the detail view.
+      recheckRecipients = action.action === "add_member" || action.action === "remove_member"
       refreshRoomDetail()
+      refreshRecipientsAfterChange()
       detailRecheck.restart()
     }
+  }
+  property bool recheckRecipients: false
+  function refreshRecipientsAfterChange() {
+    if (recheckRecipients && recipientsSupported && selectedRoomId !== "" && connection === "authenticated")
+      send("fetch_recipients", selectedRoomId)
   }
 
   // Communities (`communities`): join, switch, rename and leave, like Buzz
@@ -3532,7 +3540,8 @@ Item {
     // accepts a change; read them once more.
     id: detailRecheck
     interval: 1500
-    onTriggered: root.refreshRoomDetail()
+    // The relay's member snapshot may lag the accepted change: read both again.
+    onTriggered: { root.refreshRoomDetail(); root.refreshRecipientsAfterChange(); root.recheckRecipients = false }
   }
   Timer {
     id: roomActionTimeout
