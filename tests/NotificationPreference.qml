@@ -18,14 +18,21 @@ ShellRoot {
       }
       stop()
       var phase = Quickshell.env("BUZZ_PREFERENCE_PHASE")
-      var expected = phase === "disable"
-      if (service.notificationsEnabled !== expected) {
-        console.error("Unexpected notification preference in phase " + phase)
+      // Fresh state is the default; each phase then checks what the last one saved.
+      var expected = ({enable: ["direct", true], disable: ["all", false], invalid: ["none", true], legacy: ["all", true], legacyoff: ["none", true]})[phase]
+      if (service.notificationMode !== expected[0] || service.notificationText !== expected[1]) {
+        console.error("Unexpected notification preference in phase " + phase + ": "
+          + service.notificationMode + ", " + service.notificationText)
         Qt.exit(1)
         return
       }
-      if (phase === "enable" || phase === "disable") {
-        service.notificationsEnabled = !expected
+      if (phase === "enable") {
+        service.notificationMode = "all"
+        service.notificationText = false
+        settled.start()
+      } else if (phase === "disable") {
+        service.notificationMode = "none"
+        service.notificationText = true
         settled.start()
       } else Qt.quit()
     }

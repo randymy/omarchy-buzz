@@ -187,9 +187,26 @@ history projection. One activity worker is bounded to 20 catalog rooms and 512
 remembered IDs per room; raw bodies are not retained by that tracker. Failed or
 revoked rooms lose activity state. Jobs are cancelled on catalog revalidation
 and reauthentication. UI counters are memory-only and never authorize actions.
-The only new disk preference is a default-off boolean under
-`$XDG_STATE_HOME/omarchy-buzz/notifications.json` (fallback `~/.local/state`).
-It applies across communities and carries no identity or message data.
+The only new disk preference is under
+`$XDG_STATE_HOME/omarchy-buzz/notifications.json` (fallback `~/.local/state`):
+`{"version":2,"mode":"direct|mentions|dms|all|none","text":true}`. It applies
+across communities and carries no identity or message data.
+
+Notifications (`room_activity` summaries carry an optional `notice`): the
+helper classifies observed rows by their signed `p` and `e` tags (mention of
+this identity, DM room, reply in a thread this session knows I am in) and keeps
+one bounded notice per room: kind, room name, sender profile name (sanitized
+like roster names, empty when unknown), a snippet of at most 100 characters,
+event id and thread root, with the count of observed messages coalesced in a
+10-second window. The panel validates every field, builds the title and body,
+and escapes `&`, `<` and `>` because Omarchy's notification server renders
+bodies as styled text (it also strips `<img>`, but literal text is the
+contract). Each relay-controlled string is one argv word that never starts with
+`-` (the sender script would read it as an option) and the click command is
+`omarchy-shell -q shell summon community.buzz '{"room":...,"thread":...}'` with
+validated ids only: the panel ignores other rooms, junk ids and unknown fields.
+Thread replies come from one extra bounded read per activity poll (`kinds [9,40002]`, `#h`, limit 20, no `top_level`); signatures, kind, scope and time are verified like history, and the rows only feed the tracker. Queued notices are bound to relay, identity and generation and checked against the current catalog when sent.
+Message text stays in memory and in the notification, never in the preference.
 
 Agent hints require a verified room roster and a signed kind-10100 profile by
 that exact key. Names remain self-asserted; profile status/owner/permission fields

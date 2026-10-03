@@ -910,6 +910,7 @@ fn held_row(n: u64, author: &Keys) -> Row {
         thread: None,
         attachments: vec![],
         attachments_unavailable: false,
+        signals: Default::default(),
     }
 }
 /// A verified page of rows with timestamps `range`, newest scan position last.
@@ -1303,4 +1304,58 @@ fn reaction_chips_are_bounded() {
     assert!(chip_emoji("👍") && chip_emoji("❤️") && chip_emoji("👨‍👩‍👧‍👦"));
     assert!(!chip_emoji("👀") && !chip_emoji("💬") && !chip_emoji("x") && !chip_emoji(""));
     assert!(!chip_emoji("\u{202e}👍") && !chip_emoji(&"👍".repeat(9)));
+}
+#[test]
+fn reply_rows_keep_only_verified_replies_with_their_signals() {
+    let user = Keys::generate();
+    let me = Keys::generate();
+    let relay = Keys::generate().public_key();
+    let scope = room().to_string();
+    let t = |parts: &[&str]| parts.iter().map(|p| p.to_string()).collect::<Vec<_>>();
+    let root = event(&user, 9, "top", vec![t(&["h", &scope])], 100);
+    let rid = root.id.to_hex();
+    let reply = event(
+        &user,
+        9,
+        "re\nply",
+        vec![
+            t(&["h", &scope]),
+            t(&["e", &rid, "", "root"]),
+            t(&["e", &rid, "", "reply"]),
+            t(&["p", &me.public_key().to_hex()]),
+            t(&["p", "not-a-key"]),
+        ],
+        101,
+    );
+    let rows = reply_rows(room(), relay, &[reply.clone(), root.clone()], 200).unwrap();
+    assert_eq!(rows.len(), 1, "top-level rows are not replies");
+    assert_eq!(rows[0].text, "re ply");
+    assert_eq!(rows[0].signals.root.as_deref(), Some(rid.as_str()));
+    assert_eq!(rows[0].signals.mentions, vec![me.public_key().to_hex()]);
+    // Wrong scope, kind, duplicates, future time and oversize reject the read.
+    let other_room = event(&user, 9, "x", vec![t(&["h", "other"])], 100);
+    assert_eq!(
+        reply_rows(room(), relay, &[other_room], 200).unwrap_err(),
+        "history_invalid_scope"
+    );
+    let reaction = event(&user, 7, "x", vec![t(&["h", &scope])], 100);
+    assert_eq!(
+        reply_rows(room(), relay, &[reaction], 200).unwrap_err(),
+        "history_invalid_kind"
+    );
+    assert_eq!(
+        reply_rows(room(), relay, &[root.clone(), root.clone()], 200).unwrap_err(),
+        "history_duplicate_event"
+    );
+    assert_eq!(
+        reply_rows(room(), relay, &[root.clone()], 10).unwrap_err(),
+        "history_invalid_shape"
+    );
+    let many: Vec<Event> = (0..21)
+        .map(|n| event(&user, 9, "x", vec![t(&["h", &scope])], 100 + n))
+        .collect();
+    assert_eq!(
+        reply_rows(room(), relay, &many, 200).unwrap_err(),
+        "history_oversized"
+    );
 }

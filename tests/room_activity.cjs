@@ -56,4 +56,29 @@ assert.equal(model.total(state), 999);
 assert.equal(model.totalLabel(state), '999+');
 state = model.markSeen(state, 'a');
 assert.equal(model.totalLabel(state), '0');
+// Notices: announced once per seq, never on a baseline, malformed ones fail closed.
+const id = 'e'.repeat(64);
+const notice = (seq, extra = {}) => Object.assign({seq, kind: 'mention', count: 1, roomName: 'general', sender: 'Alex',
+  snippet: 'hi', eventId: id, threadRoot: null}, extra);
+const withNotice = (observed, n) => ({roomId: 'n', epoch: 1, observed, notice: n});
+function notices(rows, visible = '') {
+  const result = model.update(state, scope, rows, visible);
+  state = result.state;
+  return result;
+}
+state = model.fresh();
+assert.equal(notices([withNotice(3, notice(2))]).notices.length, 0, 'a notice present at the baseline is not announced');
+const first = notices([withNotice(4, notice(3, {count: 2}))]);
+assert.equal(first.notices.length, 1);
+assert.equal(first.notices[0].roomId, 'n');
+assert.equal(first.notices[0].notice.count, 2);
+assert.equal(first.notify, false, 'notices replace the generic hint');
+assert.equal(notices([withNotice(4, notice(3))]).notices.length, 0, 'the same seq is not repeated');
+assert.equal(notices([withNotice(9, notice(4))], 'n').notices.length, 1, 'visibility is the service decision, not the model');
+assert.equal(notices([{roomId: 'n', epoch: 1, observed: 10}]).notify, true, 'no notice field keeps the generic hint');
+for (const bad of [notice(0), notice(1, {kind: 'x'}), notice(1, {count: 0}), notice(1, {count: 1000}), notice(1, {sender: 'x'.repeat(65)}),
+    notice(1, {snippet: 'x'.repeat(201)}), notice(1, {eventId: 'zz'}), notice(1, {threadRoot: 'nope'}), notice(1, {roomName: 5})]) {
+  assert.equal(!!model.valid(withNotice(1, bad)), false, 'malformed notice accepted: ' + JSON.stringify(bad));
+}
+assert.ok(model.valid(withNotice(1, null)) && model.valid(withNotice(1, notice(1, {threadRoot: id}))));
 console.log('Room activity: baselines, scopes, multiroom counts, view, revocation, bounds passed');

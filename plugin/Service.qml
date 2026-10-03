@@ -5,6 +5,7 @@ import Quickshell.Wayland
 import "SampleData.js" as SampleData
 import "ActivityObserver.js" as ActivityObserver
 import "RoomActivity.js" as RoomActivity
+import "Notifications.js" as Notifications
 
 Item {
   id: root
@@ -16,8 +17,17 @@ Item {
   // First setup, in Desktop's order: "join" an existing community (default) or
   // "create" a new one at buzz.xyz. Presentation only.
   property string setupProvider: "join"
-  // Opt-in across shell restarts. Only this boolean is stored; alert payloads stay generic.
-  property bool notificationsEnabled: false
+  // Which observed messages raise a desktop notification, kept across shell restarts:
+  // "direct" (default: mentions of me, DMs, threads I am in), "mentions", "dms",
+  // "all" (plus general room activity) or "none". Only this choice and the text
+  // flag are stored, never message content.
+  property string notificationMode: "direct"
+  // Show the sender's text in the notification body. Off: "New message from Alex".
+  property bool notificationText: true
+  readonly property bool notificationsEnabled: notificationMode !== "none"
+  // The panel window has keyboard focus; the panel sets it. With the panel open
+  // on a room it suppresses that room's notifications only while focused.
+  property bool panelFocused: true
   readonly property string stateHome: Quickshell.env("XDG_STATE_HOME").startsWith("/")
     ? Quickshell.env("XDG_STATE_HOME") : Quickshell.env("HOME") + "/.local/state"
   readonly property string notificationSettingsDir: stateHome + "/omarchy-buzz"
@@ -42,14 +52,87 @@ Item {
     if (panelOpen && agentService.autoConnect) agentService.retry()
     if (panelOpen) reconnectOnOpen()
   }
+  // Older helpers report activity without notices: one generic, content-free line.
   function notifyActivity() {
-    if (notificationsEnabled && !sampleMode && !notificationProcess.running && !notificationCooldown.running) {
+    if (notificationMode === "all" && !sampleMode && !notificationProcess.running && !notificationCooldown.running) {
+      notificationProcess.command = ["timeout", "5s", "omarchy", "notification", "send", "--app-name", "Buzz",
+        "-u", "normal", "-t", "5000", "Buzz", "New activity in your Buzz rooms."]
       notificationProcess.running = true
       notificationCooldown.start()
     }
   }
+  // The helper's notice for one room (RoomActivity.update validated it); the
+  // title, body and click target are built here from that bounded, plain data.
+  property var notificationQueue: []
+  // The queue holds notices, not wording: mode, suppression and the text choice
+  // are checked again when each is sent, so a change in Settings applies at once.
+  // Items are also bound to the session they came from (relay, identity, generation)
+  // and to a room that is still in the catalog, so a community switch, a reconnect
+  // or lost access drops them.
+  readonly property string notificationScope: relay + "|" + identity + "|" + generation
+  function noticeDeliverable(item) {
+    if (sampleMode || item.scope !== notificationScope || connection !== "authenticated"
+        || !rooms.some(function(r) { return r.id === item.roomId })
+        || !Notifications.allows(notificationMode, item.notice.kind)) return false
+    return !(panelOpen && panelFocused && historyState === "snapshot" && selectedRoomId === item.roomId)
+  }
+  function announceNotice(roomId, notice) {
+    var item = {roomId: roomId, notice: notice, scope: notificationScope}
+    if (!noticeDeliverable(item)) return
+    notificationQueue = notificationQueue.concat([item]).slice(-5)
+    sendNextNotification()
+  }
+  function sendNextNotification() {
+    if (notificationProcess.running) return
+    var item = null
+    while (notificationQueue.length > 0 && !item) {
+      var candidate = notificationQueue[0]
+      notificationQueue = notificationQueue.slice(1)
+      if (noticeDeliverable(candidate)) item = candidate
+    }
+    if (!item) return
+    var room = rooms.find(function(r) { return r.id === item.roomId })
+    var message = Notifications.compose(item.notice, room.kind === "dm", notificationText)
+    var next = {title: message.title, body: message.body,
+      target: JSON.stringify(item.notice.threadRoot ? {room: item.roomId, thread: item.notice.threadRoot} : {room: item.roomId})}
+    // Fixed argv; relay text is only ever one argument (never a shell string,
+    // never an option: Notifications.arg keeps it from starting with "-"), and
+    // the click command carries only validated ids.
+    notificationProcess.command = ["timeout", "5s", "omarchy", "notification", "send", "--app-name", "Buzz",
+      "-u", "normal", "-t", "8000", Notifications.arg(next.title), Notifications.arg(next.body),
+      "--exec", "omarchy-shell", "-q", "shell", "summon", "community.buzz", next.target]
+    notificationProcess.running = true
+  }
+  // A notification click (Panel.open payload): show that room, and its thread.
+  // Applied once the catalog and history are ready; abandoned after 15 s.
+  property string targetRoomId: ""
+  property string targetThreadId: ""
+  function openNotificationTarget(roomId, threadId) {
+    if (!uuidValue(roomId) || (threadId !== "" && !/^[a-f0-9]{64}$/.test(threadId))) return
+    targetRoomId = roomId
+    targetThreadId = threadId
+    targetExpiry.restart()
+    applyNotificationTarget()
+  }
+  function clearNotificationTarget() { targetRoomId = ""; targetThreadId = ""; targetExpiry.stop() }
+  function applyNotificationTarget() {
+    if (!targetRoomId || ["partial", "ready"].indexOf(catalogState) === -1) return
+    if (!rooms.some(function(room) { return room.id === targetRoomId })) { clearNotificationTarget(); return }
+    if (selectedRoomId !== targetRoomId) selectRoom(targetRoomId)
+    if (targetThreadId === "") { clearNotificationTarget(); return }
+    if (selectedRoomId !== targetRoomId || historyState !== "snapshot") return
+    // The thread's root may not be in the recent page: the room still opens.
+    if (canOpenThread(targetThreadId)) openThread(targetThreadId)
+    clearNotificationTarget()
+  }
+  Timer { id: targetExpiry; interval: 15000; onTriggered: root.clearNotificationTarget() }
   property var activityObservation: ActivityObserver.fresh()
-  onNotificationsEnabledChanged: {
+  onNotificationModeChanged: {
+    if (notificationMode === "none") notificationQueue = []
+    notificationPreferenceChanged()
+  }
+  onNotificationTextChanged: notificationPreferenceChanged()
+  function notificationPreferenceChanged() {
     activityObservation = ActivityObserver.fresh()
     if (hydratingNotificationPreference) return
     notificationPreferenceDirty = true
@@ -58,14 +141,22 @@ Item {
 
   function loadNotificationSettings(raw) {
     if (notificationSettingsLoaded) return
-    var enabled = false
+    // No file: the defaults. A malformed one fails closed (none). Version 1 only
+    // had on/off for general activity: on is "all", off stays off.
+    var mode = raw === "" ? "direct" : "none"
+    var text = true
     try {
       var parsed = JSON.parse(raw)
-      if (parsed && parsed.version === 1 && parsed.enabled === true) enabled = true
-    } catch (error) { /* Missing or malformed settings fail closed. */ }
+      if (parsed && parsed.version === 1) mode = parsed.enabled === true ? "all" : "none"
+      else if (parsed && parsed.version === 2 && Notifications.modes.indexOf(parsed.mode) !== -1 && typeof parsed.text === "boolean") {
+        mode = parsed.mode
+        text = parsed.text
+      }
+    } catch (error) { /* Malformed settings fail closed. */ }
     if (!notificationPreferenceDirty) {
       hydratingNotificationPreference = true
-      notificationsEnabled = enabled
+      notificationMode = mode
+      notificationText = text
       hydratingNotificationPreference = false
     }
     notificationSettingsLoaded = true
@@ -96,7 +187,7 @@ Item {
     interval: 200
     onTriggered: {
       if (!root.notificationSettingsLoaded || !root.notificationSettingsDirReady) return
-      notificationSettingsFile.setText(JSON.stringify({version: 1, enabled: root.notificationsEnabled}) + "\n")
+      notificationSettingsFile.setText(JSON.stringify({version: 2, mode: root.notificationMode, text: root.notificationText}) + "\n")
       root.notificationPreferenceDirty = false
     }
   }
@@ -2272,6 +2363,7 @@ Item {
     return label
   }
   function clearCatalog() {
+    notificationQueue = []
     roomActivity = RoomActivity.fresh()
     activityObservation = ActivityObserver.fresh()
     clearHistory()
@@ -2849,6 +2941,7 @@ Item {
         panelOpen && historyState === "snapshot" ? selectedRoomId : "")
       roomActivity = activityUpdate.state
       if (activityUpdate.notify) notifyActivity()
+      activityUpdate.notices.forEach(function(item) { announceNotice(item.roomId, item.notice) })
     }
     recipientsSupported = supportsRecipients
     automaticHistorySupported = frame.capabilities.indexOf("history_auto_refresh") !== -1
@@ -2858,6 +2951,7 @@ Item {
     if (frame.type === "hello") bridgeStartedAt = Date.now()
     instanceId = frame.instanceId
     generation = frame.generation
+    applyNotificationTarget()
     relay = state.relay || ""
     connection = state.connection
     category = state.category || ""
@@ -3128,11 +3222,11 @@ Item {
   }
   Process {
     id: notificationProcess
-    // Fixed argv; no shell, relay content, credentials, or executable supplied by events.
-    command: ["timeout", "5s", "omarchy", "notification", "send", "--app-name", "Buzz",
-      "-u", "normal", "-t", "5000", "Buzz", "New activity in your Buzz rooms."]
+    // Fixed argv built by notifyActivity/sendNextNotification: no shell, credentials
+    // or executable supplied by events.
     stdout: SplitParser { onRead: function(line) {} }
     stderr: SplitParser { onRead: function(line) {} }
+    onRunningChanged: if (!running) root.sendNextNotification()
   }
   Timer {
     id: handshake

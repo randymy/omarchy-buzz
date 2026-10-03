@@ -189,13 +189,18 @@ ShellRoot {
           one("buzzMyAvatarPathApply")
           check(one("buzzMyAvatarPreview").usesColor && one("buzzMyAvatarBrightness").text === "Brightness 1.5", "Avatar section wrong")
 
-          // Alerts flips notificationsEnabled, both ways.
-          var alerts = one("buzzSettingsAlerts")
-          var before = service.notificationsEnabled
-          test.click(alerts)
-          check(service.notificationsEnabled === !before && alerts.text === (before ? "Alerts: off" : "Alerts: on"), "Alerts did not flip")
-          test.click(alerts)
-          check(service.notificationsEnabled === before, "Alerts did not flip back")
+          // Notifications: one mode is selected at a time (default Mentions & DMs); message text toggles.
+          check(service.notificationMode === "direct" && one("buzzNotify_direct").selected && !one("buzzNotify_all").selected, "Default notification mode not shown")
+          test.click(one("buzzNotify_all"))
+          check(service.notificationMode === "all" && one("buzzNotify_all").selected && !one("buzzNotify_direct").selected, "All activity did not select")
+          var notifyText = one("buzzSettingsNotifyText")
+          check(notifyText.text === "Message text: on" && notifyText.enabled, "Message text not on by default")
+          test.click(notifyText)
+          check(!service.notificationText && notifyText.text === "Message text: off", "Message text did not turn off")
+          test.click(one("buzzNotify_none"))
+          check(service.notificationMode === "none" && !notifyText.enabled, "None did not select")
+          test.click(one("buzzNotify_direct"))
+          check(service.notificationMode === "direct", "Mentions & DMs did not select")
 
           // Window: hidden without a host switch; the other presentation is requested.
           check(shown("buzzSettingsPresentation").length === 0, "Presentation offered without a host switch")
@@ -233,7 +238,7 @@ ShellRoot {
           check(test.closeRequests === 0 && window.visible, "The panel closed during the checks")
 
           if (test.captureDir === "") {
-            console.log("PASS: the account control shows my avatar and name with a green, amber, red or grey dot per connection state; its menu opens above it, closes on Escape, outside click or a choice, and opens Send feedback's fixed URL only on click; Settings replaces the room view and Back to rooms returns; Alerts flips notificationsEnabled; Overlay/Window request the switch; Copy public key copies the 64-hex key; the header keeps only title, status and ×")
+            console.log("PASS: the account control shows my avatar and name with a green, amber, red or grey dot per connection state; its menu opens above it, closes on Escape, outside click or a choice, and opens Send feedback's fixed URL only on click; Settings replaces the room view and Back to rooms returns; Notifications choose the mode and message text; Overlay/Window request the switch; Copy public key copies the 64-hex key; the header keeps only title, status and ×")
             Qt.quit()
             return
           }

@@ -200,6 +200,12 @@ impl Relay {
                         serde_json::to_string(&members).unwrap()
                     } else if filter["kinds"] == json!([39000]) {
                         serde_json::to_string(&metadata).unwrap()
+                    } else if filter["kinds"] == json!([9, 40002])
+                        && filter.get("top_level").is_none()
+                        && filter.get("#e").is_none()
+                    {
+                        // The activity poll's recent-replies read.
+                        "[]".to_string()
                     } else if filter.get("#e").is_some() {
                         thread_count.fetch_add(1, Ordering::SeqCst);
                         assert_eq!(filter["#e"], json!([server_root.id.to_hex()]));

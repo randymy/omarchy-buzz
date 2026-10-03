@@ -69,6 +69,50 @@ pub struct Row {
     pub attachments: Vec<crate::attachments::Attachment>,
     /// The content's `imeta` tags were malformed: none are shown.
     pub attachments_unavailable: bool,
+    /// Tags the activity tracker classifies by; never sent to the panel.
+    #[serde(skip)]
+    pub signals: Signals,
+}
+/// Mentions and thread position of the original event (`activity.rs` only).
+#[derive(Clone, Debug, Default)]
+pub struct Signals {
+    /// Lowercase hex keys of `p` tags, at most `MENTIONS`.
+    pub mentions: Vec<String>,
+    pub parent: Option<String>,
+    pub root: Option<String>,
+    pub broadcast: bool,
+}
+const MENTIONS: usize = 64;
+/// Buzz Desktop's `getThreadReference`: the last `reply` marker is the parent,
+/// the `root` marker (else the parent) is the root.
+fn signals(event: &Event) -> Signals {
+    let mut out = Signals::default();
+    let mut root = None;
+    for tag in event.tags.iter() {
+        let t = tag.as_slice();
+        match (t.first().map(String::as_str), t.get(1)) {
+            (Some("p"), Some(key)) if out.mentions.len() < MENTIONS => {
+                if let Ok(k) = PublicKey::from_hex(key) {
+                    let k = k.to_hex();
+                    if !out.mentions.contains(&k) {
+                        out.mentions.push(k);
+                    }
+                }
+            }
+            (Some("e"), Some(id)) => match t.get(3).map(String::as_str) {
+                Some("root") if root.is_none() => root = hex_id(id).ok(),
+                Some("reply") => out.parent = hex_id(id).ok(),
+                _ => {}
+            },
+            (Some("broadcast"), Some(v)) if v == "1" => out.broadcast = true,
+            _ => {}
+        }
+    }
+    out.root = out
+        .parent
+        .as_ref()
+        .map(|p| root.unwrap_or_else(|| p.clone()));
+    out
 }
 /// Bounded projection of a relay-signed NIP-CW `kind:39005` thread summary.
 /// Metadata about a row, never a row, a cursor input or a content claim.
@@ -553,6 +597,7 @@ pub fn reduce_at(
             unavailable,
             attachments,
             attachments_unavailable,
+            signals: signals(original),
         });
     }
     rows.sort_by(oldest_first);
@@ -807,6 +852,75 @@ pub async fn fetch(
         None,
         Some(keys.public_key()),
     )
+}
+/// Recent thread replies for the notification tracker only: the newest
+/// `ROWS` messages of the room read without `top_level`, keeping the replies.
+/// Signatures, kind, scope and time are checked like `reduce_at`; edits,
+/// deletions and summaries are not read, so rows are never shown to the panel.
+pub async fn fetch_replies(
+    relay: &str,
+    keys: &Keys,
+    trusted_signer: PublicKey,
+    room: Uuid,
+) -> Result<Vec<Row>, &'static str> {
+    let events = query(
+        relay,
+        keys,
+        &QueryRequest::RoomRecent {
+            room,
+            limit: ROWS as u16,
+        },
+    )
+    .await?;
+    reply_rows(room, trusted_signer, &events, Timestamp::now().as_secs())
+}
+pub fn reply_rows(
+    room: Uuid,
+    relay: PublicKey,
+    events: &[Event],
+    now: u64,
+) -> Result<Vec<Row>, &'static str> {
+    if events.len() > ROWS {
+        return Err("history_oversized");
+    }
+    let scope = room.to_string();
+    let mut seen = BTreeSet::new();
+    let mut rows = Vec::new();
+    for event in events {
+        event.verify().map_err(|_| "history_invalid_signature")?;
+        if event.created_at.as_secs() > now.saturating_add(60) {
+            return Err("history_invalid_shape");
+        }
+        if !seen.insert(event.id) {
+            return Err("history_duplicate_event");
+        }
+        if !matches!(event.kind.as_u16(), 9 | 40002) {
+            return Err("history_invalid_kind");
+        }
+        if one(event, "h")? != Some(scope.as_str()) {
+            return Err("history_invalid_scope");
+        }
+        let signals = signals(event);
+        if signals.parent.is_none() {
+            continue;
+        }
+        rows.push(Row {
+            reactions: None,
+            thread: None,
+            id: event.id.to_hex(),
+            author_pubkey: author(event, relay)?.to_hex(),
+            timestamp: event.created_at.as_secs(),
+            text: text(&event.content).0,
+            edited: false,
+            truncated: false,
+            unavailable: false,
+            attachments: Vec::new(),
+            attachments_unavailable: false,
+            signals,
+        });
+    }
+    rows.sort_by(oldest_first);
+    Ok(rows)
 }
 /// One older page continuing from `cursor`, verified exactly like the head
 /// plus its request binding. Reads only, so a busy query slot is retried.

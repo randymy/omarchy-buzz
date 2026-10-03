@@ -49,7 +49,7 @@ ShellRoot {
         }
 
         service.beginSession()
-        service.notificationsEnabled = true
+        service.notificationMode = "all"
         accept("hello", [entry(roomA, 5), entry(roomB, 2)])
         counts(0, 0, 0)
         accept("status", [entry(roomA, 6), entry(roomB, 3)])

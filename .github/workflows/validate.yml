@@ -41,6 +41,7 @@ jobs:
           python3 tests/acp_fixture.py
           node tests/activity_observer.cjs
           node tests/room_activity.cjs
+          node tests/notifications.cjs
           python3 scripts/check-upstream --self-test
       - name: Validate manifest
         working-directory: omarchy-buzz

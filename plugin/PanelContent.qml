@@ -1992,22 +1992,40 @@ FocusScope {
             }
 
             SettingsCaption { text: "Notifications" }
-            RowLayout {
+            Flow {
               Layout.fillWidth: true
               spacing: Style.space(8)
+              Repeater {
+                model: [{mode: "direct", label: "Mentions & DMs", note: "Mentions of you, direct messages and replies in threads you are in"},
+                  {mode: "mentions", label: "Mentions", note: "Mentions of you and replies in threads you are in"},
+                  {mode: "dms", label: "DMs", note: "Direct messages only"},
+                  {mode: "all", label: "All activity", note: "Every new message observed in your rooms"},
+                  {mode: "none", label: "None", note: "No desktop notifications"}]
+                Ui.Button {
+                  required property var modelData
+                  objectName: "buzzNotify_" + modelData.mode
+                  text: modelData.label
+                  tooltipText: modelData.note
+                  fontSize: Style.font.caption
+                  focusable: true
+                  selected: !!root.service && root.service.notificationMode === modelData.mode
+                  enabled: !!root.service
+                  onClicked: if (root.service) root.service.notificationMode = modelData.mode
+                }
+              }
               Ui.Button {
-                objectName: "buzzSettingsAlerts"
-                text: root.service && root.service.notificationsEnabled ? "Alerts: on" : "Alerts: off"
-                tooltipText: "Turn generic desktop notifications for new activity on or off"
+                objectName: "buzzSettingsNotifyText"
+                text: root.service && root.service.notificationText ? "Message text: on" : "Message text: off"
+                tooltipText: "Show the message text in notifications, or only who wrote"
                 fontSize: Style.font.caption
                 focusable: true
-                selected: !!root.service && root.service.notificationsEnabled
-                enabled: !!root.service
-                onClicked: if (root.service) root.service.notificationsEnabled = !root.service.notificationsEnabled
+                selected: !!root.service && root.service.notificationText
+                enabled: !!root.service && root.service.notificationMode !== "none"
+                onClicked: if (root.service) root.service.notificationText = !root.service.notificationText
               }
-              SettingsNote {
-                text: "Generic alerts for new activity outside the visible conversation, without message text or room names. Off by default; best-effort."
-              }
+            }
+            SettingsNote {
+              text: "Titled by sender and room; clicking opens that room. Not shown while that room is open in the focused panel. Counts such as \u201c3 new messages\u201d are what this session observed, not Buzz unread counts. Best-effort."
             }
 
             SettingsCaption { text: "Window" }

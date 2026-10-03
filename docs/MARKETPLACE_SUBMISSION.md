@@ -69,7 +69,7 @@ Independently maintained development preview for Block's Buzz, not an official
 Block or Omarchy product. The manifest and helper report version 0.0.13. Native
 bar, panel and normal-window messaging includes authenticated room discovery,
 bounded history and thread replies, plain-text sending, exact-key mentions,
-direct messages and optional generic activity notifications. Activity counts
+direct messages and desktop notifications for mentions, DMs and threads (configurable, with an option to omit message text). Activity counts
 are local observations, not synchronized unread counts.
 
 Please review as manual setup: messaging requires a separately built Rust
