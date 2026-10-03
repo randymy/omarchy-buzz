@@ -14,7 +14,12 @@ community's terms, and you are in; once connected, the panel lists the open
 rooms you can join with one click, no approval needed, and each room has a
 Leave button. An agent can also be set to answer your direct messages. Files
 to attach to a message, and the art for your avatar, are picked with your
-desktop's file dialog (**Browse…**), or you can type the file's path. If you
+desktop's file dialog (**Browse…**), or you can type the file's path. Settings →
+Avatar also has a gallery of 140 built-in ASCII avatars in ten categories
+(rotate with Previous/Next or the Left and Right arrow keys, Shuffle, filter by
+category, preview at bar, message and profile size, then **Save**), and a
+**Create your own** box to paste or type art, checked as you type. Avatars
+stay on this machine. If you
 run the relay (or are one of its admins), Settings → Invite people makes an
 invite link and a ready-to-paste message for anyone you want to bring in.
 

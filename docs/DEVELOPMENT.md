@@ -278,7 +278,10 @@ rendered QML check against synthetic frames or a stdio fixture:
 `--send-bridge`, `--thread-send`, `--thread-replies`, `--live-updates`,
 `--catalog-refresh`, `--catalog-refresh-send`, `--new-dm`, `--older-history`,
 `--last-room`, `--mentions`, `--author-names`, `--identicon` (identicons and
-pasted avatar art), `--ansi-art` (ANSI art avatars, the profile card and
+pasted avatar art), `--avatar-gallery` (the Settings avatar gallery and Create your own; set
+`BUZZ_GALLERY_CAPTURE` to a `.png` path to save the page and
+`BUZZ_GALLERY_SHEET` to save a contact sheet of every avatar; the library is also
+checked by `node tests/avatar_library.cjs`), `--ansi-art` (ANSI art avatars, the profile card and
 the Settings avatar loader from a synthetic `.ans` fixture; set `BUZZ_ANSI_CAPTURE` to an
 `.ans` path and `BUZZ_ANSI_CAPTURE_DIR` to a directory to also save
 `ansi-thumb.png`, `ansi-card-bright.png` (brightness 1.5) and `ansi-card.png`

@@ -3589,3 +3589,26 @@ marked **Decided**.
   x86-64: sign-in through the panel, enrollment, start and a room reply; a
   Codex bundle. The Rust suite, helper smoke and packaging for both
   architectures run in the release workflow.
+
+## ASCII avatar gallery — October 3, 2026
+
+Branch `ascii-avatar-gallery` (from `0a90ac3`); QML and tests only, no helper,
+service or Rust change, not installed.
+
+- `plugin/AvatarLibrary.js`: 140 original plain-ASCII avatars in ten categories
+  (animals, faces and characters, robots and tech, nature, objects, symbols and
+  abstract, food, space, geometric patterns, retro and game). Each is at most 6
+  lines of 12 columns, printable ASCII, in the exact form `AnsiArt.storedArt`
+  keeps, so every avatar renders as text in the bar, messages and profile card.
+  `tests/avatar_library.cjs` checks every entry against the real validator.
+- `plugin/AvatarGallery.qml`, placed under the avatar controls in Settings:
+  Previous/Next, Left/Right keys, Shuffle (never repeats the current one), a
+  category filter, a counter such as `1 / 140 · Animals`, previews with the real
+  `BuzzAvatar` at bar, message and profile size, and Save through the existing
+  `setOwnAvatarArt` (local `avatars.json`, not published). **Create your own**
+  takes pasted or typed art and checks it live with `AnsiArt.check` (new): too
+  wide, too tall, invalid characters, too large; colored `.ans` art is accepted
+  with its own limits and stored sanitized. **Edit a copy** moves a library
+  avatar into that box. The file loader is unchanged.
+- Evidence: `scripts/preview --avatar-gallery`, `node tests/avatar_library.cjs`.
+- Not done: the agent editor's avatar field does not offer the gallery yet.
