@@ -1,5 +1,8 @@
 // Local observed activity hints from the helper's complete monitored-room summary.
 // This is not Buzz synchronized unread state; no message data or counts persist.
+// The most summaries a frame carries: one per joined room, up to the helper's
+// catalog bound (`catalog::MAX_ROOMS`, `activity::ROOMS`).
+var MAX_SUMMARIES = 200;
 function fresh() { return {scope: "", rooms: Object.create(null)}; }
 
 function whole(value, maximum) {
@@ -33,7 +36,7 @@ function valid(summary) {
 // helpers); `notices` are the new ones to announce, at most one per room.
 function update(state, scope, summaries, visibleRoomId) {
   if (typeof scope !== "string" || scope.length === 0 || !Array.isArray(summaries)
-      || summaries.length > 20) return {state:fresh(), notify:false, notices:[]};
+      || summaries.length > MAX_SUMMARIES) return {state:fresh(), notify:false, notices:[]};
   var previous = state && state.scope === scope && state.rooms ? state.rooms : Object.create(null);
   var rooms = Object.create(null);
   var notify = false;

@@ -26,6 +26,7 @@ mod query;
 #[cfg(test)]
 mod real_relay_tests;
 mod recipients;
+mod rooms;
 mod sending;
 mod setup;
 mod thread;

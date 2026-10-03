@@ -49,9 +49,10 @@ def status(frame, kind):
     assert frame["status"]["identity"] is None, frame
     assert frame["status"]["relay"] is None, frame
     assert frame["status"]["clockSkewSeconds"] is None, frame
-    assert frame["capabilities"] == ["connection_status", "room_catalog", "room_history", "message_send", "thread_send", "room_recipients", "history_auto_refresh", "room_activity", "agent_profiles", "thread_replies", "thread_summaries", "dm_open", "older_history", "live_updates", "setup_assist", "community_join", "invite_mint", "attachments", "user_status", "presence", "communities", "people_search", "message_actions"], frame
+    assert frame["capabilities"] == ["connection_status", "room_catalog", "room_history", "message_send", "thread_send", "room_recipients", "history_auto_refresh", "room_activity", "agent_profiles", "thread_replies", "thread_summaries", "dm_open", "older_history", "live_updates", "setup_assist", "community_join", "invite_mint", "attachments", "user_status", "presence", "communities", "people_search", "message_actions", "room_manage"], frame
     assert frame["status"]["catalog"]["state"] == "unavailable", frame
     assert frame["status"]["catalog"]["rooms"] == [], frame
+    assert frame["status"]["catalog"]["more"] == "none" and frame["status"]["catalog"]["moreCategory"] is None, frame
     assert frame["status"]["history"] == {
         "state": "unavailable", "roomId": None, "rows": [], "hasMore": None, "category": None,
         "nextCursor": None, "olderState": "idle", "live": False,
@@ -70,7 +71,11 @@ def status(frame, kind):
     }, frame
     assert frame["status"]["openRooms"] == {"state": "unavailable", "rooms": [], "category": None}, frame
     assert frame["status"]["roomAction"] == {
-        "state": "idle", "action": None, "requestId": None, "roomId": None, "category": None,
+        "state": "idle", "action": None, "requestId": None, "roomId": None, "category": None, "detail": None,
+    }, frame
+    assert frame["status"]["roomDetail"] == {
+        "state": "unavailable", "roomId": None, "topic": "", "visibility": "", "about": "", "aboutTruncated": False, "role": "", "members": [],
+        "truncated": False, "category": None,
     }, frame
     assert frame["status"]["invites"] == {
         "state": "idle", "code": None, "expiresAt": None, "maxUses": None, "role": None, "category": None,
@@ -203,6 +208,28 @@ def main():
                 client.sendall(json.dumps(join).encode() + b"\n")
                 error = frames.matching(join["id"])
                 assert error["type"] == "error" and error["category"] == "relay_unavailable", error
+                # Room mutations carry the session scope they were made in (as sends do): a stale
+                # instance or generation is refused before anything is prepared or signed, and a
+                # current one reaches the session check (no session here: relay_unavailable).
+                room_uuid, key = "00000000-0000-4000-8000-000000000002", "a" * 64
+                mutations = {
+                    "create_room": {"name": "New", "visibility": "open"},
+                    "update_room": {"roomId": room_uuid, "name": "New"},
+                    "set_room_topic": {"roomId": room_uuid, "topic": "T"},
+                    "add_room_member": {"roomId": room_uuid, "key": key},
+                    "remove_room_member": {"roomId": room_uuid, "key": key},
+                }
+                for number, (kind, fields) in enumerate(mutations.items()):
+                    base_request = {"version": 1, "id": f"00000000-0000-4000-8000-0000000001{number:02d}", "type": kind, **fields}
+                    for scope, category in (
+                        ({"instanceId": "other-instance", "generation": hello["generation"]}, "room_scope_changed"),
+                        ({"instanceId": hello["instanceId"], "generation": hello["generation"] + 1}, "room_scope_changed"),
+                        ({"instanceId": hello["instanceId"], "generation": hello["generation"]}, "relay_unavailable"),
+                    ):
+                        payload = {**base_request, **scope}
+                        client.sendall(json.dumps(payload).encode() + b"\n")
+                        error = frames.matching(payload["id"])
+                        assert error["type"] == "error" and error["category"] == category, (kind, scope, error)
                 # A status needs a working session: refused, nothing signed or saved.
                 status_set = {"version": 1, "id": "00000000-0000-4000-8000-000000000003", "type": "set_status",
                               "text": "In a meeting", "emoji": "\U0001f5e3\ufe0f", "expiresInHours": 4}

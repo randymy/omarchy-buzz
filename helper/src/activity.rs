@@ -4,6 +4,35 @@
 use crate::history::Row;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
+/// Rooms tracked: every room the catalog can hold (`catalog::MAX_ROOMS`), each
+/// with bounded state. A room that leaves the catalog is evicted (`retain`,
+/// `forget`).
+pub const ROOMS: usize = crate::catalog::MAX_ROOMS;
+/// A catalog of up to this many rooms is polled one room per cycle, as ever.
+const SMALL: usize = 20;
+/// Most rooms one poll cycle reads (a head read and a replies read each) once
+/// the catalog is larger than `SMALL`: the relay load stays within a few
+/// queries per cycle however many rooms are joined.
+pub const BUDGET: usize = 4;
+/// How many rooms a poll cycle reads for a catalog of `total` rooms: one up to
+/// `SMALL` rooms (the load before paging), then `ceil(total / SMALL)` up to `BUDGET`.
+pub fn per_cycle(total: usize) -> usize {
+    if total <= SMALL {
+        usize::from(total > 0)
+    } else {
+        total.div_ceil(SMALL).min(BUDGET)
+    }
+}
+/// The next `per_cycle` rooms in rotation from `cursor` (advanced past them):
+/// every room is reached within `ceil(total / per_cycle)` cycles.
+pub fn next_rooms(rooms: &[String], cursor: &mut usize) -> Vec<String> {
+    let count = per_cycle(rooms.len());
+    let picked: Vec<String> = (0..count)
+        .map(|i| rooms[(*cursor + i) % rooms.len()].clone())
+        .collect();
+    *cursor = cursor.wrapping_add(count);
+    picked
+}
 /// At most one notice per room per window; later rows wait for the next one.
 const WINDOW: u64 = 10;
 const SNIPPET: usize = 100;
@@ -176,7 +205,7 @@ impl Tracker {
         }
     }
     pub fn observe(&mut self, room: &str, rows: &[Row], own: &str, now: u64) {
-        if rows.len() > 20 || (!self.rooms.contains_key(room) && self.rooms.len() >= 20) {
+        if rows.len() > 20 || (!self.rooms.contains_key(room) && self.rooms.len() >= ROOMS) {
             return;
         }
         let ids: BTreeSet<_> = rows.iter().map(|r| r.id.clone()).collect();
@@ -423,13 +452,53 @@ mod tests {
         t.retain(&[]);
         assert!(t.summaries().is_empty());
     }
+    /// More than 20 joined rooms: the tracker takes all of them (it used to
+    /// refuse every room past the twentieth, so those never had indicators).
+    #[test]
+    fn more_than_twenty_rooms_are_all_tracked() {
+        let mut t = Tracker::default();
+        for i in 0..50 {
+            t.observe(&format!("room-{i}"), &[row("a")], "self", 100);
+        }
+        assert_eq!(t.summaries().len(), 50);
+        assert!(t.summaries().iter().all(|s| s.observed == 0));
+    }
+    #[test]
+    fn a_cycle_reads_a_bounded_number_of_rooms_and_rotation_reaches_all() {
+        // Small catalogs are polled one room per cycle, as before paging.
+        assert_eq!((per_cycle(0), per_cycle(1), per_cycle(20)), (0, 1, 1));
+        // Larger ones: ceil(n / 20) rooms, never more than BUDGET.
+        assert_eq!((per_cycle(21), per_cycle(50), per_cycle(61)), (2, 3, 4));
+        assert_eq!((per_cycle(100), per_cycle(200)), (4, BUDGET));
+        for total in [1_usize, 7, 20, 21, 50, 99, 150, 200] {
+            let rooms: Vec<String> = (0..total).map(|i| format!("r{i}")).collect();
+            let mut cursor = 0;
+            let mut seen = BTreeSet::new();
+            let cycles = total.div_ceil(per_cycle(total));
+            for _ in 0..cycles {
+                let batch = next_rooms(&rooms, &mut cursor);
+                assert!(
+                    batch.len() <= BUDGET,
+                    "{total}: {} rooms in one cycle",
+                    batch.len()
+                );
+                assert_eq!(batch.len(), batch.iter().collect::<BTreeSet<_>>().len());
+                seen.extend(batch);
+            }
+            assert_eq!(
+                seen.len(),
+                total,
+                "{total} rooms not all reached in {cycles} cycles"
+            );
+        }
+    }
     #[test]
     fn bounded_rooms_and_dedup_storage() {
         let mut t = Tracker::default();
-        for i in 0..25 {
+        for i in 0..ROOMS + 5 {
             t.observe(&i.to_string(), &[], "self", 100);
         }
-        assert_eq!(t.summaries().len(), 20);
+        assert_eq!(t.summaries().len(), ROOMS);
         for i in 0..2000 {
             t.observe("0", &[row("anchor"), row(&i.to_string())], "self", 100);
         }

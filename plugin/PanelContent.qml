@@ -731,6 +731,7 @@ FocusScope {
   // the Buzz title and room name.
   readonly property string subView: settingsOpen ? "settings" : statusOpen ? "status"
     : communityView === "join" ? "join-community" : communityView === "create" ? "create-community"
+    : communityView === "new-room" ? "new-room" : communityView === "room-settings" ? "room-settings"
     : agentEditorShown ? (agentEditorId === "" ? "new-agent" : "agent") : ""
   readonly property bool subViewOpen: subView !== ""
   readonly property string subViewTitle: {
@@ -738,6 +739,8 @@ FocusScope {
     if (subView === "status") return "Update your status"
     if (subView === "join-community") return "Join an existing community"
     if (subView === "create-community") return "Create a new community"
+    if (subView === "new-room") return "New room"
+    if (subView === "room-settings") return "Room settings"
     if (subView === "new-agent") return "New agent"
     if (subView === "agent") {
       var entry = agentService ? agentService.agent(agentEditorId) : null
@@ -870,6 +873,137 @@ FocusScope {
     return service.leaveRoom(service.selectedRoomId)
   }
   onNewDmAvailableChanged: if (!newDmAvailable) newDmOpen = false
+  // New room and Room settings (`room_manage`) replace the room view like the
+  // community views do, through `communityView` ("new-room", "room-settings").
+  property bool newRoomPrivate: false
+  property bool newRoomAwaiting: false
+  property bool topicTouched: false
+  property bool aboutTouched: false
+  property bool nameTouched: false
+  property string armedMember: ""
+  Timer { id: memberDisarm; interval: 5000; onTriggered: root.armedMember = "" }
+  readonly property bool roomManageShown: !!service && !service.sampleMode && service.roomManageAvailable
+  function openNewRoom() {
+    if (!roomManageShown) return false
+    closeAccountMenu()
+    closeAgentEditor()
+    settingsOpen = false
+    statusOpen = false
+    statusAwaiting = false
+    communityAwaiting = false
+    service.resetRoomRequest()
+    newRoomName.text = ""
+    newRoomAbout.text = ""
+    newRoomPrivate = false
+    newRoomAwaiting = false
+    communityView = "new-room"
+    Qt.callLater(function() { newRoomName.forceActiveFocus() })
+    return true
+  }
+  readonly property bool newRoomValid: !!service && service.validRoomText(newRoomName.text, 128, true) && service.validRoomText(newRoomAbout.text, service.roomAboutBytes, false)
+  function submitNewRoom() {
+    if (!newRoomValid || !service.canManageRooms) return false
+    newRoomAwaiting = service.createRoom(newRoomName.text, newRoomAbout.text, newRoomPrivate)
+    return newRoomAwaiting
+  }
+  function openRoomSettings() {
+    if (!roomManageShown || !service.selectedRoom || service.selectedRoom.kind !== "stream") return false
+    closeAccountMenu()
+    closeAgentEditor()
+    settingsOpen = false
+    statusOpen = false
+    statusAwaiting = false
+    communityAwaiting = false
+    service.resetRoomRequest()
+    communityView = "room-settings"
+    fillRoomSettings()
+    service.refreshRoomDetail()
+    Qt.callLater(function() { headerBack.forceActiveFocus() })
+    return true
+  }
+  // The edit fields start from what the relay lists for the selected room.
+  function fillRoomSettings() {
+    var room = service ? service.selectedRoom : null
+    nameTouched = false
+    editRoomName.text = room ? room.name : ""
+    // The description comes from the room detail (the full text), never from
+    // the catalog row's shortened copy.
+    aboutTouched = false
+    editRoomAbout.text = service && service.roomDetailShown ? service.roomDetail.about : ""
+    topicTouched = false
+    editRoomTopic.text = service && service.roomDetailShown ? service.roomDetail.topic : ""
+    addMemberKey.text = ""
+    armedMember = ""
+  }
+  // One outcome line for a view: the last change's, when it is one of `kinds`
+  // (or when nothing was sent at all).
+  function changeLine(kinds) {
+    if (!service || service.roomActionLabel === "") return ""
+    return service.roomActionLocal === "failed" || kinds.indexOf(service.roomAction.action) !== -1 || service.roomActionLocal === "sending"
+      ? service.roomActionLabel : ""
+  }
+  function submitMemberRemoval(key) {
+    if (!service || !service.canEditRoom) return false
+    if (armedMember !== key) { armedMember = key; memberDisarm.restart(); return true }
+    armedMember = ""
+    return service.removeRoomMember(key)
+  }
+  function finishCreate() {
+    var action = service.roomAction
+    if (communityView === "new-room" && newRoomAwaiting && action.action === "create" && action.state === "acknowledged"
+        && service.selectedRoomId === action.roomId) { newRoomAwaiting = false; backToRooms() }
+  }
+  function followRelay() {
+    if (root.communityView !== "room-settings" || !service) return
+    var room = service.selectedRoom
+    if (!nameTouched && room) editRoomName.text = room.name
+    if (service.roomDetailShown) {
+      if (!aboutTouched) editRoomAbout.text = service.roomDetail.about
+      if (!topicTouched) editRoomTopic.text = service.roomDetail.topic
+    }
+  }
+  // What the last save sent: the request, and the fields with their submitted
+  // text. Only those fields, and only if they still read as submitted, stop
+  // being edits when the relay accepts the save.
+  property var sentSave: null
+  function submitDetails() {
+    if (!service) return false
+    var changes = service.roomEditChanges(editRoomName.text, editRoomAbout.text, nameTouched, aboutTouched)
+    if (!service.updateRoomDetails(editRoomName.text, editRoomAbout.text, nameTouched, aboutTouched)) return false
+    sentSave = {requestId: service.roomActionRequestId, name: changes.name, about: changes.about}
+    return true
+  }
+  function submitTopic() {
+    if (!service || !service.setRoomTopic(editRoomTopic.text, topicTouched)) return false
+    sentSave = {requestId: service.roomActionRequestId, topic: editRoomTopic.text.trim()}
+    return true
+  }
+  function saved(action) {
+    if (!sentSave || action.requestId !== sentSave.requestId || action.state === "sending" || communityView !== "room-settings") return
+    var sent = sentSave
+    sentSave = null
+    if (action.state !== "acknowledged") return
+    if (sent.name !== undefined && editRoomName.text.trim() === sent.name) nameTouched = false
+    if (sent.about !== undefined && editRoomAbout.text.trim() === sent.about) aboutTouched = false
+    if (sent.topic !== undefined && editRoomTopic.text.trim() === sent.topic) topicTouched = false
+  }
+  function memberLabel(member) {
+    var who = member.name.trim() || member.key.slice(0, 12) + "…"
+    return who + " · " + member.role + (service && member.key === service.identity ? " · you" : "")
+  }
+  Connections {
+    target: root.service
+    function onSelectedRoomIdChanged() {
+      root.finishCreate()
+      if (root.communityView === "room-settings") { root.fillRoomSettings(); root.service.refreshRoomDetail() }
+    }
+    // An untouched field follows the relay's latest value; a field the user
+    // typed in keeps their text (their explicit edit), whatever changed meanwhile.
+    function onRoomDetailChanged() { root.followRelay() }
+    function onSelectedRoomChanged() { root.followRelay() }
+    // Back to the rooms once the room just created is listed and selected.
+    function onRoomActionChanged() { root.finishCreate(); root.saved(root.service.roomAction) }
+  }
   Connections {
     target: root.service
     function onDmOpenStateChanged() { if (root.service.dmOpenState === "acknowledged") root.newDmOpen = false }
@@ -1182,6 +1316,17 @@ FocusScope {
               focusable: true
               onClicked: { root.joinOpen = !root.joinOpen; if (root.joinOpen) root.service.refreshOpenRooms() }
             }
+            Ui.Button {
+              objectName: "buzzNewRoom"
+              visible: root.connected && root.roomManageShown
+              Layout.fillWidth: true
+              text: "+ New room"
+              tooltipText: "Create an open or private room"
+              fontSize: Style.font.caption
+              leftAlign: true
+              focusable: true
+              onClicked: root.openNewRoom()
+            }
             Text {
               visible: root.service && (root.service.dmRooms.length > 0 || root.newDmAvailable)
               Layout.fillWidth: true
@@ -1375,6 +1520,33 @@ FocusScope {
                   onClicked: root.service.selectRoom(modelData.id)
                 }
               }
+            }
+            // The catalog holds more joined rooms than one page: the next page is
+            // read on request and merged; a failure keeps every room listed.
+            Ui.Button {
+              objectName: "buzzLoadMoreRooms"
+              visible: !!root.service && (root.service.catalogMore === "available" || root.service.catalogMore === "failed")
+              Layout.fillWidth: true
+              text: root.service && root.service.catalogMore === "failed" ? "Try again · load more rooms" : "Load more rooms"
+              tooltipText: "Show more of the rooms and messages you have joined"
+              fontSize: Style.font.caption
+              leftAlign: true
+              focusable: true
+              enabled: !!root.service && root.service.canLoadMoreRooms
+              opacity: enabled ? 1 : 0.5
+              onClicked: root.service.loadMoreRooms()
+            }
+            Text {
+              objectName: "buzzLoadMoreStatus"
+              visible: text !== ""
+              Layout.fillWidth: true
+              text: root.service ? root.service.catalogMoreLabel : ""
+              textFormat: Text.PlainText
+              wrapMode: Text.WordWrap
+              color: Color.foreground
+              opacity: 0.7
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
             }
             Text {
               objectName: "buzzAgentsHeading"
@@ -2271,6 +2443,325 @@ FocusScope {
         Item { Layout.fillHeight: true }
       }
 
+      // New room: name, optional description, open or private. The helper
+      // signs; the relay answers; the list then selects the new room.
+      ColumnLayout {
+        id: newRoomView
+        objectName: "buzzNewRoomView"
+        visible: root.communityView === "new-room"
+        Layout.fillWidth: true
+        Layout.fillHeight: true
+        Layout.preferredWidth: Style.space(400)
+        spacing: Style.space(8)
+        SettingsNote {
+          text: "Anyone in this community can join an open room. A private room is joined only by people you add."
+        }
+        SettingsCaption { text: "Name" }
+        Ui.TextField {
+          id: newRoomName
+          objectName: "buzzNewRoomName"
+          Layout.fillWidth: true
+          verticalPadding: Style.space(4)
+          maximumLength: 128
+          placeholderText: "Room name"
+          onAccepted: root.submitNewRoom()
+        }
+        SettingsCaption { text: "Description (optional)" }
+        Ui.TextField {
+          id: newRoomAbout
+          objectName: "buzzNewRoomAbout"
+          Layout.fillWidth: true
+          verticalPadding: Style.space(4)
+          maximumLength: 1024
+          placeholderText: "What is this room for?"
+          onAccepted: root.submitNewRoom()
+        }
+        RowLayout {
+          Layout.fillWidth: true
+          spacing: Style.space(6)
+          Ui.Button {
+            objectName: "buzzNewRoomOpen"
+            text: "Open"
+            tooltipText: "Anyone in this community can join"
+            fontSize: Style.font.caption
+            focusable: true
+            selected: !root.newRoomPrivate
+            onClicked: root.newRoomPrivate = false
+          }
+          Ui.Button {
+            objectName: "buzzNewRoomPrivate"
+            text: "Private"
+            tooltipText: "Only people you add can join"
+            fontSize: Style.font.caption
+            focusable: true
+            selected: root.newRoomPrivate
+            onClicked: root.newRoomPrivate = true
+          }
+          Item { Layout.fillWidth: true }
+          Ui.Button {
+            objectName: "buzzNewRoomCreate"
+            text: "Create room"
+            tooltipText: "Create this room"
+            focusable: true
+            enabled: root.newRoomValid && !!root.service && root.service.canManageRooms
+            opacity: enabled ? 1 : 0.5
+            onClicked: root.submitNewRoom()
+          }
+        }
+        Text {
+          objectName: "buzzNewRoomStatus"
+          Layout.fillWidth: true
+          visible: text !== ""
+          text: root.changeLine(["create"])
+          textFormat: Text.PlainText
+          wrapMode: Text.WordWrap
+          color: Color.foreground
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+        }
+        Item { Layout.fillHeight: true }
+      }
+      // Room settings: everyone sees the topic and the members; owners and
+      // admins (by the relay's roster) edit details and manage members. The
+      // relay decides, and a refusal is shown in its own words.
+      ColumnLayout {
+        id: roomSettingsView
+        objectName: "buzzRoomSettingsView"
+        visible: root.communityView === "room-settings"
+        Layout.fillWidth: true
+        Layout.fillHeight: true
+        Layout.preferredWidth: Style.space(400)
+        spacing: Style.space(8)
+        Controls.ScrollView {
+          Layout.fillWidth: true
+          Layout.fillHeight: true
+          contentWidth: availableWidth
+          clip: true
+          ColumnLayout {
+            width: parent.width
+            spacing: Style.space(4)
+            Text {
+              objectName: "buzzRoomSettingsTitle"
+              Layout.fillWidth: true
+              text: root.service ? root.service.roomTitle(root.service.selectedRoom) : ""
+              textFormat: Text.PlainText
+              elide: Text.ElideRight
+              color: Color.foreground
+              font.family: Style.font.family
+              font.pixelSize: Style.font.body * 1.15
+              font.bold: true
+            }
+            SettingsNote {
+              objectName: "buzzRoomDetailStatus"
+              visible: text !== ""
+              text: root.service ? root.service.roomDetailLabel : ""
+            }
+            SettingsCaption { text: "Topic" }
+            SettingsNote {
+              objectName: "buzzRoomTopic"
+              visible: !!root.service && root.service.roomDetailShown
+              text: root.service && root.service.roomDetailShown
+                ? (root.service.roomDetail.topic !== "" ? root.service.roomDetail.topic : "No topic set.") : ""
+            }
+            SettingsNote {
+              objectName: "buzzRoomVisibility"
+              visible: !!root.service && root.service.roomDetailShown
+              text: root.service && root.service.roomDetailShown
+                ? (root.service.roomDetail.visibility === "private" ? "Private room · only people added to it can join" : "Open room · anyone in this community can join") : ""
+            }
+            SettingsNote {
+              objectName: "buzzRoomEditNote"
+              visible: !!root.service && root.service.roomDetailShown && !root.service.roomEditAllowed
+              text: root.service && root.service.roomDetailShown && !root.service.roomEditAllowed
+                ? "Only this room's owners and admins change its name, description, topic and members." : ""
+            }
+            ColumnLayout {
+              objectName: "buzzRoomEdit"
+              visible: !!root.service && root.service.roomEditAllowed
+              Layout.fillWidth: true
+              spacing: Style.space(4)
+              SettingsCaption { text: "Name and description" }
+              Ui.TextField {
+                id: editRoomName
+                objectName: "buzzRoomEditName"
+                Layout.fillWidth: true
+                verticalPadding: Style.space(4)
+                maximumLength: 128
+                placeholderText: "Room name"
+                readOnly: !!root.service && root.service.roomActionBusy
+                onTextEdited: root.nameTouched = true
+              }
+              Ui.TextField {
+                id: editRoomAbout
+                objectName: "buzzRoomEditAbout"
+                Layout.fillWidth: true
+                verticalPadding: Style.space(4)
+                maximumLength: 1024
+                placeholderText: "Description"
+                readOnly: !!root.service && (root.service.roomDetail.aboutTruncated || root.service.roomActionBusy)
+                onTextEdited: root.aboutTouched = true
+              }
+              SettingsNote {
+                objectName: "buzzRoomAboutLong"
+                visible: !!root.service && root.service.roomDetail.aboutTruncated
+                text: "This description is too long to edit here; the name and topic can still be changed."
+              }
+              Ui.Button {
+                objectName: "buzzRoomSaveDetails"
+                text: "Save name and description"
+                tooltipText: "Change what you edited; the rest stays as it is"
+                fontSize: Style.font.caption
+                focusable: true
+                enabled: !!root.service && root.service.canEditRoom && root.service.validRoomText(editRoomName.text, 128, true)
+                  && root.service.validRoomText(editRoomAbout.text, root.service.roomAboutBytes, false)
+                  && Object.keys(root.service.roomEditChanges(editRoomName.text, editRoomAbout.text, root.nameTouched, root.aboutTouched)).length > 0
+                opacity: enabled ? 1 : 0.5
+                onClicked: root.submitDetails()
+              }
+              SettingsCaption { text: "Change topic" }
+              Ui.TextField {
+                id: editRoomTopic
+                objectName: "buzzRoomEditTopic"
+                Layout.fillWidth: true
+                verticalPadding: Style.space(4)
+                maximumLength: 256
+                placeholderText: "Topic"
+                readOnly: !!root.service && root.service.roomActionBusy
+                onTextEdited: root.topicTouched = true
+              }
+              Ui.Button {
+                objectName: "buzzRoomSaveTopic"
+                text: "Save topic"
+                tooltipText: "Change this room's topic"
+                fontSize: Style.font.caption
+                focusable: true
+                enabled: !!root.service && root.service.canEditRoom && root.service.validRoomText(editRoomTopic.text, 256, false)
+                  && root.service.roomTopicChanged(editRoomTopic.text, root.topicTouched)
+                opacity: enabled ? 1 : 0.5
+                onClicked: root.submitTopic()
+              }
+            }
+            SettingsCaption {
+              visible: !!root.service && root.service.roomDetailShown
+              text: root.service && root.service.roomDetailShown
+                ? "Members · " + root.service.roomDetail.members.length + (root.service.roomDetail.truncated ? " shown, more not listed" : "") : ""
+            }
+            Repeater {
+              model: root.service && root.service.roomDetailShown ? root.service.roomDetail.members : []
+              delegate: RowLayout {
+                required property var modelData
+                objectName: "buzzRoomMember"
+                readonly property string memberKey: modelData.key
+                Layout.fillWidth: true
+                spacing: Style.space(4)
+                Text {
+                  objectName: "buzzRoomMemberName"
+                  Layout.fillWidth: true
+                  text: root.memberLabel(modelData)
+                  textFormat: Text.PlainText
+                  elide: Text.ElideRight
+                  color: Color.foreground
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.caption
+                }
+                Ui.Button {
+                  objectName: "buzzRoomRemoveMember"
+                  visible: !!root.service && root.service.roomEditAllowed && modelData.key !== root.service.identity
+                  enabled: !!root.service && root.service.canEditRoom
+                  text: root.armedMember === modelData.key ? "Confirm remove" : "Remove"
+                  tooltipText: "Remove this member from the room"
+                  fontSize: Style.font.caption
+                  horizontalPadding: Style.space(6)
+                  verticalPadding: Style.space(2)
+                  focusable: true
+                  selected: root.armedMember === modelData.key
+                  onClicked: root.submitMemberRemoval(modelData.key)
+                }
+              }
+            }
+            ColumnLayout {
+              objectName: "buzzRoomAdd"
+              visible: !!root.service && root.service.roomEditAllowed
+              Layout.fillWidth: true
+              spacing: Style.space(4)
+              SettingsCaption { text: "Add a member" }
+              RowLayout {
+                Layout.fillWidth: true
+                spacing: Style.space(6)
+                Ui.TextField {
+                  id: addMemberKey
+                  objectName: "buzzRoomAddKey"
+                  Layout.fillWidth: true
+                  verticalPadding: Style.space(4)
+                  maximumLength: 80
+                  placeholderText: "Member's public key (64 hex characters)"
+                  inputMethodHints: Qt.ImhNoPredictiveText | Qt.ImhPreferLowercase
+                  onAccepted: if (root.service.addRoomMember(text)) text = ""
+                }
+                Ui.Button {
+                  objectName: "buzzRoomAddMember"
+                  text: "Add"
+                  tooltipText: "Add this key to the room"
+                  fontSize: Style.font.caption
+                  focusable: true
+                  enabled: !!root.service && root.service.canEditRoom && /^[A-Fa-f0-9]{64}$/.test(addMemberKey.text.trim())
+                  opacity: enabled ? 1 : 0.5
+                  onClicked: if (root.service.addRoomMember(addMemberKey.text)) addMemberKey.text = ""
+                }
+              }
+              SettingsNote {
+                visible: candidates.count > 0
+                text: "People you message"
+              }
+              Repeater {
+                id: candidates
+                model: root.service ? root.service.dmPeople.filter(function(person) {
+                  return !root.service.roomDetail.members.some(function(m) { return m.key === person.key })
+                }).slice(0, 8) : []
+                delegate: RowLayout {
+                  required property var modelData
+                  objectName: "buzzRoomAddCandidate"
+                  Layout.fillWidth: true
+                  spacing: Style.space(4)
+                  Text {
+                    Layout.fillWidth: true
+                    text: modelData.name + " · " + modelData.key.slice(0, 8)
+                    textFormat: Text.PlainText
+                    elide: Text.ElideRight
+                    color: Color.foreground
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.caption
+                  }
+                  Ui.Button {
+                    objectName: "buzzRoomAddCandidateButton"
+                    text: "Add"
+                    tooltipText: "Add this person to the room"
+                    fontSize: Style.font.caption
+                    horizontalPadding: Style.space(6)
+                    verticalPadding: Style.space(2)
+                    focusable: true
+                    enabled: !!root.service && root.service.canEditRoom
+                    opacity: enabled ? 1 : 0.5
+                    onClicked: root.service.addRoomMember(modelData.key)
+                  }
+                }
+              }
+            }
+            Text {
+              objectName: "buzzRoomManageStatus"
+              Layout.fillWidth: true
+              visible: text !== ""
+              text: root.changeLine(["details", "topic", "add_member", "remove_member"])
+              textFormat: Text.PlainText
+              wrapMode: Text.WordWrap
+              color: Color.foreground
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+            }
+          }
+        }
+      }
+
       ColumnLayout {
         visible: root.showTimeline && !root.agentEditorShown && !root.settingsOpen && !root.statusOpen && root.communityView === ""
         Layout.fillWidth: true
@@ -2361,6 +2852,18 @@ FocusScope {
             focusable: true
             visible: root.service && !root.service.sampleMode && root.service.connection === "authenticated" && root.service.historySupported && root.service.selectedRoom !== null
             onClicked: if (root.service) { root.service.refreshHistory(); root.service.refreshRecipients() }
+          }
+          Ui.Button {
+            objectName: "buzzRoomSettings"
+            text: "Room settings"
+            tooltipText: "Topic, members and, for owners and admins, changes"
+            fontSize: Style.font.caption
+            horizontalPadding: Style.space(6)
+            verticalPadding: Style.space(2)
+            focusable: true
+            visible: root.roomManageShown && root.service.connection === "authenticated" && root.service.selectedRoom !== null
+              && root.service.selectedRoom.kind === "stream"
+            onClicked: root.openRoomSettings()
           }
           Ui.Button {
             objectName: "buzzLeaveRoom"

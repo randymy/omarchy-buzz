@@ -194,6 +194,10 @@ struct Script {
     // those reads sent.
     people: Vec<Event>,
     people_filters: Vec<Value>,
+    // A room whose history reads the relay refuses (access lost).
+    deny_history: Option<String>,
+    // A roster read for this room is refused (the room-detail read uses it).
+    deny_roster: Option<String>,
 }
 #[derive(Clone, Copy, PartialEq)]
 enum DmReply {
@@ -296,6 +300,8 @@ async fn recheck_fixture_aging(
         presence_forged: false,
         people: Vec::new(),
         people_filters: Vec::new(),
+        deny_history: None,
+        deny_roster: None,
     }));
     let (count_tx, discoveries) = watch::channel(0_usize);
     let count_tx = std::sync::Arc::new(count_tx);
@@ -530,7 +536,8 @@ async fn recheck_fixture_aging(
                         39002 if filter.get("#p").is_some() => ok(&serde_json::to_string(&joined.iter().map(|room| membership(room)).collect::<Vec<_>>()).unwrap()),
                         39002 => {
                             let room = tagged("#d").remove(0);
-                            if joined.contains(&room) { ok(&serde_json::to_string(&vec![membership(&room)]).unwrap()) } else { FORBIDDEN.into() }
+                            let refused = script.lock().unwrap().deny_roster.as_deref() == Some(room.as_str());
+                            if joined.contains(&room) && !refused { ok(&serde_json::to_string(&vec![membership(&room)]).unwrap()) } else { FORBIDDEN.into() }
                         }
                         // Unscoped: member and open channels, each with its visibility tag,
                         // plus one private channel the viewer could not see in pinned Buzz.
@@ -549,7 +556,7 @@ async fn recheck_fixture_aging(
                             vec![Tag::parse(["d", room.as_str()]).unwrap(), Tag::parse(["name", "DM"]).unwrap(), Tag::parse(["t", "dm"]).unwrap(), Tag::parse(["hidden"]).unwrap(),
                                 Tag::parse(["p", &public.to_hex()]).unwrap(), Tag::parse(["p", &other.public_key().to_hex()]).unwrap()]
                         } else {
-                            vec![Tag::parse(["d", room.as_str()]).unwrap(), Tag::parse(["name", "Fixture"]).unwrap(), Tag::parse(["t", "stream"]).unwrap()]
+                            vec![Tag::parse(["d", room.as_str()]).unwrap(), Tag::parse(["name", "Fixture"]).unwrap(), Tag::parse(["t", "stream"]).unwrap(), Tag::parse(["public"]).unwrap()]
                         })).collect::<Vec<_>>()).unwrap()),
                         // No NIP-DV snapshot: nothing is hidden.
                         0 if filter.get("page").is_some() => {
@@ -589,7 +596,8 @@ async fn recheck_fixture_aging(
                         }
                         9 => {
                             let room = tagged("#h").remove(0);
-                            if joined.contains(&room) {
+                            let refused = script.lock().unwrap().deny_history.as_deref() == Some(room.as_str());
+                            if joined.contains(&room) && !refused {
                                 let row = note(&other, 40002, "synthetic room text", vec![Tag::parse(["h", room.as_str()]).unwrap()]);
                                 let bounds = note(&relay_keys, 39006, r#"{"has_more":false,"next_cursor":null}"#,
                                     vec![Tag::parse(["h", room.as_str()]).unwrap(), Tag::parse(["d", &format!("{room}:head")]).unwrap()]);
@@ -714,6 +722,16 @@ impl Recheck {
             s.recipients.state == "snapshot" && s.recipients.room_id.as_deref() == Some(b.as_str())
         })
         .await;
+        // The room view (roster, roles, topic) of B.
+        self.commands
+            .send(Command::FetchRoomDetail(b.clone()))
+            .await
+            .unwrap();
+        wait_status(&mut self.status, |s| {
+            s.room_detail.state == "snapshot"
+                && s.room_detail.room_id.as_deref() == Some(b.as_str())
+        })
+        .await;
         root
     }
     async fn finish(self) {
@@ -739,6 +757,8 @@ fn retained(s: &Status, a: &str, b: &str, root: &str) -> bool {
         && s.thread.root_id.as_deref() == Some(root)
         && s.recipients.state == "snapshot"
         && s.recipients.room_id.as_deref() == Some(b)
+        && s.room_detail.state == "snapshot"
+        && s.room_detail.room_id.as_deref() == Some(b)
 }
 
 #[derive(PartialEq)]
@@ -825,6 +845,9 @@ async fn background_check(outcome: Outcome) {
                 assert_eq!(s.thread.category.as_deref(), Some("thread_access_denied"));
                 assert_eq!(s.recipients.state, "snapshot");
                 assert_eq!(s.recipients.room_id.as_deref(), Some(b.as_str()));
+                // B stays joined: its room view stays.
+                assert_eq!(s.room_detail.state, "snapshot");
+                assert_eq!(s.room_detail.room_id.as_deref(), Some(b.as_str()));
                 assert_eq!(s.delivery.state, "unknown");
                 assert_eq!(s.delivery.request_id.as_deref(), Some(request_id.as_str()));
                 assert_eq!(s.delivery.category.as_deref(), Some("delivery_unknown"));
@@ -861,6 +884,19 @@ async fn background_check(outcome: Outcome) {
                     s.recipients.category.as_deref(),
                     Some("recipients_access_denied")
                 );
+                // The room view of the room that was lost goes with it: no
+                // roster, topic or role of a room this identity is not in.
+                assert_eq!(s.room_detail.state, "unavailable");
+                assert_eq!(s.room_detail.room_id.as_deref(), Some(b.as_str()));
+                assert_eq!(
+                    s.room_detail.category.as_deref(),
+                    Some("room_detail_access_denied")
+                );
+                assert!(
+                    s.room_detail.members.is_empty()
+                        && s.room_detail.topic.is_empty()
+                        && s.room_detail.role.is_empty()
+                );
                 assert_eq!(
                     s.delivery.state, "sending",
                     "delivery in a remaining room was revoked"
@@ -885,6 +921,8 @@ async fn background_check(outcome: Outcome) {
                 assert!(s.recipients.room_id.is_none() && s.recipients.entries.is_empty());
                 assert_eq!(s.thread.state, "unavailable");
                 assert!(s.thread.room_id.is_none());
+                assert_eq!(s.room_detail.state, "unavailable");
+                assert!(s.room_detail.room_id.is_none() && s.room_detail.members.is_empty());
                 assert!(s.activity.is_empty());
                 // Unchanged: a failed check leaves delivery evidence alone.
                 assert_eq!(s.delivery.state, "sending");
@@ -899,6 +937,143 @@ async fn background_check(outcome: Outcome) {
 #[tokio::test]
 async fn background_room_check_keeps_published_views() {
     background_check(Outcome::Same).await;
+}
+
+/// A room mutation checked against generation N and consumed after the session
+/// moved to N+1 (another client switched communities in between) is refused
+/// before it is prepared or signed; the same request at the current generation
+/// is accepted.
+#[tokio::test]
+async fn room_mutation_checked_for_an_older_session_is_not_signed() {
+    let _network_fixture = crate::NETWORK_TEST_LOCK.lock().await;
+    timeout(Duration::from_secs(20), async {
+        let mut f = recheck_fixture(None).await;
+        wait_status(&mut f.status, |s| {
+            s.catalog.state == "partial" && s.catalog.rooms.len() == 2
+        })
+        .await;
+        let create = |name: &str| crate::rooms::Change::Create {
+            name: name.into(),
+            about: String::new(),
+            private: false,
+        };
+        let checked = f.status.borrow().generation;
+        // The community changes after the IPC check, before the command runs.
+        f.injector.send_modify(|s| s.generation = checked + 1);
+        let (reply, answer) = oneshot::channel();
+        f.commands
+            .send(Command::RoomChange(
+                create("stale"),
+                "00000000-0000-4000-8000-0000000000a1".into(),
+                checked,
+                reply,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(answer.await.unwrap(), Some("room_scope_changed"));
+        {
+            let s = f.status.borrow();
+            assert_eq!(s.room_action.state, "idle", "a stale request was prepared");
+            assert!(s.room_action.request_id.is_none());
+        }
+        // The same request for the current session is signed and sent.
+        let (reply, answer) = oneshot::channel();
+        f.commands
+            .send(Command::RoomChange(
+                create("current"),
+                "00000000-0000-4000-8000-0000000000a2".into(),
+                checked + 1,
+                reply,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(answer.await.unwrap(), None);
+        let s = snapshot(&mut f.status, |s| s.room_action.state == "sending").await;
+        assert_eq!(s.room_action.action.as_deref(), Some("create"));
+        f.finish().await;
+    })
+    .await
+    .expect("room mutation scope fixture deadline");
+}
+
+/// Access lost through a denied history read (not a catalog check): the room
+/// leaves the catalog and every view of it goes, the room detail included, and
+/// the next catalog check cannot repair what it no longer lists.
+#[tokio::test]
+async fn denied_history_read_revokes_the_room_detail_too() {
+    let _network_fixture = crate::NETWORK_TEST_LOCK.lock().await;
+    timeout(Duration::from_secs(20), async {
+        let mut f = recheck_fixture(None).await;
+        let b = f.b.clone();
+        f.establish().await;
+        {
+            let s = f.status.borrow();
+            assert_eq!(s.room_detail.state, "snapshot");
+            assert_eq!(s.room_detail.room_id.as_deref(), Some(b.as_str()));
+        }
+        f.script.lock().unwrap().deny_history = Some(b.clone());
+        f.commands
+            .send(Command::FetchRecent(b.clone()))
+            .await
+            .unwrap();
+        let s = snapshot(&mut f.status, |s| {
+            !s.catalog.rooms.iter().any(|r| r.id == b)
+        })
+        .await;
+        assert_eq!(s.history.category.as_deref(), Some("history_access_denied"));
+        assert_eq!(s.recipients.state, "unavailable");
+        assert_eq!(s.room_detail.state, "unavailable");
+        assert_eq!(s.room_detail.room_id.as_deref(), Some(b.as_str()));
+        assert_eq!(
+            s.room_detail.category.as_deref(),
+            Some("room_detail_access_denied")
+        );
+        assert!(
+            s.room_detail.members.is_empty()
+                && s.room_detail.role.is_empty()
+                && s.room_detail.topic.is_empty()
+        );
+        f.finish().await;
+    })
+    .await
+    .expect("denied history fixture deadline");
+}
+
+/// A refused room-detail read revokes the room like any other room read: it
+/// leaves the catalog and its history and recipients go too.
+#[tokio::test]
+async fn denied_detail_read_revokes_the_room() {
+    let _network_fixture = crate::NETWORK_TEST_LOCK.lock().await;
+    timeout(Duration::from_secs(20), async {
+        let mut f = recheck_fixture(None).await;
+        let b = f.b.clone();
+        f.establish().await;
+        f.script.lock().unwrap().deny_roster = Some(b.clone());
+        f.commands
+            .send(Command::FetchRoomDetail(b.clone()))
+            .await
+            .unwrap();
+        let s = snapshot(&mut f.status, |s| {
+            !s.catalog.rooms.iter().any(|r| r.id == b)
+        })
+        .await;
+        assert_eq!(
+            s.room_detail.category.as_deref(),
+            Some("room_detail_access_denied")
+        );
+        assert!(s.room_detail.members.is_empty() && s.room_detail.role.is_empty());
+        assert_ne!(
+            s.history.room_id.as_deref(),
+            Some(b.as_str()).filter(|_| s.history.state == "snapshot")
+        );
+        assert!(
+            !(s.recipients.state == "snapshot"
+                && s.recipients.room_id.as_deref() == Some(b.as_str()))
+        );
+        f.finish().await;
+    })
+    .await
+    .expect("denied detail fixture deadline");
 }
 
 #[tokio::test]

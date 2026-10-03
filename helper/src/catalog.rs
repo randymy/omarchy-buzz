@@ -1,7 +1,7 @@
 //! Origin-bound NIP-11 discovery and relay-author-validated room snapshots.
 //! A bounded #p query cannot prove a complete roster or current membership forever.
 use crate::query::{query, QueryRequest};
-use nostr::{Event, Keys, PublicKey, Timestamp};
+use nostr::{Event, EventId, Keys, PublicKey, Timestamp};
 use reqwest::{redirect::Policy, Client};
 use serde::Serialize;
 use std::{
@@ -13,7 +13,15 @@ use uuid::Uuid;
 // Hosted Buzz can include inline community icons larger than 32 KiB.
 // Bound the entire document; only its signer is returned to the caller.
 const INFO_BYTES: usize = 128 * 1024;
-const LIMIT: u16 = 20;
+/// Joined rooms (DMs included) are read in pages of `PAGE` kind 39002 events,
+/// newest first, continued with Desktop's composite `(until, before_id)` cursor
+/// (`fetch.rs` `advance_directory_cursor`). The panel holds at most
+/// `MAX_PAGES` pages so a status frame stays bounded (`MAX_ROOMS` rows).
+pub const PAGE: u16 = 50;
+pub const MAX_PAGES: usize = 4;
+pub const MAX_ROOMS: usize = PAGE as usize * MAX_PAGES;
+/// A relay-signed membership snapshot's position: `(created_at, event id)`.
+pub type Cursor = (u64, EventId);
 static DISCOVERY: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
 
 #[derive(Clone, Debug, Serialize)]
@@ -37,6 +45,13 @@ pub struct Catalog {
     pub rooms: Vec<Room>,
     /// `relay − local` seconds from this discovery's NIP-11 `Date` header.
     pub clock_skew: Option<i64>,
+    /// The last membership page was full: more joined rooms may exist.
+    pub has_more: bool,
+    /// Where the next page continues; present only with `has_more`.
+    pub next: Option<Cursor>,
+    /// Confirmed rooms beyond `MAX_ROOMS` were left out (the least recent ones;
+    /// the room in view is kept): the list is at its limit, not complete.
+    pub trimmed: bool,
 }
 
 /// `self` is the signing identity. The NIP-11 `pubkey` contact is NOT authority.
@@ -203,7 +218,7 @@ async fn info_bytes(mut response: reqwest::Response) -> Result<Vec<u8>, &'static
     Ok(bytes)
 }
 
-fn one_tag<'a>(event: &'a Event, name: &str) -> Result<Option<&'a str>, &'static str> {
+pub(crate) fn one_tag<'a>(event: &'a Event, name: &str) -> Result<Option<&'a str>, &'static str> {
     let mut matches = event
         .tags
         .iter()
@@ -216,7 +231,7 @@ fn one_tag<'a>(event: &'a Event, name: &str) -> Result<Option<&'a str>, &'static
     }
     Ok(value.flatten())
 }
-fn clean(text: &str, cap: usize) -> String {
+pub(crate) fn clean(text: &str, cap: usize) -> String {
     let mut value = String::new();
     for ch in text.chars() {
         let ch = if ch.is_control() { ' ' } else { ch };
@@ -235,7 +250,12 @@ fn room_id(event: &Event) -> Result<Uuid, &'static str> {
     }
     Ok(id)
 }
-fn validated(event: &Event, signer: PublicKey, kind: u16, now: u64) -> Result<Uuid, &'static str> {
+pub(crate) fn validated(
+    event: &Event,
+    signer: PublicKey,
+    kind: u16,
+    now: u64,
+) -> Result<Uuid, &'static str> {
     event.verify().map_err(|_| "catalog_invalid_signature")?;
     if event.pubkey != signer {
         return Err("catalog_untrusted_author");
@@ -312,7 +332,7 @@ fn dm_name(member: PublicKey, participants: &[String], names: &BTreeMap<String, 
 }
 
 /// Other participants of every DM, the keys whose profiles name DMs. At most
-/// 20 rooms x 8 others, since `reconcile` bounds both.
+/// `MAX_ROOMS` x 8 others, since `reconcile` bounds both.
 fn dm_others(catalog: &Catalog, member: PublicKey) -> BTreeSet<String> {
     let own = member.to_hex();
     catalog
@@ -436,7 +456,7 @@ pub fn reconcile(
     metadata: &[Event],
     now: u64,
 ) -> Result<Catalog, &'static str> {
-    if memberships.len() > LIMIT as usize || metadata.len() > LIMIT as usize {
+    if memberships.len() > MAX_ROOMS || metadata.len() > MAX_ROOMS {
         return Err("catalog_oversized");
     }
     let mut joined = BTreeMap::new();
@@ -535,6 +555,9 @@ pub fn reconcile(
         category: "room_catalog_partial",
         rooms,
         clock_skew: None,
+        has_more: false,
+        next: None,
+        trimmed: false,
     })
 }
 
@@ -631,26 +654,66 @@ pub async fn discover_open(
     open_rooms(pin, &events, &joined, Timestamp::now().as_secs())
 }
 
+/// The first page only, with no earlier rooms to confirm (fixtures).
+#[cfg(test)]
 pub async fn discover(
     relay: &str,
     keys: &Keys,
     pin: Option<PublicKey>,
 ) -> Result<Catalog, &'static str> {
-    let _permit = DISCOVERY.try_acquire().map_err(|_| "discovery_busy")?;
-    let (signer, clock_skew) = relay_info(relay, pin).await;
-    let signer = signer?;
-    let memberships = query(relay, keys, &QueryRequest::JoinedRooms { limit: LIMIT }).await?;
+    discover_pages(relay, keys, pin, 1, &[], None).await
+}
+
+/// A page must hold only snapshots at or before the cursor it continues from.
+fn check_page(page: &[Event], before: Option<Cursor>) -> Result<(), &'static str> {
+    if page.len() > PAGE as usize
+        || before.is_some_and(|(at, _)| page.iter().any(|e| e.created_at.as_secs() > at))
+    {
+        return Err("catalog_invalid_shape");
+    }
+    Ok(())
+}
+
+/// One snapshot per room: the newer of two (a room's roster changed between
+/// pages). Events without a readable room id stay for `reconcile` to reject.
+fn newest(events: Vec<Event>) -> Vec<Event> {
+    let mut by_room: BTreeMap<Uuid, Event> = BTreeMap::new();
+    let mut rest = Vec::new();
+    for event in events {
+        match room_id(&event) {
+            Ok(id) => match by_room.get(&id) {
+                Some(old) if (old.created_at, old.id) >= (event.created_at, event.id) => {}
+                _ => {
+                    by_room.insert(id, event);
+                }
+            },
+            Err(_) => rest.push(event),
+        }
+    }
+    by_room.into_values().chain(rest).collect()
+}
+
+/// Reads per request; one page of memberships needs one metadata read.
+const METADATA_BATCH: usize = PAGE as usize;
+
+/// Metadata, DM visibility and names for already authorized memberships.
+async fn build(
+    relay: &str,
+    keys: &Keys,
+    signer: PublicKey,
+    memberships: &[Event],
+) -> Result<Catalog, &'static str> {
     // Validate authorship before letting returned IDs shape further requests.
     reconcile(
         keys.public_key(),
         signer,
-        &memberships,
+        memberships,
         &[],
         Timestamp::now().as_secs(),
     )?;
     let ids: Vec<Uuid> = memberships.iter().map(room_id).collect::<Result<_, _>>()?;
     let mut metadata = Vec::new();
-    for batch in ids.chunks(20) {
+    for batch in ids.chunks(METADATA_BATCH) {
         metadata.extend(
             query(
                 relay,
@@ -665,7 +728,7 @@ pub async fn discover(
     let mut result = reconcile(
         keys.public_key(),
         signer,
-        &memberships,
+        memberships,
         &metadata,
         Timestamp::now().as_secs(),
     )?;
@@ -685,14 +748,166 @@ pub async fn discover(
     } else {
         "tls_origin"
     };
+    Ok(result)
+}
+
+/// Cuts `events` (newest first) to `MAX_ROOMS`, from the end, never the one
+/// for `keep` (the room in view). True if any were cut.
+fn fit(events: &mut Vec<Event>, keep: Option<&str>) -> bool {
+    let mut excess = events.len().saturating_sub(MAX_ROOMS);
+    let trimmed = excess > 0;
+    let mut at = events.len();
+    while excess > 0 && at > 0 {
+        at -= 1;
+        if !room_id(&events[at]).is_ok_and(|id| Some(id.to_string().as_str()) == keep) {
+            events.remove(at);
+            excess -= 1;
+        }
+    }
+    trimmed
+}
+
+/// The relay-signed rosters of rooms this identity may no longer be in. A
+/// refusal ("not a member") is an answer: a batch that is refused is asked
+/// again room by room, and a refused room is simply not confirmed.
+async fn confirm_rosters(
+    relay: &str,
+    keys: &Keys,
+    rooms: &[Uuid],
+) -> Result<Vec<Event>, &'static str> {
+    let ask = |rooms: Vec<Uuid>| async move {
+        query(relay, keys, &QueryRequest::RoomRosters { rooms }).await
+    };
+    match ask(rooms.to_vec()).await {
+        Err("query_access_denied") if rooms.len() > 1 => {
+            let mut events = Vec::new();
+            for room in rooms {
+                match ask(vec![*room]).await {
+                    Ok(found) => events.extend(found),
+                    Err("query_access_denied") => {}
+                    Err(error) => return Err(error),
+                }
+            }
+            Ok(events)
+        }
+        Err("query_access_denied") => Ok(Vec::new()),
+        other => other,
+    }
+}
+
+/// The first `pages` pages of joined rooms. `known` are rooms the panel already
+/// lists: a membership snapshot moves to the front when its roster changes, so
+/// a listed room can fall past the last page read without having been left.
+/// Each one missing from the pages is confirmed by its own roster read, and
+/// kept only when that relay-signed roster still names this identity.
+pub async fn discover_pages(
+    relay: &str,
+    keys: &Keys,
+    pin: Option<PublicKey>,
+    pages: usize,
+    known: &[String],
+    keep: Option<&str>,
+) -> Result<Catalog, &'static str> {
+    let _permit = DISCOVERY.try_acquire().map_err(|_| "discovery_busy")?;
+    let (signer, clock_skew) = relay_info(relay, pin).await;
+    let signer = signer?;
+    let mut memberships = Vec::new();
+    let (mut before, mut next, mut has_more) = (None, None, false);
+    for _ in 0..pages.clamp(1, MAX_PAGES) {
+        let page = query(
+            relay,
+            keys,
+            &QueryRequest::JoinedRooms {
+                limit: PAGE,
+                before,
+            },
+        )
+        .await?;
+        check_page(&page, before)?;
+        has_more = page.len() == PAGE as usize;
+        next = if has_more {
+            page.last().map(|e| (e.created_at.as_secs(), e.id))
+        } else {
+            None
+        };
+        memberships.extend(page);
+        if !has_more {
+            break;
+        }
+        before = next;
+    }
+    let mut memberships = newest(memberships);
+    memberships.sort_by(|a, b| (b.created_at, b.id).cmp(&(a.created_at, a.id)));
+    let held: BTreeSet<String> = memberships
+        .iter()
+        .filter_map(|e| room_id(e).ok())
+        .map(|id| id.to_string())
+        .collect();
+    let missing: Vec<Uuid> = known
+        .iter()
+        .filter(|id| !held.contains(*id))
+        .filter_map(|id| Uuid::parse_str(id).ok())
+        .collect();
+    let me = keys.public_key().to_hex();
+    let mut confirmed = Vec::new();
+    for batch in missing.chunks(METADATA_BATCH) {
+        let rosters = confirm_rosters(relay, keys, batch).await?;
+        confirmed.extend(rosters.into_iter().filter(|e| {
+            e.tags.iter().any(|t| {
+                t.as_slice().first().is_some_and(|v| v == "p")
+                    && t.as_slice().get(1).is_some_and(|v| *v == me)
+            })
+        }));
+    }
+    // Pages and confirmed rooms together never pass the limit `reconcile`
+    // enforces: past it the least recent rooms are cut (never the one in
+    // view), not the whole catalog.
+    confirmed.sort_by(|a, b| (b.created_at, b.id).cmp(&(a.created_at, a.id)));
+    memberships.extend(confirmed);
+    let trimmed = fit(&mut memberships, keep);
+    let mut result = build(relay, keys, signer, &newest(memberships)).await?;
     result.clock_skew = clock_skew;
+    result.has_more = has_more;
+    result.next = next;
+    result.trimmed = trimmed;
+    Ok(result)
+}
+
+/// The page after `before`, for "Load more": its rooms only; the caller merges.
+pub async fn discover_more(
+    relay: &str,
+    keys: &Keys,
+    pin: PublicKey,
+    before: Cursor,
+) -> Result<Catalog, &'static str> {
+    let _permit = DISCOVERY.try_acquire().map_err(|_| "discovery_busy")?;
+    let signer = relay_info(relay, Some(pin)).await.0?;
+    let page = query(
+        relay,
+        keys,
+        &QueryRequest::JoinedRooms {
+            limit: PAGE,
+            before: Some(before),
+        },
+    )
+    .await?;
+    check_page(&page, Some(before))?;
+    let has_more = page.len() == PAGE as usize;
+    let next = if has_more {
+        page.last().map(|e| (e.created_at.as_secs(), e.id))
+    } else {
+        None
+    };
+    let mut result = build(relay, keys, signer, &newest(page)).await?;
+    result.has_more = has_more;
+    result.next = next;
     Ok(result)
 }
 
 /// Best-effort profile lookup for DM names, in author batches of 20 within a
 /// short budget so the catalog refresh stays inside its caller's timeout. A busy
 /// read slot is retried briefly; any other failure leaves key prefixes.
-async fn dm_profile_names(
+pub(crate) async fn dm_profile_names(
     relay: &str,
     keys: &Keys,
     wanted: BTreeSet<String>,
