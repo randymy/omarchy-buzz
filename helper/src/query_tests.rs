@@ -482,3 +482,39 @@ fn user_status_request_is_author_scoped_general_and_bounded() {
     .body(&viewer)
     .is_err());
 }
+
+#[test]
+fn people_requests_use_desktops_kind_zero_filters() {
+    let viewer = Keys::generate();
+    let json = |request: &QueryRequest| {
+        serde_json::from_slice::<serde_json::Value>(&request.body(&viewer).unwrap()).unwrap()
+    };
+    let directory = QueryRequest::People {
+        query: String::new(),
+    };
+    assert_eq!(
+        json(&directory),
+        serde_json::json!([{"kinds":[0],"limit":50,"page":1}])
+    );
+    let search = QueryRequest::People {
+        query: "tyl".into(),
+    };
+    assert_eq!(
+        json(&search),
+        serde_json::json!([{"kinds":[0],"search":"tyl","search_mode":"prefix","limit":50,"page":1}])
+    );
+    assert!(QueryRequest::People {
+        query: "x".repeat(65)
+    }
+    .body(&viewer)
+    .is_err());
+    assert_eq!(search.budget().0, 50);
+    let profile = EventBuilder::new(Kind::Custom(0), "{}")
+        .sign_with_keys(&Keys::generate())
+        .unwrap();
+    let note = EventBuilder::new(Kind::Custom(1), "x")
+        .sign_with_keys(&Keys::generate())
+        .unwrap();
+    assert!(search.matches(&profile, &viewer) && directory.matches(&profile, &viewer));
+    assert!(!search.matches(&note, &viewer));
+}

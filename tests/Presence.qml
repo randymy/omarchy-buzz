@@ -163,8 +163,9 @@ ShellRoot {
           var dm = one("buzzDmPresence")
           check(dm.presence === "offline" && dm.label === "Offline" && Qt.colorEqual(dm.color, service.presenceColors.offline), "DM dot wrong: " + dm.presence)
           check(service.presenceOf(test.unknown) === "" && service.presenceOf("4".repeat(64)) === "", "Unknown keys have a state")
+          // The existing DM partner (offline) is listed beside the roster members.
           view.newDmOpen = true
-          check(test.presences("buzzNewDmPresence") === "away,online", "New-DM dots wrong: " + test.presences("buzzNewDmPresence"))
+          check(test.presences("buzzNewDmPresence") === "away,offline,online", "New-DM dots wrong: " + test.presences("buzzNewDmPresence"))
           view.newDmOpen = false
           view.recipientPickerExpanded = true
           check(test.presences("buzzRecipientPresence") === "away,online,online", "Picker dots wrong: " + test.presences("buzzRecipientPresence"))

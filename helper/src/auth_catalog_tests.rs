@@ -184,6 +184,10 @@ struct Script {
     presence: std::collections::BTreeMap<String, String>,
     presence_reads: usize,
     presence_forged: bool,
+    // Kind 0 events a people directory or search read serves, and the filters
+    // those reads sent.
+    people: Vec<Event>,
+    people_filters: Vec<Value>,
 }
 #[derive(Clone, Copy, PartialEq)]
 enum DmReply {
@@ -273,6 +277,8 @@ async fn recheck_fixture_every(first: Option<Discovery>, catalog: Duration) -> R
         presence: std::collections::BTreeMap::new(),
         presence_reads: 0,
         presence_forged: false,
+        people: Vec::new(),
+        people_filters: Vec::new(),
     }));
     let (count_tx, discoveries) = watch::channel(0_usize);
     let count_tx = std::sync::Arc::new(count_tx);
@@ -521,6 +527,11 @@ async fn recheck_fixture_every(first: Option<Discovery>, catalog: Duration) -> R
                             vec![Tag::parse(["d", room.as_str()]).unwrap(), Tag::parse(["name", "Fixture"]).unwrap(), Tag::parse(["t", "stream"]).unwrap()]
                         })).collect::<Vec<_>>()).unwrap()),
                         // No NIP-DV snapshot: nothing is hidden.
+                        0 if filter.get("page").is_some() => {
+                            let mut script = script.lock().unwrap();
+                            script.people_filters.push(filter.clone());
+                            ok(&serde_json::to_string(&script.people).unwrap())
+                        }
                         0 | 10100 | 30622 => ok("[]"),
                         // Statuses: the other member's fixed one, plus every accepted
                         // publication by the viewer (the reader picks the newest).

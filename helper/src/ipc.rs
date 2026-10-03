@@ -205,6 +205,7 @@ async fn client(
                     "fetch_thread"=>Some(protocol::Command::FetchThread(r.room_id.clone().unwrap(),r.root_id.clone().unwrap())),
                     "close_thread"=>Some(protocol::Command::CloseThread),
                     "fetch_recipients"=>Some(protocol::Command::FetchRecipients(r.room_id.clone().unwrap())),
+                    "search_people"=>Some(protocol::Command::SearchPeople(r.id.clone(),crate::recipients::people_query(r.query.as_deref().unwrap_or_default()))),
                     "send_message"=>{let (reply,receiver)=tokio::sync::oneshot::channel();send_reply=Some(receiver);Some(protocol::Command::SendChecked(protocol::SendIntent {
                         request_id:r.id.clone(),room:r.room_id.clone().unwrap(),root_id:r.root_id.clone(),text:r.text.clone().unwrap(),
                         mentions:r.mentions.clone().unwrap(),generation:r.generation.unwrap(),

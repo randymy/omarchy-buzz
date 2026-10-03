@@ -421,3 +421,116 @@ async fn optional_profile_access_denial_preserves_the_verified_roster() {
         task.await.unwrap();
     }
 }
+
+fn listed(user: &Keys, body: &str, at: u64) -> Event {
+    profile(user, body, at)
+}
+fn names(found: &[Person]) -> Vec<&str> {
+    found.iter().map(|p| p.name.as_str()).collect()
+}
+
+#[test]
+fn people_directory_lists_by_name_dedupes_and_excludes_self() {
+    let me = key(1);
+    let (ann, bob, cy) = (key(2), key(3), key(4));
+    let events = [
+        listed(&cy, r#"{"display_name":"cy"}"#, 10),
+        listed(&bob, r#"{"name":"Bob"}"#, 10),
+        listed(&ann, r#"{"display_name":"Old Ann"}"#, 10),
+        listed(&ann, r#"{"display_name":"Ann"}"#, 20),
+        listed(&me, r#"{"display_name":"Me"}"#, 10),
+    ];
+    let found = people(me.public_key(), "", &events, 100).unwrap();
+    // The newest kind 0 per author, in name order, without the viewer.
+    assert_eq!(names(&found), ["Ann", "Bob", "cy"]);
+    assert_eq!(found[0].key, ann.public_key().to_hex());
+    // An equal time keeps the lower event id, whatever the relay order.
+    let a = listed(&bob, r#"{"display_name":"B1"}"#, 30);
+    let b = listed(&bob, r#"{"display_name":"B2"}"#, 30);
+    let lower = if a.id < b.id { "B1" } else { "B2" };
+    for events in [[a.clone(), b.clone()], [b, a]] {
+        let found = people(me.public_key(), "", &events, 100).unwrap();
+        assert_eq!(names(&found), [lower]);
+    }
+}
+
+#[test]
+fn people_without_a_name_stay_listed_and_names_are_sanitized() {
+    let me = key(1);
+    let (plain, odd) = (key(2), key(3));
+    let events = [
+        listed(&plain, "not json", 10),
+        listed(&odd, "{\"display_name\":\"A\\u202eB\\nC\"}", 10),
+    ];
+    let found = people(me.public_key(), "", &events, 100).unwrap();
+    assert_eq!(found.len(), 2);
+    let unnamed = found.iter().find(|p| p.key == plain.public_key().to_hex());
+    assert_eq!(unnamed.unwrap().name, "");
+    let cleaned = found.iter().find(|p| p.key == odd.public_key().to_hex());
+    assert_eq!(cleaned.unwrap().name, "A B C");
+    let long = format!(r#"{{"display_name":"{}"}}"#, "x".repeat(200));
+    let found = people(me.public_key(), "", &[listed(&plain, &long, 10)], 100).unwrap();
+    assert_eq!(found[0].name.len(), 64);
+}
+
+#[test]
+fn people_search_ranks_like_desktop_and_drops_non_matches() {
+    let me = key(1);
+    let (a, b, c, d, e) = (key(2), key(3), key(4), key(5), key(6));
+    let events = [
+        listed(&a, r#"{"display_name":"Big Tyler"}"#, 10),
+        listed(&b, r#"{"display_name":"Tyler"}"#, 10),
+        listed(&c, r#"{"display_name":"Tylerson"}"#, 10),
+        listed(&d, r#"{"display_name":"Zed","about":"I know Tyler"}"#, 10),
+        listed(
+            &e,
+            r#"{"display_name":"Zoe","nip05":"tyler@example.com"}"#,
+            10,
+        ),
+    ];
+    let found = people(me.public_key(), "tyler", &events, 100).unwrap();
+    // Exact name, name prefix, name substring, nip05 prefix; `about` never matches.
+    assert_eq!(names(&found), ["Tyler", "Tylerson", "Big Tyler", "Zoe"]);
+    let by_key = people(me.public_key(), &a.public_key().to_hex()[..6], &events, 100).unwrap();
+    assert_eq!(names(&by_key), ["Big Tyler"]);
+    assert!(people(me.public_key(), "nobody", &events, 100)
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn people_reject_unverified_or_out_of_scope_reads_whole() {
+    let me = key(1);
+    let other = key(2);
+    let good = listed(&other, r#"{"display_name":"Ok"}"#, 10);
+    let mut forged = listed(&other, r#"{"display_name":"Forged"}"#, 11);
+    forged.content = r#"{"display_name":"Changed"}"#.into();
+    for bad in [
+        forged,
+        event(&other, 1, "note", vec![], 10),
+        listed(&other, "{}", 1000),
+    ] {
+        assert_eq!(
+            people(me.public_key(), "", &[good.clone(), bad], 100).unwrap_err(),
+            "people_invalid"
+        );
+    }
+    let many: Vec<Event> = (0..=PEOPLE as u8)
+        .map(|n| listed(&key(n + 2), "{}", 10))
+        .collect();
+    assert!(people(me.public_key(), "", &many, 100).is_err());
+    assert_eq!(
+        people(me.public_key(), "", &many[..PEOPLE], 100)
+            .unwrap()
+            .len(),
+        PEOPLE
+    );
+}
+
+#[test]
+fn people_query_is_bounded_and_plain() {
+    assert_eq!(people_query("  ann  "), "ann");
+    assert_eq!(people_query("a\u{202e}b\nc"), "a b c");
+    assert_eq!(people_query(" \t "), "");
+    assert_eq!(people_query(&"é".repeat(100)).len(), QUERY_BYTES);
+}

@@ -258,9 +258,10 @@ Item {
   readonly property string deliveryBaseLabel: deliveryCategory === "send_request_reused" ? "Submission ID cannot be reused. Start a new submission explicitly." : deliveryCategory === "send_ledger_unavailable" ? "Local send ledger unavailable. Check state directory permissions and free space, then retry." : ({idle:"",sending:"Sending…",acknowledged:"Acknowledged by relay",rejected:"Message rejected. Start a new submission explicitly to retry; this receipt will not send again.",failed:"Send failed · draft retained",unknown:"Outcome unknown. Sending again may create a duplicate. Discard the uncertain draft explicitly to continue."})[deliveryState] || ""
   readonly property string deliveryLabel: deliveryScopeMismatch && deliveryBaseLabel ? submissionScopeLabel + ": " + deliveryBaseLabel : deliveryBaseLabel
 
-  // Starting a DM (helper `dm_open`). People come only from the verified roster
-  // on screen or from an existing DM's participants; the relay decides. The
-  // viewer's public key is used only to leave the viewer out of the choice.
+  // Starting a DM (helper `dm_open`). People come only from what the helper
+  // verified: existing DM participants, its people directory or search
+  // (`people_search`) and the roster on screen; the relay decides. The viewer's
+  // public key is used only to leave the viewer out of the choice.
   property string identity: ""
   property bool dmOpenSupported: false
   property string dmOpenState: "idle"
@@ -271,9 +272,52 @@ Item {
   // The channel the relay named for the last acknowledged open, selected once listed.
   property string dmOpenTarget: ""
   property var dmSelection: []
-  readonly property var dmCandidates: recipientsState === "snapshot" && recipientsRoomId === selectedRoomId && selectedRoomId !== ""
-    ? recipientEntries.filter(function(entry) { return entry.key !== root.identity })
-      .map(function(entry) { return {key: entry.key, name: entry.name, label: root.participantLabel(entry.key), status: entry.status || null, presence: root.presenceOf(entry.key)} }) : []
+  // The names shown on the chosen people's chips, by key.
+  property var dmNames: ({})
+  // The people directory or search (helper `people_search`). `peopleText` is
+  // what the panel last asked for (empty: the directory); the view answers the
+  // request with `peopleRequestId` and is never shown for another one.
+  property bool peopleSupported: false
+  property string peopleText: ""
+  property string peopleRequestId: ""
+  property bool peopleLost: false
+  property string peopleViewRequestId: ""
+  property string peopleViewState: "unavailable"
+  property string peopleViewCategory: ""
+  property var peopleEntries: []
+  // Keys the helper served on this connection, as it allows them (at most 200).
+  property var peopleServed: []
+  readonly property bool peopleAnswered: peopleRequestId !== "" && peopleViewRequestId === peopleRequestId && peopleViewState !== "loading"
+  // idle (not asked), loading, ready or failed.
+  readonly property string peopleStatus: peopleRequestId === "" ? "idle"
+    : peopleAnswered ? (peopleViewState === "snapshot" ? "ready" : "failed") : peopleLost ? "failed" : "loading"
+  readonly property var dmCandidates: dmCandidateList()
+  function personName(key) {
+    var entry = recipientEntries.find(function(item) { return item.key === key }) || peopleEntries.find(function(item) { return item.key === key })
+    return entry ? entry.name : ""
+  }
+  // Existing conversations first, then the relay's directory or search, then
+  // the open room's members while that read has not answered. Those typed
+  // into the search apply to every source.
+  function dmCandidateList() {
+    var q = peopleText.toLowerCase()
+    var seen = ({})
+    seen[identity] = true
+    dmSelection.forEach(function(key) { seen[key] = true })
+    var list = []
+    function add(key, name, entry) {
+      if (seen[key] || (q !== "" && name.toLowerCase().indexOf(q) === -1 && key.indexOf(q) !== 0)) return
+      seen[key] = true
+      list.push({key: key, name: name, label: participantLabel(key), status: entry && entry.status || null, presence: presenceOf(key)})
+    }
+    dmRooms.forEach(function(room) {
+      var others = room.participants.filter(function(key) { return key !== identity })
+      others.forEach(function(key) { add(key, personName(key) || (others.length === 1 ? room.name : ""), null) })
+    })
+    if (peopleStatus === "ready") peopleEntries.forEach(function(entry) { add(entry.key, entry.name, null) })
+    else if (recipientsRetained()) recipientEntries.forEach(function(entry) { add(entry.key, entry.name, entry) })
+    return list
+  }
   readonly property bool dmOpenAvailable: dmOpenSupported && !sampleMode && !sessionFailed && connection === "authenticated"
     && ["partial", "ready"].indexOf(catalogState) !== -1 && instanceId !== ""
   readonly property bool canStartDm: dmOpenAvailable && dmOpenState !== "sending" && validDmKeys(dmSelection)
@@ -289,6 +333,7 @@ Item {
   })[dmOpenState] || ""
   function dmKeyAllowed(key) {
     if (typeof key !== "string" || !/^[a-f0-9]{64}$/.test(key) || key === identity) return false
+    if (peopleServed.indexOf(key) !== -1) return true
     if (recipientsState === "snapshot" && recipientsRoomId === selectedRoomId && selectedRoomId !== ""
         && recipientEntries.some(function(entry) { return entry.key === key })) return true
     return rooms.some(function(room) { return room.kind === "dm" && room.participants.indexOf(key) !== -1 })
@@ -297,14 +342,16 @@ Item {
     return Array.isArray(keys) && keys.length >= 1 && keys.length <= 8
       && keys.every(function(key, index) { return keys.indexOf(key) === index && root.dmKeyAllowed(key) })
   }
-  function toggleDmParticipant(key) {
+  function toggleDmParticipant(key, name) {
     if (!dmOpenAvailable || dmOpenState === "sending") return false
     var copy = dmSelection.slice()
+    var names = Object.assign({}, dmNames)
     var index = copy.indexOf(key)
-    if (index !== -1) copy.splice(index, 1)
-    else if (copy.length < 8 && dmKeyAllowed(key)) copy.push(key)
+    if (index !== -1) { copy.splice(index, 1); delete names[key] }
+    else if (copy.length < 8 && dmKeyAllowed(key)) { copy.push(key); names[key] = typeof name === "string" ? name : "" }
     else return false
     dmSelection = copy
+    dmNames = names
     if (dmOpenState !== "idle") { dmOpenState = "idle"; dmOpenCategory = "" }
     return true
   }
@@ -355,6 +402,59 @@ Item {
       dmSelection = []
       if (view.channelId) dmOpenTarget = view.channelId
     }
+  }
+  // Asks the helper for the directory (empty text) or a prefix search.
+  function searchPeople(text) {
+    if (!dmOpenAvailable || !peopleSupported || typeof text !== "string") return false
+    peopleText = text.trim()
+    peopleLost = false
+    peopleRequestId = ""
+    send("search_people", peopleText)
+    peopleLostTimer.restart()
+    return peopleRequestId !== ""
+  }
+  function clearPeople() {
+    peopleLostTimer.stop()
+    peopleText = ""
+    peopleRequestId = ""
+    peopleLost = false
+    peopleViewRequestId = ""
+    peopleViewState = "unavailable"
+    peopleViewCategory = ""
+    peopleEntries = []
+    peopleServed = []
+  }
+  function validatedPeople(value) {
+    if (!value || ["unavailable", "loading", "snapshot"].indexOf(value.state) === -1
+        || (value.requestId !== null && (typeof value.requestId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(value.requestId)))
+        || !boundedString(value.query, 64) || utf8Size(value.query) > 64 || /[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069\u200e\u200f\u061c]/.test(value.query)
+        || !Array.isArray(value.entries) || value.entries.length > 50
+        || (value.category !== null && ["people_unavailable", "people_timeout", "people_invalid"].indexOf(value.category) === -1)
+        || (value.category !== null && value.state !== "unavailable")
+        || (value.state !== "snapshot" && value.entries.length !== 0)
+        || (value.state !== "unavailable" && value.requestId === null)) return null
+    var seen = ({})
+    var entries = []
+    for (var i = 0; i < value.entries.length; i++) {
+      var entry = value.entries[i]
+      if (!entry || typeof entry.key !== "string" || !/^[a-f0-9]{64}$/.test(entry.key) || seen[entry.key]
+          || !boundedString(entry.name, 64) || utf8Size(entry.name) > 64 || /[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069\u200e\u200f\u061c]/.test(entry.name)) return null
+      seen[entry.key] = true
+      entries.push({key: entry.key, name: entry.name})
+    }
+    return {state: value.state, requestId: value.requestId, entries: entries, category: value.category || ""}
+  }
+  function applyPeople(view) {
+    var served = view.state === "snapshot" && (view.requestId !== peopleViewRequestId || view.state !== peopleViewState)
+    peopleViewRequestId = view.requestId || ""
+    peopleViewState = view.state
+    peopleViewCategory = view.category
+    if (!sameProjection(peopleEntries, view.entries)) peopleEntries = view.entries
+    if (served) {
+      var keys = view.entries.map(function(entry) { return entry.key })
+      peopleServed = peopleServed.filter(function(key) { return keys.indexOf(key) === -1 }).concat(keys).slice(-200)
+    }
+    if (peopleAnswered) peopleLostTimer.stop()
   }
   function selectOpenedDm() {
     if (dmOpenTarget === "" || !dmRooms.some(function(room) { return room.id === root.dmOpenTarget })) return
@@ -2038,7 +2138,7 @@ Item {
     return Array.isArray(capabilities) && capabilities.length >= 1 && capabilities.length <= 21
       && capabilities.indexOf("connection_status") !== -1
       && capabilities.every(function(cap, index) {
-        return ["connection_status", "room_catalog", "room_history", "message_send", "room_recipients", "history_auto_refresh", "room_activity", "agent_profiles", "thread_replies", "thread_send", "thread_summaries", "dm_open", "older_history", "live_updates", "setup_assist", "community_join", "invite_mint", "attachments", "user_status", "presence", "communities"].indexOf(cap) !== -1 && capabilities.indexOf(cap) === index
+        return ["connection_status", "room_catalog", "room_history", "message_send", "room_recipients", "history_auto_refresh", "room_activity", "agent_profiles", "thread_replies", "thread_send", "thread_summaries", "dm_open", "older_history", "live_updates", "setup_assist", "community_join", "invite_mint", "attachments", "user_status", "presence", "communities", "people_search"].indexOf(cap) !== -1 && capabilities.indexOf(cap) === index
       })
   }
   // Streams carry no participants and are never hidden. A DM lists 2-9 distinct
@@ -2159,6 +2259,8 @@ Item {
     losePendingDelivery()
     loseDmOpen()
     dmOpenSupported = false
+    clearPeople()
+    peopleSupported = false
     sendSupported = false
     clearCatalog()
     instanceId = ""
@@ -2207,6 +2309,8 @@ Item {
     losePendingDelivery()
     loseDmOpen()
     dmOpenSupported = false
+    clearPeople()
+    peopleSupported = false
     sendSupported = false
     handshake.stop()
     clearCatalog()
@@ -2401,6 +2505,9 @@ Item {
     var supportsDmOpen = frame.capabilities.indexOf("dm_open") !== -1
     var dmOpen = supportsDmOpen ? validatedDmOpen(state.dmOpen) : null
     if (supportsDmOpen && !dmOpen) { fail("invalid_response"); return false }
+    var supportsPeople = frame.capabilities.indexOf("people_search") !== -1
+    var people = supportsPeople ? validatedPeople(state.people) : null
+    if (supportsPeople && !people) { fail("invalid_response"); return false }
     var supportsJoin = frame.capabilities.indexOf("community_join") !== -1
     var join = supportsJoin ? validatedJoinSetup(state.setup) : null
     var open = supportsJoin ? validatedOpenRooms(state.openRooms, catalog) : null
@@ -2546,6 +2653,10 @@ Item {
     identity = state.identity || ""
     dmOpenSupported = supportsDmOpen
     if (!supportsDmOpen) loseDmOpen()
+    // The directory belongs to one authenticated connection and community.
+    if (!supportsPeople || state.connection !== "authenticated" || frame.generation !== generation) clearPeople()
+    peopleSupported = supportsPeople
+    if (people) applyPeople(people)
     setupAssistSupported = frame.capabilities.indexOf("setup_assist") !== -1
     if (frame.type === "status" && setupState === "sending" && frame.id === setupRequestId && frame.instanceId === setupInstance) {
       setupTimeout.stop()
@@ -2685,6 +2796,8 @@ Item {
       if (kind === "fetch_thread") { request.roomId = roomId; request.rootId = rootId; pendingThreadRequestId = request.id }
       if (kind === "fetch_recipients") { request.roomId = roomId; pendingRecipientsRequestId = request.id }
       if (kind === "fetch_older") { request.roomId = roomId; pendingOlderRequestId = request.id }
+      // The first argument is the search text here, not a room.
+      if (kind === "search_people") { request.query = roomId; peopleRequestId = request.id }
       bridge.write(JSON.stringify(request) + "\n")
     }
   }
@@ -2812,6 +2925,12 @@ Item {
     onTriggered: root.fail("handshake_timeout")
   }
   Timer {
+    id: peopleLostTimer
+    // Beyond the helper's own 15-second bound: no answer is shown as failed.
+    interval: 20000
+    onTriggered: root.peopleLost = true
+  }
+  Timer {
     id: dmOpenTimeout
     // Beyond the helper's own 15-second bound: a missing answer is unknown, never refused.
     interval: 30000
@@ -2906,6 +3025,8 @@ Item {
       root.losePendingDelivery()
       root.loseDmOpen()
       root.dmOpenSupported = false
+      root.clearPeople()
+      root.peopleSupported = false
       root.sendSupported = false
       handshake.stop()
       root.clearCatalog()

@@ -834,9 +834,25 @@ FocusScope {
   readonly property var mentionMatches: activeComposer.mentionMatches
   readonly property bool mentionOpen: activeComposer.mentionOpen
   function chooseMention(index) { return activeComposer.chooseMention(index) }
-  // New direct message: a compact picker over the open room's verified members.
+  // New direct message: a compact picker over people the helper verified.
   readonly property bool newDmAvailable: !!service && service.dmOpenAvailable
   property bool newDmOpen: false
+  // A pick clears the search. Choosing rebuilds the list and destroys the
+  // button that called, so this runs from here, not from the button.
+  function pickDmPerson(key, name) { if (service.toggleDmParticipant(key, name)) dmSearch.text = "" }
+  // What the picker's list cannot show: the helper's states, never guessed ones.
+  readonly property string newDmNote: {
+    if (!service) return ""
+    var state = service.peopleStatus
+    if (state === "loading") return service.peopleText ? "Searching people…" : "Loading people…"
+    if (state === "failed" || (state === "idle" && service.peopleSupported))
+      return ({people_timeout: "People search timed out", people_invalid: "The relay's people list was not usable"})[service.peopleViewCategory]
+        || "People are not available right now"
+    if (service.dmCandidates.length > 0) return ""
+    if (!service.peopleSupported) return "Open a room to choose its members"
+    return service.peopleText ? "No people match \u201c" + service.peopleText + "\u201d" : "No people found"
+  }
+  readonly property bool newDmRetryable: !!service && (service.peopleStatus === "failed" || (service.peopleStatus === "idle" && service.peopleSupported))
   // The sidebar's join section: on request, or when connected without rooms
   // while the welcome pane is not already listing the same open rooms.
   property bool joinOpen: false
@@ -1180,7 +1196,7 @@ FocusScope {
               visible: root.newDmAvailable
               Layout.fillWidth: true
               text: root.newDmOpen ? "Cancel new message" : "+ New message"
-              tooltipText: "Message people from this room"
+              tooltipText: "Message people"
               fontSize: Style.font.caption
               leftAlign: true
               focusable: true
@@ -1192,17 +1208,55 @@ FocusScope {
               Layout.fillWidth: true
               Layout.leftMargin: Style.space(6)
               spacing: Style.space(2)
+              onVisibleChanged: if (visible) {
+                dmSearch.text = ""
+                dmSearchDebounce.stop()
+                if (root.service) root.service.searchPeople("")
+              }
               Text {
                 Layout.fillWidth: true
-                text: root.service && root.service.dmCandidates.length
-                  ? "Members of " + root.service.roomTitle(root.service.selectedRoom) + " · up to 8"
-                  : "Open a room to choose its members"
+                text: root.service && root.service.dmSelection.length ? root.service.dmSelection.length + " of 8 chosen" : "Choose up to 8 people"
                 textFormat: Text.PlainText
                 elide: Text.ElideRight
                 color: Color.foreground
                 opacity: 0.6
                 font.family: Style.font.family
                 font.pixelSize: Style.font.caption
+              }
+              Flow {
+                objectName: "buzzNewDmChips"
+                visible: !!root.service && root.service.dmSelection.length > 0
+                Layout.fillWidth: true
+                spacing: Style.space(2)
+                Repeater {
+                  model: root.service ? root.service.dmSelection : []
+                  delegate: Ui.Button {
+                    required property string modelData
+                    objectName: "buzzNewDmChip"
+                    readonly property string key: modelData
+                    text: ((root.service.dmNames[modelData] || "").trim() || modelData.slice(0, 8) + "…") + " ×"
+                    fontSize: Style.font.caption
+                    focusable: true
+                    selected: true
+                    onClicked: root.service.toggleDmParticipant(modelData)
+                  }
+                }
+              }
+              Ui.TextField {
+                id: dmSearch
+                objectName: "buzzNewDmSearch"
+                visible: !!root.service && root.service.peopleSupported
+                Layout.fillWidth: true
+                verticalPadding: Style.space(4)
+                maximumLength: 64
+                placeholderText: "Search people"
+                onTextChanged: dmSearchDebounce.restart()
+                onAccepted: { dmSearchDebounce.stop(); if (root.service) root.service.searchPeople(text) }
+              }
+              Timer {
+                id: dmSearchDebounce
+                interval: 250
+                onTriggered: if (root.service) root.service.searchPeople(dmSearch.text)
               }
               Repeater {
                 model: root.service ? root.service.dmCandidates : []
@@ -1230,8 +1284,32 @@ FocusScope {
                     leftAlign: true
                     focusable: true
                     selected: chosen
-                    onClicked: root.service.toggleDmParticipant(modelData.key)
+                    onClicked: root.pickDmPerson(modelData.key, modelData.name)
                   }
+                }
+              }
+              RowLayout {
+                visible: root.newDmNote !== ""
+                Layout.fillWidth: true
+                spacing: Style.space(4)
+                Text {
+                  objectName: "buzzNewDmNote"
+                  Layout.fillWidth: true
+                  text: root.newDmNote
+                  textFormat: Text.PlainText
+                  elide: Text.ElideRight
+                  color: Color.foreground
+                  opacity: 0.6
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.caption
+                }
+                Ui.Button {
+                  objectName: "buzzNewDmRetry"
+                  visible: root.newDmRetryable
+                  text: "Retry"
+                  fontSize: Style.font.caption
+                  focusable: true
+                  onClicked: if (root.service) root.service.searchPeople(dmSearch.text)
                 }
               }
               Ui.Button {

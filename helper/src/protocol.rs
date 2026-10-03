@@ -57,6 +57,9 @@ pub struct Request {
     pub relay: Option<String>,
     /// `rename_community` only: the new local label (sanitized by the helper).
     pub name: Option<String>,
+    /// `search_people` only: the typed search text, empty for the directory.
+    /// The helper normalizes and bounds it (`recipients::people_query`).
+    pub query: Option<String>,
 }
 fn is_hash(value: &str) -> bool {
     crate::attachments::is_hash(value)
@@ -104,6 +107,7 @@ pub fn request(bytes: &[u8]) -> Result<Request, &'static str> {
             | "fetch_thread"
             | "close_thread"
             | "fetch_recipients"
+            | "search_people"
             | "send_message"
             | "open_dm"
             | "set_relay"
@@ -219,6 +223,15 @@ pub fn request(bytes: &[u8]) -> Result<Request, &'static str> {
             }
         }
     } else if r.participants.is_some() {
+        return Err("invalid_request");
+    }
+    if r.kind == "search_people" {
+        // Shape only; an empty query lists the directory.
+        let query = r.query.as_deref().ok_or("invalid_request")?;
+        if query.len() > 256 || query.contains('\0') {
+            return Err("invalid_request");
+        }
+    } else if raw.get("query").is_some() {
         return Err("invalid_request");
     }
     if r.kind == "set_relay" {
@@ -396,6 +409,9 @@ pub enum Command {
     FetchThread(String, String),
     CloseThread,
     FetchRecipients(String),
+    /// A people directory (empty) or search read: the request ID, which the
+    /// view echoes, and the text, already normalized by the helper.
+    SearchPeople(String, String),
     // Trusted fixture path; external IPC always uses the checked reply boundary.
     #[allow(dead_code)]
     Send(SendIntent),
@@ -805,6 +821,32 @@ impl UserStatusView {
         }
     }
 }
+/// The latest people directory or search read, independent of any room.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PeopleView {
+    /// `unavailable` (nothing read, or no session), `loading` or `snapshot`.
+    pub state: String,
+    /// The `search_people` request this view answers; none before the first.
+    pub request_id: Option<String>,
+    /// The normalized search text this view answers; empty is the directory.
+    pub query: String,
+    /// At most `recipients::PEOPLE`, in display order, without this identity.
+    pub entries: Vec<crate::recipients::Person>,
+    /// Present only when `unavailable` after a failed read.
+    pub category: Option<String>,
+}
+impl PeopleView {
+    pub fn unavailable(request: Option<&str>, query: &str, category: Option<&str>) -> Self {
+        Self {
+            state: "unavailable".into(),
+            request_id: request.map(str::to_owned),
+            query: query.into(),
+            entries: Vec::new(),
+            category: category.map(str::to_owned),
+        }
+    }
+}
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RecipientsView {
@@ -1026,6 +1068,7 @@ pub struct Status {
     pub delivery: Delivery,
     pub dm_open: DmOpen,
     pub recipients: RecipientsView,
+    pub people: PeopleView,
     pub activity: Vec<crate::activity::Summary>,
     pub setup: JoinSetup,
     pub open_rooms: OpenRooms,
@@ -1056,6 +1099,7 @@ impl Status {
             delivery: Delivery::default(),
             dm_open: DmOpen::default(),
             recipients: RecipientsView::unavailable(None, None),
+            people: PeopleView::unavailable(None, "", None),
             activity: Vec::new(),
             setup: JoinSetup::default(),
             open_rooms: OpenRooms::unavailable(None),
@@ -1072,7 +1116,7 @@ impl Status {
     }
 }
 pub fn envelope(kind: &str, id: Option<&str>, instance: &str, s: &Status) -> serde_json::Value {
-    serde_json::json!({"version":1,"type":kind,"id":id,"instanceId":instance,"generation":s.generation,"capabilities":["connection_status","room_catalog","room_history","message_send","thread_send","room_recipients","history_auto_refresh","room_activity","agent_profiles","thread_replies","thread_summaries","dm_open","older_history","live_updates","setup_assist","community_join","invite_mint","attachments","user_status","presence","communities"],"backendRevision":crate::compatibility::BUZZ_REVISION,"status":s})
+    serde_json::json!({"version":1,"type":kind,"id":id,"instanceId":instance,"generation":s.generation,"capabilities":["connection_status","room_catalog","room_history","message_send","thread_send","room_recipients","history_auto_refresh","room_activity","agent_profiles","thread_replies","thread_summaries","dm_open","older_history","live_updates","setup_assist","community_join","invite_mint","attachments","user_status","presence","communities","people_search"],"backendRevision":crate::compatibility::BUZZ_REVISION,"status":s})
 }
 pub async fn read_line<R: tokio::io::AsyncBufRead + Unpin>(
     r: &mut R,
@@ -1156,6 +1200,24 @@ mod tests {
             serde_json::json!({"version":1,"id":id,"type":"get_snapshot","maxUses":5}),
         ] {
             assert!(request(bad.to_string().as_bytes()).is_err(), "{bad}");
+        }
+    }
+    #[test]
+    fn people_requests_carry_only_a_bounded_query() {
+        let parse = |v: &serde_json::Value| request(&serde_json::to_vec(v).unwrap());
+        let ok = serde_json::json!({"version":1,"id":"ui-3","type":"search_people","query":"ann"});
+        assert_eq!(parse(&ok).unwrap().query.as_deref(), Some("ann"));
+        let all = serde_json::json!({"version":1,"id":"ui-3","type":"search_people","query":""});
+        assert!(parse(&all).is_ok());
+        for bad in [
+            serde_json::json!({"version":1,"id":"ui-3","type":"search_people"}),
+            serde_json::json!({"version":1,"id":"ui-3","type":"search_people","query":null}),
+            serde_json::json!({"version":1,"id":"ui-3","type":"search_people","query":"a".repeat(257)}),
+            serde_json::json!({"version":1,"id":"ui-3","type":"search_people","query":"a\u{0}"}),
+            serde_json::json!({"version":1,"id":"ui-3","type":"search_people","query":"a","roomId":"11111111-1111-4111-8111-111111111111"}),
+            serde_json::json!({"version":1,"id":"ui-3","type":"get_snapshot","query":"a"}),
+        ] {
+            assert!(parse(&bad).is_err(), "{bad}");
         }
     }
     #[test]
@@ -1409,7 +1471,8 @@ mod state_tests {
                 "attachments",
                 "user_status",
                 "presence",
-                "communities"
+                "communities",
+                "people_search"
             ])
         );
         assert_eq!(v["status"]["catalog"]["state"], "unavailable");

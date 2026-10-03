@@ -8,6 +8,7 @@
 //! relay's exact-ID `OK`.
 use crate::protocol::{DmOpen, DmOpenIntent, Status};
 use nostr::{Event, Keys, PublicKey};
+use std::collections::VecDeque;
 use tokio::time::{Duration, Instant};
 
 /// Same bound as a kind-9 send: no `OK` by then means the outcome is unknown.
@@ -26,9 +27,28 @@ struct Pending {
 #[derive(Default)]
 pub struct Opener {
     pending: Option<Pending>,
+    /// Keys the helper itself just served from the relay's people directory or
+    /// search, oldest first. Only this connection's reads are remembered.
+    served: VecDeque<String>,
 }
 
+/// Enough for several full directory pages; older keys fall off.
+const SERVED: usize = 200;
+
 impl Opener {
+    /// Remembers verified keys from a directory or search read.
+    pub fn remember(&mut self, keys: impl IntoIterator<Item = String>) {
+        for key in keys {
+            self.served.retain(|k| *k != key);
+            self.served.push_back(key);
+            if self.served.len() > SERVED {
+                self.served.pop_front();
+            }
+        }
+    }
+    pub fn forget_served(&mut self) {
+        self.served.clear();
+    }
     pub fn is_pending(&self) -> bool {
         self.pending.is_some()
     }
@@ -81,7 +101,7 @@ impl Opener {
         if !intent
             .participants
             .iter()
-            .all(|key| allowed(status, key.as_str()))
+            .all(|key| allowed(status, &self.served, key.as_str()))
         {
             return Err("dm_open_access_denied");
         }
@@ -153,10 +173,10 @@ impl Opener {
 }
 
 /// Keys a DM may be opened with: the verified roster of the room whose members
-/// are on screen, or a participant of a DM already in the joined catalog.
-/// Desktop searches the whole community directory; the helper has no verified
-/// directory, so it offers only people it has already verified.
-pub fn allowed(status: &Status, key: &str) -> bool {
+/// are on screen, a participant of a DM already in the joined catalog, or a key
+/// the helper served from the relay's people directory or search (`served`).
+/// Everything offered is data the helper verified; the panel is never trusted.
+pub fn allowed(status: &Status, served: &VecDeque<String>, key: &str) -> bool {
     let roster = status.recipients.state == "snapshot"
         && status
             .recipients
@@ -169,6 +189,7 @@ pub fn allowed(status: &Status, key: &str) -> bool {
             .iter()
             .any(|entry| entry.key == key);
     roster
+        || served.iter().any(|k| k == key)
         || status
             .catalog
             .rooms
