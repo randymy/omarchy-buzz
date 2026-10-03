@@ -178,6 +178,23 @@ Item {
   property int submissionGeneration: 0
   property string submissionInstance: ""
   property string acknowledgedRefreshId: ""
+  // Message actions (`message_actions`): one edit, delete or reaction at a time,
+  // answered through the same delivery receipt as a send. Nothing is shown as
+  // done until the relay accepted it; the rows then refresh from the helper.
+  property bool messageActionsSupported: false
+  property string actionId: ""
+  property string actionKind: ""
+  property string actionTarget: ""
+  property string actionEmoji: ""
+  property string actionRoom: ""
+  property string actionInstance: ""
+  property int actionGeneration: 0
+  property string actionState: "idle"
+  property string actionCategory: ""
+  readonly property bool canAct: messageActionsSupported && !sampleMode && !sessionFailed && connection === "authenticated"
+    && resyncStage === "" && actionState !== "sending" && deliveryState !== "sending"
+  // Presentation only: the helper decides who may edit or delete (own messages).
+  readonly property var quickReactions: ["👍", "❤️", "😂", "🎉", "🙏", "😮", "😢", "🚀"]
   property int recipientsRetryBudget: 0
   property string recipientsRetryRoom: ""
   property string recipientsRetryInstance: ""
@@ -213,8 +230,9 @@ Item {
   readonly property bool recipientPickerLocked: deliveryState === "sending" || deliveryState === "unknown" || deliveryState === "rejected" || deliveryCategory === "send_request_reused"
   readonly property string recipientsLabel: recipientsState === "loading" ? "Loading recipients" : recipientsState === "snapshot" ? (recipientsPartial ? "Partial recipient list · " : "Room recipients · ") + recipientEntries.length : "Recipients unavailable"
 
+  // A message action and a send share the helper's one publication slot.
   readonly property bool canSend: sendSupported && !sampleMode && !sessionFailed && connection === "authenticated"
-    && selectedRoom !== null && deliveryState !== "sending" && deliveryState !== "unknown" && deliveryState !== "rejected" && deliveryCategory !== "send_request_reused"
+    && selectedRoom !== null && deliveryState !== "sending" && actionState !== "sending" && deliveryState !== "unknown" && deliveryState !== "rejected" && deliveryCategory !== "send_request_reused"
     && replyReady && recipientIntentValid && (draftText.trim().length > 0 || pendingFor(replyRootId).length > 0)
     && draftText.indexOf("\u0000") === -1 && utf8Size(draftText) <= 4096 && !uploadingFor(replyRootId)
   // The room and the open thread each have a composer. Editing or submitting one
@@ -241,7 +259,7 @@ Item {
       && (chosen.length === 0 || (recipientsSupported && recipientsState === "snapshot"
         && chosen.every(function(key) { return recipientEntries.some(function(entry) { return entry.key === key }) })))
       && (text.trim().length > 0 || pendingFor(rootId).length > 0) && text.indexOf("\u0000") === -1 && utf8Size(text) <= 4096
-      && !uploadingFor(rootId)
+      && !uploadingFor(rootId) && actionState !== "sending"
   }
   // A file still being checked or uploaded for this draft holds Send.
   function uploadingFor(rootId) {
@@ -1853,9 +1871,10 @@ Item {
     deliveryTimeout.stop()
     if (dropHeldSubmission()) return
     if (deliveryState === "sending") { deliveryState = "unknown"; deliveryCategory = "delivery_unknown" }
+    loseAction()
   }
   function validatedDelivery(delivery) {
-    var categories = ["delivery_unknown","send_rejected","send_unavailable","send_invalid","send_busy","send_access_denied","send_ledger_unavailable","send_request_reused","send_scope_changed"]
+    var categories = ["delivery_unknown","send_rejected","send_unavailable","send_invalid","send_busy","send_access_denied","send_ledger_unavailable","send_request_reused","send_scope_changed","send_not_author","send_unsupported"]
     if (!delivery || ["idle","sending","acknowledged","rejected","unknown","failed"].indexOf(delivery.state) === -1
         || (delivery.category !== null && categories.indexOf(delivery.category) === -1)
         || (delivery.eventId !== null && (typeof delivery.eventId !== "string" || !/^[a-f0-9]{64}$/.test(delivery.eventId)))) return null
@@ -1888,6 +1907,90 @@ Item {
         }
       }
     }
+  }
+  // A native emoji the helper accepts as a reaction: never a :shortcode:, and
+  // never the agents' 👀/💬 acknowledgements.
+  function validReactionEmoji(value) {
+    return typeof value === "string" && value.charAt(0) !== ":" && value !== "👀" && value !== "💬" && validStatusEmoji(value)
+  }
+  function isOwnRow(row) { return !!row && identity !== "" && row.author === identity && row.unavailable !== true }
+  function canEditRow(row) {
+    return canAct && isOwnRow(row) && row.truncated !== true && row.attachmentsUnavailable !== true
+      && !(Array.isArray(row.attachments) && row.attachments.length > 0)
+  }
+  function canDeleteRow(row) { return canAct && isOwnRow(row) }
+  function canReactTo(row) { return canAct && !!row && !!row.reactions && row.unavailable !== true }
+  function submitAction(kind, id, fields) {
+    if (!canAct || !bridge.running || !selectedRoomId || typeof id !== "string" || !/^[a-f0-9]{64}$/.test(id)) return false
+    actionId = correlationUuid()
+    actionKind = kind
+    actionTarget = id
+    actionEmoji = fields.emoji || ""
+    actionRoom = selectedRoomId
+    actionGeneration = generation
+    actionInstance = instanceId
+    actionState = "sending"
+    actionCategory = ""
+    actionClear.stop()
+    var request = {version: 1, id: actionId, type: kind, roomId: actionRoom, eventId: id, generation: generation, instanceId: instanceId}
+    if (fields.text !== undefined) request.text = fields.text
+    if (fields.emoji !== undefined) request.emoji = fields.emoji
+    bridge.write(JSON.stringify(request) + "\n")
+    actionTimeout.restart()
+    return true
+  }
+  function editMessage(id, text) {
+    var trimmed = typeof text === "string" ? text.trim() : ""
+    if (trimmed === "" || utf8Size(trimmed) > 4096) return false
+    return submitAction("edit_message", id, {text: trimmed})
+  }
+  function deleteMessage(id) { return submitAction("delete_message", id, {}) }
+  function toggleReaction(id, emoji, mine) {
+    if (!validReactionEmoji(emoji)) return false
+    return submitAction(mine ? "remove_reaction" : "add_reaction", id, {emoji: emoji})
+  }
+  function clearAction() {
+    actionTimeout.stop()
+    actionClear.stop()
+    actionId = ""
+    actionKind = ""
+    actionTarget = ""
+    actionEmoji = ""
+    actionState = "idle"
+    actionCategory = ""
+  }
+  // A lost session or answer is not a refusal: the change may have been applied.
+  function loseAction() {
+    actionTimeout.stop()
+    if (actionState === "sending") { actionState = "unknown"; actionCategory = "delivery_unknown" }
+  }
+  function applyActionDelivery(delivery) {
+    if (!delivery || actionState !== "sending" || delivery.state === "idle" || delivery.requestId !== actionId
+        || delivery.roomId !== actionRoom || generation !== actionGeneration || instanceId !== actionInstance) return
+    actionState = delivery.state
+    actionCategory = delivery.category || ""
+    if (actionState === "sending") return
+    actionTimeout.stop()
+    if (actionState === "acknowledged") {
+      actionClear.restart()
+      if (selectedRoomId === actionRoom) {
+        refreshHistory()
+        if (threadRootId !== "" && threadState === "snapshot") refreshThread()
+      }
+    }
+  }
+  function actionNote(id) {
+    if (actionTarget === "" || actionTarget !== id || actionState === "idle") return ""
+    var notes = {send_not_author: "Only your own messages can be changed.", send_unsupported: "This cannot be changed here.",
+      send_access_denied: "That message is not available to change.", send_busy: "Another send is in progress. Try again in a moment.",
+      send_invalid: "That was not sent.", send_unavailable: "Not connected. Nothing was sent.", send_scope_changed: "Outcome unknown. The room changed while sending.",
+      send_ledger_unavailable: "Local send ledger unavailable. Nothing was sent."}
+    var what = ({edit_message: "Edit", delete_message: "Delete", add_reaction: "Reaction", remove_reaction: "Reaction"})[actionKind] || "Change"
+    if (actionState === "sending") return what + " sending…"
+    if (actionState === "acknowledged") return what + " accepted by the relay"
+    if (actionState === "rejected") return "The relay refused this " + what.toLowerCase() + ". Nothing changed."
+    if (actionState === "unknown") return what + " outcome unknown. It may or may not have applied; check the message before trying again."
+    return notes[actionCategory] || (what + " failed. Nothing changed.")
   }
   function canReplyTo(id) {
     return threadSendSupported && sendSupported && canOpenThread(id)
@@ -2166,7 +2269,7 @@ Item {
     catalogCategory = ""
     if (!sampleMode) selectedRoomId = ""
   }
-  readonly property var knownCapabilities: ["connection_status", "room_catalog", "room_history", "message_send", "room_recipients", "history_auto_refresh", "room_activity", "agent_profiles", "thread_replies", "thread_send", "thread_summaries", "dm_open", "older_history", "live_updates", "setup_assist", "community_join", "invite_mint", "attachments", "user_status", "presence", "communities", "people_search"]
+  readonly property var knownCapabilities: ["connection_status", "room_catalog", "room_history", "message_send", "room_recipients", "history_auto_refresh", "room_activity", "agent_profiles", "thread_replies", "thread_send", "thread_summaries", "dm_open", "older_history", "live_updates", "setup_assist", "community_join", "invite_mint", "attachments", "user_status", "presence", "communities", "people_search", "message_actions"]
   // Distinct known names only, so the length bound follows the list.
   function validCapabilities(capabilities) {
     return Array.isArray(capabilities) && capabilities.length >= 1 && capabilities.length <= knownCapabilities.length
@@ -2208,6 +2311,16 @@ Item {
     if (["unavailable", "loading"].indexOf(catalog.state) !== -1 && clean.length !== 0) return null
     return {state: catalog.state, rooms: clean, category: catalog.category || ""}
   }
+  // Reaction chips: absent from helpers without `message_actions`; else at most
+  // 16 distinct native emoji with a count and whether this identity reacted.
+  function validChips(chips) {
+    if (chips === undefined) return true
+    return Array.isArray(chips) && chips.length <= 16 && chips.every(function(chip, index) {
+      return !!chip && typeof chip === "object" && Object.keys(chip).sort().join(",") === "count,emoji,mine"
+        && validReactionEmoji(chip.emoji) && Number.isInteger(chip.count) && chip.count >= 1 && chip.count <= 1000
+        && typeof chip.mine === "boolean" && chips.findIndex(function(other) { return other.emoji === chip.emoji }) === index
+    })
+  }
   function validatedHistory(history, limit, media) {
     var uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/
     if (!history || ["unavailable", "loading", "snapshot"].indexOf(history.state) === -1
@@ -2240,7 +2353,8 @@ Item {
           || !boundedString(row.text, 2048) || typeof row.edited !== "boolean"
           || typeof row.truncated !== "boolean" || typeof row.unavailable !== "boolean"
           || (reactions != null && (!Number.isInteger(reactions.seen) || reactions.seen < 0 || reactions.seen > 200
-            || !Number.isInteger(reactions.working) || reactions.working < 0 || reactions.working > 200))
+            || !Number.isInteger(reactions.working) || reactions.working < 0 || reactions.working > 200
+            || !validChips(reactions.chips)))
           || (thread != null && (typeof thread !== "object" || Array.isArray(thread)
             || !Number.isInteger(thread.replies) || thread.replies < 0 || thread.replies > 1000000
             || (thread.lastReplyAt !== null && (!Number.isInteger(thread.lastReplyAt) || thread.lastReplyAt < 0 || thread.lastReplyAt > 253402300799))
@@ -2265,7 +2379,8 @@ Item {
       ids[row.id] = true
       clean.push({id: row.id, author: row.author, time: row.time, text: row.unavailable ? "" : row.text,
         edited: row.edited, truncated: row.truncated, unavailable: row.unavailable,
-        reactions: reactions == null ? null : {seen: reactions.seen, working: reactions.working},
+        reactions: reactions == null ? null : {seen: reactions.seen, working: reactions.working,
+          chips: (reactions.chips || []).map(function(chip) { return {emoji: chip.emoji, count: chip.count, mine: chip.mine} })},
         thread: thread == null ? null : {replies: thread.replies, lastReplyAt: thread.lastReplyAt, participants: thread.participants.slice()},
         attachments: attached, attachmentsUnavailable: media ? row.attachmentsUnavailable : false})
     }
@@ -2440,6 +2555,12 @@ Item {
         dmOpenTimeout.stop()
         dmOpenState = frame.category === "dm_open_unknown" ? "unknown" : "failed"
         dmOpenCategory = frame.category === "request_busy" ? "dm_open_busy" : frame.category
+      }
+      if (frame.id === actionId && actionState === "sending") {
+        // Refused before anything was signed, unless the helper's answer was lost.
+        actionTimeout.stop()
+        actionState = ["send_scope_changed", "delivery_unknown"].indexOf(frame.category) !== -1 ? "unknown" : "failed"
+        actionCategory = frame.category === "request_busy" ? "send_busy" : frame.category
       }
       if (frame.id === submissionId && deliveryState === "sending") {
         deliveryTimeout.stop()
@@ -2629,6 +2750,8 @@ Item {
         if (observed.notify && !supportsActivity && !panelOpen) notifyActivity()
       } else if (history.state === "unavailable") activityObservation = ActivityObserver.fresh()
     }
+    messageActionsSupported = supportsSend && supportsHistory && frame.capabilities.indexOf("message_actions") !== -1
+    if (!messageActionsSupported) clearAction()
     threadSendSupported = supportsThread && frame.capabilities.indexOf("message_send") !== -1 && frame.capabilities.indexOf("thread_send") !== -1
     threadSupported = supportsThread
     if (!supportsThread || state.connection !== "authenticated" || historyState !== "snapshot"
@@ -2800,6 +2923,7 @@ Item {
     attachmentsSupported = supportsAttachments
     applyTransfers(transfers, frame)
     applyDelivery(delivery)
+    applyActionDelivery(delivery)
     applyDmOpen(dmOpen)
     handshake.stop()
     if (frame.type === "hello" && bridge.running) send("subscribe")
@@ -3041,6 +3165,17 @@ Item {
     id: deliveryTimeout
     interval: 30000
     onTriggered: root.losePendingDelivery()
+  }
+  Timer {
+    id: actionTimeout
+    interval: 30000
+    onTriggered: root.loseAction()
+  }
+  // An accepted action's note stays briefly; failures and unknowns stay until the next action.
+  Timer {
+    id: actionClear
+    interval: 4000
+    onTriggered: if (root.actionState === "acknowledged") root.clearAction()
   }
   Process {
     id: bridge

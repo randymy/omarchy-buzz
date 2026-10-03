@@ -1218,3 +1218,89 @@ async fn loopback_older_page_sends_the_exact_continuation_filter_with_nip98() {
         "history_invalid_cursor"
     );
 }
+
+fn react(signer: &Keys, target: &Event, emoji: &str, at: u64) -> Event {
+    buzz_sdk::build_reaction(target.id, emoji)
+        .unwrap()
+        .custom_created_at(Timestamp::from(at))
+        .sign_with_keys(signer)
+        .unwrap()
+}
+#[test]
+fn reaction_chips_count_distinct_reactors_flag_mine_and_honor_removal() {
+    let relay = key(1);
+    let me = key(2);
+    let a = key(3);
+    let b = key(4);
+    let original = row(&a, "hello");
+    let mine = react(&me, &original, "🎉", 150);
+    let page = vec![
+        original.clone(),
+        mine.clone(),
+        react(&a, &original, "🎉", 151),
+        react(&a, &original, "🎉", 152),
+        react(&b, &original, "👍", 153),
+        react(&b, &original, "👀", 154),
+        react(&b, &original, "ab", 155),
+        react(&b, &original, ":custom:", 156),
+        head(&relay),
+    ];
+    let result = reduce_as(room(), relay.public_key(), &page, 200, me.public_key()).unwrap();
+    let r = result.rows[0].reactions.as_ref().unwrap();
+    // Duplicates collapse per reactor; agent 👀 stays a count, never a chip;
+    // text and shortcodes are not chips.
+    assert_eq!(r.seen, 1);
+    assert_eq!(
+        r.chips
+            .iter()
+            .map(|c| (c.emoji.as_str(), c.count, c.mine))
+            .collect::<Vec<_>>(),
+        vec![("🎉", 2, true), ("👍", 1, false)]
+    );
+    assert_eq!(
+        r.chips[0].mine_id.as_deref(),
+        Some(mine.id.to_hex().as_str())
+    );
+    assert_eq!(r.chips[1].mine_id, None);
+    // The serialized chip never carries the event id.
+    let shown = serde_json::to_value(&r.chips[0]).unwrap();
+    assert!(shown.get("mine_id").is_none() && shown.get("mineId").is_none());
+    // Without an identity nothing is mine.
+    let anon = reduce(room(), relay.public_key(), &page, 200).unwrap();
+    let chips = &anon.rows[0].reactions.as_ref().unwrap().chips;
+    assert!(chips.iter().all(|c| !c.mine));
+    // Removing my reaction (kind 5 on the reaction event) drops me from the count.
+    let mut removed = page.clone();
+    removed.push(deletion(&me, &mine));
+    let result = reduce_as(room(), relay.public_key(), &removed, 200, me.public_key()).unwrap();
+    let chips = &result.rows[0].reactions.as_ref().unwrap().chips;
+    assert_eq!(
+        (chips[0].emoji.as_str(), chips[0].count, chips[0].mine),
+        ("🎉", 1, false)
+    );
+    // Someone else's removal marker is not mine either way.
+    let mut forged = page;
+    forged.push(deletion(&b, &mine));
+    let result = reduce_as(room(), relay.public_key(), &forged, 200, me.public_key()).unwrap();
+    let chips = &result.rows[0].reactions.as_ref().unwrap().chips;
+    assert!(chips.iter().all(|c| !c.mine));
+}
+#[test]
+fn reaction_chips_are_bounded() {
+    let relay = key(1);
+    let me = key(2);
+    let original = row(&me, "popular");
+    let mut page = vec![original.clone(), head(&relay)];
+    for i in 0..30u32 {
+        let glyph = char::from_u32(0x1f600 + i).unwrap().to_string();
+        page.push(react(&key(10 + i as u8), &original, &glyph, 150));
+    }
+    let result = reduce_as(room(), relay.public_key(), &page, 200, me.public_key()).unwrap();
+    assert_eq!(
+        result.rows[0].reactions.as_ref().unwrap().chips.len(),
+        CHIPS
+    );
+    assert!(chip_emoji("👍") && chip_emoji("❤️") && chip_emoji("👨‍👩‍👧‍👦"));
+    assert!(!chip_emoji("👀") && !chip_emoji("💬") && !chip_emoji("x") && !chip_emoji(""));
+    assert!(!chip_emoji("\u{202e}👍") && !chip_emoji(&"👍".repeat(9)));
+}

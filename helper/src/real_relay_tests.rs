@@ -220,6 +220,7 @@ async fn real_relay_messaging_conformance() {
         .expect("exact-ID authorized COUNT freshness");
         let text = format!("synthetic conformance {}", Uuid::new_v4());
         let intent = protocol::SendIntent {
+            action: Default::default(),
             request_id: Uuid::new_v4().to_string(),
             room: room.to_string(),
             root_id: None,
@@ -358,6 +359,7 @@ async fn real_relay_messaging_conformance() {
         };
         let reply_text = format!("synthetic thread reply {}", Uuid::new_v4());
         let reply_intent = protocol::SendIntent {
+            action: Default::default(),
             request_id: Uuid::new_v4().to_string(),
             room: room.to_string(),
             root_id: Some(event_id.clone()),
@@ -524,6 +526,7 @@ async fn real_relay_messaging_conformance() {
         eprintln!("OMARCHY_CONFORMANCE_STAGE=local_revoked_write");
         let (denied, outgoing) = sender.prepare(
             protocol::SendIntent {
+                action: Default::default(),
                 request_id: Uuid::new_v4().to_string(),
                 room: room.to_string(),
                 root_id: None,

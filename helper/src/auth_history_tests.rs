@@ -161,7 +161,7 @@ async fn scenario(in_flight: bool, automatic: bool, automatic_failure: bool) {
                 wait_status(&mut status,|s|s.history.state=="unavailable"&&s.history.rows.is_empty()).await;
                 assert_eq!(status.borrow().history.category.as_deref(),Some("history_access_denied"));
                 assert!(status.borrow().catalog.rooms.iter().all(|r|r.id!=room),"denied room remained selectable");
-                let intent=crate::protocol::SendIntent {request_id:uuid::Uuid::new_v4().to_string(),room:room.clone(),root_id:None,text:"must not send".into(),mentions:vec![],generation:status.borrow().generation};
+                let intent=crate::protocol::SendIntent {action: Default::default(), request_id:uuid::Uuid::new_v4().to_string(),room:room.clone(),root_id:None,text:"must not send".into(),mentions:vec![],generation:status.borrow().generation};
                 let (reply,received)=oneshot::channel();
                 commands.send(crate::protocol::Command::SendChecked(intent,reply)).await.unwrap();
                 assert_eq!(received.await.unwrap(),Some("send_access_denied"),"revoked room prepared a send");

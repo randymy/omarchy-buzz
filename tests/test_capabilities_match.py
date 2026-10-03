@@ -24,6 +24,12 @@ def panel_capabilities():
     return json.loads(match.group(1))
 
 
+def smoke_capabilities():
+    source = (ROOT / "tests/helper_smoke.py").read_text()
+    match = re.search(r'frame\["capabilities"\] == (\[[^\]]*\])', source)
+    return json.loads(match.group(1))
+
+
 class Capabilities(unittest.TestCase):
     def test_panel_knows_every_helper_capability(self):
         helper, panel = helper_capabilities(), panel_capabilities()
@@ -31,6 +37,10 @@ class Capabilities(unittest.TestCase):
         self.assertEqual(sorted(set(helper) - set(panel)), [], "capabilities the panel would refuse")
         self.assertLessEqual(len(helper), len(panel))
         self.assertIn("connection_status", helper)
+
+    def test_release_smoke_expects_the_helper_list(self):
+        # tests/helper_smoke.py runs in the release workflow against the real binary.
+        self.assertEqual(smoke_capabilities(), helper_capabilities())
 
 
 if __name__ == "__main__":

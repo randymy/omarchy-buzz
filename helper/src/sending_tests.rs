@@ -4,6 +4,7 @@ fn fixture() -> (Sender, SendIntent, Keys, Status, std::path::PathBuf) {
     let ledger = Ledger::open(path.join("ledger.json")).unwrap();
     let keys = Keys::generate();
     let intent = SendIntent {
+        action: Default::default(),
         request_id: uuid::Uuid::new_v4().to_string(),
         room: uuid::Uuid::new_v4().to_string(),
         root_id: None,
@@ -714,4 +715,278 @@ fn a_blank_text_is_sent_only_with_attachments() {
     sender.acknowledge(&event.id.to_hex(), false);
     assert_eq!(sender.take_sent_media(), None);
     std::fs::remove_dir_all(path).unwrap();
+}
+
+// Message actions: edit, delete and reactions on shown rows.
+fn shown(
+    status: &mut Status,
+    room: &str,
+    author: &str,
+    id: &str,
+    chips: Vec<crate::history::Chip>,
+) {
+    status.history = crate::protocol::History {
+        state: "snapshot".into(),
+        room_id: Some(room.into()),
+        rows: vec![crate::protocol::HistoryRow {
+            reactions: Some(crate::history::Reactions {
+                chips,
+                ..Default::default()
+            }),
+            thread: None,
+            id: id.into(),
+            author: author.into(),
+            time: 1,
+            text: "body".into(),
+            edited: false,
+            truncated: false,
+            unavailable: false,
+            attachments: vec![],
+            attachments_unavailable: false,
+        }],
+        has_more: Some(false),
+        category: None,
+        next_cursor: None,
+        older_state: "idle".into(),
+        live: false,
+    };
+}
+fn chip(emoji: &str, mine_id: Option<&str>) -> crate::history::Chip {
+    crate::history::Chip {
+        emoji: emoji.into(),
+        count: 1,
+        mine: mine_id.is_some(),
+        mine_id: mine_id.map(str::to_owned),
+    }
+}
+fn act(
+    sender: &mut Sender,
+    intent: &SendIntent,
+    keys: &Keys,
+    status: &Status,
+    action: Action,
+    text: &str,
+) -> (Delivery, Option<Event>) {
+    let mut intent = intent.clone();
+    intent.action = action;
+    intent.text = text.into();
+    sender.prepare(intent, "ws://127.0.0.1/", keys, status, true, true)
+}
+fn tag_values(event: &Event) -> Vec<Vec<String>> {
+    event.tags.iter().map(|t| t.as_slice().to_vec()).collect()
+}
+fn own(keys: &Keys) -> String {
+    keys.public_key().to_hex()
+}
+#[test]
+fn own_edit_and_delete_sign_desktops_event_shapes() {
+    let (mut sender, intent, keys, mut status, path) = fixture();
+    let target = "b".repeat(64);
+    shown(&mut status, &intent.room, &own(&keys), &target, vec![]);
+    let (delivery, event) = act(
+        &mut sender,
+        &intent,
+        &keys,
+        &status,
+        Action::Edit(target.clone()),
+        "  fixed text ",
+    );
+    assert_eq!(delivery.state, "sending");
+    let event = event.unwrap();
+    assert_eq!(event.kind.as_u16(), 40003);
+    assert_eq!(event.content, "fixed text");
+    let tags = tag_values(&event);
+    assert_eq!(tags[0], vec!["h".to_string(), intent.room.clone()]);
+    assert_eq!(tags[1], vec!["e".to_string(), target.clone()]);
+    assert_eq!(
+        tags[2],
+        vec![
+            "omarchy-buzz-request".to_string(),
+            intent.request_id.clone()
+        ]
+    );
+    assert_eq!(tags.len(), 3);
+    event.verify().unwrap();
+    sender.acknowledge(&event.id.to_hex(), true).unwrap();
+    // Delete is the NIP-09 kind 5 with `h`, as Desktop's `delete_message`.
+    let mut intent = intent;
+    intent.request_id = uuid::Uuid::new_v4().to_string();
+    let (_, event) = act(
+        &mut sender,
+        &intent,
+        &keys,
+        &status,
+        Action::Delete(target.clone()),
+        "",
+    );
+    let event = event.unwrap();
+    assert_eq!(event.kind.as_u16(), 5);
+    assert_eq!(event.content, "");
+    let tags = tag_values(&event);
+    assert_eq!(tags[0], vec!["h".to_string(), intent.room.clone()]);
+    assert_eq!(tags[1], vec!["e".to_string(), target]);
+    let _ = std::fs::remove_dir_all(path);
+}
+#[test]
+fn only_own_messages_can_be_edited_or_deleted() {
+    let (mut sender, mut intent, keys, mut status, path) = fixture();
+    let target = "b".repeat(64);
+    let other = Keys::generate().public_key().to_hex();
+    shown(&mut status, &intent.room, &other, &target, vec![]);
+    for (action, text) in [
+        (Action::Edit(target.clone()), "x"),
+        (Action::Delete(target.clone()), ""),
+    ] {
+        intent.request_id = uuid::Uuid::new_v4().to_string();
+        let (delivery, event) = act(&mut sender, &intent, &keys, &status, action, text);
+        assert!(event.is_none());
+        assert_eq!(delivery.state, "failed");
+        assert_eq!(delivery.category.as_deref(), Some("send_not_author"));
+    }
+    // A row that is not on the shown page is never a target.
+    intent.request_id = uuid::Uuid::new_v4().to_string();
+    let (delivery, event) = act(
+        &mut sender,
+        &intent,
+        &keys,
+        &status,
+        Action::Delete("c".repeat(64)),
+        "",
+    );
+    assert!(event.is_none());
+    assert_eq!(delivery.category.as_deref(), Some("send_access_denied"));
+    assert!(!sender.is_pending());
+    let _ = std::fs::remove_dir_all(path);
+}
+#[test]
+fn edit_refuses_rows_it_cannot_rebuild_and_empty_text() {
+    let (mut sender, mut intent, keys, mut status, path) = fixture();
+    let target = "b".repeat(64);
+    shown(&mut status, &intent.room, &own(&keys), &target, vec![]);
+    status.history.rows[0].truncated = true;
+    let (delivery, event) = act(
+        &mut sender,
+        &intent,
+        &keys,
+        &status,
+        Action::Edit(target.clone()),
+        "x",
+    );
+    assert!(event.is_none());
+    assert_eq!(delivery.category.as_deref(), Some("send_unsupported"));
+    status.history.rows[0].truncated = false;
+    intent.request_id = uuid::Uuid::new_v4().to_string();
+    let (delivery, event) = act(
+        &mut sender,
+        &intent,
+        &keys,
+        &status,
+        Action::Edit(target),
+        "   ",
+    );
+    assert!(event.is_none());
+    assert_eq!(delivery.category.as_deref(), Some("send_invalid"));
+    let _ = std::fs::remove_dir_all(path);
+}
+#[test]
+fn reactions_sign_kind_7_and_removal_deletes_my_reaction_event() {
+    let (mut sender, mut intent, keys, mut status, path) = fixture();
+    let target = "b".repeat(64);
+    let mine = "d".repeat(64);
+    shown(
+        &mut status,
+        &intent.room,
+        &Keys::generate().public_key().to_hex(),
+        &target,
+        vec![chip("🎉", Some(&mine)), chip("👍", None)],
+    );
+    let (_, event) = act(
+        &mut sender,
+        &intent,
+        &keys,
+        &status,
+        Action::React(target.clone()),
+        "👍",
+    );
+    let event = event.unwrap();
+    assert_eq!(event.kind.as_u16(), 7);
+    assert_eq!(event.content, "👍");
+    let tags = tag_values(&event);
+    assert_eq!(tags[0], vec!["e".to_string(), target.clone()]);
+    assert_eq!(tags.len(), 2);
+    sender.acknowledge(&event.id.to_hex(), true).unwrap();
+    intent.request_id = uuid::Uuid::new_v4().to_string();
+    let (_, event) = act(
+        &mut sender,
+        &intent,
+        &keys,
+        &status,
+        Action::Unreact(target.clone()),
+        "🎉",
+    );
+    let event = event.unwrap();
+    assert_eq!(event.kind.as_u16(), 5);
+    assert_eq!(tag_values(&event)[0], vec!["e".to_string(), mine]);
+    sender.acknowledge(&event.id.to_hex(), false).unwrap();
+    // Already reacted, nothing of mine to remove, and agent or invalid emoji.
+    for (action, text, category) in [
+        (Action::React(target.clone()), "🎉", "send_invalid"),
+        (Action::Unreact(target.clone()), "👍", "send_unsupported"),
+        (Action::React(target.clone()), "👀", "send_invalid"),
+        (Action::React(target.clone()), "💬", "send_invalid"),
+        (Action::React(target.clone()), "ab", "send_invalid"),
+        (Action::React(target.clone()), ":party:", "send_invalid"),
+        (Action::React(target.clone()), "", "send_invalid"),
+    ] {
+        intent.request_id = uuid::Uuid::new_v4().to_string();
+        let (delivery, event) = act(&mut sender, &intent, &keys, &status, action, text);
+        assert!(event.is_none(), "{text}");
+        assert_eq!(delivery.category.as_deref(), Some(category), "{text}");
+    }
+    let _ = std::fs::remove_dir_all(path);
+}
+#[test]
+fn an_action_is_never_replayed_or_confused_with_another() {
+    let (mut sender, intent, keys, mut status, path) = fixture();
+    let target = "b".repeat(64);
+    shown(&mut status, &intent.room, &own(&keys), &target, vec![]);
+    let (_, event) = act(
+        &mut sender,
+        &intent,
+        &keys,
+        &status,
+        Action::Delete(target.clone()),
+        "",
+    );
+    assert!(event.is_some());
+    // The same request id for a different action is refused while pending ...
+    let mut other = intent.clone();
+    other.action = Action::Edit(target.clone());
+    other.text = "x".into();
+    assert_eq!(sender.pending_error(&other), Some("send_request_reused"));
+    // ... and an identical replay returns the receipt without a second event.
+    let (delivery, again) = act(
+        &mut sender,
+        &intent,
+        &keys,
+        &status,
+        Action::Delete(target.clone()),
+        "",
+    );
+    assert!(again.is_none());
+    assert_eq!(delivery.state, "sending");
+    // A lost answer is unknown, and the same request id never sends again.
+    assert_eq!(sender.unknown().unwrap().state, "unknown");
+    let (delivery, again) = act(
+        &mut sender,
+        &intent,
+        &keys,
+        &status,
+        Action::Delete(target),
+        "",
+    );
+    assert!(again.is_none());
+    assert_eq!(delivery.state, "failed");
+    assert_eq!(delivery.category.as_deref(), Some("send_request_reused"));
+    let _ = std::fs::remove_dir_all(path);
 }

@@ -28,6 +28,46 @@ Column {
   spacing: Style.space(2)
   leftPadding: indent
 
+  // Message actions (`message_actions`): the helper decides what is allowed
+  // (own messages only for edit and delete); this only offers and reports.
+  property bool actionsOpen: false
+  property bool pickerOpen: false
+  property bool editing: false
+  property bool confirmingDelete: false
+  readonly property bool shown: ready && !sample
+  readonly property bool own: shown && service.isOwnRow(row)
+  readonly property bool reactable: shown && !!row.reactions && row.unavailable !== true && service.messageActionsSupported
+  readonly property bool actionable: own || reactable
+  readonly property var chips: row && row.reactions && Array.isArray(row.reactions.chips) ? row.reactions.chips : []
+  readonly property string actionNote: shown ? service.actionNote(row.id) : ""
+  function react(emoji) {
+    var mine = chips.some(function(chip) { return chip.emoji === emoji && chip.mine })
+    if (!service.toggleReaction(row.id, emoji, mine)) return false
+    pickerOpen = false
+    return true
+  }
+  function saveEdit() {
+    if (!service.editMessage(row.id, editField.text)) return false
+    return true
+  }
+  function cancelEdit() {
+    editing = false
+    // A refused or unknown edit keeps its note until something else happens.
+    if (service.actionTarget === row.id && service.actionState !== "sending") service.clearAction()
+  }
+  HoverHandler { id: rowHover }
+  TapHandler {
+    acceptedButtons: Qt.RightButton
+    onTapped: if (root.actionable) root.actionsOpen = !root.actionsOpen
+  }
+  Connections {
+    target: root.service
+    function onActionStateChanged() {
+      if (!root.ready || root.service.actionTarget !== root.row.id || root.service.actionState !== "acknowledged") return
+      if (root.service.actionKind === "edit_message") { root.editing = false; root.actionsOpen = false }
+    }
+  }
+
   Item {
     visible: root.row.dayBreak === true
     width: root.width - root.indent
@@ -189,7 +229,7 @@ Column {
         objectName: "buzzMessageBody"
         width: parent.width
         // An attachment-only message has no text line of its own.
-        visible: !(root.ready && !root.sample && root.row.text === "" && !root.row.unavailable && !root.row.edited
+        visible: !root.editing && !(root.ready && !root.sample && root.row.text === "" && !root.row.unavailable && !root.row.edited
           && !root.row.truncated && Array.isArray(root.row.attachments) && root.row.attachments.length > 0)
         height: visible ? implicitHeight : 0
         text: !root.ready ? "" : root.sample ? root.row.text : (root.row.unavailable ? "Content unavailable" : root.row.text)
@@ -376,6 +416,253 @@ Column {
           }
         }
       }
+      // Inline editor: Enter saves, Shift+Enter adds a line, Escape cancels.
+      Column {
+        objectName: "buzzMessageEditor"
+        visible: root.editing
+        width: parent.width
+        spacing: Style.space(4)
+        Controls.TextArea {
+          id: editField
+          objectName: "buzzEditField"
+          width: parent.width
+          textFormat: TextEdit.PlainText
+          wrapMode: TextEdit.Wrap
+          readOnly: root.service && root.service.actionState === "sending"
+          color: Color.foreground
+          font.family: Style.font.family
+          font.pixelSize: Style.font.body
+          background: Rectangle {
+            color: Color.popups.background
+            border.color: editField.activeFocus ? Color.popups.border : Util.alpha(Color.foreground, 0.25)
+            radius: Style.cornerRadius
+          }
+          onTextChanged: if (text.length > 4096) text = text.slice(0, 4096)
+          Keys.onPressed: function(event) {
+            var enter = event.key === Qt.Key_Return || event.key === Qt.Key_Enter
+            if (enter && !(event.modifiers & Qt.ShiftModifier)) {
+              root.saveEdit()
+              event.accepted = true
+            } else if (event.key === Qt.Key_Escape) {
+              root.cancelEdit()
+              event.accepted = true
+            }
+          }
+        }
+        Row {
+          spacing: Style.space(6)
+          Ui.Button {
+            objectName: "buzzEditSave"
+            text: "Save"
+            tooltipText: "Save the edit (Enter)"
+            fontSize: Style.font.caption
+            horizontalPadding: Style.space(6)
+            verticalPadding: Style.space(2)
+            focusable: true
+            enabled: !!root.service && root.service.canAct && editField.text.trim() !== ""
+            onClicked: root.saveEdit()
+          }
+          Ui.Button {
+            objectName: "buzzEditCancel"
+            text: "Cancel"
+            tooltipText: "Discard the edit (Esc)"
+            fontSize: Style.font.caption
+            horizontalPadding: Style.space(6)
+            verticalPadding: Style.space(2)
+            foreground: Util.alpha(Color.foreground, 0.6)
+            focusable: true
+            onClicked: root.cancelEdit()
+          }
+        }
+      }
+      Row {
+        objectName: "buzzDeleteConfirm"
+        visible: root.confirmingDelete
+        spacing: Style.space(6)
+        Text {
+          anchors.verticalCenter: parent.verticalCenter
+          text: "Delete this message for everyone?"
+          textFormat: Text.PlainText
+          color: Color.foreground
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+        }
+        Ui.Button {
+          objectName: "buzzDeleteConfirmYes"
+          text: "Delete"
+          tooltipText: "Delete this message"
+          fontSize: Style.font.caption
+          horizontalPadding: Style.space(6)
+          verticalPadding: Style.space(2)
+          focusable: true
+          enabled: !!root.service && root.service.canAct
+          onClicked: {
+            if (root.service.deleteMessage(root.row.id)) { root.confirmingDelete = false; root.actionsOpen = false }
+          }
+        }
+        Ui.Button {
+          objectName: "buzzDeleteCancel"
+          text: "Keep"
+          tooltipText: "Keep this message"
+          fontSize: Style.font.caption
+          horizontalPadding: Style.space(6)
+          verticalPadding: Style.space(2)
+          foreground: Util.alpha(Color.foreground, 0.6)
+          focusable: true
+          onClicked: root.confirmingDelete = false
+        }
+      }
+      // Reactions: counts of distinct reactors; a highlighted chip is mine, and clicking toggles it.
+      Flow {
+        objectName: "buzzReactionChips"
+        visible: root.chips.length > 0
+        width: parent.width
+        spacing: Style.space(4)
+        Repeater {
+          model: root.chips
+          delegate: Rectangle {
+            id: chip
+            required property var modelData
+            readonly property bool pending: root.shown && root.service.actionState === "sending"
+              && root.service.actionTarget === root.row.id && root.service.actionEmoji === modelData.emoji
+            objectName: "buzzReactionChip"
+            property string emoji: modelData.emoji
+            property bool mine: modelData.mine
+            property int count: modelData.count
+            function activate() { if (root.shown && root.service.canAct) root.react(emoji) }
+            width: chipText.implicitWidth + Style.space(12)
+            height: chipText.implicitHeight + Style.space(4)
+            radius: height / 2
+            color: mine ? Util.alpha(Color.accent, 0.22) : Util.alpha(Color.foreground, 0.06)
+            border.color: mine ? Color.accent : Util.alpha(Color.foreground, 0.2)
+            opacity: pending ? 0.5 : 1
+            Text {
+              id: chipText
+              anchors.centerIn: parent
+              text: chip.emoji + " " + chip.count + (chip.pending ? " …" : "")
+              textFormat: Text.PlainText
+              color: Color.foreground
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+            }
+            MouseArea {
+              anchors.fill: parent
+              enabled: root.shown && root.service.canAct
+              cursorShape: Qt.PointingHandCursor
+              onClicked: chip.activate()
+            }
+          }
+        }
+      }
+      Row {
+        objectName: "buzzMessageActions"
+        visible: root.actionsOpen && !root.editing && !root.confirmingDelete
+        spacing: Style.space(6)
+        Ui.Button {
+          objectName: "buzzActionReact"
+          visible: root.reactable
+          text: "React"
+          tooltipText: "Add a reaction"
+          fontSize: Style.font.caption
+          horizontalPadding: Style.space(6)
+          verticalPadding: Style.space(2)
+          focusable: true
+          selected: root.pickerOpen
+          onClicked: root.pickerOpen = !root.pickerOpen
+        }
+        Ui.Button {
+          objectName: "buzzActionEdit"
+          visible: root.own
+          text: "Edit"
+          tooltipText: root.shown && !root.service.canEditRow(root.row) ? "This message cannot be edited here" : "Edit your message"
+          fontSize: Style.font.caption
+          horizontalPadding: Style.space(6)
+          verticalPadding: Style.space(2)
+          focusable: true
+          enabled: root.shown && root.service.canEditRow(root.row)
+          onClicked: {
+            editField.text = root.row.text
+            root.pickerOpen = false
+            root.editing = true
+            editField.forceActiveFocus()
+          }
+        }
+        Ui.Button {
+          objectName: "buzzActionDelete"
+          visible: root.own
+          text: "Delete"
+          tooltipText: "Delete your message"
+          fontSize: Style.font.caption
+          horizontalPadding: Style.space(6)
+          verticalPadding: Style.space(2)
+          focusable: true
+          enabled: root.shown && root.service.canDeleteRow(root.row)
+          onClicked: { root.pickerOpen = false; root.confirmingDelete = true }
+        }
+      }
+      // A small quick picker plus free entry of any single emoji; no full picker.
+      Column {
+        objectName: "buzzReactionPicker"
+        visible: root.pickerOpen && root.actionsOpen && !root.editing
+        width: parent.width
+        spacing: Style.space(4)
+        Flow {
+          width: parent.width
+          spacing: Style.space(4)
+          Repeater {
+            model: root.shown ? root.service.quickReactions : []
+            delegate: Ui.Button {
+              required property string modelData
+              objectName: "buzzReactionQuick"
+              property string emoji: modelData
+              text: modelData
+              fontSize: Style.font.body
+              horizontalPadding: Style.space(6)
+              verticalPadding: Style.space(2)
+              focusable: true
+              enabled: root.service.canAct
+              onClicked: root.react(modelData)
+            }
+          }
+        }
+        Row {
+          spacing: Style.space(6)
+          Ui.TextField {
+            id: reactionField
+            objectName: "buzzReactionField"
+            width: Style.space(120)
+            verticalPadding: Style.space(4)
+            maximumLength: 64
+            placeholderText: "Any emoji"
+            inputMethodHints: Qt.ImhNoPredictiveText
+            onAccepted: if (root.shown && root.service.validReactionEmoji(text) && root.react(text)) text = ""
+          }
+          Text {
+            objectName: "buzzReactionFieldNote"
+            anchors.verticalCenter: parent.verticalCenter
+            visible: reactionField.text !== "" && !(root.shown && root.service.validReactionEmoji(reactionField.text))
+            text: "Use one emoji."
+            textFormat: Text.PlainText
+            color: Color.foreground
+            opacity: 0.7
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+          }
+        }
+      }
+      // What happened to the last edit, delete or reaction here; never assumed.
+      Text {
+        objectName: "buzzActionNote"
+        visible: root.actionNote !== ""
+        width: parent.width
+        text: root.actionNote
+        textFormat: Text.PlainText
+        wrapMode: Text.Wrap
+        color: Color.foreground
+        opacity: 0.75
+        font.family: Style.font.family
+        font.pixelSize: Style.font.caption
+      }
     }
     Ui.Button {
       objectName: "buzzCopyMessage"
@@ -389,6 +676,24 @@ Column {
       foreground: Util.alpha(Color.foreground, 0.6)
       focusable: true
       onClicked: body.copyAll()
+    }
+    Ui.Button {
+      objectName: "buzzMessageMore"
+      Layout.alignment: Qt.AlignTop
+      visible: root.actionable
+      text: "⋯"
+      tooltipText: "Message actions (or right-click)"
+      fontSize: Style.font.caption
+      horizontalPadding: Style.space(6)
+      verticalPadding: Style.space(2)
+      foreground: Util.alpha(Color.foreground, 0.6)
+      opacity: rowHover.hovered || root.actionsOpen ? 1 : 0.4
+      selected: root.actionsOpen
+      focusable: true
+      onClicked: {
+        root.actionsOpen = !root.actionsOpen
+        if (!root.actionsOpen) { root.pickerOpen = false; root.confirmingDelete = false }
+      }
     }
     Ui.Button {
       objectName: root.threadLink ? "buzzThreadToggle" : ""

@@ -672,6 +672,8 @@ fn send_category(category: &str) -> Option<&'static str> {
         "send_request_reused" => Some("send_request_reused"),
         "send_scope_changed" => Some("send_scope_changed"),
         "send_access_denied" => Some("send_access_denied"),
+        "send_not_author" => Some("send_not_author"),
+        "send_unsupported" => Some("send_unsupported"),
         "send_ledger_unavailable" => Some("send_ledger_unavailable"),
         "send_unavailable" => Some("send_unavailable"),
         _ => None,

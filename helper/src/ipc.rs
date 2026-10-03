@@ -105,7 +105,7 @@ async fn client(
             line=protocol::read_line_buffered(&mut read, &mut partial_frame)=> {
                 let line=match line? { Some(l)=>l,None=>return Ok(()) };
                 let r=match protocol::request(&line) { Ok(r)=>r,Err(category)=> { write(&mut out,&serde_json::json!({"version":1,"type":"error","category":category,"instanceId":instance})).await?; return Ok(()); } };
-                if r.kind=="send_message" && (r.instance_id.as_deref()!=Some(instance.as_str()) || r.generation!=Some(status.borrow().generation)) {
+                if protocol::publishes_message(&r.kind) && (r.instance_id.as_deref()!=Some(instance.as_str()) || r.generation!=Some(status.borrow().generation)) {
                     write(&mut out,&serde_json::json!({"version":1,"type":"error","id":r.id,"category":"send_scope_changed","instanceId":instance})).await?;
                     continue;
                 }
@@ -185,7 +185,7 @@ async fn client(
                     let busy={let current=status.borrow();current.room_action.state=="sending" && current.room_action.request_id.as_deref()!=Some(r.id.as_str())};
                     if busy {write(&mut out,&serde_json::json!({"version":1,"type":"error","id":r.id,"category":"setup_busy","instanceId":instance})).await?;continue;}
                 }
-                if r.kind=="send_message" {
+                if protocol::publishes_message(&r.kind) {
                     let busy={let pending=status.borrow();pending.delivery.state=="sending" && pending.delivery.request_id.as_deref()!=Some(r.id.as_str())};
                     if busy {write(&mut out,&serde_json::json!({"version":1,"type":"error","id":r.id,"category":"send_busy","instanceId":instance})).await?;continue;}
                 }
@@ -207,9 +207,22 @@ async fn client(
                     "fetch_recipients"=>Some(protocol::Command::FetchRecipients(r.room_id.clone().unwrap())),
                     "search_people"=>Some(protocol::Command::SearchPeople(r.id.clone(),crate::recipients::people_query(r.query.as_deref().unwrap_or_default()))),
                     "send_message"=>{let (reply,receiver)=tokio::sync::oneshot::channel();send_reply=Some(receiver);Some(protocol::Command::SendChecked(protocol::SendIntent {
-                        request_id:r.id.clone(),room:r.room_id.clone().unwrap(),root_id:r.root_id.clone(),text:r.text.clone().unwrap(),
+                        action: Default::default(), request_id:r.id.clone(),room:r.room_id.clone().unwrap(),root_id:r.root_id.clone(),text:r.text.clone().unwrap(),
                         mentions:r.mentions.clone().unwrap(),generation:r.generation.unwrap(),
                     },reply))},
+                    "edit_message"|"delete_message"|"add_reaction"|"remove_reaction"=>{let (reply,receiver)=tokio::sync::oneshot::channel();send_reply=Some(receiver);
+                        let target=r.event_id.clone().unwrap();
+                        let action=match r.kind.as_str() {
+                            "edit_message"=>protocol::Action::Edit(target),
+                            "delete_message"=>protocol::Action::Delete(target),
+                            "add_reaction"=>protocol::Action::React(target),
+                            _=>protocol::Action::Unreact(target),
+                        };
+                        Some(protocol::Command::SendChecked(protocol::SendIntent {
+                            action,request_id:r.id.clone(),room:r.room_id.clone().unwrap(),root_id:None,
+                            text:r.text.clone().or_else(||r.emoji.clone()).unwrap_or_default(),
+                            mentions:Vec::new(),generation:r.generation.unwrap(),
+                        },reply))},
                     "open_dm"=>{let (reply,receiver)=tokio::sync::oneshot::channel();send_reply=Some(receiver);Some(protocol::Command::OpenDm(protocol::DmOpenIntent {
                         request_id:r.id.clone(),participants:r.participants.clone().unwrap(),generation:r.generation.unwrap(),
                     },reply))},

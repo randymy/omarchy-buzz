@@ -183,3 +183,20 @@ accepted, such as the relay's `duplicate:` answer, is `acknowledged` with no
 channel and `dm_open_response_unknown`. Relay text is never forwarded. An
 acknowledged open triggers the joined-room check at once; the panel selects
 the channel only after that check lists it.
+
+## Message actions: edit, delete and reactions
+
+Capability `message_actions` (requires `message_send` and `room_history`). Four more requests, `edit_message`, `delete_message`, `add_reaction` and `remove_reaction`, take `roomId`, `eventId` (the shown message), `generation` and `instanceId` like `send_message`, plus `text` (edit) or `emoji` (reactions). They use the same sender: one request in flight, the same delivery receipt (`status.delivery`), the same durable ledger record, and the same outcomes (`sending`, `acknowledged`, `rejected`, `unknown`, or `failed` before anything was signed). A request id never publishes twice, and another request while one is pending answers `send_busy`.
+
+Events match Desktop (`messages.rs`, `events.rs`), plus the local `omarchy-buzz-request` tag:
+
+| Action | Kind | Tags |
+| --- | --- | --- |
+| edit | 40003, new text (trimmed) | `h` room, `e` target |
+| delete | 5 (NIP-09) | `h` room, `e` target |
+| add reaction | 7, emoji as content | `e` target |
+| remove reaction | 5 | `e` the helper's own reaction event |
+
+Desktop's message delete is always kind 5; kind 9005 is the moderator tombstone and is not offered. The relay accepts an edit or a kind 5 from the author or from the owner of the agent that wrote it (`validate_edit_ownership`, `validate_standard_deletion_event`); the helper only knows the author, so it accepts **only your own shown messages** and answers `send_not_author` for others (agent-owner and moderator paths are not offered). The target must be a row of the selected room's snapshot or its open thread; otherwise `send_access_denied`. An edit also refuses (`send_unsupported`) rows with attachments, shortened (`truncated`) text or unavailable content, because the edit is rebuilt from the shown projection, which flattens line breaks to spaces and omits `imeta`. An edit sends no `p` tags or mention snapshot (a partial edit, as Desktop's typo-fix path).
+
+Reactions accept one native emoji (`history::chip_emoji`: 1-8 scalars, no ASCII, controls, bidi or invisible characters). `:shortcode:` reactions need an emoji URL and are not sent, and the agents' 👀 and 💬 are refused: they stay the agent acknowledgement counts and are never chips. Adding an emoji you already show as yours is `send_invalid`. Removal needs the id of your kind 7 event, which history keeps per chip (never serialized to the panel); without one it answers `send_unsupported`. The relay still decides; the panel refreshes history after an acknowledgement and shows nothing as changed before it. A lost answer is `unknown`, and the QML says the change may or may not have applied.

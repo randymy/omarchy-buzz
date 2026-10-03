@@ -20,11 +20,38 @@ const SUMMARY_PARTICIPANTS: usize = 10;
 // 9999-12-31T23:59:59Z; the panel rejects later instants as unrepresentable.
 const SUMMARY_TIME: u64 = 253_402_300_799;
 
+/// Distinct emoji shown under one message, and the largest count shown.
+pub const CHIPS: usize = 16;
+pub const CHIP_COUNT: usize = 1000;
 /// Observed live reactions in this bounded page, not authoritative agent state.
+/// `seen`/`working` are the agent 👀/💬 acknowledgements; every other emoji is
+/// a chip. The agent emoji are never chips: a person must not mimic agent work
+/// states, and `sending` refuses them.
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct Reactions {
     pub seen: usize,
     pub working: usize,
+    pub chips: Vec<Chip>,
+}
+/// One emoji's reactors on a message in this page.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Chip {
+    pub emoji: String,
+    pub count: usize,
+    /// This identity reacted with it.
+    pub mine: bool,
+    /// This identity's reaction event, for removal. Never leaves the helper.
+    #[serde(skip)]
+    pub mine_id: Option<String>,
+}
+/// The agent acknowledgement emoji, shown as counts and never as chips.
+pub fn agent_emoji(value: &str) -> bool {
+    matches!(value, "👀" | "💬")
+}
+/// A reaction a person may show or send: a native glyph sequence, not agent state.
+/// `:shortcode:` reactions need an emoji URL tag and are not supported.
+pub fn chip_emoji(value: &str) -> bool {
+    !agent_emoji(value) && !value.starts_with(':') && crate::user_status::valid_emoji(value)
 }
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -226,11 +253,22 @@ pub fn reduce_page(
     now: u64,
     request: Option<&Cursor>,
 ) -> Result<History, &'static str> {
-    reduce_at(room, relay, TEST_ORIGIN, events, now, request)
+    reduce_at(room, relay, TEST_ORIGIN, events, now, request, None)
+}
+#[cfg(test)]
+pub fn reduce_as(
+    room: Uuid,
+    relay: PublicKey,
+    events: &[Event],
+    now: u64,
+    me: PublicKey,
+) -> Result<History, &'static str> {
+    reduce_at(room, relay, TEST_ORIGIN, events, now, None, Some(me))
 }
 /// `request` is the cursor this page was asked for (`None` for the head). The
 /// bounds must echo it, and every row must lie strictly past it. `origin` is
 /// the configured relay's media origin (`attachments::origin`).
+/// `me` marks this identity's own reactions.
 pub fn reduce_at(
     room: Uuid,
     relay: PublicKey,
@@ -238,6 +276,7 @@ pub fn reduce_at(
     events: &[Event],
     now: u64,
     request: Option<&Cursor>,
+    me: Option<PublicKey>,
 ) -> Result<History, &'static str> {
     if events.len() > EVENTS {
         return Err("history_oversized");
@@ -430,7 +469,10 @@ pub fn reduce_at(
             }
         }
     }
-    let mut observed: BTreeMap<String, (BTreeSet<PublicKey>, BTreeSet<PublicKey>)> =
+    // Per target: agent 👀 and 💬 reactors, then each other emoji's reactors
+    // and this identity's reaction event for it.
+    type Emoji = BTreeMap<String, (BTreeSet<PublicKey>, Option<String>)>;
+    let mut observed: BTreeMap<String, (BTreeSet<PublicKey>, BTreeSet<PublicKey>, Emoji)> =
         BTreeMap::new();
     for reaction in reactions {
         if deleted.contains(&reaction.id.to_hex()) || uncertain.contains(&reaction.id.to_hex()) {
@@ -449,6 +491,14 @@ pub fn reduce_at(
             }
             "💬" => {
                 counts.1.insert(author(reaction, relay)?);
+            }
+            other if chip_emoji(other) => {
+                let who = author(reaction, relay)?;
+                let entry = counts.2.entry(other.to_owned()).or_default();
+                entry.0.insert(who);
+                if Some(who) == me {
+                    entry.1 = Some(reaction.id.to_hex());
+                }
             }
             _ => {}
         }
@@ -470,10 +520,22 @@ pub fn reduce_at(
         let reactions = if unavailable {
             None
         } else {
-            let (seen, working) = observed.remove(&id).unwrap_or_default();
+            let (seen, working, emoji) = observed.remove(&id).unwrap_or_default();
+            let mut chips: Vec<Chip> = emoji
+                .into_iter()
+                .map(|(emoji, (who, mine_id))| Chip {
+                    emoji,
+                    count: who.len().min(CHIP_COUNT),
+                    mine: me.is_some_and(|me| who.contains(&me)),
+                    mine_id,
+                })
+                .collect();
+            chips.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.emoji.cmp(&b.emoji)));
+            chips.truncate(CHIPS);
             Some(Reactions {
                 seen: seen.len(),
                 working: working.len(),
+                chips,
             })
         };
         // A relay-authored reply summary is kept even when the row's content
@@ -743,6 +805,7 @@ pub async fn fetch(
         &events,
         Timestamp::now().as_secs(),
         None,
+        Some(keys.public_key()),
     )
 }
 /// One older page continuing from `cursor`, verified exactly like the head
@@ -781,6 +844,7 @@ pub async fn fetch_older(
         &events,
         Timestamp::now().as_secs(),
         Some(cursor),
+        Some(keys.public_key()),
     )
 }
 #[cfg(test)]

@@ -76,6 +76,7 @@ async fn scenario(accept: Option<bool>) {
     let path = std::env::temp_dir().join(format!("buzz-send-wire-{}", uuid::Uuid::new_v4()));
     let mut sender = Sender::new(Some(Ledger::open(path.join("ledger.json")).unwrap()));
     let intent = SendIntent {
+        action: Default::default(),
         request_id: uuid::Uuid::new_v4().to_string(),
         room: uuid::Uuid::new_v4().to_string(),
         root_id: None,
