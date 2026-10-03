@@ -166,13 +166,13 @@ the relay's `OK` for the exact event id; no `OK` in 15 s, a disconnect or re-aut
 | Request | Event | Relay rule (side_effects.rs) |
 | --- | --- | --- |
 | `create_room` (name, about?, visibility) | 9007: `h` new UUID, `name`, `visibility`, `channel_type` `stream`, `about` | any member |
-| `update_room` (name, about) | 9002: `h`, `name`, `about` | owner or admin |
+| `update_room` (name and/or about) | 9002: `h` plus only the fields given | owner or admin |
 | `set_room_topic` | 9002: `h`, `topic` | any member (the panel offers it to owners and admins) |
 | `add_room_member` (key) | 9000: `h`, `p` | owner or admin |
 | `remove_room_member` (key) | 9001: `h`, `p` | owner or admin; others only |
 
 The helper checks only what it can know: a joined stream room as target, text bounds (name 128, description 512,
-topic 256 bytes, no controls; the relay stores names without a leading `#`), a removal naming a member of the
+topic 256 bytes, description 1024 for create, edit and detail, no controls; the relay stores names without a leading `#`), a removal naming a member of the
 **verified roster** (`fetch_room_detail`) other than this identity (that is leaving), an addition not already on a
 fully shown roster. It does not decide permissions: a refusal arrives as `rejected` with `create_rejected`,
 `edit_rejected`, `member_add_rejected` or `member_remove_rejected` and the relay's own `OK false` words in
@@ -187,6 +187,15 @@ visibility (exactly one of `public`/`private`), the viewer's role, and up to 100
 with their role words (`owner`, `admin`, `member`, `guest`, `bot`, else `unknown`) and a profile-name hint.
 Owners and admins see edit controls from the verified role; everyone else sees the topic and members. The relay,
 not this role, is the authority.
+
+**Editing never rewrites what was not edited.** The catalog row's description is a 256-byte display copy, so an
+edit must not round-trip it. `update_room` carries only the fields the user changed (a name-only edit has no
+`about` tag); the description's edit baseline is `roomDetail.about`, the relay's full text up to 1024 bytes, and a
+longer one (`aboutTruncated`) is shown read-only because it could only be saved back cut.
+
+**Losing a room.** When a catalog check, a recipients/thread/activity read or an access denial removes a room (or
+clears the catalog), its `roomDetail` is cleared to `room_detail_access_denied` and any read still running is
+cancelled; a read that finishes for an unlisted room is never shown and leaves no `loading` state.
 
 **Not done.** Role changes (Desktop's `change_channel_member_role`), archive/delete, TTL, purpose, visibility
 changes of an existing room and forum rooms; showing the topic in the room header; rosters over 100 members.

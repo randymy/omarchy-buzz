@@ -549,7 +549,7 @@ async fn recheck_fixture_aging(
                             vec![Tag::parse(["d", room.as_str()]).unwrap(), Tag::parse(["name", "DM"]).unwrap(), Tag::parse(["t", "dm"]).unwrap(), Tag::parse(["hidden"]).unwrap(),
                                 Tag::parse(["p", &public.to_hex()]).unwrap(), Tag::parse(["p", &other.public_key().to_hex()]).unwrap()]
                         } else {
-                            vec![Tag::parse(["d", room.as_str()]).unwrap(), Tag::parse(["name", "Fixture"]).unwrap(), Tag::parse(["t", "stream"]).unwrap()]
+                            vec![Tag::parse(["d", room.as_str()]).unwrap(), Tag::parse(["name", "Fixture"]).unwrap(), Tag::parse(["t", "stream"]).unwrap(), Tag::parse(["public"]).unwrap()]
                         })).collect::<Vec<_>>()).unwrap()),
                         // No NIP-DV snapshot: nothing is hidden.
                         0 if filter.get("page").is_some() => {
@@ -714,6 +714,16 @@ impl Recheck {
             s.recipients.state == "snapshot" && s.recipients.room_id.as_deref() == Some(b.as_str())
         })
         .await;
+        // The room view (roster, roles, topic) of B.
+        self.commands
+            .send(Command::FetchRoomDetail(b.clone()))
+            .await
+            .unwrap();
+        wait_status(&mut self.status, |s| {
+            s.room_detail.state == "snapshot"
+                && s.room_detail.room_id.as_deref() == Some(b.as_str())
+        })
+        .await;
         root
     }
     async fn finish(self) {
@@ -739,6 +749,8 @@ fn retained(s: &Status, a: &str, b: &str, root: &str) -> bool {
         && s.thread.root_id.as_deref() == Some(root)
         && s.recipients.state == "snapshot"
         && s.recipients.room_id.as_deref() == Some(b)
+        && s.room_detail.state == "snapshot"
+        && s.room_detail.room_id.as_deref() == Some(b)
 }
 
 #[derive(PartialEq)]
@@ -825,6 +837,9 @@ async fn background_check(outcome: Outcome) {
                 assert_eq!(s.thread.category.as_deref(), Some("thread_access_denied"));
                 assert_eq!(s.recipients.state, "snapshot");
                 assert_eq!(s.recipients.room_id.as_deref(), Some(b.as_str()));
+                // B stays joined: its room view stays.
+                assert_eq!(s.room_detail.state, "snapshot");
+                assert_eq!(s.room_detail.room_id.as_deref(), Some(b.as_str()));
                 assert_eq!(s.delivery.state, "unknown");
                 assert_eq!(s.delivery.request_id.as_deref(), Some(request_id.as_str()));
                 assert_eq!(s.delivery.category.as_deref(), Some("delivery_unknown"));
@@ -861,6 +876,19 @@ async fn background_check(outcome: Outcome) {
                     s.recipients.category.as_deref(),
                     Some("recipients_access_denied")
                 );
+                // The room view of the room that was lost goes with it: no
+                // roster, topic or role of a room this identity is not in.
+                assert_eq!(s.room_detail.state, "unavailable");
+                assert_eq!(s.room_detail.room_id.as_deref(), Some(b.as_str()));
+                assert_eq!(
+                    s.room_detail.category.as_deref(),
+                    Some("room_detail_access_denied")
+                );
+                assert!(
+                    s.room_detail.members.is_empty()
+                        && s.room_detail.topic.is_empty()
+                        && s.room_detail.role.is_empty()
+                );
                 assert_eq!(
                     s.delivery.state, "sending",
                     "delivery in a remaining room was revoked"
@@ -885,6 +913,8 @@ async fn background_check(outcome: Outcome) {
                 assert!(s.recipients.room_id.is_none() && s.recipients.entries.is_empty());
                 assert_eq!(s.thread.state, "unavailable");
                 assert!(s.thread.room_id.is_none());
+                assert_eq!(s.room_detail.state, "unavailable");
+                assert!(s.room_detail.room_id.is_none() && s.room_detail.members.is_empty());
                 assert!(s.activity.is_empty());
                 // Unchanged: a failed check leaves delivery evidence alone.
                 assert_eq!(s.delivery.state, "sending");

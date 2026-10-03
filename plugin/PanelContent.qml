@@ -878,6 +878,7 @@ FocusScope {
   property bool newRoomPrivate: false
   property bool newRoomAwaiting: false
   property bool topicTouched: false
+  property bool aboutTouched: false
   property string armedMember: ""
   Timer { id: memberDisarm; interval: 5000; onTriggered: root.armedMember = "" }
   readonly property bool roomManageShown: !!service && !service.sampleMode && service.roomManageAvailable
@@ -898,7 +899,7 @@ FocusScope {
     Qt.callLater(function() { newRoomName.forceActiveFocus() })
     return true
   }
-  readonly property bool newRoomValid: !!service && service.validRoomText(newRoomName.text, 128, true) && service.validRoomText(newRoomAbout.text, 512, false)
+  readonly property bool newRoomValid: !!service && service.validRoomText(newRoomName.text, 128, true) && service.validRoomText(newRoomAbout.text, service.roomAboutBytes, false)
   function submitNewRoom() {
     if (!newRoomValid || !service.canManageRooms) return false
     newRoomAwaiting = service.createRoom(newRoomName.text, newRoomAbout.text, newRoomPrivate)
@@ -923,7 +924,10 @@ FocusScope {
   function fillRoomSettings() {
     var room = service ? service.selectedRoom : null
     editRoomName.text = room ? room.name : ""
-    editRoomAbout.text = room ? room.description : ""
+    // The description comes from the room detail (the full text), never from
+    // the catalog row's shortened copy.
+    aboutTouched = false
+    editRoomAbout.text = service && service.roomDetailShown ? service.roomDetail.about : ""
     topicTouched = false
     editRoomTopic.text = service && service.roomDetailShown ? service.roomDetail.topic : ""
     addMemberKey.text = ""
@@ -960,6 +964,8 @@ FocusScope {
     function onRoomDetailChanged() {
       if (root.communityView === "room-settings" && !root.topicTouched && !editRoomTopic.activeFocus && root.service.roomDetailShown)
         editRoomTopic.text = root.service.roomDetail.topic
+      if (root.communityView === "room-settings" && !root.aboutTouched && !editRoomAbout.activeFocus && root.service.roomDetailShown)
+        editRoomAbout.text = root.service.roomDetail.about
     }
     // Back to the rooms once the room just created is listed and selected.
     function onRoomActionChanged() { root.finishCreate() }
@@ -2432,7 +2438,7 @@ FocusScope {
           objectName: "buzzNewRoomAbout"
           Layout.fillWidth: true
           verticalPadding: Style.space(4)
-          maximumLength: 512
+          maximumLength: 1024
           placeholderText: "What is this room for?"
           onAccepted: root.submitNewRoom()
         }
@@ -2554,17 +2560,25 @@ FocusScope {
                 objectName: "buzzRoomEditAbout"
                 Layout.fillWidth: true
                 verticalPadding: Style.space(4)
-                maximumLength: 512
+                maximumLength: 1024
                 placeholderText: "Description"
+                readOnly: !!root.service && root.service.roomDetail.aboutTruncated
+                onTextEdited: root.aboutTouched = true
+              }
+              SettingsNote {
+                objectName: "buzzRoomAboutLong"
+                visible: !!root.service && root.service.roomDetail.aboutTruncated
+                text: "This description is too long to edit here; the name and topic can still be changed."
               }
               Ui.Button {
                 objectName: "buzzRoomSaveDetails"
                 text: "Save name and description"
-                tooltipText: "Change this room's name and description"
+                tooltipText: "Change what you edited; the rest stays as it is"
                 fontSize: Style.font.caption
                 focusable: true
                 enabled: !!root.service && root.service.canEditRoom && root.service.validRoomText(editRoomName.text, 128, true)
-                  && root.service.validRoomText(editRoomAbout.text, 512, false)
+                  && root.service.validRoomText(editRoomAbout.text, root.service.roomAboutBytes, false)
+                  && Object.keys(root.service.roomEditChanges(editRoomName.text, editRoomAbout.text)).length > 0
                 opacity: enabled ? 1 : 0.5
                 onClicked: root.service.updateRoomDetails(editRoomName.text, editRoomAbout.text)
               }

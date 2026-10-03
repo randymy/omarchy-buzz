@@ -21,7 +21,7 @@ use uuid::Uuid;
 
 /// Bounds the panel and the helper both enforce (bytes of UTF-8).
 pub const NAME_BYTES: usize = 128;
-pub const ABOUT_BYTES: usize = 512;
+pub const ABOUT_BYTES: usize = 1024;
 pub const TOPIC_BYTES: usize = 256;
 /// Roster rows in one `Detail`; the rest is counted as `truncated`.
 pub const MEMBERS: usize = 100;
@@ -33,10 +33,12 @@ pub enum Change {
         about: String,
         private: bool,
     },
+    /// Only the fields given are published: a field left out is left as it is
+    /// (never rewritten from a shortened display copy). At least one.
     Details {
         room: Uuid,
-        name: String,
-        about: String,
+        name: Option<String>,
+        about: Option<String>,
     },
     Topic {
         room: Uuid,
@@ -111,9 +113,18 @@ impl Change {
                 )
             }
             Change::Details { name, about, .. } => {
-                let name = plain(name, NAME_BYTES).ok_or("room_invalid")?;
-                let about = plain(about, ABOUT_BYTES).ok_or("room_invalid")?;
-                buzz_sdk::build_update_channel(room, Some(&name), Some(&about), None, None)
+                if name.is_none() && about.is_none() {
+                    return Err("room_invalid");
+                }
+                let name = match name {
+                    Some(n) => Some(plain(n, NAME_BYTES).ok_or("room_invalid")?),
+                    None => None,
+                };
+                let about = match about {
+                    Some(a) => Some(plain(a, ABOUT_BYTES).ok_or("room_invalid")?),
+                    None => None,
+                };
+                buzz_sdk::build_update_channel(room, name.as_deref(), about.as_deref(), None, None)
             }
             Change::Topic { topic, .. } => {
                 let topic = plain(topic, TOPIC_BYTES).ok_or("room_invalid")?;
@@ -190,6 +201,12 @@ pub struct Detail {
     pub topic: String,
     /// `open` or `private`, from the relay-signed metadata.
     pub visibility: String,
+    /// The room's description as the relay lists it, up to `ABOUT_BYTES` (the
+    /// catalog row's is cut shorter for display). Controls become spaces.
+    pub about: String,
+    /// The description is longer than `ABOUT_BYTES`: `about` is a cut copy and
+    /// is never to be edited and saved back.
+    pub about_truncated: bool,
     /// This identity's role in the roster.
     pub role: String,
     pub members: Vec<Member>,
@@ -271,9 +288,14 @@ pub fn detail(
             .unwrap_or(""),
         TOPIC_BYTES,
     );
+    let raw_about = one_tag(meta, "about")
+        .map_err(|_| "room_detail_invalid")?
+        .unwrap_or("");
     Ok(Detail {
         room: room.to_string(),
         topic,
+        about: clean(raw_about, ABOUT_BYTES),
+        about_truncated: raw_about.len() > ABOUT_BYTES,
         visibility: visibility.into(),
         role,
         members: listed

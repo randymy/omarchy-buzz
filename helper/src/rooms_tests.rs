@@ -69,24 +69,35 @@ fn event_shapes_match_desktop() {
             row(&["channel_type", "stream"]),
         ]
     );
-    let details = Change::Details {
-        room: id,
-        name: "Renamed".into(),
-        about: String::new(),
-    }
-    .build(id)
-    .unwrap()
-    .sign_with_keys(&key(2))
-    .unwrap();
-    assert_eq!(details.kind.as_u16(), 9002);
+    let details = |name: Option<&str>, about: Option<&str>| {
+        Change::Details {
+            room: id,
+            name: name.map(Into::into),
+            about: about.map(Into::into),
+        }
+        .build(id)
+        .map(|b| b.sign_with_keys(&key(2)).unwrap())
+    };
+    let both = details(Some("Renamed"), Some("")).unwrap();
+    assert_eq!(both.kind.as_u16(), 9002);
     assert_eq!(
-        tags_of(&details),
+        tags_of(&both),
         vec![
             row(&["h", ROOM]),
             row(&["name", "Renamed"]),
             row(&["about", ""])
         ]
     );
+    // Only what was given is published: a field left out is left alone.
+    assert_eq!(
+        tags_of(&details(Some("Renamed"), None).unwrap()),
+        vec![row(&["h", ROOM]), row(&["name", "Renamed"])]
+    );
+    assert_eq!(
+        tags_of(&details(None, Some("New text")).unwrap()),
+        vec![row(&["h", ROOM]), row(&["about", "New text"])]
+    );
+    assert_eq!(details(None, None).err(), Some("room_invalid"));
     let topic = Change::Topic {
         room: id,
         topic: "Ship it".into(),
@@ -537,6 +548,73 @@ fn detail_is_verified_with_roles_and_topic() {
         100,
     );
     assert_eq!(go(&[elsewhere], &[meta], &me), Some("room_detail_invalid"));
+}
+
+/// A description longer than the catalog row's display cut survives a name-only
+/// edit: the detail serves it whole, and the edit publishes no `about` at all.
+#[test]
+fn a_long_description_survives_a_name_only_edit() {
+    let (relay, me) = (key(1), key(2));
+    let long = "d".repeat(900);
+    let roster = roster(&relay, &[(&me, "owner")], 100);
+    let meta_with = |about: &str| meta(&relay, &[&["public"], &["about", about]]);
+    let d = detail(
+        room(),
+        me.public_key(),
+        relay.public_key(),
+        &[roster.clone()],
+        &[meta_with(&long)],
+        1000,
+    )
+    .unwrap();
+    assert_eq!(d.about, long, "the full description is served for editing");
+    assert!(!d.about_truncated);
+    // The catalog row is a display copy, cut well below that.
+    let listed = crate::catalog::reconcile(
+        me.public_key(),
+        relay.public_key(),
+        &[roster.clone()],
+        &[event(
+            &relay,
+            39000,
+            &[
+                row(&["d", ROOM]),
+                row(&["name", "Lobby"]),
+                row(&["t", "stream"]),
+                row(&["about", &long]),
+            ],
+            100,
+        )],
+        1000,
+    )
+    .unwrap();
+    assert!(listed.rooms[0].description.len() < long.len());
+    let edit = Change::Details {
+        room: room(),
+        name: Some("Renamed".into()),
+        about: None,
+    }
+    .build(room())
+    .unwrap()
+    .sign_with_keys(&me)
+    .unwrap();
+    assert_eq!(
+        tags_of(&edit),
+        vec![row(&["h", ROOM]), row(&["name", "Renamed"])],
+        "a name-only edit must not carry the description"
+    );
+    // Past the protocol bound the copy is cut and flagged, never offered whole.
+    let huge = "e".repeat(ABOUT_BYTES + 200);
+    let d = detail(
+        room(),
+        me.public_key(),
+        relay.public_key(),
+        &[roster],
+        &[meta_with(&huge)],
+        1000,
+    )
+    .unwrap();
+    assert!(d.about_truncated && d.about.len() == ABOUT_BYTES);
 }
 
 #[test]
@@ -1154,8 +1232,28 @@ fn room_requests_have_exact_shapes_and_map_to_changes() {
         ),
         Some(Change::Details {
             room: room(),
-            name: "N".into(),
-            about: String::new()
+            name: Some("N".into()),
+            about: Some(String::new())
+        })
+    );
+    // A name-only or description-only edit carries only that field.
+    assert_eq!(
+        ok("update_room", serde_json::json!({"roomId":ROOM,"name":"N"})),
+        Some(Change::Details {
+            room: room(),
+            name: Some("N".into()),
+            about: None
+        })
+    );
+    assert_eq!(
+        ok(
+            "update_room",
+            serde_json::json!({"roomId":ROOM,"about":"A"})
+        ),
+        Some(Change::Details {
+            room: room(),
+            name: None,
+            about: Some("A".into())
         })
     );
     assert_eq!(
@@ -1217,7 +1315,16 @@ fn room_requests_have_exact_shapes_and_map_to_changes() {
             "create_room",
             serde_json::json!({"name":"x","visibility":"open","key":member}),
         ),
-        frame("update_room", serde_json::json!({"roomId":ROOM,"name":"x"})),
+        frame("update_room", serde_json::json!({"roomId":ROOM})),
+        frame(
+            "update_room",
+            serde_json::json!({"roomId":ROOM,"name":null}),
+        ),
+        frame("update_room", serde_json::json!({"roomId":ROOM,"name":" "})),
+        frame(
+            "update_room",
+            serde_json::json!({"roomId":ROOM,"about":null}),
+        ),
         frame("update_room", serde_json::json!({"name":"x","about":""})),
         frame(
             "update_room",

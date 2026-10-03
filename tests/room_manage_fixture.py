@@ -43,10 +43,13 @@ members = {
 }
 roles = {GENERAL: "owner", OPS: "member", CREATED: "owner"}
 topics = {GENERAL: "Welcome", OPS: "", CREATED: ""}
+# Full descriptions; the catalog row carries only a shortened copy, as the helper's does.
+abouts = {GENERAL: "Everyone", OPS: "", CREATED: ""}
+ROW_ABOUT = 256
 visibility = {GENERAL: "open", OPS: "open", CREATED: "open"}
 room_action = {"state": "idle", "action": None, "requestId": None, "roomId": None, "category": None, "detail": None}
-detail = {"state": "unavailable", "roomId": None, "topic": "", "visibility": "", "role": "", "members": [],
-          "truncated": False, "category": None}
+detail = {"state": "unavailable", "roomId": None, "topic": "", "visibility": "", "about": "", "aboutTruncated": False,
+          "role": "", "members": [], "truncated": False, "category": None}
 counts = {"more": 0, "create": 0, "update": 0, "polls": 0}
 created = False
 
@@ -91,6 +94,7 @@ def act(request, action, ok, reason=None):
 def refresh_detail(room_id):
     global detail
     detail = {"state": "snapshot", "roomId": room_id, "topic": topics[room_id], "visibility": visibility[room_id],
+              "about": abouts[room_id], "aboutTruncated": False,
               "role": roles[room_id], "truncated": False, "category": None,
               "members": [{"key": k, "name": n, "role": r} for k, r, n in members[room_id]]}
 
@@ -115,7 +119,7 @@ for line in sys.stdin:
     elif kind == "refresh_rooms":
         counts["polls"] += 1
         if created and not any(r["id"] == CREATED for r in rooms):
-            rooms.append(room(CREATED, "Plans", "Quarterly"))
+            rooms.append(room(CREATED, "Plans", abouts[CREATED][:ROW_ABOUT]))
         emit()
     elif kind == "fetch_room_detail":
         assert UUID.fullmatch(request["roomId"]) and sorted(request) == ["id", "roomId", "type", "version"], request
@@ -131,16 +135,21 @@ for line in sys.stdin:
         else:
             created = True
             visibility[CREATED] = request["visibility"]
+            abouts[CREATED] = request["about"]
             act(request, "create", True)
     elif kind == "update_room":
-        assert sorted(request) == ["about", "id", "name", "roomId", "type", "version"], request
+        # Only what changed is sent: at least one of name and about, never a copy of the rest.
+        assert set(request) <= {"about", "id", "name", "roomId", "type", "version"} and set(request) & {"about", "name"}, request
         counts["update"] += 1
         if counts["update"] == 1:
             act(request, "details", False, "restricted: actor not authorized for name/about changes")
         else:
             for r in rooms:
                 if r["id"] == request["roomId"]:
-                    r["name"], r["description"] = request["name"], request["about"]
+                    r["name"] = request.get("name", r["name"])
+                    if "about" in request:
+                        abouts[r["id"]] = request["about"]
+                    r["description"] = abouts[r["id"]][:ROW_ABOUT]
             act(request, "details", True)
     elif kind == "set_room_topic":
         assert sorted(request) == ["id", "roomId", "topic", "type", "version"], request

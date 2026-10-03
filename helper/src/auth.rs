@@ -1941,10 +1941,12 @@ async fn observe_inner(
                             }
                             revoked_delivery=sender.revoke_room(&room);
                             activity.forget(&room);
+                            if tx.borrow().room_detail.room_id.as_deref()==Some(room.as_str()) {detail_jobs.abort_all();detail_jobs=tokio::task::JoinSet::new();detail_ticket=detail_ticket.wrapping_add(1);}
                         }
                         publish_status(tx, |s| {
                             if denied {
                                 s.catalog.rooms.retain(|r|r.id!=room);
+                                if s.room_detail.room_id.as_deref()==Some(room.as_str()) {s.room_detail=crate::protocol::RoomDetailView::unavailable(Some(room.clone()),Some("room_detail_access_denied"));}
                                 s.activity=activity.summaries();
                                 if s.history.room_id.as_deref()==Some(room.as_str()) {s.history=History::unavailable(Some(room.clone()),Some("history_access_denied"));}
                             }
@@ -2077,11 +2079,13 @@ async fn observe_inner(
                             _=>activity.forget(&room),
                         }
                         if let Some(rows)=replies {activity.observe_replies(&room,&rows,&own_key,nostr::Timestamp::now().as_secs());}
+                        if denied && tx.borrow().room_detail.room_id.as_deref()==Some(room.as_str()) {detail_jobs.abort_all();detail_jobs=tokio::task::JoinSet::new();detail_ticket=detail_ticket.wrapping_add(1);}
                         publish_status(tx, |s| {
                             if denied {
                                 s.catalog.rooms.retain(|r|r.id!=room);
                                 if s.history.room_id.as_deref()==Some(room.as_str()) {s.history=History::unavailable(Some(room.clone()),Some("history_access_denied"));}
                                 if s.recipients.room_id.as_deref()==Some(room.as_str()) {s.recipients=crate::protocol::RecipientsView::unavailable(Some(room.clone()),Some("recipients_access_denied"));}
+                                if s.room_detail.room_id.as_deref()==Some(room.as_str()) {s.room_detail=crate::protocol::RoomDetailView::unavailable(Some(room.clone()),Some("room_detail_access_denied"));}
                             }
                             if let Some(delivery)=revoked_delivery {s.delivery=delivery;}
                             s.activity=activity.summaries();
@@ -2246,12 +2250,13 @@ async fn observe_inner(
                         };
                         // A room that left the joined set loses its views, jobs and pending
                         // delivery as an access denial would; remaining rooms keep theirs.
-                        let (removed,lost_recipients,lost_thread)={
+                        let (removed,lost_recipients,lost_thread,lost_detail)={
                             let status=tx.borrow();
                             let removed:Vec<String>=status.catalog.rooms.iter().filter(|r|!next_catalog.rooms.iter().any(|n|n.id==r.id)).map(|r|r.id.clone()).collect();
                             let lost_recipients=status.recipients.room_id.clone().filter(|room|removed.contains(room));
                             let lost_thread=status.thread.room_id.as_ref().is_some_and(|room|removed.contains(room));
-                            (removed,lost_recipients,lost_thread)
+                            let lost_detail=status.room_detail.room_id.clone().filter(|room|removed.contains(room));
+                            (removed,lost_recipients,lost_thread,lost_detail)
                         };
                         activity.retain(&next_catalog.rooms);
                         let removed_selection=selected_history.as_ref().filter(|room|!next_catalog.rooms.iter().any(|r|r.id==**room)).cloned();
@@ -2261,6 +2266,8 @@ async fn observe_inner(
                         }
                         if lost_recipients.is_some() {recipient_jobs.abort_all();recipient_jobs=tokio::task::JoinSet::new();recipient_ticket=recipient_ticket.wrapping_add(1);}
                         if lost_thread {thread_jobs.abort_all();thread_jobs=tokio::task::JoinSet::new();thread_ticket=thread_ticket.wrapping_add(1);}
+                        // A room view (roster, topic) of a lost room, or a read of it still running.
+                        if lost_detail.is_some() {detail_jobs.abort_all();detail_jobs=tokio::task::JoinSet::new();detail_ticket=detail_ticket.wrapping_add(1);}
                         // The single in-flight activity read does not record its room.
                         if !removed.is_empty() {activity_jobs.abort_all();activity_jobs=tokio::task::JoinSet::new();}
                         let mut revoked_delivery=None;
@@ -2276,6 +2283,7 @@ async fn observe_inner(
                             else if let Some(room)=s.history.room_id.clone().filter(|room|removed.contains(room)) {s.history=History::unavailable(Some(room),Some("history_access_denied"));}
                             if let Some(room)=lost_recipients {s.recipients=crate::protocol::RecipientsView::unavailable(Some(room),Some("recipients_access_denied"));}
                             if lost_thread {s.thread=Thread::unavailable(None,None,Some("thread_access_denied"));}
+                            if let Some(room)=lost_detail {s.room_detail=crate::protocol::RoomDetailView::unavailable(Some(room),Some("room_detail_access_denied"));}
                             if let Some(delivery)=revoked_delivery {s.delivery=delivery;}
                             // An open room that is now joined is no longer offered.
                             let joined=&s.catalog.rooms;
@@ -2307,8 +2315,10 @@ async fn observe_inner(
                         activity=crate::activity::Tracker::default();
                         presence_jobs.abort_all();presence_jobs=tokio::task::JoinSet::new();presence_ticket=presence_ticket.wrapping_add(1);
                         presence_seen.clear();presence_read_at=None;
+                        detail_jobs.abort_all();detail_jobs=tokio::task::JoinSet::new();detail_ticket=detail_ticket.wrapping_add(1);
                         project_presence!();
                         publish_status(tx, |s|{
+                            s.room_detail=crate::protocol::RoomDetailView::unavailable(None,None);
                             s.activity.clear();s.catalog=crate::protocol::Catalog::unavailable(Some(category));s.history=History::unavailable(None,None);
                             s.recipients=crate::protocol::RecipientsView::unavailable(None,None);s.thread=Thread::unavailable(None,None,None);
                             s.open_rooms=crate::protocol::OpenRooms::unavailable(None);
@@ -2366,6 +2376,11 @@ async fn observe_inner(
                 catalog_due=tokio::time::Instant::now()+policy.catalog;
             },
             result=detail_jobs.join_next(), if !detail_jobs.is_empty()=> {
+                // A read that panicked leaves no loading state behind.
+                if matches!(&result,Some(Err(e)) if !e.is_cancelled()) {
+                    detail_jobs.abort_all();detail_jobs=tokio::task::JoinSet::new();detail_ticket=detail_ticket.wrapping_add(1);
+                    publish_status(tx,|s|s.room_detail=crate::protocol::RoomDetailView::unavailable(s.room_detail.room_id.clone(),Some("room_detail_unavailable")));
+                }
                 if let Some(Ok((ticket,room,result)))=result {
                     let listed=tx.borrow().catalog.rooms.iter().any(|r|r.id==room && r.kind=="stream");
                     if ticket==detail_ticket && fresh && listed {
@@ -2374,6 +2389,10 @@ async fn observe_inner(
                             Ok(_)=>crate::protocol::RoomDetailView::unavailable(Some(room),Some("room_detail_invalid")),
                             Err(category)=>crate::protocol::RoomDetailView::unavailable(Some(room),Some(category)),
                         });
+                    } else if ticket==detail_ticket {
+                        // The read finished for a room that is no longer listed (or not
+                        // fresh): nothing it found is shown, and no loading state stays.
+                        publish_status(tx,|s|if s.room_detail.room_id.as_deref()==Some(room.as_str()) {s.room_detail=crate::protocol::RoomDetailView::unavailable(Some(room),Some("room_detail_access_denied"));});
                     }
                 }
             },

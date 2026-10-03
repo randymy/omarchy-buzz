@@ -13,6 +13,8 @@ ShellRoot {
   readonly property string general: "aaaaaaaa-0000-4000-8000-000000000001"
   readonly property string ops: "aaaaaaaa-0000-4000-8000-000000000002"
   readonly property string created: "bbbbbbbb-0000-4000-8000-000000000009"
+  // Longer than the catalog row's shortened copy (256 bytes), within what is sent whole.
+  readonly property string longAbout: "Quarterly planning. " + "q".repeat(700)
   readonly property string pat: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
   Buzz.Service {
     id: service
@@ -112,7 +114,7 @@ ShellRoot {
           check(one("buzzHeaderPlace").text === "New room" && !one("buzzNewRoomCreate").enabled, "New room view wrong or Create enabled without a name")
           check(one("buzzNewRoomOpen").selected && !one("buzzNewRoomPrivate").selected, "Open is not the default")
           type("buzzNewRoomName", "  Plans ")
-          type("buzzNewRoomAbout", "Quarterly")
+          type("buzzNewRoomAbout", test.longAbout)
           click("buzzNewRoomPrivate")
           check(one("buzzNewRoomPrivate").selected && one("buzzNewRoomCreate").enabled, "Private choice or Create not taken")
           click("buzzNewRoomCreate")
@@ -137,8 +139,12 @@ ShellRoot {
           check(one("buzzRoomTopic").text === "No topic set." && /^Private room/.test(one("buzzRoomVisibility").text), "Topic or visibility wrong")
           check(memberKeys().length === 1 && shown("buzzRoomRemoveMember").length === 0, "The owner's own row offers Remove")
           one("buzzRoomEdit")
-          check(one("buzzRoomEditName").text === "Plans" && one("buzzRoomEditAbout").text === "Quarterly", "Edit fields not filled")
+          check(service.selectedRoom.description.length === 256 && test.longAbout.length > 256, "Catalog row is not a shortened copy")
+          check(one("buzzRoomEditName").text === "Plans" && one("buzzRoomEditAbout").text === test.longAbout,
+            "Edit fields not filled from the full description: " + one("buzzRoomEditAbout").text.length)
+          check(!one("buzzRoomSaveDetails").enabled, "Save enabled with nothing changed")
           type("buzzRoomEditName", "Plans 2")
+          check(one("buzzRoomSaveDetails").enabled, "Save disabled after a change")
           click("buzzRoomSaveDetails")
           advance(7)
         } else if (test.stage === 7 && service.roomAction.state === "rejected") {
@@ -198,11 +204,16 @@ ShellRoot {
           if (!(topics.length === 1 && adds.length === 2 && removed.length === 1 && creates.length === 2 && more.length === 2
               && requests("update_room").length === 2 && requests("refresh_rooms").length >= 1)) return
           check(more.every(function(r) { return Object.keys(r).sort().join(",") === "id,type,version" }), "Load more requests wrong")
-          check(creates.every(function(r) { return r.name === "Plans" && r.about === "Quarterly" && r.visibility === "private" }),
+          check(creates.every(function(r) { return r.name === "Plans" && r.about === test.longAbout && r.visibility === "private" }),
             "Create requests wrong: " + JSON.stringify(creates))
           check(topics[0].topic === "Ship it" && topics[0].roomId === test.created, "Topic request wrong")
           check(adds[0].key === "d".repeat(64) && adds[1].key === test.pat && adds.every(function(r) { return r.roomId === test.created }),
             "Add requests wrong: " + JSON.stringify(adds))
+          // A name-only edit sent only the name: the long description is not rewritten.
+          var updates = requests("update_room")
+          check(updates.length === 2 && updates.every(function(r) {
+            return Object.keys(r).sort().join(",") === "id,name,roomId,type,version" && r.name === "Plans 2"
+          }), "Update requests wrong: " + JSON.stringify(updates))
           check(removed[0].roomId === test.created && removed[0].key !== service.identity, "Removal request wrong")
           console.log("PASS: Load more keeps the loaded rooms, retries after a timeout and merges the next page; New room sends a trimmed name, description and visibility, shows the relay's refusal as said, then selects the room once it is listed; Room settings shows topic and members to everyone and lets owners and admins edit details and the topic, add members by key or from DMs and remove others after confirmation, with every relay refusal shown in its own words; the panel accepts the helper's full capability list")
           Qt.quit()

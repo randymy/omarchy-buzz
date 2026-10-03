@@ -314,10 +314,12 @@ pub fn request(bytes: &[u8]) -> Result<Request, &'static str> {
         "rename_community" | "create_room" | "update_room"
     ) {
         // Shape only; the helper sanitizes and bounds it (`config::label`,
-        // `rooms::plain`).
-        let name = r.name.as_deref().ok_or("invalid_request")?;
-        if name.trim().is_empty() || name.len() > 1024 || name.contains('\0') {
-            return Err("invalid_request");
+        // `rooms::plain`). `update_room` sends only what changed: name optional.
+        match r.name.as_deref() {
+            None if r.kind == "update_room" && raw.get("name").is_none() => {}
+            Some(name) if !name.trim().is_empty() && name.len() <= 1024 && !name.contains('\0') => {
+            }
+            _ => return Err("invalid_request"),
         }
     } else if raw.get("name").is_some() {
         return Err("invalid_request");
@@ -330,7 +332,10 @@ pub fn request(bytes: &[u8]) -> Result<Request, &'static str> {
     };
     match r.kind.as_str() {
         "create_room" if raw.get("about").is_none() || shaped(&r.about) => {}
-        "update_room" if shaped(&r.about) => {}
+        // At least one of name and about; each only when changed.
+        "update_room"
+            if (raw.get("about").is_none() || shaped(&r.about))
+                && (raw.get("about").is_some() || raw.get("name").is_some()) => {}
         "create_room" | "update_room" => return Err("invalid_request"),
         _ if raw.get("about").is_some() => return Err("invalid_request"),
         _ => {}
@@ -537,8 +542,14 @@ pub fn room_change(r: &Request) -> Option<crate::rooms::Change> {
         },
         "update_room" => Change::Details {
             room: room()?,
-            name: name()?,
-            about: about()?,
+            name: match r.name {
+                Some(_) => Some(name()?),
+                None => None,
+            },
+            about: match r.about {
+                Some(_) => Some(about()?),
+                None => None,
+            },
         },
         "set_room_topic" => Change::Topic {
             room: room()?,
@@ -858,6 +869,10 @@ pub struct RoomDetailView {
     pub topic: String,
     /// `open` or `private` in a snapshot, else empty.
     pub visibility: String,
+    /// The description as the relay lists it, up to `rooms::ABOUT_BYTES`.
+    pub about: String,
+    /// The description was longer: `about` is a cut copy, not to be edited.
+    pub about_truncated: bool,
     /// This identity's role in a snapshot, else empty.
     pub role: String,
     pub members: Vec<RoomMember>,
@@ -874,6 +889,8 @@ impl RoomDetailView {
             room_id: room,
             topic: String::new(),
             visibility: String::new(),
+            about: String::new(),
+            about_truncated: false,
             role: String::new(),
             members: Vec::new(),
             truncated: false,
@@ -888,6 +905,8 @@ impl From<crate::rooms::Detail> for RoomDetailView {
             room_id: Some(d.room),
             topic: d.topic,
             visibility: d.visibility,
+            about: d.about,
+            about_truncated: d.about_truncated,
             role: d.role,
             members: d
                 .members
@@ -2337,6 +2356,8 @@ mod state_tests {
             state: "snapshot".into(),
             room_id: Some("00000000-0000-4000-8000-000000000006".into()),
             topic: "\\".repeat(crate::rooms::TOPIC_BYTES),
+            about: "\\".repeat(crate::rooms::ABOUT_BYTES),
+            about_truncated: true,
             visibility: "private".into(),
             role: "owner".into(),
             members: (0..crate::rooms::MEMBERS)

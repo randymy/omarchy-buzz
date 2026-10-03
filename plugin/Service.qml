@@ -925,14 +925,31 @@ Item {
       && !/[\u0000-\u001f\u007f]/.test(text.trim())
   }
   function createRoom(name, about, priv) {
-    if (!validRoomText(name, 128, true) || !validRoomText(about, 512, false)) return false
+    if (!validRoomText(name, 128, true) || !validRoomText(about, roomAboutBytes, false)) return false
     var fields = {name: name.trim(), visibility: priv ? "private" : "open"}
     if (about.trim() !== "") fields.about = about.trim()
     return manageRequest("create_room", fields)
   }
+  // The longest room description the helper sends or serves in full
+  // (`rooms::ABOUT_BYTES`); the catalog row's copy is cut shorter for display.
+  readonly property int roomAboutBytes: 1024
+  // What an edit would change: only fields that differ from what the relay
+  // lists. The description's baseline is the full one from the room detail,
+  // never the catalog row's shortened copy; a description past the bound is
+  // not editable here at all (it could only be saved back cut).
+  function roomEditChanges(name, about) {
+    var changes = {}
+    if (!canEditRoom || selectedRoom === null) return changes
+    if (name.trim() !== selectedRoom.name) changes.name = name.trim()
+    if (!roomDetail.aboutTruncated && about.trim() !== roomDetail.about.trim()) changes.about = about.trim()
+    return changes
+  }
   function updateRoomDetails(name, about) {
-    if (!canEditRoom || !validRoomText(name, 128, true) || !validRoomText(about, 512, false)) return false
-    return manageRequest("update_room", {roomId: selectedRoomId, name: name.trim(), about: about.trim()})
+    if (!validRoomText(name, 128, true) || !validRoomText(about, roomAboutBytes, false)) return false
+    var changes = roomEditChanges(name, about)
+    if (Object.keys(changes).length === 0) return false
+    changes.roomId = selectedRoomId
+    return manageRequest("update_room", changes)
   }
   function setRoomTopic(topic) {
     if (!canEditRoom || !validRoomText(topic, 256, false)) return false
@@ -1288,21 +1305,24 @@ Item {
     return {state: value.state, action: value.action, requestId: value.requestId, roomId: value.roomId, category: value.category, detail: detail}
   }
   readonly property var memberRoles: ["owner", "admin", "member", "guest", "bot", "unknown"]
-  readonly property var roomDetailIdle: ({state: "unavailable", roomId: null, topic: "", visibility: "", role: "", members: [], truncated: false, category: null})
+  readonly property var roomDetailIdle: ({state: "unavailable", roomId: null, topic: "", visibility: "", about: "", aboutTruncated: false, role: "", members: [], truncated: false, category: null})
   // The verified roster, roles and topic of a joined stream room. Names are
   // profile hints; roles are the relay's, shown as said.
   function validatedRoomDetail(value) {
     if (!value || typeof value !== "object" || Array.isArray(value)
-        || Object.keys(value).sort().join(",") !== "category,members,role,roomId,state,topic,truncated,visibility"
+        || Object.keys(value).sort().join(",") !== "about,aboutTruncated,category,members,role,roomId,state,topic,truncated,visibility"
         || ["unavailable", "loading", "snapshot"].indexOf(value.state) === -1
         || (value.roomId !== null && !uuidValue(value.roomId))
         || (value.category !== null && ["room_detail_unavailable", "room_detail_invalid", "room_detail_access_denied"].indexOf(value.category) === -1)
         || !boundedString(value.topic, 1024) || utf8Size(value.topic) > 256 || /[\u0000-\u001f\u007f]/.test(value.topic)
+        || !boundedString(value.about, 4096) || utf8Size(value.about) > roomAboutBytes || /[\u0000-\u001f\u007f]/.test(value.about)
+        || typeof value.aboutTruncated !== "boolean"
         || typeof value.truncated !== "boolean" || !Array.isArray(value.members) || value.members.length > 100) return null
     if (value.state !== "snapshot") {
       return value.members.length === 0 && value.topic === "" && value.visibility === "" && value.role === "" && !value.truncated
-        && (value.state !== "loading" || value.roomId !== null) ? {state: value.state, roomId: value.roomId, topic: "", visibility: "", role: "",
-          members: [], truncated: false, category: value.category} : null
+        && value.about === "" && !value.aboutTruncated
+        && (value.state !== "loading" || value.roomId !== null) ? {state: value.state, roomId: value.roomId, topic: "", visibility: "", about: "",
+          aboutTruncated: false, role: "", members: [], truncated: false, category: value.category} : null
     }
     if (value.roomId === null || value.category !== null || ["open", "private"].indexOf(value.visibility) === -1
         || memberRoles.indexOf(value.role) === -1) return null
@@ -1317,7 +1337,7 @@ Item {
       seen[member.key] = true
       clean.push({key: member.key, name: member.name, role: member.role})
     }
-    return {state: "snapshot", roomId: value.roomId, topic: value.topic, visibility: value.visibility, role: value.role,
+    return {state: "snapshot", roomId: value.roomId, topic: value.topic, visibility: value.visibility, about: value.about, aboutTruncated: value.aboutTruncated, role: value.role,
       members: clean, truncated: value.truncated, category: null}
   }
   function selectJoinedRoom() {

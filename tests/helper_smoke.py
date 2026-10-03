@@ -74,7 +74,7 @@ def status(frame, kind):
         "state": "idle", "action": None, "requestId": None, "roomId": None, "category": None, "detail": None,
     }, frame
     assert frame["status"]["roomDetail"] == {
-        "state": "unavailable", "roomId": None, "topic": "", "visibility": "", "role": "", "members": [],
+        "state": "unavailable", "roomId": None, "topic": "", "visibility": "", "about": "", "aboutTruncated": False, "role": "", "members": [],
         "truncated": False, "category": None,
     }, frame
     assert frame["status"]["invites"] == {
