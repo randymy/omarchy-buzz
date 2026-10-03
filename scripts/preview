@@ -234,6 +234,7 @@ if [[ ${1:-} == --notifications ]]; then
   expect 'Alex (direct message)' '2 new messages. Latest: yo' '{"room":"'$room_b'"}'
   expect 'Sam mentioned you in #general' 'ping' '{"room":"'$room_a'"}'
   expect 'Direct message' 'New message' '{"room":"'$room_b'"}'
+  expect 'Zed mentioned you in #general' 'New message from Zed' '{"room":"'$room_a'"}'
   if ! cmp -s "$preview_dir/expected-notifications" "$BUZZ_ACTIVITY_RECORD"; then
     echo "preview: notification argv differs from the expected titles, bodies and click targets" >&2
     diff "$preview_dir/expected-notifications" "$BUZZ_ACTIVITY_RECORD" >&2 || true

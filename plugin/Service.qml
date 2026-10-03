@@ -64,21 +64,31 @@ Item {
   // The helper's notice for one room (RoomActivity.update validated it); the
   // title, body and click target are built here from that bounded, plain data.
   property var notificationQueue: []
+  // The queue holds notices, not wording: mode, suppression and the text choice
+  // are checked again when each is sent, so a change in Settings applies at once.
+  function noticeDeliverable(item) {
+    if (sampleMode || !Notifications.allows(notificationMode, item.notice.kind)) return false
+    return !(panelOpen && panelFocused && historyState === "snapshot" && selectedRoomId === item.roomId)
+  }
   function announceNotice(roomId, notice) {
-    if (sampleMode || !Notifications.allows(notificationMode, notice.kind)) return
-    if (panelOpen && panelFocused && historyState === "snapshot" && selectedRoomId === roomId) return
-    var room = rooms.find(function(r) { return r.id === roomId })
-    var message = Notifications.compose(notice, room ? room.kind === "dm" : notice.kind === "dm", notificationText)
-    var queue = notificationQueue.concat([{
-      title: message.title, body: message.body,
-      target: JSON.stringify(notice.threadRoot ? {room: roomId, thread: notice.threadRoot} : {room: roomId})}])
-    notificationQueue = queue.slice(-5)
+    var item = {roomId: roomId, notice: notice}
+    if (!noticeDeliverable(item)) return
+    notificationQueue = notificationQueue.concat([item]).slice(-5)
     sendNextNotification()
   }
   function sendNextNotification() {
-    if (notificationProcess.running || notificationQueue.length === 0) return
-    var next = notificationQueue[0]
-    notificationQueue = notificationQueue.slice(1)
+    if (notificationProcess.running) return
+    var item = null
+    while (notificationQueue.length > 0 && !item) {
+      var candidate = notificationQueue[0]
+      notificationQueue = notificationQueue.slice(1)
+      if (noticeDeliverable(candidate)) item = candidate
+    }
+    if (!item) return
+    var room = rooms.find(function(r) { return r.id === item.roomId })
+    var message = Notifications.compose(item.notice, room ? room.kind === "dm" : item.notice.kind === "dm", notificationText)
+    var next = {title: message.title, body: message.body,
+      target: JSON.stringify(item.notice.threadRoot ? {room: item.roomId, thread: item.notice.threadRoot} : {room: item.roomId})}
     // Fixed argv; relay text is only ever one argument (never a shell string,
     // never an option: Notifications.arg keeps it from starting with "-"), and
     // the click command carries only validated ids.
@@ -111,7 +121,10 @@ Item {
   }
   Timer { id: targetExpiry; interval: 15000; onTriggered: root.clearNotificationTarget() }
   property var activityObservation: ActivityObserver.fresh()
-  onNotificationModeChanged: notificationPreferenceChanged()
+  onNotificationModeChanged: {
+    if (notificationMode === "none") notificationQueue = []
+    notificationPreferenceChanged()
+  }
   onNotificationTextChanged: notificationPreferenceChanged()
   function notificationPreferenceChanged() {
     activityObservation = ActivityObserver.fresh()

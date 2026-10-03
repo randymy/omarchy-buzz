@@ -94,6 +94,24 @@ ShellRoot {
           // Settings persist the mode choice but never message data.
           check(service.notificationsEnabled, "notifications unexpectedly off")
         } else if (step === 8) {
+          // Queued notices (as if the sender were busy) obey the current mode when sent.
+          var queued = function(sender) { return {roomId: roomA, notice: {seq: 99, kind: "mention", count: 1, roomName: "general",
+            sender: sender, snippet: "secret", eventId: "d".repeat(64), threadRoot: null}} }
+          service.notificationMode = "direct"
+          service.notificationQueue = [queued("Q1"), queued("Q2"), queued("Q3")]
+          service.notificationMode = "none"
+          check(service.notificationQueue.length === 0, "None did not clear the queue")
+          service.notificationMode = "dms"
+          service.notificationQueue = [queued("Q1"), queued("Q2"), queued("Q3")]
+          service.sendNextNotification()
+          check(service.notificationQueue.length === 0, "excluded kinds stayed queued")
+          // ...and the current text choice: queued with text on, sent with it off.
+          service.notificationMode = "direct"
+          service.notificationText = true
+          service.notificationQueue = [queued("Zed")]
+          service.notificationText = false
+          service.sendNextNotification()
+        } else if (step === 9) {
           console.log("Buzz offscreen notification check passed")
           Qt.quit()
         }
