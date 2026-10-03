@@ -121,6 +121,15 @@ for line in sys.stdin:
         if created and not any(r["id"] == CREATED for r in rooms):
             rooms.append(room(CREATED, "Plans", abouts[CREATED][:ROW_ABOUT]))
         emit()
+    elif kind == "fixture_rename":
+        # Another client renames the created room and changes its topic.
+        for r in rooms:
+            if r["id"] == CREATED:
+                r["name"] = "Renamed elsewhere"
+        topics[CREATED] = "Other topic"
+        if detail["roomId"] == CREATED:
+            refresh_detail(CREATED)
+        emit()
     elif kind == "fetch_room_detail":
         assert UUID.fullmatch(request["roomId"]) and sorted(request) == ["id", "roomId", "type", "version"], request
         if request["roomId"] in members:

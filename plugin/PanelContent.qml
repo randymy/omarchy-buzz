@@ -879,6 +879,7 @@ FocusScope {
   property bool newRoomAwaiting: false
   property bool topicTouched: false
   property bool aboutTouched: false
+  property bool nameTouched: false
   property string armedMember: ""
   Timer { id: memberDisarm; interval: 5000; onTriggered: root.armedMember = "" }
   readonly property bool roomManageShown: !!service && !service.sampleMode && service.roomManageAvailable
@@ -923,6 +924,7 @@ FocusScope {
   // The edit fields start from what the relay lists for the selected room.
   function fillRoomSettings() {
     var room = service ? service.selectedRoom : null
+    nameTouched = false
     editRoomName.text = room ? room.name : ""
     // The description comes from the room detail (the full text), never from
     // the catalog row's shortened copy.
@@ -951,6 +953,22 @@ FocusScope {
     if (communityView === "new-room" && newRoomAwaiting && action.action === "create" && action.state === "acknowledged"
         && service.selectedRoomId === action.roomId) { newRoomAwaiting = false; backToRooms() }
   }
+  function followRelay() {
+    if (root.communityView !== "room-settings" || !service) return
+    var room = service.selectedRoom
+    if (!nameTouched && room) editRoomName.text = room.name
+    if (service.roomDetailShown) {
+      if (!aboutTouched) editRoomAbout.text = service.roomDetail.about
+      if (!topicTouched) editRoomTopic.text = service.roomDetail.topic
+    }
+  }
+  // A saved field is no longer an edit: it follows the relay again.
+  function saved(action) {
+    if (action.state !== "acknowledged" || action.requestId !== service.roomActionRequestId || communityView !== "room-settings") return
+    if (action.action === "details") { nameTouched = false; aboutTouched = false }
+    if (action.action === "topic") topicTouched = false
+    followRelay()
+  }
   function memberLabel(member) {
     var who = member.name.trim() || member.key.slice(0, 12) + "…"
     return who + " · " + member.role + (service && member.key === service.identity ? " · you" : "")
@@ -961,14 +979,12 @@ FocusScope {
       root.finishCreate()
       if (root.communityView === "room-settings") { root.fillRoomSettings(); root.service.refreshRoomDetail() }
     }
-    function onRoomDetailChanged() {
-      if (root.communityView === "room-settings" && !root.topicTouched && !editRoomTopic.activeFocus && root.service.roomDetailShown)
-        editRoomTopic.text = root.service.roomDetail.topic
-      if (root.communityView === "room-settings" && !root.aboutTouched && !editRoomAbout.activeFocus && root.service.roomDetailShown)
-        editRoomAbout.text = root.service.roomDetail.about
-    }
+    // An untouched field follows the relay's latest value; a field the user
+    // typed in keeps their text (their explicit edit), whatever changed meanwhile.
+    function onRoomDetailChanged() { root.followRelay() }
+    function onSelectedRoomChanged() { root.followRelay() }
     // Back to the rooms once the room just created is listed and selected.
-    function onRoomActionChanged() { root.finishCreate() }
+    function onRoomActionChanged() { root.finishCreate(); root.saved(root.service.roomAction) }
   }
   Connections {
     target: root.service
@@ -2554,6 +2570,7 @@ FocusScope {
                 verticalPadding: Style.space(4)
                 maximumLength: 128
                 placeholderText: "Room name"
+                onTextEdited: root.nameTouched = true
               }
               Ui.TextField {
                 id: editRoomAbout
@@ -2578,9 +2595,9 @@ FocusScope {
                 focusable: true
                 enabled: !!root.service && root.service.canEditRoom && root.service.validRoomText(editRoomName.text, 128, true)
                   && root.service.validRoomText(editRoomAbout.text, root.service.roomAboutBytes, false)
-                  && Object.keys(root.service.roomEditChanges(editRoomName.text, editRoomAbout.text)).length > 0
+                  && Object.keys(root.service.roomEditChanges(editRoomName.text, editRoomAbout.text, root.nameTouched, root.aboutTouched)).length > 0
                 opacity: enabled ? 1 : 0.5
-                onClicked: root.service.updateRoomDetails(editRoomName.text, editRoomAbout.text)
+                onClicked: root.service.updateRoomDetails(editRoomName.text, editRoomAbout.text, root.nameTouched, root.aboutTouched)
               }
               SettingsCaption { text: "Change topic" }
               Ui.TextField {
@@ -2599,8 +2616,9 @@ FocusScope {
                 fontSize: Style.font.caption
                 focusable: true
                 enabled: !!root.service && root.service.canEditRoom && root.service.validRoomText(editRoomTopic.text, 256, false)
+                  && root.service.roomTopicChanged(editRoomTopic.text, root.topicTouched)
                 opacity: enabled ? 1 : 0.5
-                onClicked: root.service.setRoomTopic(editRoomTopic.text)
+                onClicked: root.service.setRoomTopic(editRoomTopic.text, root.topicTouched)
               }
             }
             SettingsCaption {

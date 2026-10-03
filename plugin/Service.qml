@@ -933,26 +933,31 @@ Item {
   // The longest room description the helper sends or serves in full
   // (`rooms::ABOUT_BYTES`); the catalog row's copy is cut shorter for display.
   readonly property int roomAboutBytes: 1024
-  // What an edit would change: only fields that differ from what the relay
-  // lists. The description's baseline is the full one from the room detail,
-  // never the catalog row's shortened copy; a description past the bound is
-  // not editable here at all (it could only be saved back cut).
-  function roomEditChanges(name, about) {
+  // What a save would send: only fields the user touched (typed in) that also
+  // differ from what the relay lists now. A field left alone is never sent, so
+  // a rename or new text made elsewhere in the meantime is not reversed. The
+  // description's baseline is the full one from the room detail, never the
+  // catalog row's shortened copy; a description past the bound is not editable
+  // here at all (it could only be saved back cut).
+  function roomEditChanges(name, about, nameTouched, aboutTouched) {
     var changes = {}
     if (!canEditRoom || selectedRoom === null) return changes
-    if (name.trim() !== selectedRoom.name) changes.name = name.trim()
-    if (!roomDetail.aboutTruncated && about.trim() !== roomDetail.about.trim()) changes.about = about.trim()
+    if (nameTouched && name.trim() !== selectedRoom.name) changes.name = name.trim()
+    if (aboutTouched && !roomDetail.aboutTruncated && about.trim() !== roomDetail.about.trim()) changes.about = about.trim()
     return changes
   }
-  function updateRoomDetails(name, about) {
+  function roomTopicChanged(topic, touched) {
+    return canEditRoom && touched && topic.trim() !== roomDetail.topic.trim()
+  }
+  function updateRoomDetails(name, about, nameTouched, aboutTouched) {
     if (!validRoomText(name, 128, true) || !validRoomText(about, roomAboutBytes, false)) return false
-    var changes = roomEditChanges(name, about)
+    var changes = roomEditChanges(name, about, nameTouched, aboutTouched)
     if (Object.keys(changes).length === 0) return false
     changes.roomId = selectedRoomId
     return manageRequest("update_room", changes)
   }
-  function setRoomTopic(topic) {
-    if (!canEditRoom || !validRoomText(topic, 256, false)) return false
+  function setRoomTopic(topic, touched) {
+    if (!roomTopicChanged(topic, touched) || !validRoomText(topic, 256, false)) return false
     return manageRequest("set_room_topic", {roomId: selectedRoomId, topic: topic.trim()})
   }
   function addRoomMember(key) {

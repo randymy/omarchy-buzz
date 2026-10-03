@@ -66,6 +66,22 @@ ShellRoot {
     field.forceActiveFocus()
     field.text = text
   }
+  // Typing as a user does (programmatic text changes are not edits).
+  function typeUser(name, text) {
+    var field = one(name)
+    reveal(field)
+    field.forceActiveFocus()
+    field.selectAll()
+    input.keyClick(Qt.Key_Backspace)
+    for (var i = 0; i < text.length; i++) input.keyClick(text[i])
+  }
+  function appendUser(name, text) {
+    var field = one(name)
+    reveal(field)
+    field.forceActiveFocus()
+    field.cursorPosition = field.length
+    for (var i = 0; i < text.length; i++) input.keyClick(text[i])
+  }
   function requests(kind) {
     return JSON.parse(record.text() || '{"requests":[]}').requests.filter(function(r) { return r.type === kind })
   }
@@ -142,19 +158,42 @@ ShellRoot {
           check(service.selectedRoom.description.length === 256 && test.longAbout.length > 256, "Catalog row is not a shortened copy")
           check(one("buzzRoomEditName").text === "Plans" && one("buzzRoomEditAbout").text === test.longAbout,
             "Edit fields not filled from the full description: " + one("buzzRoomEditAbout").text.length)
-          check(!one("buzzRoomSaveDetails").enabled, "Save enabled with nothing changed")
-          type("buzzRoomEditName", "Plans 2")
-          check(one("buzzRoomSaveDetails").enabled, "Save disabled after a change")
+          check(!one("buzzRoomSaveDetails").enabled && !one("buzzRoomSaveTopic").enabled, "Save enabled with nothing changed")
+          // Another client renames the room and changes its topic while this view is open.
+          service.send("fixture_rename")
+          advance(60)
+        } else if (test.stage === 60 && service.selectedRoom.name === "Renamed elsewhere" && service.roomDetail.topic === "Other topic") {
+          // Untouched fields follow the relay; nothing is a pending edit.
+          check(one("buzzRoomEditName").text === "Renamed elsewhere" && one("buzzRoomEditTopic").text === "Other topic",
+            "Untouched fields did not follow the relay: " + one("buzzRoomEditName").text + " / " + one("buzzRoomEditTopic").text)
+          check(one("buzzRoomEditAbout").text === test.longAbout, "Untouched description changed")
+          check(!one("buzzRoomSaveDetails").enabled && !one("buzzRoomSaveTopic").enabled, "Save enabled for a relay-side change")
+          // Edit only the description and save: the stale-looking name is never sent.
+          appendUser("buzzRoomEditAbout", "!")
+          check(one("buzzRoomSaveDetails").enabled && !one("buzzRoomSaveTopic").enabled, "Save not enabled by a description edit")
           click("buzzRoomSaveDetails")
           advance(7)
         } else if (test.stage === 7 && service.roomAction.state === "rejected") {
           check(one("buzzRoomManageStatus").text === "The relay refused to change the room details. Relay: restricted: actor not authorized for name/about changes",
             "Permission refusal not shown: " + one("buzzRoomManageStatus").text)
+          // A refused edit stays an edit: the text is kept and can be saved again.
+          check(one("buzzRoomEditAbout").text === test.longAbout + "!" && one("buzzRoomSaveDetails").enabled, "A refused edit was dropped")
           click("buzzRoomSaveDetails")
           advance(8)
-        } else if (test.stage === 8 && service.roomAction.state === "acknowledged" && service.selectedRoom.name === "Plans 2") {
+        } else if (test.stage === 8 && service.roomAction.state === "acknowledged" && service.roomDetail.about === test.longAbout + "!") {
           check(one("buzzRoomManageStatus").text === "Room details saved.", "Saved text wrong: " + one("buzzRoomManageStatus").text)
-          type("buzzRoomEditTopic", "Ship it")
+          check(service.selectedRoom.name === "Renamed elsewhere" && one("buzzRoomEditName").text === "Renamed elsewhere",
+            "The other client's rename was reversed")
+          check(!one("buzzRoomSaveDetails").enabled, "Save still enabled after saving")
+          // Now edit the name, and a touched name is kept when the relay changes underneath.
+          typeUser("buzzRoomEditName", "Plans 2")
+          check(one("buzzRoomSaveDetails").enabled, "Save disabled after a name edit")
+          click("buzzRoomSaveDetails")
+          advance(80)
+        } else if (test.stage === 80 && service.selectedRoom.name === "Plans 2" && service.roomAction.action === "details"
+            && service.roomAction.state === "acknowledged" && one("buzzRoomManageStatus").text === "Room details saved.") {
+          typeUser("buzzRoomEditTopic", "Ship it")
+          check(one("buzzRoomSaveTopic").enabled, "Topic save not enabled by an edit")
           click("buzzRoomSaveTopic")
           advance(9)
         } else if (test.stage === 9 && service.roomDetail.topic === "Ship it") {
@@ -202,7 +241,7 @@ ShellRoot {
           var creates = requests("create_room")
           var more = requests("load_more_rooms")
           if (!(topics.length === 1 && adds.length === 2 && removed.length === 1 && creates.length === 2 && more.length === 2
-              && requests("update_room").length === 2 && requests("refresh_rooms").length >= 1)) return
+              && requests("update_room").length === 3 && requests("refresh_rooms").length >= 1)) return
           check(more.every(function(r) { return Object.keys(r).sort().join(",") === "id,type,version" }), "Load more requests wrong")
           check(creates.every(function(r) { return r.name === "Plans" && r.about === test.longAbout && r.visibility === "private" }),
             "Create requests wrong: " + JSON.stringify(creates))
@@ -211,9 +250,10 @@ ShellRoot {
             "Add requests wrong: " + JSON.stringify(adds))
           // A name-only edit sent only the name: the long description is not rewritten.
           var updates = requests("update_room")
-          check(updates.length === 2 && updates.every(function(r) {
-            return Object.keys(r).sort().join(",") === "id,name,roomId,type,version" && r.name === "Plans 2"
-          }), "Update requests wrong: " + JSON.stringify(updates))
+          check(updates.length === 3 && updates.slice(0, 2).every(function(r) {
+            return Object.keys(r).sort().join(",") === "about,id,roomId,type,version" && r.about === test.longAbout + "!"
+          }) && Object.keys(updates[2]).sort().join(",") === "id,name,roomId,type,version" && updates[2].name === "Plans 2",
+            "Update requests wrong: " + JSON.stringify(updates))
           check(removed[0].roomId === test.created && removed[0].key !== service.identity, "Removal request wrong")
           console.log("PASS: Load more keeps the loaded rooms, retries after a timeout and merges the next page; New room sends a trimmed name, description and visibility, shows the relay's refusal as said, then selects the room once it is listed; Room settings shows topic and members to everyone and lets owners and admins edit details and the topic, add members by key or from DMs and remove others after confirmation, with every relay refusal shown in its own words; the panel accepts the helper's full capability list")
           Qt.quit()
