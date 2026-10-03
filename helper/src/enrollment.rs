@@ -122,6 +122,7 @@ pub async fn enroll() -> Result<(), &'static str> {
                 eprintln!("That key signs for the relay. Enter a separate personal Buzz identity.")
             }
             "discovery_unavailable"
+            | "discovery_denied"
             | "discovery_invalid_info"
             | "discovery_signer_unavailable"
             | "discovery_oversized"

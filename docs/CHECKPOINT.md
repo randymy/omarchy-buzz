@@ -3640,7 +3640,9 @@ service or Rust change, not installed.
 - A background joined-room check that fails transiently (timeout, unavailable,
   busy, rate-limited) keeps the last verified catalog, history, thread and
   roster; a changed relay identity, a denial or an invalid answer still clears
-  them.
+  them. A 401/403 from the relay's `/info` is `discovery_denied` (formerly
+  `discovery_unavailable`), so a refusal is never mistaken for an outage; the
+  panel still shows `room_catalog_unavailable`.
 - Panel: an ended `ui-bridge` restarts after 1, 2, 5, 10 s, then every 30 s
   (`autoRestart`, on with `autoConnect`; not for `incompatible_response`); the
   delays start over after a bridge that lived 60 s. Opening the panel retries

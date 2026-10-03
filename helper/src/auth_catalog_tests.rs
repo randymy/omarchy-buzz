@@ -161,6 +161,8 @@ struct Discovery {
     gate: Option<(oneshot::Sender<()>, oneshot::Receiver<()>)>,
     // The relay information names another signing key.
     changed: bool,
+    // The relay information request is refused (403).
+    denied: bool,
 }
 struct Script {
     next: std::collections::VecDeque<Discovery>,
@@ -494,12 +496,14 @@ async fn recheck_fixture_aging(
                             rooms,
                             gate,
                             changed,
+                            denied,
                         }) => {
                             if let Some((started, release)) = gate {
                                 let _ = started.send(());
                                 let _ = release.await;
                             }
                             match rooms {
+                                _ if denied => FORBIDDEN.into(),
                                 _ if changed => ok(&json!({"self": Keys::generate().public_key().to_hex()})
                                     .to_string()),
                                 Some(rooms) => {
@@ -658,6 +662,7 @@ fn held(rooms: Option<Vec<String>>) -> (Discovery, oneshot::Receiver<()>, onesho
             rooms,
             gate: Some((started_tx, release_rx)),
             changed: false,
+            denied: false,
         },
         started,
         release,
@@ -743,6 +748,7 @@ enum Outcome {
     RemoveOther,
     Fail,
     IdentityChanged,
+    Denied,
 }
 async fn background_check(outcome: Outcome) {
     let _network_fixture = crate::NETWORK_TEST_LOCK.lock().await;
@@ -754,10 +760,11 @@ async fn background_check(outcome: Outcome) {
             Outcome::Same => Some(vec![a.clone(), b.clone()]),
             Outcome::RemoveSelected => Some(vec![b.clone()]),
             Outcome::RemoveOther => Some(vec![a.clone()]),
-            Outcome::Fail | Outcome::IdentityChanged => None,
+            Outcome::Fail | Outcome::IdentityChanged | Outcome::Denied => None,
         };
         let (mut step, started, release) = held(after);
         step.changed = outcome == Outcome::IdentityChanged;
+        step.denied = outcome == Outcome::Denied;
         f.script.lock().unwrap().next.push_back(step);
         timeout(Duration::from_secs(5), started)
             .await
@@ -860,12 +867,17 @@ async fn background_check(outcome: Outcome) {
                 );
                 assert!(s.activity.iter().all(|entry| entry.room_id == a));
             }
-            Outcome::IdentityChanged => {
+            // A refusal answers for access: nothing verified before it stays.
+            Outcome::IdentityChanged | Outcome::Denied => {
                 let s = snapshot(&mut f.status, |s| s.catalog.state == "unavailable").await;
                 assert!(s.catalog.rooms.is_empty());
                 assert_eq!(
                     s.catalog.category.as_deref(),
-                    Some("relay_identity_changed")
+                    Some(if outcome == Outcome::Denied {
+                        "room_catalog_unavailable"
+                    } else {
+                        "relay_identity_changed"
+                    })
                 );
                 assert_eq!(s.history.state, "unavailable");
                 assert!(s.history.room_id.is_none() && s.history.rows.is_empty());
@@ -909,6 +921,11 @@ async fn background_room_check_with_changed_relay_identity_clears_dependent_view
     background_check(Outcome::IdentityChanged).await;
 }
 
+#[tokio::test]
+async fn refused_background_room_check_clears_dependent_views() {
+    background_check(Outcome::Denied).await;
+}
+
 #[test]
 fn only_timeouts_and_unavailable_relays_keep_a_catalog() {
     for transient in [
@@ -925,6 +942,7 @@ fn only_timeouts_and_unavailable_relays_keep_a_catalog() {
         "query_access_denied",
         "query_auth_rejected",
         "relay_identity_changed",
+        "discovery_denied",
         "discovery_signer_unavailable",
         "catalog_invalid_signature",
         "catalog_untrusted_author",

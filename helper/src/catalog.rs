@@ -175,6 +175,11 @@ async fn info_bytes(mut response: reqwest::Response) -> Result<Vec<u8>, &'static
     if response.status().is_redirection() {
         return Err("discovery_redirect_rejected");
     }
+    // A refusal is an answer about access, not an unreachable relay: a
+    // background check must not keep a catalog after it.
+    if matches!(response.status().as_u16(), 401 | 403) {
+        return Err("discovery_denied");
+    }
     if response.status().as_u16() != 200 {
         return Err("discovery_unavailable");
     }

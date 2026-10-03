@@ -285,6 +285,7 @@ async fn statuses_and_presence_age_out_while_room_checks_keep_failing() {
                     rooms: None,
                     gate: None,
                     changed: false,
+                    denied: false,
                 });
             }
             *f.discoveries.borrow()
