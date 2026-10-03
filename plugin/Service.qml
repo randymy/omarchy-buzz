@@ -305,8 +305,9 @@ Item {
     seen[identity] = true
     dmSelection.forEach(function(key) { seen[key] = true })
     var list = []
-    function add(key, name, entry) {
-      if (seen[key] || (q !== "" && name.toLowerCase().indexOf(q) === -1 && key.indexOf(q) !== 0)) return
+    // `filtered`: the helper already matched and ranked it (name, nip05 or key).
+    function add(key, name, entry, filtered) {
+      if (seen[key] || (!filtered && q !== "" && name.toLowerCase().indexOf(q) === -1 && key.indexOf(q) !== 0)) return
       seen[key] = true
       list.push({key: key, name: name, label: participantLabel(key), status: entry && entry.status || null, presence: presenceOf(key)})
     }
@@ -314,7 +315,7 @@ Item {
       var others = room.participants.filter(function(key) { return key !== identity })
       others.forEach(function(key) { add(key, personName(key) || (others.length === 1 ? room.name : ""), null) })
     })
-    if (peopleStatus === "ready") peopleEntries.forEach(function(entry) { add(entry.key, entry.name, null) })
+    if (peopleStatus === "ready") peopleEntries.forEach(function(entry) { add(entry.key, entry.name, null, true) })
     else if (recipientsRetained()) recipientEntries.forEach(function(entry) { add(entry.key, entry.name, entry) })
     return list
   }
@@ -2134,11 +2135,13 @@ Item {
     catalogCategory = ""
     if (!sampleMode) selectedRoomId = ""
   }
+  readonly property var knownCapabilities: ["connection_status", "room_catalog", "room_history", "message_send", "room_recipients", "history_auto_refresh", "room_activity", "agent_profiles", "thread_replies", "thread_send", "thread_summaries", "dm_open", "older_history", "live_updates", "setup_assist", "community_join", "invite_mint", "attachments", "user_status", "presence", "communities", "people_search"]
+  // Distinct known names only, so the length bound follows the list.
   function validCapabilities(capabilities) {
-    return Array.isArray(capabilities) && capabilities.length >= 1 && capabilities.length <= 21
+    return Array.isArray(capabilities) && capabilities.length >= 1 && capabilities.length <= knownCapabilities.length
       && capabilities.indexOf("connection_status") !== -1
       && capabilities.every(function(cap, index) {
-        return ["connection_status", "room_catalog", "room_history", "message_send", "room_recipients", "history_auto_refresh", "room_activity", "agent_profiles", "thread_replies", "thread_send", "thread_summaries", "dm_open", "older_history", "live_updates", "setup_assist", "community_join", "invite_mint", "attachments", "user_status", "presence", "communities", "people_search"].indexOf(cap) !== -1 && capabilities.indexOf(cap) === index
+        return knownCapabilities.indexOf(cap) !== -1 && capabilities.indexOf(cap) === index
       })
   }
   // Streams carry no participants and are never hidden. A DM lists 2-9 distinct
@@ -2531,6 +2534,7 @@ Item {
         || state.activity.slice(0,i).some(function(b) { return b.roomId === a.roomId })
     }))) { fail("invalid_response"); return false }
     var incomingScope = (state.relay || "") + "|" + (state.identity || "")
+    var scopeBefore = draftScopeKey
     if (draftScopeKey && (incomingScope !== draftScopeKey || (instanceId !== "" && frame.generation !== generation))) {
       losePendingDelivery()
       loseDmOpen()
@@ -2654,7 +2658,8 @@ Item {
     dmOpenSupported = supportsDmOpen
     if (!supportsDmOpen) loseDmOpen()
     // The directory belongs to one authenticated connection and community.
-    if (!supportsPeople || state.connection !== "authenticated" || frame.generation !== generation) clearPeople()
+    if (!supportsPeople || state.connection !== "authenticated" || frame.generation !== generationBefore
+        || incomingScope !== scopeBefore) clearPeople()
     peopleSupported = supportsPeople
     if (people) applyPeople(people)
     setupAssistSupported = frame.capabilities.indexOf("setup_assist") !== -1

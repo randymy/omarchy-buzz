@@ -222,8 +222,9 @@ ShellRoot {
           test.stage = 5
         } else if (test.stage === 5 && service.peopleText === "dana" && service.peopleStatus === "ready") {
           var found = test.candidates()
-          if (found.length !== 1 || found[0].key !== test.dana)
-            throw new Error("Search must list only the match: " + found.length)
+          // The helper's matches are kept as served, including a nip05-only match.
+          if (found.length !== 2 || found[0].key !== test.dana || found[1].key !== "5a".repeat(32))
+            throw new Error("Search must list the helper's matches: " + found.length)
           found[0].clicked()
           // A person from the directory, not the room, may be started with.
           if (JSON.stringify(service.dmSelection) !== JSON.stringify([test.dana]) || !service.canStartDm)
