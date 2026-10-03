@@ -196,9 +196,16 @@ async fn exact_bytes_and_auth_reach_fixed_query() {
     let event = membership(&keys);
     let body = serde_json::to_vec(&vec![event.clone()]).unwrap();
     let (relay, task) = server(response(&body)).await;
-    let events = query(&relay, &keys, &QueryRequest::JoinedRooms { limit: 20 })
-        .await
-        .unwrap();
+    let events = query(
+        &relay,
+        &keys,
+        &QueryRequest::JoinedRooms {
+            limit: 20,
+            before: None,
+        },
+    )
+    .await
+    .unwrap();
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].id, event.id);
     let got = task.await.unwrap();
@@ -230,7 +237,10 @@ async fn redirect_contacts_no_target() {
         query(
             &relay,
             &Keys::generate(),
-            &QueryRequest::JoinedRooms { limit: 1 }
+            &QueryRequest::JoinedRooms {
+                limit: 1,
+                before: None
+            }
         )
         .await,
         Err("query_redirect_rejected")
@@ -253,7 +263,10 @@ async fn rejects_length_and_chunked_overflow() {
         query(
             &relay,
             &Keys::generate(),
-            &QueryRequest::JoinedRooms { limit: 1 }
+            &QueryRequest::JoinedRooms {
+                limit: 1,
+                before: None
+            }
         )
         .await,
         Err("query_oversized")
@@ -272,7 +285,10 @@ async fn rejects_length_and_chunked_overflow() {
         query(
             &relay,
             &Keys::generate(),
-            &QueryRequest::JoinedRooms { limit: 1 }
+            &QueryRequest::JoinedRooms {
+                limit: 1,
+                before: None
+            }
         )
         .await,
         Err("query_oversized")
@@ -286,7 +302,15 @@ async fn rejects_malformed_signature_and_scope() {
     for body in [b"{}".to_vec(), b"[broken".to_vec()] {
         let (relay, task) = server(response(&body)).await;
         assert!(matches!(
-            query(&relay, &keys, &QueryRequest::JoinedRooms { limit: 1 }).await,
+            query(
+                &relay,
+                &keys,
+                &QueryRequest::JoinedRooms {
+                    limit: 1,
+                    before: None
+                }
+            )
+            .await,
             Err("query_invalid_response")
         ));
         task.await.unwrap();
@@ -296,7 +320,15 @@ async fn rejects_malformed_signature_and_scope() {
     let body = serde_json::to_vec(&vec![event]).unwrap();
     let (relay, task) = server(response(&body)).await;
     assert!(matches!(
-        query(&relay, &keys, &QueryRequest::JoinedRooms { limit: 1 }).await,
+        query(
+            &relay,
+            &keys,
+            &QueryRequest::JoinedRooms {
+                limit: 1,
+                before: None
+            }
+        )
+        .await,
         Err("query_invalid_signature")
     ));
     task.await.unwrap();
@@ -304,7 +336,15 @@ async fn rejects_malformed_signature_and_scope() {
     let body = serde_json::to_vec(&vec![event]).unwrap();
     let (relay, task) = server(response(&body)).await;
     assert!(matches!(
-        query(&relay, &keys, &QueryRequest::JoinedRooms { limit: 1 }).await,
+        query(
+            &relay,
+            &keys,
+            &QueryRequest::JoinedRooms {
+                limit: 1,
+                before: None
+            }
+        )
+        .await,
         Err("query_invalid_scope")
     ));
     task.await.unwrap();
@@ -317,7 +357,10 @@ async fn response_reason_does_not_escape_category() {
         query(
             &relay,
             &Keys::generate(),
-            &QueryRequest::JoinedRooms { limit: 1 }
+            &QueryRequest::JoinedRooms {
+                limit: 1,
+                before: None
+            }
         )
         .await,
         Err("query_auth_rejected")
@@ -333,7 +376,10 @@ async fn concurrent_capacity_rejects_without_network() {
         query(
             "ws://localhost:3000",
             &Keys::generate(),
-            &QueryRequest::JoinedRooms { limit: 1 }
+            &QueryRequest::JoinedRooms {
+                limit: 1,
+                before: None
+            }
         )
         .await,
         Err("query_busy")
@@ -352,12 +398,22 @@ fn metadata_request_is_typed_and_bounded() {
         .body(&keys)
         .is_err());
     assert!(QueryRequest::RoomMetadata {
-        rooms: vec![room; 21]
+        rooms: vec![room; 51]
     }
     .body(&keys)
     .is_err());
-    assert!(QueryRequest::JoinedRooms { limit: 0 }.body(&keys).is_err());
-    assert!(QueryRequest::JoinedRooms { limit: 51 }.body(&keys).is_err());
+    assert!(QueryRequest::JoinedRooms {
+        limit: 0,
+        before: None
+    }
+    .body(&keys)
+    .is_err());
+    assert!(QueryRequest::JoinedRooms {
+        limit: 51,
+        before: None
+    }
+    .body(&keys)
+    .is_err());
 }
 
 #[test]

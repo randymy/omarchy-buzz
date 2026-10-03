@@ -251,7 +251,7 @@ the same thread reducer. No production relay is used by these tests.
 The first view is read-only, depth one, with up to eight replies, manual refresh and an eight-second refresh while
 the panel is open. Failed reads pause refresh until an explicit retry. The existing composer sends top-level messages. Pagination, replying
 inside a thread, automatic thread notifications and detailed execution state
-are separate increments. Responses are bounded to 1 MiB; incoming commands
+are separate increments. Responses are bounded to 2 MiB (1 MiB before `room_manage`); incoming commands
 remain bounded to 64 KiB. Install matching helper/plugin versions together.
 
 ## Thread composition and installation (0.0.8)

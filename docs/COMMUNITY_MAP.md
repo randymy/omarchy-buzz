@@ -592,3 +592,12 @@ is exercised.
   community" in `CommunityRail.tsx`/`CommunitySwitcher.tsx`) — out of scope
   for this map (invite *sending*, not joining, is already covered by this
   project's `docs/JOIN_MAP.md` "Inviting" section).
+
+## Addendum: rooms inside a community
+
+Room paging, creation and settings (`room_manage`) are specified in
+[JOIN_MAP.md](JOIN_MAP.md#rooms-paging-creation-and-settings). For a community that holds more than 20
+joined rooms and direct messages, the first page of 50 is listed and **Load more rooms** reads further pages (up to
+200); the background check keeps every loaded page. **+ New room** and **Room settings** act on the active
+community only, with that community's relay deciding who may create, rename or manage members; switching
+community resets them like every other room view.

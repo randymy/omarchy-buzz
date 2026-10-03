@@ -49,9 +49,10 @@ def status(frame, kind):
     assert frame["status"]["identity"] is None, frame
     assert frame["status"]["relay"] is None, frame
     assert frame["status"]["clockSkewSeconds"] is None, frame
-    assert frame["capabilities"] == ["connection_status", "room_catalog", "room_history", "message_send", "thread_send", "room_recipients", "history_auto_refresh", "room_activity", "agent_profiles", "thread_replies", "thread_summaries", "dm_open", "older_history", "live_updates", "setup_assist", "community_join", "invite_mint", "attachments", "user_status", "presence", "communities", "people_search", "message_actions"], frame
+    assert frame["capabilities"] == ["connection_status", "room_catalog", "room_history", "message_send", "thread_send", "room_recipients", "history_auto_refresh", "room_activity", "agent_profiles", "thread_replies", "thread_summaries", "dm_open", "older_history", "live_updates", "setup_assist", "community_join", "invite_mint", "attachments", "user_status", "presence", "communities", "people_search", "message_actions", "room_manage"], frame
     assert frame["status"]["catalog"]["state"] == "unavailable", frame
     assert frame["status"]["catalog"]["rooms"] == [], frame
+    assert frame["status"]["catalog"]["more"] == "none" and frame["status"]["catalog"]["moreCategory"] is None, frame
     assert frame["status"]["history"] == {
         "state": "unavailable", "roomId": None, "rows": [], "hasMore": None, "category": None,
         "nextCursor": None, "olderState": "idle", "live": False,
@@ -70,7 +71,11 @@ def status(frame, kind):
     }, frame
     assert frame["status"]["openRooms"] == {"state": "unavailable", "rooms": [], "category": None}, frame
     assert frame["status"]["roomAction"] == {
-        "state": "idle", "action": None, "requestId": None, "roomId": None, "category": None,
+        "state": "idle", "action": None, "requestId": None, "roomId": None, "category": None, "detail": None,
+    }, frame
+    assert frame["status"]["roomDetail"] == {
+        "state": "unavailable", "roomId": None, "topic": "", "visibility": "", "about": "", "aboutTruncated": False, "role": "", "members": [],
+        "truncated": False, "category": None,
     }, frame
     assert frame["status"]["invites"] == {
         "state": "idle", "code": None, "expiresAt": None, "maxUses": None, "role": None, "category": None,
