@@ -12,6 +12,7 @@ import json
 import os
 import re
 import sys
+import time
 
 INSTANCE = "room-manage-fixture"
 ME = "7" * 64
@@ -77,13 +78,14 @@ def emit(kind="status", request_id=None):
                       "capabilities": CAPABILITIES, "status": status()}), flush=True)
 
 
-def act(request, action, ok, reason=None):
+def act(request, action, ok, reason=None, hold=0):
     """The helper's two frames: `sending` (the reply), then the relay's answer."""
     global room_action
     target = request.get("roomId") or CREATED
     room_action = {"state": "sending", "action": action, "requestId": request["id"], "roomId": target,
                    "category": None, "detail": None}
     emit(request_id=request["id"])
+    time.sleep(hold)  # a change pending at the relay
     refused = {"create": "create_rejected", "details": "edit_rejected", "topic": "edit_rejected",
                "add_member": "member_add_rejected", "remove_member": "member_remove_rejected"}[action]
     room_action = {**room_action, "state": "acknowledged" if ok else "rejected",
@@ -159,7 +161,7 @@ for line in sys.stdin:
                     if "about" in request:
                         abouts[r["id"]] = request["about"]
                     r["description"] = abouts[r["id"]][:ROW_ABOUT]
-            act(request, "details", True)
+            act(request, "details", True, hold=1.5 if counts["update"] == 3 else 0)
     elif kind == "set_room_topic":
         assert sorted(request) == ["id", "roomId", "topic", "type", "version"], request
         topics[request["roomId"]] = request["topic"]

@@ -962,12 +962,30 @@ FocusScope {
       if (!topicTouched) editRoomTopic.text = service.roomDetail.topic
     }
   }
-  // A saved field is no longer an edit: it follows the relay again.
+  // What the last save sent: the request, and the fields with their submitted
+  // text. Only those fields, and only if they still read as submitted, stop
+  // being edits when the relay accepts the save.
+  property var sentSave: null
+  function submitDetails() {
+    if (!service) return false
+    var changes = service.roomEditChanges(editRoomName.text, editRoomAbout.text, nameTouched, aboutTouched)
+    if (!service.updateRoomDetails(editRoomName.text, editRoomAbout.text, nameTouched, aboutTouched)) return false
+    sentSave = {requestId: service.roomActionRequestId, name: changes.name, about: changes.about}
+    return true
+  }
+  function submitTopic() {
+    if (!service || !service.setRoomTopic(editRoomTopic.text, topicTouched)) return false
+    sentSave = {requestId: service.roomActionRequestId, topic: editRoomTopic.text.trim()}
+    return true
+  }
   function saved(action) {
-    if (action.state !== "acknowledged" || action.requestId !== service.roomActionRequestId || communityView !== "room-settings") return
-    if (action.action === "details") { nameTouched = false; aboutTouched = false }
-    if (action.action === "topic") topicTouched = false
-    followRelay()
+    if (!sentSave || action.requestId !== sentSave.requestId || action.state === "sending" || communityView !== "room-settings") return
+    var sent = sentSave
+    sentSave = null
+    if (action.state !== "acknowledged") return
+    if (sent.name !== undefined && editRoomName.text.trim() === sent.name) nameTouched = false
+    if (sent.about !== undefined && editRoomAbout.text.trim() === sent.about) aboutTouched = false
+    if (sent.topic !== undefined && editRoomTopic.text.trim() === sent.topic) topicTouched = false
   }
   function memberLabel(member) {
     var who = member.name.trim() || member.key.slice(0, 12) + "…"
@@ -2553,13 +2571,13 @@ FocusScope {
             }
             SettingsNote {
               objectName: "buzzRoomEditNote"
-              visible: !!root.service && root.service.roomDetailShown && !root.service.canEditRoom
-              text: root.service && root.service.roomDetailShown && !root.service.canEditRoom
+              visible: !!root.service && root.service.roomDetailShown && !root.service.roomEditAllowed
+              text: root.service && root.service.roomDetailShown && !root.service.roomEditAllowed
                 ? "Only this room's owners and admins change its name, description, topic and members." : ""
             }
             ColumnLayout {
               objectName: "buzzRoomEdit"
-              visible: !!root.service && root.service.canEditRoom
+              visible: !!root.service && root.service.roomEditAllowed
               Layout.fillWidth: true
               spacing: Style.space(4)
               SettingsCaption { text: "Name and description" }
@@ -2570,6 +2588,7 @@ FocusScope {
                 verticalPadding: Style.space(4)
                 maximumLength: 128
                 placeholderText: "Room name"
+                readOnly: !!root.service && root.service.roomActionBusy
                 onTextEdited: root.nameTouched = true
               }
               Ui.TextField {
@@ -2579,7 +2598,7 @@ FocusScope {
                 verticalPadding: Style.space(4)
                 maximumLength: 1024
                 placeholderText: "Description"
-                readOnly: !!root.service && root.service.roomDetail.aboutTruncated
+                readOnly: !!root.service && (root.service.roomDetail.aboutTruncated || root.service.roomActionBusy)
                 onTextEdited: root.aboutTouched = true
               }
               SettingsNote {
@@ -2597,7 +2616,7 @@ FocusScope {
                   && root.service.validRoomText(editRoomAbout.text, root.service.roomAboutBytes, false)
                   && Object.keys(root.service.roomEditChanges(editRoomName.text, editRoomAbout.text, root.nameTouched, root.aboutTouched)).length > 0
                 opacity: enabled ? 1 : 0.5
-                onClicked: root.service.updateRoomDetails(editRoomName.text, editRoomAbout.text, root.nameTouched, root.aboutTouched)
+                onClicked: root.submitDetails()
               }
               SettingsCaption { text: "Change topic" }
               Ui.TextField {
@@ -2607,6 +2626,7 @@ FocusScope {
                 verticalPadding: Style.space(4)
                 maximumLength: 256
                 placeholderText: "Topic"
+                readOnly: !!root.service && root.service.roomActionBusy
                 onTextEdited: root.topicTouched = true
               }
               Ui.Button {
@@ -2618,7 +2638,7 @@ FocusScope {
                 enabled: !!root.service && root.service.canEditRoom && root.service.validRoomText(editRoomTopic.text, 256, false)
                   && root.service.roomTopicChanged(editRoomTopic.text, root.topicTouched)
                 opacity: enabled ? 1 : 0.5
-                onClicked: root.service.setRoomTopic(editRoomTopic.text, root.topicTouched)
+                onClicked: root.submitTopic()
               }
             }
             SettingsCaption {
@@ -2646,7 +2666,8 @@ FocusScope {
                 }
                 Ui.Button {
                   objectName: "buzzRoomRemoveMember"
-                  visible: !!root.service && root.service.canEditRoom && modelData.key !== root.service.identity
+                  visible: !!root.service && root.service.roomEditAllowed && modelData.key !== root.service.identity
+                  enabled: !!root.service && root.service.canEditRoom
                   text: root.armedMember === modelData.key ? "Confirm remove" : "Remove"
                   tooltipText: "Remove this member from the room"
                   fontSize: Style.font.caption
@@ -2660,7 +2681,7 @@ FocusScope {
             }
             ColumnLayout {
               objectName: "buzzRoomAdd"
-              visible: !!root.service && root.service.canEditRoom
+              visible: !!root.service && root.service.roomEditAllowed
               Layout.fillWidth: true
               spacing: Style.space(4)
               SettingsCaption { text: "Add a member" }

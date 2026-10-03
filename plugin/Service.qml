@@ -902,8 +902,12 @@ Item {
   // Roster and topic of the selected room, once read for it.
   readonly property bool roomDetailShown: roomDetail.state === "snapshot" && roomDetail.roomId === selectedRoomId && selectedRoomId !== ""
   readonly property string roomRole: roomDetailShown ? roomDetail.role : ""
-  readonly property bool canEditRoom: canManageRooms && roomDetailShown && selectedRoom !== null && selectedRoom.kind === "stream"
+  // The editor is shown to owners and admins (by the verified roster role); it
+  // stays shown while a change is pending, read-only, and `canEditRoom` (which
+  // also needs no change in flight) lets a save or member change be sent.
+  readonly property bool roomEditAllowed: roomManageAvailable && roomDetailShown && selectedRoom !== null && selectedRoom.kind === "stream"
     && (roomRole === "owner" || roomRole === "admin")
+  readonly property bool canEditRoom: roomEditAllowed && !roomActionBusy
   readonly property string roomDetailLabel: roomDetailShown ? ""
     : roomDetail.roomId === selectedRoomId && roomDetail.state === "loading" ? "Loading members and topic…"
     : roomDetail.roomId === selectedRoomId && roomDetail.category === "room_detail_access_denied" ? "The relay does not list you in this room."

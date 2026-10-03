@@ -185,13 +185,29 @@ ShellRoot {
           check(service.selectedRoom.name === "Renamed elsewhere" && one("buzzRoomEditName").text === "Renamed elsewhere",
             "The other client's rename was reversed")
           check(!one("buzzRoomSaveDetails").enabled, "Save still enabled after saving")
-          // Now edit the name, and a touched name is kept when the relay changes underneath.
+          // A description edited and put back is still the user's edit, though it differs from nothing:
+          // a name-only save must leave it touched and intact when it is accepted.
+          appendUser("buzzRoomEditAbout", "x")
+          input.keyClick(Qt.Key_Backspace)
+          check(view.aboutTouched && one("buzzRoomEditAbout").text === test.longAbout + "!" && !one("buzzRoomSaveDetails").enabled,
+            "Description not touched-but-unchanged")
           typeUser("buzzRoomEditName", "Plans 2")
           check(one("buzzRoomSaveDetails").enabled, "Save disabled after a name edit")
           click("buzzRoomSaveDetails")
+          advance(79)
+        } else if (test.stage === 79 && service.roomActionBusy) {
+          // While the save is pending the fields are read-only and Save is off.
+          check(one("buzzRoomEditName").readOnly && one("buzzRoomEditAbout").readOnly && one("buzzRoomEditTopic").readOnly,
+            "Fields are editable while a change is pending")
+          check(!one("buzzRoomSaveDetails").enabled && !one("buzzRoomSaveTopic").enabled, "Save enabled while a change is pending")
+          one("buzzRoomEdit")
           advance(80)
         } else if (test.stage === 80 && service.selectedRoom.name === "Plans 2" && service.roomAction.action === "details"
             && service.roomAction.state === "acknowledged" && one("buzzRoomManageStatus").text === "Room details saved.") {
+          // Accepted: only the submitted name stopped being an edit; the description stays one, intact.
+          check(!view.nameTouched && view.aboutTouched && one("buzzRoomEditAbout").text === test.longAbout + "!",
+            "A name-only save changed the description's edit state")
+          check(!one("buzzRoomEditName").readOnly && !one("buzzRoomEditAbout").readOnly, "Fields stay read-only after the answer")
           typeUser("buzzRoomEditTopic", "Ship it")
           check(one("buzzRoomSaveTopic").enabled, "Topic save not enabled by an edit")
           click("buzzRoomSaveTopic")
