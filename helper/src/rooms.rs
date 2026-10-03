@@ -140,8 +140,11 @@ pub fn project(r: crate::catalog::Room) -> Room {
 
 /// The `more` state after a read: a full last page means more may exist,
 /// unless `pages` already reached `catalog::MAX_PAGES`.
-pub fn more(has_more: bool, pages: usize) -> &'static str {
+/// A catalog cut to `catalog::MAX_ROOMS` (`trimmed`) is at its limit too, even
+/// when no further page exists.
+pub fn more(has_more: bool, pages: usize, trimmed: bool) -> &'static str {
     match (has_more, pages >= crate::catalog::MAX_PAGES) {
+        _ if trimmed => "limit",
         (false, _) => "none",
         (true, true) => "limit",
         (true, false) => "available",
@@ -149,8 +152,10 @@ pub fn more(has_more: bool, pages: usize) -> &'static str {
 }
 
 /// Catalog rows after a page: a room read again replaces its older row, new
-/// rooms follow. Nothing already listed is dropped.
-pub fn merge(held: &[Room], page: Vec<Room>) -> Vec<Room> {
+/// rooms follow. Nothing already listed is dropped unless the total would pass
+/// `catalog::MAX_ROOMS`: then the newest additions at the end are cut (never
+/// the room `keep`) and the second value says so (the list is at its limit).
+pub fn merge(held: &[Room], page: Vec<Room>, keep: Option<&str>) -> (Vec<Room>, bool) {
     let fresh: BTreeSet<String> = page.iter().map(|r| r.id.clone()).collect();
     let mut rooms: Vec<Room> = held
         .iter()
@@ -158,7 +163,17 @@ pub fn merge(held: &[Room], page: Vec<Room>) -> Vec<Room> {
         .cloned()
         .collect();
     rooms.extend(page);
-    rooms
+    let mut excess = rooms.len().saturating_sub(crate::catalog::MAX_ROOMS);
+    let trimmed = excess > 0;
+    let mut at = rooms.len();
+    while excess > 0 && at > 0 {
+        at -= 1;
+        if Some(rooms[at].id.as_str()) != keep {
+            rooms.remove(at);
+            excess -= 1;
+        }
+    }
+    (rooms, trimmed)
 }
 
 #[derive(Clone, Debug, PartialEq)]

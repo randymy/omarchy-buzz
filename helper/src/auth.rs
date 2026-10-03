@@ -2238,7 +2238,7 @@ async fn observe_inner(
                         *relay_pin=Some(catalog.signer);
                         let skew=catalog.clock_skew;
                         catalog_next=catalog.next;
-                        let more=crate::rooms::more(catalog.has_more,catalog_pages);
+                        let more=crate::rooms::more(catalog.has_more,catalog_pages,catalog.trimmed);
                         let next_catalog=crate::protocol::Catalog {
                             state:catalog.state.into(),category:Some(catalog.category.into()),
                             rooms:catalog.rooms.into_iter().map(crate::rooms::project).collect(),
@@ -2333,8 +2333,9 @@ async fn observe_inner(
                 // Every room already listed is read again (or confirmed), never dropped.
                 let known:Vec<String>=tx.borrow().catalog.rooms.iter().map(|r|r.id.clone()).collect();
                 let pages=catalog_pages;
+                let keep=selected_history.clone();
                 jobs.spawn(async move {
-                    match timeout(Duration::from_secs(15+5*(pages as u64-1)),crate::catalog::discover_pages(&relay,&keys,pin,pages,&known)).await {
+                    match timeout(Duration::from_secs(15+5*(pages as u64-1)),crate::catalog::discover_pages(&relay,&keys,pin,pages,&known,keep.as_deref())).await {
                         Ok(result)=>result,Err(_)=>Err("discovery_timeout"),
                     }
                 });
@@ -2345,11 +2346,12 @@ async fn observe_inner(
                         Ok(page)=> {
                             catalog_pages+=1;
                             catalog_next=page.next;
-                            let more=crate::rooms::more(page.has_more,catalog_pages);
+                            let (has_more,pages,keep)=(page.has_more,catalog_pages,selected_history.clone());
                             let rows:Vec<crate::protocol::Room>=page.rooms.into_iter().map(crate::rooms::project).collect();
                             publish_status(tx,|s|{
-                                s.catalog.rooms=crate::rooms::merge(&s.catalog.rooms,rows);
-                                s.catalog.more=more.into();s.catalog.more_category=None;
+                                let (rooms,trimmed)=crate::rooms::merge(&s.catalog.rooms,rows,keep.as_deref());
+                                s.catalog.rooms=rooms;
+                                s.catalog.more=crate::rooms::more(has_more,pages,trimmed).into();s.catalog.more_category=None;
                             });
                         },
                         Err(error)=> {

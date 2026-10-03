@@ -564,6 +564,57 @@ fn unknown_roles_are_not_invented_and_large_rosters_are_cut() {
 }
 
 #[test]
+fn the_helper_and_panel_share_one_room_limit() {
+    // `Service.qml` validates frames against this number: a catalog the helper
+    // publishes must never be one the panel refuses (that ends the session).
+    let panel = include_str!("../../plugin/Service.qml");
+    assert!(
+        panel.contains(&format!(
+            "readonly property int maxRooms: {}",
+            crate::catalog::MAX_ROOMS
+        )),
+        "Service.qml maxRooms differs from catalog::MAX_ROOMS"
+    );
+}
+
+#[test]
+fn merge_never_passes_the_room_limit() {
+    let limit = crate::catalog::MAX_ROOMS;
+    let row = |n: usize| Room {
+        id: format!("r{n}"),
+        name: format!("room {n}"),
+        description: String::new(),
+        kind: "stream".into(),
+        participants: Vec::new(),
+        hidden: false,
+    };
+    let rows = |range: std::ops::Range<usize>| range.map(row).collect::<Vec<_>>();
+    // 199 held: one more fits, five more cut four (the end, newest additions).
+    let held = rows(0..limit - 1);
+    let (fits, trimmed) = merge(&held, rows(limit..limit + 1), None);
+    assert_eq!((fits.len(), trimmed), (limit, false));
+    let (cut, trimmed) = merge(&held, rows(limit..limit + 5), None);
+    assert_eq!((cut.len(), trimmed), (limit, true));
+    assert_eq!(
+        cut[limit - 2].id,
+        format!("r{}", limit - 2),
+        "held rooms are never cut for additions"
+    );
+    // 200 held: a new page is cut away entirely; a re-read room is not an addition.
+    let full = rows(0..limit);
+    let (same, trimmed) = merge(&full, rows(limit..limit + 3), None);
+    assert_eq!((same.len(), trimmed), (limit, true));
+    assert!(same.iter().zip(&full).all(|(a, b)| a.id == b.id));
+    let (reread, trimmed) = merge(&full, rows(5..6), None);
+    assert_eq!((reread.len(), trimmed), (limit, false));
+    // The room in view survives even when it is among the additions.
+    let keep = format!("r{}", limit + 2);
+    let (kept, trimmed) = merge(&full, rows(limit..limit + 3), Some(&keep));
+    assert!(trimmed && kept.len() == limit && kept.iter().any(|r| r.id == keep));
+    assert_eq!(more(false, 3, trimmed), "limit");
+}
+
+#[test]
 fn merge_keeps_every_listed_room() {
     let row = |id: &str, name: &str| Room {
         id: id.into(),
@@ -574,16 +625,18 @@ fn merge_keeps_every_listed_room() {
         hidden: false,
     };
     let held = vec![row("a", "A"), row("b", "B"), row("c", "C")];
-    let merged = merge(&held, vec![row("b", "B2"), row("d", "D")]);
+    let merged = merge(&held, vec![row("b", "B2"), row("d", "D")], None).0;
     let names: Vec<(&str, &str)> = merged
         .iter()
         .map(|r| (r.id.as_str(), r.name.as_str()))
         .collect();
     assert_eq!(names, [("a", "A"), ("c", "C"), ("b", "B2"), ("d", "D")]);
-    assert_eq!(merge(&held, Vec::new()).len(), 3);
-    assert_eq!(more(false, 1), "none");
-    assert_eq!(more(true, 1), "available");
-    assert_eq!(more(true, crate::catalog::MAX_PAGES), "limit");
+    assert_eq!(merge(&held, Vec::new(), None).0.len(), 3);
+    assert_eq!(more(false, 1, false), "none");
+    assert_eq!(more(true, 1, false), "available");
+    assert_eq!(more(true, crate::catalog::MAX_PAGES, false), "limit");
+    // Cut to the limit is the limit, whatever the pages say.
+    assert_eq!(more(false, 1, true), "limit");
 }
 
 mod paging {
@@ -711,7 +764,7 @@ mod paging {
         ])
         .await;
         let catalog =
-            crate::catalog::discover_pages(&origin, &me, Some(relay.public_key()), 2, &[])
+            crate::catalog::discover_pages(&origin, &me, Some(relay.public_key()), 2, &[], None)
                 .await
                 .unwrap();
         assert_eq!(catalog.rooms.len(), page + 7);
@@ -744,9 +797,10 @@ mod paging {
             json(&(0..page).map(|n| metadata(&relay, n)).collect::<Vec<_>>()),
         ])
         .await;
-        let head = crate::catalog::discover_pages(&origin, &me, Some(relay.public_key()), 1, &[])
-            .await
-            .unwrap();
+        let head =
+            crate::catalog::discover_pages(&origin, &me, Some(relay.public_key()), 1, &[], None)
+                .await
+                .unwrap();
         finished(task).await;
         let last = first.last().unwrap();
         assert!(head.has_more);
@@ -776,7 +830,7 @@ mod paging {
         assert!(!next.has_more);
         // The caller's merge keeps the first page's rooms.
         let held: Vec<Room> = head.rooms.into_iter().map(project).collect();
-        let merged = merge(&held, next.rooms.into_iter().map(project).collect());
+        let merged = merge(&held, next.rooms.into_iter().map(project).collect(), None).0;
         assert_eq!(merged.len(), page + 3);
     }
 
@@ -825,7 +879,7 @@ mod paging {
         ])
         .await;
         let catalog =
-            crate::catalog::discover_pages(&origin, &me, Some(relay.public_key()), 1, &known)
+            crate::catalog::discover_pages(&origin, &me, Some(relay.public_key()), 1, &known, None)
                 .await
                 .unwrap();
         let ids: Vec<&str> = catalog.rooms.iter().map(|r| r.id.as_str()).collect();
@@ -866,7 +920,7 @@ mod paging {
         ])
         .await;
         let catalog =
-            crate::catalog::discover_pages(&origin, &me, Some(relay.public_key()), 2, &[])
+            crate::catalog::discover_pages(&origin, &me, Some(relay.public_key()), 2, &[], None)
                 .await
                 .unwrap();
         assert_eq!(catalog.rooms.len(), page);
@@ -890,7 +944,7 @@ mod paging {
         ])
         .await;
         let catalog =
-            crate::catalog::discover_pages(&origin, &me, Some(relay.public_key()), 1, &known)
+            crate::catalog::discover_pages(&origin, &me, Some(relay.public_key()), 1, &known, None)
                 .await
                 .unwrap();
         let ids: Vec<&str> = catalog.rooms.iter().map(|r| r.id.as_str()).collect();
@@ -899,6 +953,157 @@ mod paging {
         assert_eq!(filters[1]["#d"].as_array().unwrap().len(), 2);
         assert_eq!(filters[2]["#d"], serde_json::json!([room_uuid(1)]));
         assert_eq!(filters[3]["#d"], serde_json::json!([room_uuid(2)]));
+    }
+
+    /// A relay that answers by filter: 39002 pages with the composite cursor,
+    /// roster confirmations by room, metadata by room.
+    async fn serve_state(
+        relay: Keys,
+        mut joined: Vec<Event>,
+        rosters: Vec<Event>,
+        requests: usize,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        joined.sort_by(|a, b| (b.created_at, b.id).cmp(&(a.created_at, a.id)));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("ws://{}/", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move {
+            for index in 0..requests {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut head = Vec::new();
+                loop {
+                    let mut byte = [0; 1];
+                    assert_eq!(stream.read(&mut byte).await.unwrap(), 1);
+                    head.push(byte[0]);
+                    if head.ends_with(b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let payload = if index == 0 {
+                    info(&relay)
+                } else {
+                    let head = String::from_utf8(head).unwrap().to_ascii_lowercase();
+                    let length: usize = head
+                        .lines()
+                        .find_map(|l| l.strip_prefix("content-length: "))
+                        .unwrap()
+                        .trim()
+                        .parse()
+                        .unwrap();
+                    let mut body = vec![0; length];
+                    stream.read_exact(&mut body).await.unwrap();
+                    let filter =
+                        serde_json::from_slice::<serde_json::Value>(&body).unwrap()[0].clone();
+                    let ids: Vec<String> = filter["#d"]
+                        .as_array()
+                        .map(|v| v.iter().map(|s| s.as_str().unwrap().to_owned()).collect())
+                        .unwrap_or_default();
+                    let events: Vec<Event> = match filter["kinds"][0].as_u64().unwrap() {
+                        39002 if filter.get("#p").is_some() => {
+                            let start = filter["before_id"]
+                                .as_str()
+                                .map(|id| {
+                                    joined.iter().position(|e| e.id.to_hex() == id).unwrap() + 1
+                                })
+                                .unwrap_or(0);
+                            joined
+                                .iter()
+                                .skip(start)
+                                .take(filter["limit"].as_u64().unwrap() as usize)
+                                .cloned()
+                                .collect()
+                        }
+                        39002 => rosters
+                            .iter()
+                            .filter(|e| {
+                                ids.iter().any(|id| {
+                                    e.tags.iter().any(|t| t.as_slice().get(1) == Some(id))
+                                })
+                            })
+                            .cloned()
+                            .collect(),
+                        39000 => ids
+                            .iter()
+                            .map(|id| {
+                                metadata(&relay, usize::from_str_radix(&id[..8], 16).unwrap())
+                            })
+                            .collect(),
+                        other => panic!("unexpected kind {other}"),
+                    };
+                    json(&events)
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    payload.len(),
+                    payload
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        (origin, task)
+    }
+
+    /// 200 rooms are listed, another joined room moves into the first four
+    /// pages and so displaces one: the catalog stays 200 rooms (no
+    /// `catalog_oversized`), is marked cut, and the room in view survives.
+    #[tokio::test]
+    async fn a_displaced_room_cannot_push_the_catalog_past_the_limit() {
+        let _network_fixture = crate::NETWORK_TEST_LOCK.lock().await;
+        let (relay, me) = (key(1), key(2));
+        let limit = crate::catalog::MAX_ROOMS;
+        // Rooms 0..199 were listed; room 1000 is new and newest, so the four
+        // pages hold it and rooms 0..198, and room 199 is displaced.
+        let mut pages: Vec<Event> = (0..limit - 1)
+            .map(|n| membership(&relay, &me, n, 2000 - n as u64))
+            .collect();
+        pages.push(membership(&relay, &me, 1000, 3000));
+        let displaced = membership(&relay, &me, limit - 1, 1);
+        let known: Vec<String> = (0..limit).map(room_uuid).collect();
+        for keep in [None, Some(room_uuid(limit - 1))] {
+            // The relay holds 201 memberships; the pages show the newest 200.
+            let mut all = pages.clone();
+            all.push(displaced.clone());
+            let (origin, task) = serve_state(
+                relay.clone(),
+                all,
+                vec![displaced.clone()],
+                // info, 4 pages, 1 roster confirmation, 4 metadata reads
+                10,
+            )
+            .await;
+            let catalog = crate::catalog::discover_pages(
+                &origin,
+                &me,
+                Some(relay.public_key()),
+                crate::catalog::MAX_PAGES,
+                &known,
+                keep.as_deref(),
+            )
+            .await
+            .expect("an over-limit refresh must not reject the catalog");
+            assert_eq!(catalog.rooms.len(), limit);
+            assert!(catalog.trimmed, "the cut is reported");
+            assert_eq!(
+                crate::rooms::more(catalog.has_more, crate::catalog::MAX_PAGES, catalog.trimmed),
+                "limit"
+            );
+            assert!(
+                catalog.rooms.iter().any(|r| r.id == room_uuid(1000)),
+                "the new room is listed"
+            );
+            match keep {
+                // The least recent goes: the displaced room.
+                None => assert!(catalog.rooms.iter().all(|r| r.id != room_uuid(limit - 1))),
+                // The room in view stays; the least recent discovered one makes room.
+                Some(ref id) => {
+                    assert!(catalog.rooms.iter().any(|r| r.id == *id));
+                    assert!(catalog.rooms.iter().all(|r| r.id != room_uuid(limit - 2)));
+                }
+            }
+            tokio::time::timeout(Duration::from_secs(10), task)
+                .await
+                .unwrap()
+                .unwrap();
+        }
     }
 }
 

@@ -49,6 +49,9 @@ pub struct Catalog {
     pub has_more: bool,
     /// Where the next page continues; present only with `has_more`.
     pub next: Option<Cursor>,
+    /// Confirmed rooms beyond `MAX_ROOMS` were left out (the least recent ones;
+    /// the room in view is kept): the list is at its limit, not complete.
+    pub trimmed: bool,
 }
 
 /// `self` is the signing identity. The NIP-11 `pubkey` contact is NOT authority.
@@ -554,6 +557,7 @@ pub fn reconcile(
         clock_skew: None,
         has_more: false,
         next: None,
+        trimmed: false,
     })
 }
 
@@ -657,7 +661,7 @@ pub async fn discover(
     keys: &Keys,
     pin: Option<PublicKey>,
 ) -> Result<Catalog, &'static str> {
-    discover_pages(relay, keys, pin, 1, &[]).await
+    discover_pages(relay, keys, pin, 1, &[], None).await
 }
 
 /// A page must hold only snapshots at or before the cursor it continues from.
@@ -747,6 +751,22 @@ async fn build(
     Ok(result)
 }
 
+/// Cuts `events` (newest first) to `MAX_ROOMS`, from the end, never the one
+/// for `keep` (the room in view). True if any were cut.
+fn fit(events: &mut Vec<Event>, keep: Option<&str>) -> bool {
+    let mut excess = events.len().saturating_sub(MAX_ROOMS);
+    let trimmed = excess > 0;
+    let mut at = events.len();
+    while excess > 0 && at > 0 {
+        at -= 1;
+        if !room_id(&events[at]).is_ok_and(|id| Some(id.to_string().as_str()) == keep) {
+            events.remove(at);
+            excess -= 1;
+        }
+    }
+    trimmed
+}
+
 /// The relay-signed rosters of rooms this identity may no longer be in. A
 /// refusal ("not a member") is an answer: a batch that is refused is asked
 /// again room by room, and a refused room is simply not confirmed.
@@ -786,6 +806,7 @@ pub async fn discover_pages(
     pin: Option<PublicKey>,
     pages: usize,
     known: &[String],
+    keep: Option<&str>,
 ) -> Result<Catalog, &'static str> {
     let _permit = DISCOVERY.try_acquire().map_err(|_| "discovery_busy")?;
     let (signer, clock_skew) = relay_info(relay, pin).await;
@@ -816,6 +837,7 @@ pub async fn discover_pages(
         before = next;
     }
     let mut memberships = newest(memberships);
+    memberships.sort_by(|a, b| (b.created_at, b.id).cmp(&(a.created_at, a.id)));
     let held: BTreeSet<String> = memberships
         .iter()
         .filter_map(|e| room_id(e).ok())
@@ -827,19 +849,27 @@ pub async fn discover_pages(
         .filter_map(|id| Uuid::parse_str(id).ok())
         .collect();
     let me = keys.public_key().to_hex();
+    let mut confirmed = Vec::new();
     for batch in missing.chunks(METADATA_BATCH) {
         let rosters = confirm_rosters(relay, keys, batch).await?;
-        memberships.extend(rosters.into_iter().filter(|e| {
+        confirmed.extend(rosters.into_iter().filter(|e| {
             e.tags.iter().any(|t| {
                 t.as_slice().first().is_some_and(|v| v == "p")
                     && t.as_slice().get(1).is_some_and(|v| *v == me)
             })
         }));
     }
+    // Pages and confirmed rooms together never pass the limit `reconcile`
+    // enforces: past it the least recent rooms are cut (never the one in
+    // view), not the whole catalog.
+    confirmed.sort_by(|a, b| (b.created_at, b.id).cmp(&(a.created_at, a.id)));
+    memberships.extend(confirmed);
+    let trimmed = fit(&mut memberships, keep);
     let mut result = build(relay, keys, signer, &newest(memberships)).await?;
     result.clock_skew = clock_skew;
     result.has_more = has_more;
     result.next = next;
+    result.trimmed = trimmed;
     Ok(result)
 }
 
