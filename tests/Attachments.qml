@@ -13,6 +13,7 @@ ShellRoot {
   id: test
   property int stage: -1
   property int ticks: 0
+  property bool busy: false
   property int uploadsBefore: -1
   // Clicks are spaced beyond the double-click interval: a second press at the
   // same spot would be a double click, which buttons do not take as a click.
@@ -97,6 +98,10 @@ ShellRoot {
     repeat: true
     running: true
     onTriggered: {
+      // keyClick spins a nested event loop that fires this Timer again; a nested
+      // tick would rerun the stage and tear the test down under its own handler.
+      if (test.busy) return
+      test.busy = true
       try {
         test.ticks++
         record.reload()
@@ -246,7 +251,7 @@ ShellRoot {
           console.log("PASS: attachment cards show name, size and a verified bounded preview; downloads report progress, Saved/Open or a refusal; uploads refuse relative paths and SVG; the file chooser fills the path and attaches, decodes file URLs and refuses cancelled, relative and .. choices; pending files are listed with removal, and a message with only an attachment sends and clears them")
           Qt.quit()
         }
-      } catch (error) { console.error(error.message || error); Qt.exit(1) }
+      } catch (error) { console.error(error.message || error); Qt.exit(1) } finally { test.busy = false }
     }
   }
 }

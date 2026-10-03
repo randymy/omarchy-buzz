@@ -14,6 +14,7 @@ ShellRoot {
   id: test
   property int stage: -1
   property int ticks: 0
+  property bool busy: false
   property int closeRequests: 0
   readonly property string me: "5".repeat(64)
   readonly property string other: "8".repeat(64)
@@ -106,6 +107,10 @@ ShellRoot {
     repeat: true
     running: true
     onTriggered: {
+      // keyClick spins a nested event loop that fires this Timer again; a nested
+      // tick would rerun the stage and tear the test down under its own handler.
+      if (test.busy) return
+      test.busy = true
       try {
         test.ticks++
         if (test.ticks > 150) throw new Error("Status timed out at stage " + test.stage + " " + service.connection + " " + JSON.stringify(service.userStatus) + " " + service.statusRequestState)
@@ -196,7 +201,7 @@ ShellRoot {
           console.log("PASS: account menu shows Update your status above Settings with the placeholder or the current status; the status view offers 12 chips, a checked free emoji field and 1h/4h/1d/1w; Set sends text, emoji and hours; relay and rate-limit refusals are explained; an accepted status shows on the account and beside names; Clear, Escape and Back work")
           Qt.quit()
         }
-      } catch (error) { console.error(error.message || error); Qt.exit(1) }
+      } catch (error) { console.error(error.message || error); Qt.exit(1) } finally { test.busy = false }
     }
   }
 }
