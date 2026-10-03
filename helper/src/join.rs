@@ -689,6 +689,7 @@ impl RoomActions {
     pub fn abandon(&mut self) {
         self.pending = None;
     }
+    #[cfg(test)]
     pub fn acknowledge(&mut self, event_id: &str, accepted: bool) -> Option<RoomAction> {
         self.acknowledge_with(event_id, accepted, "")
     }

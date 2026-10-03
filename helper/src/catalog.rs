@@ -650,7 +650,8 @@ pub async fn discover_open(
     open_rooms(pin, &events, &joined, Timestamp::now().as_secs())
 }
 
-/// The first page only, with no earlier rooms to confirm.
+/// The first page only, with no earlier rooms to confirm (fixtures).
+#[cfg(test)]
 pub async fn discover(
     relay: &str,
     keys: &Keys,

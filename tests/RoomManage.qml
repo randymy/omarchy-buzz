@@ -82,7 +82,7 @@ ShellRoot {
         if (test.stage === -1) {
           // Every capability the helper announces is one the panel accepts.
           var helper = JSON.parse(Quickshell.env("BUZZ_HELPER_CAPABILITIES"))
-          check(helper.indexOf("room_manage") !== -1 && helper.length === 22, "Helper capability list not as expected: " + helper.length)
+          check(helper.indexOf("room_manage") !== -1 && helper.length === service.knownCapabilities.length, "Helper capability list not as expected: " + helper.length)
           check(service.validCapabilities(helper), "The panel refuses the helper's full capability list")
           check(!service.validCapabilities(helper.concat(["unknown_capability"])) && !service.validCapabilities(helper.concat([helper[1]])),
             "Unknown or repeated capabilities accepted")
