@@ -69,6 +69,50 @@ pub struct Row {
     pub attachments: Vec<crate::attachments::Attachment>,
     /// The content's `imeta` tags were malformed: none are shown.
     pub attachments_unavailable: bool,
+    /// Tags the activity tracker classifies by; never sent to the panel.
+    #[serde(skip)]
+    pub signals: Signals,
+}
+/// Mentions and thread position of the original event (`activity.rs` only).
+#[derive(Clone, Debug, Default)]
+pub struct Signals {
+    /// Lowercase hex keys of `p` tags, at most `MENTIONS`.
+    pub mentions: Vec<String>,
+    pub parent: Option<String>,
+    pub root: Option<String>,
+    pub broadcast: bool,
+}
+const MENTIONS: usize = 64;
+/// Buzz Desktop's `getThreadReference`: the last `reply` marker is the parent,
+/// the `root` marker (else the parent) is the root.
+fn signals(event: &Event) -> Signals {
+    let mut out = Signals::default();
+    let mut root = None;
+    for tag in event.tags.iter() {
+        let t = tag.as_slice();
+        match (t.first().map(String::as_str), t.get(1)) {
+            (Some("p"), Some(key)) if out.mentions.len() < MENTIONS => {
+                if let Ok(k) = PublicKey::from_hex(key) {
+                    let k = k.to_hex();
+                    if !out.mentions.contains(&k) {
+                        out.mentions.push(k);
+                    }
+                }
+            }
+            (Some("e"), Some(id)) => match t.get(3).map(String::as_str) {
+                Some("root") if root.is_none() => root = hex_id(id).ok(),
+                Some("reply") => out.parent = hex_id(id).ok(),
+                _ => {}
+            },
+            (Some("broadcast"), Some(v)) if v == "1" => out.broadcast = true,
+            _ => {}
+        }
+    }
+    out.root = out
+        .parent
+        .as_ref()
+        .map(|p| root.unwrap_or_else(|| p.clone()));
+    out
 }
 /// Bounded projection of a relay-signed NIP-CW `kind:39005` thread summary.
 /// Metadata about a row, never a row, a cursor input or a content claim.
@@ -553,6 +597,7 @@ pub fn reduce_at(
             unavailable,
             attachments,
             attachments_unavailable,
+            signals: signals(original),
         });
     }
     rows.sort_by(oldest_first);

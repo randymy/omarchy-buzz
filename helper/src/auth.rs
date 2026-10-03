@@ -1869,6 +1869,7 @@ async fn observe_inner(
                     if allowed {
                         let denied=result.as_ref().is_err_and(|error|recipients_category(error)=="recipients_access_denied");
                         let mut revoked_delivery=None;
+                        if let Ok(r)=&result {if r.room==room {activity.note_names(&r.entries);}}
                         if denied {
                             if tx.borrow().history.room_id.as_deref()==Some(room.as_str()) {
                                 history_jobs.abort_all();history_jobs=tokio::task::JoinSet::new();history_ticket=history_ticket.wrapping_add(1); drop_older!();

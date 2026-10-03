@@ -17,15 +17,21 @@ Item {
   readonly property alias content: content
   readonly property alias overlayShown: overlayWindow.visible
   onOpenedChanged: if (service) service.panelOpen = opened
+  // Notifications for the open room are suppressed only while this window has focus.
+  Binding { target: root.service; property: "panelFocused"; value: root.opened && content.Window.active; when: root.service !== null }
   Component.onDestruction: if (service) service.panelOpen = false
 
   function open(payloadJson) {
-    // Only a presentation choice is accepted; no navigation or executable data.
+    // Only a presentation choice or a room/thread id to show is accepted; no executable data.
     if (payloadJson) {
       try {
         var payload = JSON.parse(String(payloadJson))
         if (payload && payload.mode === "window") windowMode = true
         else if (payload && payload.mode === "overlay") windowMode = false
+        // A notification click names a room (and thread) to show; the service
+        // validates both ids and ignores rooms I have not joined.
+        if (payload && service && typeof payload.room === "string")
+          service.openNotificationTarget(payload.room, typeof payload.thread === "string" ? payload.thread : "")
       } catch (e) { /* malformed payload leaves the current presentation */ }
     }
     var focused = Hyprland.focusedMonitor

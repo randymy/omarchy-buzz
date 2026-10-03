@@ -54,7 +54,7 @@ ShellRoot {
         }
 
         service.beginSession()
-        service.notificationsEnabled = true
+        service.notificationMode = "all"
         service.panelOpen = true
         accept("hello", [row("1", other)])
         idsAre(["1".repeat(64)])
@@ -100,8 +100,8 @@ ShellRoot {
         if (service.activityObservation.scope !== before) throw new Error("Null identity observed activity")
         idsAre(["4".repeat(64), "5".repeat(64)])
 
-        service.notificationsEnabled = false
-        service.notificationsEnabled = true
+        service.notificationMode = "none"
+        service.notificationMode = "all"
         service.panelOpen = false
         accept("status", [row("5", other)], {relay:"wss://another.example/"})
         idsAre(["5".repeat(64)])

@@ -230,7 +230,9 @@ or model-backed agent certification. See CHECKPOINT.md for remaining gates.
 
 ## Activity and profile validation (0.0.5)
 
-Run `node tests/room_activity.cjs`, `scripts/preview --room-activity`,
+Run `node tests/room_activity.cjs`, `node tests/notifications.cjs`,
+`scripts/preview --room-activity`, `scripts/preview --notifications` (titles,
+bodies, modes, suppression and click targets against a fake `omarchy`),
 `scripts/preview --notification-preference`, and `scripts/preview --activity`.
 The offscreen notification fixtures shadow the native notifier and assert fixed
 argv without producing a real desktop alert. Rust tests validate signed agent

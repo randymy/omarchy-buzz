@@ -2053,6 +2053,16 @@ mod state_tests {
                 room_id: "00000000-0000-4000-8000-000000000001".into(),
                 epoch: u64::MAX,
                 observed: 1_000_000_000,
+                notice: Some(crate::activity::Notice {
+                    seq: u64::MAX,
+                    kind: "mention",
+                    count: 999,
+                    room_name: "\\".repeat(128),
+                    sender: "\\".repeat(64),
+                    snippet: "\\".repeat(100),
+                    event_id: "a".repeat(64),
+                    thread_root: Some("b".repeat(64)),
+                }),
             })
             .collect();
         status.recipients.agents = (0..10)

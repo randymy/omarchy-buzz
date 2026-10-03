@@ -910,6 +910,7 @@ fn held_row(n: u64, author: &Keys) -> Row {
         thread: None,
         attachments: vec![],
         attachments_unavailable: false,
+        signals: Default::default(),
     }
 }
 /// A verified page of rows with timestamps `range`, newest scan position last.
