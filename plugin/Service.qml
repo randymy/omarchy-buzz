@@ -294,7 +294,35 @@ Item {
   readonly property var dmCandidates: dmCandidateList()
   function personName(key) {
     var entry = recipientEntries.find(function(item) { return item.key === key }) || peopleEntries.find(function(item) { return item.key === key })
-    return entry ? entry.name : ""
+    return entry && entry.name ? entry.name : knownNames[key] || ""
+  }
+  // Names the helper has served for this community (any room's members, the
+  // people directory), newest last. A roster that is reloading, failed or cut
+  // at its bound must not turn names back into keys, so a name is replaced by
+  // a newer one but never dropped while the community stays the same.
+  property var knownNames: ({})
+  property var knownNameOrder: []
+  property string knownNamesScope: ""
+  readonly property int knownNamesLimit: 1000
+  function rememberNames(entries) {
+    var next = null
+    var order = knownNameOrder
+    for (var i = 0; i < entries.length; i++) {
+      var key = entries[i].key, name = entries[i].name
+      if (typeof key !== "string" || typeof name !== "string" || !name.trim() || knownNames[key] === name) continue
+      if (!next) { next = Object.assign({}, knownNames); order = order.slice() }
+      if (next[key] === undefined) order.push(key)
+      next[key] = name
+    }
+    if (!next) return
+    while (order.length > knownNamesLimit) delete next[order.shift()]
+    knownNameOrder = order
+    knownNames = next
+  }
+  function forgetNames(scope) {
+    knownNamesScope = scope
+    knownNameOrder = []
+    knownNames = ({})
   }
   // Existing conversations first, then the relay's directory or search, then
   // the open room's members while that read has not answered. Those typed
@@ -452,6 +480,8 @@ Item {
     peopleViewCategory = view.category
     if (!sameProjection(peopleEntries, view.entries)) peopleEntries = view.entries
     if (served) {
+      // Only a newly served read is evidence: the helper repeats its last one.
+      rememberNames(view.entries)
       var keys = view.entries.map(function(entry) { return entry.key })
       peopleServed = peopleServed.filter(function(key) { return keys.indexOf(key) === -1 }).concat(keys).slice(-200)
     }
@@ -2117,6 +2147,7 @@ Item {
       var recipient = recipientEntries.find(function(entry) { return entry.key === key })
       if (recipient && recipient.name.trim()) return recipient.name
     }
+    if (knownNames[key]) return knownNames[key]
     return key.slice(0, 12) + "…"
   }
   function messageAuthorLabel(key) {
@@ -2535,6 +2566,8 @@ Item {
     }))) { fail("invalid_response"); return false }
     var incomingScope = (state.relay || "") + "|" + (state.identity || "")
     var scopeBefore = draftScopeKey
+    // A frame without a relay or identity (setup, disconnected) keeps the names.
+    if (state.relay && state.identity && incomingScope !== knownNamesScope) forgetNames(incomingScope)
     if (draftScopeKey && (incomingScope !== draftScopeKey || (instanceId !== "" && frame.generation !== generation))) {
       losePendingDelivery()
       loseDmOpen()
@@ -2625,8 +2658,11 @@ Item {
       // Loading frames for a same-room refresh carry an empty roster.
       if (!(recipients.state === "loading" && recipientsRetained())) {
         recipientsRoomId = recipients.roomId
+        // Only a changed member list is new evidence; repeats must not undo a newer name.
+        var rosterChanged = !sameProjection(recipientEntries, recipients.entries) || recipientsState !== recipients.state
         if (!sameProjection(recipientEntries, recipients.entries)) recipientEntries = recipients.entries
         if (!sameProjection(agentProfiles, agents)) agentProfiles = agents
+        if (recipients.state === "snapshot" && rosterChanged) rememberNames(recipients.entries)
         recipientsState = recipients.state
         recipientsCategory = recipients.category
         recipientsPartial = recipients.partial
