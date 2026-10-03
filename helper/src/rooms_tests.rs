@@ -653,6 +653,17 @@ fn the_helper_and_panel_share_one_room_limit() {
         )),
         "Service.qml maxRooms differs from catalog::MAX_ROOMS"
     );
+    // The activity list is bounded by the same number on both sides.
+    let activity = include_str!("../../plugin/RoomActivity.js");
+    assert!(
+        activity.contains(&format!("var MAX_SUMMARIES = {};", crate::activity::ROOMS)),
+        "RoomActivity.js MAX_SUMMARIES differs from activity::ROOMS"
+    );
+    assert_eq!(crate::activity::ROOMS, crate::catalog::MAX_ROOMS);
+    assert!(
+        panel.contains("state.activity.length > RoomActivity.MAX_SUMMARIES"),
+        "Service.qml does not bound the activity list by MAX_SUMMARIES"
+    );
 }
 
 #[test]

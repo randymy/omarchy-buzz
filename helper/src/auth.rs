@@ -2078,29 +2078,39 @@ async fn observe_inner(
                 activity_due=tokio::time::Instant::now()+Duration::from_secs(5);
                 let status=tx.borrow();
                 let rooms=&status.catalog.rooms;
-                let candidate=if status.catalog.state=="partial" && !rooms.is_empty() {
-                    let room=rooms[activity_cursor % rooms.len()].id.clone();
-                    activity_cursor=activity_cursor.wrapping_add(1);
-                    Some(room)
-                } else {None};
+                // A bounded number of rooms per cycle, in rotation (`activity::per_cycle`):
+                // one room as ever up to 20 joined rooms, a few more beyond that.
+                let batch:Vec<String>=if status.catalog.state=="partial" && !rooms.is_empty() {
+                    let ids:Vec<String>=rooms.iter().map(|r|r.id.clone()).collect();
+                    crate::activity::next_rooms(&ids,&mut activity_cursor)
+                } else {Vec::new()};
                 let generation=status.generation;drop(status);
                 // The selected room's head page is read by its own refresh; only its replies are read here.
-                let skip_head=candidate.as_ref().is_some_and(|r|selected_history.as_ref()==Some(r));
-                if let (Some(room),Some(pin))=(candidate,*relay_pin) {
-                    let relay=relay.to_owned();let keys=keys.clone();let id=uuid::Uuid::parse_str(&room).expect("catalog canonical room");
+                let reads:Vec<(String,bool)>=batch.into_iter().map(|r|{let skip=selected_history.as_ref()==Some(&r);(r,skip)}).collect();
+                if let (false,Some(pin))=(reads.is_empty(),*relay_pin) {
+                    let relay=relay.to_owned();let keys=keys.clone();
                     activity_jobs.spawn(async move {
-                        let result=if skip_head {None} else {Some(match timeout(Duration::from_secs(15),crate::history::fetch(&relay,&keys,pin,id)).await {Ok(r)=>r,Err(_)=>Err("history_timeout")})};
-                        // Thread replies are not in the head page (`top_level`): one more bounded read, only for notifications.
-                        let replies=if result.as_ref().is_none_or(|r|r.is_ok()) {
-                            timeout(Duration::from_secs(15),crate::history::fetch_replies(&relay,&keys,pin,id)).await.unwrap_or(Err("history_timeout")).ok()
-                        } else {None};
-                        (generation,room,result,replies)
+                        let mut done=Vec::new();
+                        for (room,skip_head) in reads {
+                            let id=uuid::Uuid::parse_str(&room).expect("catalog canonical room");
+                            let result=if skip_head {None} else {Some(match timeout(Duration::from_secs(15),crate::history::fetch(&relay,&keys,pin,id)).await {Ok(r)=>r,Err(_)=>Err("history_timeout")})};
+                            // Thread replies are not in the head page (`top_level`): one more bounded read, only for notifications.
+                            let replies=if result.as_ref().is_none_or(|r|r.is_ok()) {
+                                timeout(Duration::from_secs(15),crate::history::fetch_replies(&relay,&keys,pin,id)).await.unwrap_or(Err("history_timeout")).ok()
+                            } else {None};
+                            let denied=matches!(&result,Some(Err("query_access_denied")));
+                            done.push((room,result,replies));
+                            // A refused room is acted on at once; the rest wait for the next cycle.
+                            if denied {break;}
+                        }
+                        (generation,done)
                     });
                 }
             },
             result=activity_jobs.join_next(), if !activity_jobs.is_empty()=> {
                 activity_due=tokio::time::Instant::now()+Duration::from_secs(5);
-                if let Some(Ok((generation,room,result,replies)))=result {
+                if let Some(Ok((generation,batch)))=result {
+                  for (room,result,replies) in batch {
                     let allowed=fresh && generation==tx.borrow().generation && tx.borrow().catalog.state=="partial" && tx.borrow().catalog.rooms.iter().any(|r|r.id==room);
                     if allowed {
                         let denied=matches!(&result,Some(Err("query_access_denied")));
@@ -2119,6 +2129,7 @@ async fn observe_inner(
                             s.activity=activity.summaries();
                         });
                     }
+                  }
                 } else {
                     // A task panic cannot leave a stale activity claim visible.
                     activity=crate::activity::Tracker::default();publish_status(tx, |s|s.activity.clear());

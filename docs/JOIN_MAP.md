@@ -203,5 +203,15 @@ longer one (`aboutTruncated`) is shown read-only because it could only be saved 
 clears the catalog), its `roomDetail` is cleared to `room_detail_access_denied` and any read still running is
 cancelled; a read that finishes for an unlisted room is never shown and leaves no `loading` state.
 
+**Activity and notifications with more than 20 rooms.** The activity poll reads one room per 5 s cycle in rotation
+(a head read and a replies read; the selected room's head comes from its own refresh). Up to 20 joined rooms that
+is unchanged. The tracker used to refuse any room past the twentieth, so those never got indicators or notices;
+it now holds every room the catalog can (`activity::ROOMS` = `catalog::MAX_ROOMS`, 200; the panel's activity list
+is bounded by the same number, `RoomActivity.MAX_SUMMARIES`, asserted in a test). Past 20 rooms a cycle reads
+`ceil(n / 20)` rooms, at most 4 (`activity::BUDGET`, up to 8 reads per cycle), so relay load stays a few queries
+per cycle. Rooms are reached in rotation, so activity and notifications for a room can lag by up to
+`ceil(n / rooms-per-cycle)` cycles of 5 s (n = 200: 50 cycles, about 4 minutes; n = 21: 11 cycles, under a minute).
+A refused room is revoked at once and ends that cycle's reads.
+
 **Not done.** Role changes (Desktop's `change_channel_member_role`), archive/delete, TTL, purpose, visibility
 changes of an existing room and forum rooms; showing the topic in the room header; rosters over 100 members.

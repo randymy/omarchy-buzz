@@ -2304,7 +2304,7 @@ mod state_tests {
                 presence: Some("offline".into()),
             })
             .collect();
-        status.activity = (0..20)
+        status.activity = (0..crate::activity::ROOMS)
             .map(|_| crate::activity::Summary {
                 room_id: "00000000-0000-4000-8000-000000000001".into(),
                 epoch: u64::MAX,

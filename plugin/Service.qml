@@ -3049,7 +3049,7 @@ Item {
     var transfers = supportsAttachments ? validatedTransfers(state, origin) : null
     if (supportsAttachments && !transfers) { fail("invalid_response"); return false }
     var supportsActivity = frame.capabilities.indexOf("room_activity") !== -1
-    if (supportsActivity && (!Array.isArray(state.activity) || state.activity.length > 20 || state.activity.some(function(a, i) {
+    if (supportsActivity && (!Array.isArray(state.activity) || state.activity.length > RoomActivity.MAX_SUMMARIES || state.activity.some(function(a, i) {
       return !RoomActivity.valid(a) || !uuidValue(a.roomId) || !catalog.rooms.some(function(r) { return r.id === a.roomId })
         || state.activity.slice(0,i).some(function(b) { return b.roomId === a.roomId })
     }))) { fail("invalid_response"); return false }
