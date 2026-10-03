@@ -45,7 +45,32 @@ ShellRoot {
         service.unknownAuthorRoom = ""
         service.noteUnknownAuthors([{author: "d".repeat(64)}])
         if (service.unknownAuthorRoom !== "") throw new Error("Member read attempted without the capability")
-        console.log("PASS: message usernames, profile updates, agent labels, room-scoped fallback and a member re-read for unknown authors")
+        // Names the helper served stay while the community is the same: a member
+        // list that reloads, fails, belongs to another room or is cut at its bound
+        // must not turn a known name back into a key.
+        var fdax = "f".repeat(64)
+        service.rememberNames([{key: fdax, name: "FDAX"}, {key: "e".repeat(64), name: "  "}])
+        service.clearRecipients()
+        if (service.messageAuthorName(fdax) !== "FDAX") throw new Error("Known name lost when the member list cleared")
+        if (service.personName(fdax) !== "FDAX") throw new Error("Known name missing from people labels")
+        if (service.messageAuthorName("e".repeat(64)) !== "eeeeeeeeeeee…") throw new Error("Blank name remembered")
+        service.recipientsRoomId = room
+        service.recipientsState = "snapshot"
+        service.recipientEntries = [{key: fdax, name: "FDAX renamed"}]
+        if (service.messageAuthorName(fdax) !== "FDAX renamed") throw new Error("Current member list not preferred")
+        service.recipientsRoomId = "22222222-2222-4222-8222-222222222222"
+        if (service.messageAuthorName(fdax) !== "FDAX") throw new Error("Known name lost in another room")
+        service.rememberNames([{key: fdax, name: "FDAX renamed"}])
+        if (service.messageAuthorName(fdax) !== "FDAX renamed") throw new Error("Newer name not remembered")
+        var many = []
+        for (var n = 0; n < service.knownNamesLimit + 5; n++) many.push({key: ("000" + n).slice(-4).repeat(16), name: "P" + n})
+        service.rememberNames(many)
+        if (service.knownNameOrder.length !== service.knownNamesLimit || service.knownNames[fdax] !== undefined
+            || service.knownNames[many[many.length - 1].key] !== "P" + (many.length - 1)) throw new Error("Name cache not bounded oldest-first")
+        service.forgetNames("wss://other.example|" + "b".repeat(64))
+        if (service.messageAuthorName(many[many.length - 1].key) !== many[many.length - 1].key.slice(0, 12) + "…")
+          throw new Error("Names kept across communities")
+        console.log("PASS: message usernames, profile updates, agent labels, room-scoped fallback, a member re-read for unknown authors, and served names kept per community")
         Qt.quit()
       } catch (error) { console.error(error); Qt.exit(1) }
     }
