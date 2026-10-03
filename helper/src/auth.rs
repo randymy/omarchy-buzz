@@ -86,6 +86,7 @@ fn set_connection(
             s.thread = Thread::unavailable(None, None, None);
             s.activity.clear();
             s.recipients = crate::protocol::RecipientsView::unavailable(None, None);
+            s.room_detail = crate::protocol::RoomDetailView::unavailable(None, None);
             s.people = crate::protocol::PeopleView::unavailable(None, "", None);
             s.open_rooms = crate::protocol::OpenRooms::unavailable(None);
             // Nothing is known about the status without a session; a failure's
@@ -2795,6 +2796,21 @@ mod reload_tests {
             identity: identity.map(str::to_owned),
             communities: Vec::new(),
         }
+    }
+    #[test]
+    fn leaving_authenticated_clears_the_room_detail() {
+        // Members and roles from the last session must not read as current.
+        let (tx, rx) = watch::channel(Status::new(&fixture(None, None)));
+        publish_status(&tx, |s| {
+            s.connection = "authenticated".into();
+            s.room_detail.state = "snapshot".into();
+            s.room_detail.room_id = Some("room".into());
+            s.room_detail.role = "owner".into();
+        });
+        set_connection(&tx, "connecting", None, Some(true));
+        let s = rx.borrow();
+        assert_eq!(s.room_detail.state, "unavailable");
+        assert!(s.room_detail.room_id.is_none() && s.room_detail.role.is_empty());
     }
     #[test]
     fn scope_generation_changes_only_with_public_scope() {
