@@ -38,6 +38,13 @@ pub enum QueryRequest {
         limit: u16,
         before: Option<(u64, EventId)>,
     },
+    /// The newest messages of a room as an ordinary filter, so thread replies
+    /// are included (`RoomHistory` is `top_level` and excludes them). Used only
+    /// by the notification tracker; no bounds, summaries or edits.
+    RoomRecent {
+        room: Uuid,
+        limit: u16,
+    },
     /// Desktop's legacy oldest-first thread read (NIP-CW "Legacy Oldest-first
     /// Threads"); `after` is the last loaded reply's `(created_at, id)`.
     ThreadReplies {
@@ -124,6 +131,9 @@ impl QueryRequest {
                 }
                 filter
             }
+            Self::RoomRecent { room, limit } if (1..=20).contains(limit) => {
+                serde_json::json!({"kinds":[9,40002],"#h":[room.to_string()],"limit":limit})
+            }
             Self::ThreadReplies { room, root, after } => {
                 let mut filter = serde_json::json!({"#h":[room.to_string()],"#e":[root.to_hex()],"kinds":[9,40002],"depth_limit":THREAD_DEPTH,"limit":THREAD_PAGE_ROWS,"include_aux":true});
                 if let Some((created_at, id)) = after {
@@ -192,6 +202,15 @@ impl QueryRequest {
                                     .get(1)
                                     .is_some_and(|id| *id == room.to_string())
                         }))
+            }
+            Self::RoomRecent { room, .. } => {
+                matches!(event.kind.as_u16(), 9 | 40002)
+                    && event.tags.iter().any(|t| {
+                        t.as_slice().first().map(String::as_str) == Some("h")
+                            && t.as_slice()
+                                .get(1)
+                                .is_some_and(|id| *id == room.to_string())
+                    })
             }
             Self::ThreadReplies { room, .. } => {
                 let kind = event.kind.as_u16();

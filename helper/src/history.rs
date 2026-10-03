@@ -853,6 +853,75 @@ pub async fn fetch(
         Some(keys.public_key()),
     )
 }
+/// Recent thread replies for the notification tracker only: the newest
+/// `ROWS` messages of the room read without `top_level`, keeping the replies.
+/// Signatures, kind, scope and time are checked like `reduce_at`; edits,
+/// deletions and summaries are not read, so rows are never shown to the panel.
+pub async fn fetch_replies(
+    relay: &str,
+    keys: &Keys,
+    trusted_signer: PublicKey,
+    room: Uuid,
+) -> Result<Vec<Row>, &'static str> {
+    let events = query(
+        relay,
+        keys,
+        &QueryRequest::RoomRecent {
+            room,
+            limit: ROWS as u16,
+        },
+    )
+    .await?;
+    reply_rows(room, trusted_signer, &events, Timestamp::now().as_secs())
+}
+pub fn reply_rows(
+    room: Uuid,
+    relay: PublicKey,
+    events: &[Event],
+    now: u64,
+) -> Result<Vec<Row>, &'static str> {
+    if events.len() > ROWS {
+        return Err("history_oversized");
+    }
+    let scope = room.to_string();
+    let mut seen = BTreeSet::new();
+    let mut rows = Vec::new();
+    for event in events {
+        event.verify().map_err(|_| "history_invalid_signature")?;
+        if event.created_at.as_secs() > now.saturating_add(60) {
+            return Err("history_invalid_shape");
+        }
+        if !seen.insert(event.id) {
+            return Err("history_duplicate_event");
+        }
+        if !matches!(event.kind.as_u16(), 9 | 40002) {
+            return Err("history_invalid_kind");
+        }
+        if one(event, "h")? != Some(scope.as_str()) {
+            return Err("history_invalid_scope");
+        }
+        let signals = signals(event);
+        if signals.parent.is_none() {
+            continue;
+        }
+        rows.push(Row {
+            reactions: None,
+            thread: None,
+            id: event.id.to_hex(),
+            author_pubkey: author(event, relay)?.to_hex(),
+            timestamp: event.created_at.as_secs(),
+            text: text(&event.content).0,
+            edited: false,
+            truncated: false,
+            unavailable: false,
+            attachments: Vec::new(),
+            attachments_unavailable: false,
+            signals,
+        });
+    }
+    rows.sort_by(oldest_first);
+    Ok(rows)
+}
 /// One older page continuing from `cursor`, verified exactly like the head
 /// plus its request binding. Reads only, so a busy query slot is retried.
 pub async fn fetch_older(

@@ -189,9 +189,18 @@ impl Tracker {
         } else {
             self.rooms[room].mine.clone()
         };
-        for row in rows.iter().filter(|r| r.author_pubkey == own) {
-            mine.insert(row.id.clone());
-            mine.extend(row.signals.root.clone());
+        for row in rows {
+            if row.author_pubkey == own
+                || row
+                    .thread
+                    .as_ref()
+                    .is_some_and(|t| t.participants.iter().any(|p| p == own))
+            {
+                mine.insert(row.id.clone());
+            }
+            if row.author_pubkey == own {
+                mine.extend(row.signals.root.clone());
+            }
         }
         if mine.len() > 512 {
             mine.clear();
@@ -215,7 +224,7 @@ impl Tracker {
             );
             return;
         }
-        let mut fresh = Vec::new();
+        let mut fresh: Vec<&Row> = Vec::new();
         {
             let r = self.rooms.get_mut(room).unwrap();
             for row in rows {
@@ -232,9 +241,49 @@ impl Tracker {
             }
             r.previous = ids;
         }
+        let fresh: Vec<Row> = fresh.into_iter().cloned().collect();
+        self.queue(room, &fresh, rows, own, now, mine);
+    }
+    /// Thread replies from a read without `top_level` (`history::fetch_replies`),
+    /// which the head page never holds. Only for a room already baselined;
+    /// replies older than that baseline or already seen are not new.
+    pub fn observe_replies(&mut self, room: &str, replies: &[Row], own: &str, now: u64) {
+        let Some(r) = self.rooms.get_mut(room) else {
+            return;
+        };
+        if replies.len() > 20 || r.ids.len() + replies.len() > 512 {
+            return;
+        }
+        let mut mine = std::mem::take(&mut r.mine);
+        for row in replies.iter().filter(|r| r.author_pubkey == own) {
+            mine.insert(row.id.clone());
+            mine.extend(row.signals.root.clone());
+        }
+        let mut fresh = Vec::new();
+        for row in replies {
+            if r.ids.insert(row.id.clone())
+                && row.author_pubkey != own
+                && row.timestamp >= r.floor
+                && row.timestamp <= now.saturating_add(60)
+            {
+                r.observed = r.observed.saturating_add(1).min(1_000_000_000);
+                fresh.push(row.clone());
+            }
+        }
+        self.queue(room, &fresh, replies, own, now, mine);
+    }
+    fn queue(
+        &mut self,
+        room: &str,
+        fresh: &[Row],
+        rows: &[Row],
+        own: &str,
+        now: u64,
+        mine: BTreeSet<String>,
+    ) {
         // The strongest kind in the burst, then its latest message, speaks for it.
         let mut best: Option<(Kind, &Row)> = None;
-        for row in &fresh {
+        for row in fresh {
             let kind = self.classify(room, row, own, rows, &mine);
             if best.is_none_or(|(k, b)| rank(kind, row) > rank(k, b)) {
                 best = Some((kind, row));
@@ -244,7 +293,11 @@ impl Tracker {
         let taken;
         {
             let r = self.rooms.get_mut(room).unwrap();
-            r.mine = mine;
+            r.mine = if mine.len() > 512 {
+                BTreeSet::new()
+            } else {
+                mine
+            };
             if let Some((kind, row)) = best {
                 let count = u32::try_from(fresh.len()).unwrap_or(999);
                 r.pending = Some(match r.pending.take() {
@@ -511,6 +564,27 @@ mod tests {
         assert!(!n.snippet.contains('\u{202e}'));
         assert_eq!(snippet("short"), "short");
         assert_eq!(snippet(&"x".repeat(SNIPPET)).chars().count(), SNIPPET);
+    }
+    #[test]
+    fn replies_need_a_baseline_and_are_counted_once() {
+        let reply = |id: &str, at: u64| {
+            let mut r = row(id);
+            r.timestamp = at;
+            r.signals.parent = Some("x".into());
+            r.signals.root = Some("x".into());
+            r.signals.mentions = vec!["self".into()];
+            r
+        };
+        let mut t = Tracker::default();
+        t.observe_replies("a", &[reply("1", 100)], "self", 100);
+        assert!(t.summaries().is_empty(), "no baseline, no observation");
+        let mut t = ready(&[room("a", "stream", "g", &[])]);
+        // Older than the baseline floor (99) is history, not news.
+        t.observe_replies("a", &[reply("old", 50), reply("1", 100)], "self", 100);
+        let n = notice(&t);
+        assert_eq!((n.kind, n.count, n.event_id.as_str()), ("mention", 1, "1"));
+        t.observe_replies("a", &[reply("1", 100)], "self", 130);
+        assert_eq!((notice(&t).seq, t.summaries()[0].observed), (1, 1));
     }
     #[test]
     fn bounded_name_cache() {

@@ -208,3 +208,116 @@ async fn denied_background_room_is_removed_without_changing_selected_history() {
 async fn background_denial_clears_room_selected_while_query_was_in_flight() {
     scenario(true).await;
 }
+
+/// A reply under my message reaches the tracker through the production polls:
+/// the head page (`top_level`) never holds it, the ordinary recent read does.
+#[tokio::test]
+async fn thread_reply_reaches_notice_through_the_recent_read() {
+    let _fixture = crate::NETWORK_TEST_LOCK.lock().await;
+    timeout(Duration::from_secs(40), async {
+        let user = Keys::generate();
+        let other = Keys::generate();
+        let relay_key = Keys::generate();
+        let public = user.public_key();
+        let a = "11111111-1111-4111-8111-111111111111".to_string();
+        let h = || Tag::parse(["h", "11111111-1111-4111-8111-111111111111"]).unwrap();
+        let members = vec![event(&relay_key, 39002, "", vec![Tag::parse(["d", a.as_str()]).unwrap(), Tag::parse(["p", &public.to_hex()]).unwrap()])];
+        let metadata = vec![event(&relay_key, 39000, "", vec![Tag::parse(["d", a.as_str()]).unwrap(), Tag::parse(["name", "Fixture"]).unwrap(), Tag::parse(["t", "stream"]).unwrap()])];
+        let root = event(&user, 9, "my question", vec![h()]);
+        let root_id = root.id.to_hex();
+        // Signed when first served: it must be newer than the tracker's baseline.
+        let reply_tags = vec![h(), Tag::parse(["e", &root_id, "", "root"]).unwrap(), Tag::parse(["e", &root_id, "", "reply"]).unwrap()];
+        let reply_id = Arc::new(std::sync::Mutex::new(String::new()));
+        let served_id = reply_id.clone();
+        let bounds = event(&relay_key, 39006, r#"{"has_more":false,"next_cursor":null}"#,
+            vec![h(), Tag::parse(["d", &format!("{a}:head")]).unwrap()]);
+        let head = serde_json::to_string(&vec![root.clone(), bounds]).unwrap();
+        let root_for_server = root.clone();
+        let empty = serde_json::to_string::<Vec<Event>>(&vec![]).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("ws://{}/", listener.local_addr().unwrap());
+        let signer = relay_key.public_key();
+        let recent_reads = Arc::new(AtomicUsize::new(0));
+        let counted = recent_reads.clone();
+        let room_for_server = a.clone();
+        let (stop_tx, mut stop_rx) = oneshot::channel::<()>();
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut ws = accept_async(tcp).await.unwrap();
+            ws.send(Message::Text(json!(["AUTH", "fixture"]).to_string().into())).await.unwrap();
+            let Some(Ok(Message::Text(text))) = ws.next().await else { panic!("AUTH expected") };
+            let frame: Value = serde_json::from_str(&text).unwrap();
+            let auth: Event = serde_json::from_value(frame[1].clone()).unwrap();
+            ws.send(Message::Text(json!(["OK", auth.id.to_hex(), true, ""]).to_string().into())).await.unwrap();
+            let ws_task = tokio::spawn(async move {
+                while let Some(Ok(Message::Text(text))) = ws.next().await {
+                    let frame: Value = serde_json::from_str(&text).unwrap();
+                    if matches!(frame[0].as_str(), Some("REQ" | "CLOSE")) {
+                        continue;
+                    }
+                    ws.send(Message::Text(json!(["COUNT", frame[1], {"count":0}]).to_string().into())).await.unwrap();
+                }
+            });
+            loop {
+                tokio::select! {
+                    _ = &mut stop_rx => break,
+                    accepted = listener.accept() => {
+                        let (mut stream, _) = accepted.unwrap();
+                        let (head_text, body) = read_request(&mut stream).await;
+                        let reply_body = if head_text.starts_with("get /info ") {
+                            ok(&json!({"self": signer.to_hex()}).to_string())
+                        } else {
+                            let request = body.unwrap();
+                            match request[0]["kinds"].as_array().unwrap()[0].as_u64().unwrap() {
+                                39002 => ok(&serde_json::to_string(&members).unwrap()),
+                                39000 => ok(&serde_json::to_string(&metadata).unwrap()),
+                                9 if request[0]["top_level"] == true => ok(&head),
+                                9 => {
+                                    // The production shape of the recent read: no extension flags.
+                                    assert_eq!(request, json!([{"kinds":[9,40002],"#h":[room_for_server.clone()],"limit":20}]));
+                                    // The first poll is the baseline; the reply arrives afterwards.
+                                    if counted.fetch_add(1, Ordering::SeqCst) == 0 { ok(&empty) } else {
+                                        let reply = event(&other, 9, "an answer in the thread", reply_tags.clone());
+                                        *served_id.lock().unwrap() = reply.id.to_hex();
+                                        ok(&serde_json::to_string(&vec![reply, root_for_server.clone()]).unwrap())
+                                    }
+                                },
+                                kind => panic!("unexpected query kind {kind}"),
+                            }
+                        };
+                        stream.write_all(reply_body.as_bytes()).await.unwrap();
+                    }
+                }
+            }
+            ws_task.abort();
+        });
+        let config = config::Config { relay: Some(origin.clone()), identity: Some(public.to_hex()), communities: Vec::new() };
+        let (tx, mut status) = watch::channel(Status::new(&config));
+        let (commands, mut command_rx) = mpsc::channel(4);
+        let mut conn = connect_identity(&origin, &user).await.unwrap();
+        let observer = tokio::spawn(async move {
+            let mut pin = None;
+            let mut backoff = Backoff::default();
+            observe_connection(&mut conn, &user, &origin, &mut pin, &tx, &mut command_rx,
+                &mut backoff, FreshnessPolicy { interval: Duration::from_secs(2), response: Duration::from_secs(1), ..FRESHNESS }).await
+        });
+        // The polls are about 5 s apart and the room is never selected.
+        timeout(Duration::from_secs(25), async {
+            while status.borrow().activity.first().and_then(|s| s.notice.as_ref()).is_none() {
+                status.changed().await.unwrap();
+            }
+        }).await.unwrap();
+        let summary = status.borrow().activity[0].clone();
+        let notice = summary.notice.unwrap();
+        assert_eq!((notice.kind, notice.count, notice.seq), ("thread", 1, 1));
+        assert_eq!(notice.event_id, *reply_id.lock().unwrap());
+        assert_eq!(notice.thread_root.as_deref(), Some(root_id.as_str()));
+        assert_eq!(notice.snippet, "an answer in the thread");
+        assert_eq!(notice.room_name, "Fixture");
+        assert!(summary.observed >= 1);
+        commands.send(Command::Retry).await.unwrap();
+        assert!(matches!(timeout(Duration::from_secs(3), observer).await.unwrap().unwrap(), ConnectionExit::Retry));
+        let _ = stop_tx.send(());
+        timeout(Duration::from_secs(3), server).await.unwrap().unwrap();
+    }).await.expect("thread reply fixture deadline");
+}

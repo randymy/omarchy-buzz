@@ -1971,27 +1971,35 @@ async fn observe_inner(
                 let candidate=if status.catalog.state=="partial" && !rooms.is_empty() {
                     let room=rooms[activity_cursor % rooms.len()].id.clone();
                     activity_cursor=activity_cursor.wrapping_add(1);
-                    Some(room).filter(|r|selected_history.as_ref()!=Some(r))
+                    Some(room)
                 } else {None};
                 let generation=status.generation;drop(status);
+                // The selected room's head page is read by its own refresh; only its replies are read here.
+                let skip_head=candidate.as_ref().is_some_and(|r|selected_history.as_ref()==Some(r));
                 if let (Some(room),Some(pin))=(candidate,*relay_pin) {
                     let relay=relay.to_owned();let keys=keys.clone();let id=uuid::Uuid::parse_str(&room).expect("catalog canonical room");
                     activity_jobs.spawn(async move {
-                        let result=match timeout(Duration::from_secs(15),crate::history::fetch(&relay,&keys,pin,id)).await {Ok(r)=>r,Err(_)=>Err("history_timeout")};
-                        (generation,room,result)
+                        let result=if skip_head {None} else {Some(match timeout(Duration::from_secs(15),crate::history::fetch(&relay,&keys,pin,id)).await {Ok(r)=>r,Err(_)=>Err("history_timeout")})};
+                        // Thread replies are not in the head page (`top_level`): one more bounded read, only for notifications.
+                        let replies=if result.as_ref().is_none_or(|r|r.is_ok()) {
+                            timeout(Duration::from_secs(15),crate::history::fetch_replies(&relay,&keys,pin,id)).await.unwrap_or(Err("history_timeout")).ok()
+                        } else {None};
+                        (generation,room,result,replies)
                     });
                 }
             },
             result=activity_jobs.join_next(), if !activity_jobs.is_empty()=> {
                 activity_due=tokio::time::Instant::now()+Duration::from_secs(5);
-                if let Some(Ok((generation,room,result)))=result {
+                if let Some(Ok((generation,room,result,replies)))=result {
                     let allowed=fresh && generation==tx.borrow().generation && tx.borrow().catalog.state=="partial" && tx.borrow().catalog.rooms.iter().any(|r|r.id==room);
                     if allowed {
-                        let denied=matches!(&result,Err("query_access_denied"));
+                        let denied=matches!(&result,Some(Err("query_access_denied")));
                         let mut revoked_delivery=None;
+                        let own_key=keys.public_key().to_hex();
                         match result {
-                            Ok(h) if h.room==room=>activity.observe(&room,&h.rows,&keys.public_key().to_hex(),nostr::Timestamp::now().as_secs()),
-                            Err("query_access_denied")=>{
+                            Some(Ok(h)) if h.room==room=>activity.observe(&room,&h.rows,&own_key,nostr::Timestamp::now().as_secs()),
+                            None=>{},
+                            Some(Err("query_access_denied"))=>{
                                 activity.forget(&room);
                                 if selected_history.as_deref()==Some(room.as_str()) {
                                     selected_history=None;
@@ -2004,6 +2012,7 @@ async fn observe_inner(
                             },
                             _=>activity.forget(&room),
                         }
+                        if let Some(rows)=replies {activity.observe_replies(&room,&rows,&own_key,nostr::Timestamp::now().as_secs());}
                         publish_status(tx, |s| {
                             if denied {
                                 s.catalog.rooms.retain(|r|r.id!=room);

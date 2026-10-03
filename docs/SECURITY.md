@@ -205,6 +205,7 @@ contract). Each relay-controlled string is one argv word that never starts with
 `-` (the sender script would read it as an option) and the click command is
 `omarchy-shell -q shell summon community.buzz '{"room":...,"thread":...}'` with
 validated ids only: the panel ignores other rooms, junk ids and unknown fields.
+Thread replies come from one extra bounded read per activity poll (`kinds [9,40002]`, `#h`, limit 20, no `top_level`); signatures, kind, scope and time are verified like history, and the rows only feed the tracker. Queued notices are bound to relay, identity and generation and checked against the current catalog when sent.
 Message text stays in memory and in the notification, never in the preference.
 
 Agent hints require a verified room roster and a signed kind-10100 profile by

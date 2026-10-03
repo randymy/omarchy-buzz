@@ -25,13 +25,16 @@ ShellRoot {
     return seqs[roomId] || {roomId: roomId, epoch: 1, observed: 0, notice: null}
   }
   // Both rooms stay baselined at seq 0 until a notice names a higher seq.
-  function accept(type, a, b) {
-    var status = {generation: 1, connection: "authenticated", category: null, identity: self, relay: "wss://fixture.example/",
+  function queued(sender) { return {roomId: roomA, notice: {seq: 99, kind: "mention", count: 1, roomName: "general",
+            sender: sender, snippet: "secret", eventId: "d".repeat(64), threadRoot: null}, scope: service.notificationScope} }
+  function accept(type, a, b, options) {
+    options = options || {}
+    var status = {generation: 1, connection: "authenticated", category: null, identity: self, relay: options.relay || "wss://fixture.example/",
       catalog: {state: "partial", category: "room_catalog_partial", rooms: [
         {id: roomA, name: "general", description: "", kind: "stream", participants: [], hidden: false},
-        {id: roomB, name: "Alex", description: "", kind: "dm", participants: [self, other], hidden: false}]},
+        {id: roomB, name: "Alex", description: "", kind: "dm", participants: [self, other], hidden: false}].slice(0, options.onlyA ? 1 : 2)},
       history: {state: "snapshot", roomId: roomA, rows: [], hasMore: false, category: "history_completeness_unknown"},
-      activity: [entry(roomA, a), entry(roomB, b)]}
+      activity: [entry(roomA, a), entry(roomB, b)].slice(0, options.onlyA ? 1 : 2)}
     check(service.acceptFrame(JSON.stringify({version: 1, type: type, instanceId: "notify-fixture", generation: 1,
       capabilities: ["connection_status", "room_catalog", "room_history", "room_activity"], status: status})), "valid frame rejected")
   }
@@ -95,8 +98,6 @@ ShellRoot {
           check(service.notificationsEnabled, "notifications unexpectedly off")
         } else if (step === 8) {
           // Queued notices (as if the sender were busy) obey the current mode when sent.
-          var queued = function(sender) { return {roomId: roomA, notice: {seq: 99, kind: "mention", count: 1, roomName: "general",
-            sender: sender, snippet: "secret", eventId: "d".repeat(64), threadRoot: null}} }
           service.notificationMode = "direct"
           service.notificationQueue = [queued("Q1"), queued("Q2"), queued("Q3")]
           service.notificationMode = "none"
@@ -112,6 +113,25 @@ ShellRoot {
           service.notificationText = false
           service.sendNextNotification()
         } else if (step === 9) {
+          // Queued notices belong to their session and to a room still in the catalog.
+          service.notificationMode = "direct"
+          var stale = queued("Stale")
+          stale.scope = "wss://old.example/|" + self + "|1"
+          service.notificationQueue = [stale]
+          service.sendNextNotification()
+          check(service.notificationQueue.length === 0, "a notice from another session stayed queued")
+          var gone = queued("Gone")
+          gone.roomId = roomB
+          service.notificationQueue = [gone]
+          accept("status", null, null, {onlyA: true})
+          service.sendNextNotification()
+          check(service.notificationQueue.length === 0, "a notice for a removed room stayed queued")
+          service.notificationQueue = [queued("Switch1"), queued("Switch2")]
+          accept("status", null, null, {relay: "wss://other.example/"})
+          check(service.notificationQueue.length === 0 || service.notificationScope.indexOf("other.example") !== -1, "community switch kept scope")
+          service.sendNextNotification()
+          check(service.notificationQueue.length === 0, "notices survived a community switch")
+        } else if (step === 10) {
           console.log("Buzz offscreen notification check passed")
           Qt.quit()
         }

@@ -66,12 +66,18 @@ Item {
   property var notificationQueue: []
   // The queue holds notices, not wording: mode, suppression and the text choice
   // are checked again when each is sent, so a change in Settings applies at once.
+  // Items are also bound to the session they came from (relay, identity, generation)
+  // and to a room that is still in the catalog, so a community switch, a reconnect
+  // or lost access drops them.
+  readonly property string notificationScope: relay + "|" + identity + "|" + generation
   function noticeDeliverable(item) {
-    if (sampleMode || !Notifications.allows(notificationMode, item.notice.kind)) return false
+    if (sampleMode || item.scope !== notificationScope || connection !== "authenticated"
+        || !rooms.some(function(r) { return r.id === item.roomId })
+        || !Notifications.allows(notificationMode, item.notice.kind)) return false
     return !(panelOpen && panelFocused && historyState === "snapshot" && selectedRoomId === item.roomId)
   }
   function announceNotice(roomId, notice) {
-    var item = {roomId: roomId, notice: notice}
+    var item = {roomId: roomId, notice: notice, scope: notificationScope}
     if (!noticeDeliverable(item)) return
     notificationQueue = notificationQueue.concat([item]).slice(-5)
     sendNextNotification()
@@ -86,7 +92,7 @@ Item {
     }
     if (!item) return
     var room = rooms.find(function(r) { return r.id === item.roomId })
-    var message = Notifications.compose(item.notice, room ? room.kind === "dm" : item.notice.kind === "dm", notificationText)
+    var message = Notifications.compose(item.notice, room.kind === "dm", notificationText)
     var next = {title: message.title, body: message.body,
       target: JSON.stringify(item.notice.threadRoot ? {room: item.roomId, thread: item.notice.threadRoot} : {room: item.roomId})}
     // Fixed argv; relay text is only ever one argument (never a shell string,
@@ -2357,6 +2363,7 @@ Item {
     return label
   }
   function clearCatalog() {
+    notificationQueue = []
     roomActivity = RoomActivity.fresh()
     activityObservation = ActivityObserver.fresh()
     clearHistory()

@@ -118,7 +118,13 @@ async fn scenario(in_flight: bool, automatic: bool, automatic_failure: bool) {
             if automatic {responses.push(newer_page);}
             let mut held_send=Some(held_send);let mut release_wait=Some(release_wait);let mut released_send=Some(released_send);
             for (index,payload) in responses.into_iter().enumerate() {
-                let (mut stream,_)=listener.accept().await.unwrap();let (head,body)=request(&mut stream).await;count.fetch_add(1,Ordering::SeqCst);
+                // The activity poll's recent-replies read (no `top_level`) is not part of this sequence.
+                let (mut stream,head,body)=loop {
+                    let (mut stream,_)=listener.accept().await.unwrap();let (head,body)=request(&mut stream).await;
+                    if body.as_ref().is_some_and(|b|b[0]["kinds"]==json!([9,40002])&&b[0].get("top_level").is_none()) {let _=stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n[]").await;continue;}
+                    break (stream,head,body);
+                };
+                count.fetch_add(1,Ordering::SeqCst);
                 if index==0 {assert!(head.starts_with("get /info "));assert!(body.is_none());}
                 else {
                     assert!(head.starts_with("post /query "));assert!(head.contains("authorization: nostr "));let body=body.unwrap();
@@ -275,7 +281,9 @@ async fn older_page_is_held_across_head_refresh_and_dropped_on_reselect() {
                     json!({"self": signer.to_hex()}).to_string()
                 } else {
                     let body = body.unwrap();
-                    if body[0]["kinds"] == json!([39002]) {
+                    if body[0]["kinds"] == json!([9, 40002]) && body[0].get("top_level").is_none() {
+                        "[]".to_string()
+                    } else if body[0]["kinds"] == json!([39002]) {
                         serde_json::to_string(&vec![membership.clone()]).unwrap()
                     } else if body[0]["kinds"] == json!([39000]) {
                         serde_json::to_string(&vec![metadata.clone()]).unwrap()
