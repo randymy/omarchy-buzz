@@ -3,6 +3,7 @@ import QtQuick.Layouts
 import QtQuick.Controls as Controls
 import qs.Ui as Ui
 import qs.Commons
+import "PlainText.js" as PlainText
 
 // Composer for one destination: the room (empty rootId) or the open thread.
 ColumnLayout {
@@ -116,7 +117,7 @@ ColumnLayout {
             + " · " + modelData.key.slice(0, 12) + "…" + modelData.key.slice(-8) + " · " + root.service.participantLabel(modelData.key)
           hoverEnabled: true
           Controls.ToolTip.visible: hovered
-          Controls.ToolTip.text: modelData.key + (modelData.status && modelData.status.text ? " · " + modelData.status.text : "")
+          Controls.ToolTip.text: PlainText.tip(modelData.key + (modelData.status && modelData.status.text ? " · " + modelData.status.text : ""))
           contentItem: Row {
             leftPadding: parent.indicator ? parent.indicator.width + Style.space(6) : 0
             spacing: Style.space(4)

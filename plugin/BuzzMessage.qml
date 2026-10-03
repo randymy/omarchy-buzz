@@ -3,6 +3,7 @@ import QtQuick.Layouts
 import QtQuick.Controls as Controls
 import qs.Ui as Ui
 import qs.Commons
+import "PlainText.js" as PlainText
 
 // One message or reply. Presentation only: every value is an already validated projection.
 Column {
@@ -114,7 +115,7 @@ Column {
           font.pixelSize: Style.font.body
           font.bold: true
           Controls.ToolTip.visible: authorHover.containsMouse && !root.sample
-          Controls.ToolTip.text: root.sample || !root.ready ? "" : root.row.author
+          Controls.ToolTip.text: PlainText.tip(root.sample || !root.ready ? "" : root.row.author)
           MouseArea {
             id: authorHover
             anchors.fill: parent
@@ -134,7 +135,7 @@ Column {
           font.family: Style.font.family
           font.pixelSize: Style.font.caption
           Controls.ToolTip.visible: statusHover.containsMouse && root.authorStatus && root.authorStatus.text !== ""
-          Controls.ToolTip.text: root.authorStatus ? root.authorStatus.text : ""
+          Controls.ToolTip.text: PlainText.tip(root.authorStatus ? root.authorStatus.text : "")
           MouseArea {
             id: statusHover
             anchors.fill: parent
@@ -154,7 +155,7 @@ Column {
           font.family: Style.font.family
           font.pixelSize: Style.font.caption
           Controls.ToolTip.visible: agentHover.containsMouse
-          Controls.ToolTip.text: "Self-described agent · what it is doing is not known here"
+          Controls.ToolTip.text: PlainText.tip("Self-described agent · what it is doing is not known here")
           MouseArea {
             id: agentHover
             anchors.fill: parent
@@ -173,7 +174,7 @@ Column {
           font.family: Style.font.family
           font.pixelSize: Style.font.caption
           Controls.ToolTip.visible: stampHover.containsMouse && !root.sample
-          Controls.ToolTip.text: root.sample || !root.ready ? "" : root.service.formatTimestamp(root.row.time)
+          Controls.ToolTip.text: PlainText.tip(root.sample || !root.ready ? "" : root.service.formatTimestamp(root.row.time))
           MouseArea {
             id: stampHover
             anchors.fill: parent
@@ -270,7 +271,7 @@ Column {
                 font.family: Style.font.family
                 font.pixelSize: Style.font.caption
                 Controls.ToolTip.visible: nameHover.containsMouse
-                Controls.ToolTip.text: card.modelData.name + " · " + card.modelData.mime
+                Controls.ToolTip.text: PlainText.tip(card.modelData.name + " · " + card.modelData.mime)
                 MouseArea {
                   id: nameHover
                   anchors.fill: parent
@@ -350,7 +351,7 @@ Column {
           font.family: Style.font.family
           font.pixelSize: Style.font.caption
           Controls.ToolTip.visible: seenHover.containsMouse
-          Controls.ToolTip.text: "Queued reaction (snapshot)"
+          Controls.ToolTip.text: PlainText.tip("Queued reaction (snapshot)")
           MouseArea {
             id: seenHover
             anchors.fill: parent
@@ -366,7 +367,7 @@ Column {
           font.family: Style.font.family
           font.pixelSize: Style.font.caption
           Controls.ToolTip.visible: workingHover.containsMouse
-          Controls.ToolTip.text: "Working reaction (snapshot) · not a reply count"
+          Controls.ToolTip.text: PlainText.tip("Working reaction (snapshot) · not a reply count")
           MouseArea {
             id: workingHover
             anchors.fill: parent
