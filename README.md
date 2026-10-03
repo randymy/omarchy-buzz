@@ -62,7 +62,7 @@ Selected-room history refreshes about five seconds after a request finishes. A s
 
 Enrollment verifies the relay's signing identity before saving a human key and rejects the server signing key. The relay must be reachable. Update helper and plugin together: 0.0.5 adds `room_activity` and `agent_profiles` capabilities. See [ACP readiness](docs/ACP_READINESS.md) for the remaining real-agent launch blockers.
 
-The helper owns identity access through Linux Secret Service. Enrollment uses hidden terminal input; QML receives bounded presentation data and never identity keys. Missing or failed helpers leave the panel usable with setup instructions and Retry. Authentication is not a claim that room synchronization works.
+The helper owns identity access through Linux Secret Service. Enrollment uses hidden terminal input; QML receives bounded presentation data and never identity keys. Missing or failed helpers leave the panel usable with setup instructions and Retry; the panel restarts an ended helper bridge on its own (after 1, 2, 5 and 10 seconds, then every 30) and the helper reconnects a lost relay connection on its own, shown as "Reconnecting…". Authentication is not a claim that room synchronization works.
 
 The community plugin will remain generic. A downstream project consumes it as a separate integration, described in the design, rather than a separate plugin fork. This project is independently maintained and is not presented as an official Block or Omarchy product.
 

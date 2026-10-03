@@ -61,6 +61,16 @@ fn publish_status(tx: &watch::Sender<Status>, change: impl FnOnce(&mut Status)) 
     });
 }
 fn update(tx: &watch::Sender<Status>, state: &str, category: Option<&str>) {
+    set_connection(tx, state, category, None);
+}
+/// `reconnecting` none keeps an automatic reconnection shown while
+/// `connecting`; any other state ends it.
+fn set_connection(
+    tx: &watch::Sender<Status>,
+    state: &str,
+    category: Option<&str>,
+    reconnecting: Option<bool>,
+) {
     #[cfg(test)]
     assert!(
         category.is_none_or(|c| crate::protocol::CONNECTION_CATEGORIES.contains(&c)),
@@ -69,6 +79,7 @@ fn update(tx: &watch::Sender<Status>, state: &str, category: Option<&str>) {
     publish_status(tx, |s| {
         s.connection = state.into();
         s.category = category.map(str::to_owned);
+        s.reconnecting = reconnecting.unwrap_or(state == "connecting" && s.reconnecting);
         if state != "authenticated" {
             s.catalog = crate::protocol::Catalog::unavailable(None);
             s.history = History::unavailable(None, None);
@@ -165,6 +176,7 @@ fn apply_loaded_config(
                     s.dm_open = crate::protocol::DmOpen::default();
                     s.connection = "unconfigured".into();
                     s.category = None;
+                    s.reconnecting = false;
                     // A measurement belongs to the relay it was taken against.
                     s.clock_skew_seconds = None;
                     s.catalog = crate::protocol::Catalog::unavailable(None);
@@ -229,6 +241,23 @@ fn catalog_category(error: &str) -> &'static str {
     }
 }
 
+/// Catalog failures that say nothing about access: timeouts, an unreachable
+/// or busy relay. A denial, a changed relay identity or an invalid answer is
+/// never transient.
+fn catalog_transient(error: &str) -> bool {
+    matches!(
+        error,
+        "discovery_timeout"
+            | "discovery_unavailable"
+            | "discovery_busy"
+            | "query_timeout"
+            | "query_unavailable"
+            | "query_transport_unavailable"
+            | "query_rate_limited"
+            | "query_busy"
+    )
+}
+
 // NIP-45 COUNT is supported by the pinned relay's handle_count. It is a
 // narrow own-profile read, not a presence/process-health assertion.
 #[derive(Clone, Copy)]
@@ -248,6 +277,8 @@ struct FreshnessPolicy {
     // and the re-publication interval while online or away.
     presence_gap: Duration,
     presence_heartbeat: Duration,
+    // Shown presence states older than this are dropped (`presence::FRESH_SECS`).
+    presence_fresh: Duration,
 }
 const FRESHNESS: FreshnessPolicy = FreshnessPolicy {
     interval: Duration::from_secs(20),
@@ -258,9 +289,49 @@ const FRESHNESS: FreshnessPolicy = FreshnessPolicy {
     status_gap: crate::user_status::GAP,
     presence_gap: crate::presence::GAP,
     presence_heartbeat: crate::presence::HEARTBEAT,
+    presence_fresh: Duration::from_secs(crate::presence::FRESH_SECS),
 };
+#[derive(Debug, PartialEq)]
+enum ProbeAnswer {
+    Counted,
+    // Relays refuse COUNT in normal operation ("rate-limited: too many
+    // concurrent requests", "error: database error"). A refusal of the exact
+    // probe still answers it on this socket: the session stays fresh.
+    Refused,
+    // "auth-required:": the relay no longer treats the session as
+    // authenticated. The helper reconnects with backoff.
+    SignedOut,
+}
+/// A relay frame answering the pending liveness probe, if it is one.
+fn probe_answer(msg: &RelayMessage, pending: Option<&str>) -> Option<ProbeAnswer> {
+    match msg {
+        RelayMessage::Count {
+            subscription_id, ..
+        } if pending == Some(subscription_id.as_str()) => Some(ProbeAnswer::Counted),
+        RelayMessage::Closed {
+            subscription_id,
+            message,
+        } if pending == Some(subscription_id.as_str()) => {
+            Some(if message.starts_with("auth-required:") {
+                ProbeAnswer::SignedOut
+            } else {
+                ProbeAnswer::Refused
+            })
+        }
+        _ => None,
+    }
+}
+/// Automatic reconnection. Network-like failures (`relay_timeout`,
+/// `relay_unavailable`, `relay_resource_limit`, `relay_protocol_error`) are
+/// retried without limit: 1, 2, 4… seconds up to `cap`, each delay jittered
+/// to 75–125 % (never above `cap`) so clients do not return in step. A
+/// rejected authentication is retried only as described below, at most
+/// `REJECTIONS` times. Failures are forgotten only after `stable` of fresh
+/// session, so a connection that keeps dropping keeps its longer delay.
 struct Backoff {
-    failures: u8,
+    failures: u32,
+    // Rejections retried since the last stable session or Retry.
+    rejections: u8,
     // Set when the relay rejected a re-authentication of a session that had
     // authenticated since start or Retry. Until success, Retry or exhaustion,
     // `auth_rejected` then retries like a network failure. A rejected first
@@ -270,38 +341,81 @@ struct Backoff {
     // re-authentication explained by the clock offset). The clock can be fixed
     // while the helper keeps trying, so it retries like a network failure.
     clock_skew: bool,
+    // When the current session was first found fresh.
+    fresh_since: Option<tokio::time::Instant>,
     unit: Duration,
+    cap: Duration,
+    stable: Duration,
 }
+const REJECTIONS: u8 = 5;
 impl Default for Backoff {
     fn default() -> Self {
         Self {
             failures: 0,
+            rejections: 0,
             reauth_rejected: false,
             clock_skew: false,
+            fresh_since: None,
             unit: Duration::from_secs(1),
+            cap: Duration::from_secs(30),
+            stable: Duration::from_secs(60),
         }
     }
 }
 impl Backoff {
     fn reset(&mut self) {
         self.failures = 0;
+        self.rejections = 0;
         self.reauth_rejected = false;
         self.clock_skew = false;
+        self.fresh_since = None;
+    }
+    /// A liveness answer on an authenticated session: the latest failure is
+    /// over. Delays start again from `unit` once the session has stayed fresh
+    /// for `stable`.
+    fn healthy(&mut self, now: tokio::time::Instant) {
+        self.reauth_rejected = false;
+        self.clock_skew = false;
+        let since = *self.fresh_since.get_or_insert(now);
+        if now.duration_since(since) >= self.stable {
+            self.failures = 0;
+            self.rejections = 0;
+        }
     }
     fn delay(&mut self, error: &str) -> Option<Duration> {
-        let retryable = matches!(
+        // Uniform in [0, 1), from the system random source behind UUID v4: its
+        // low 56 bits are random (the version and variant bits lie above).
+        const BITS: u32 = 53;
+        let draw = uuid::Uuid::new_v4().as_u128() & ((1 << BITS) - 1);
+        let random = draw as f64 / (1_u64 << BITS) as f64;
+        self.delay_jittered(error, random)
+    }
+    /// `delay` with the jitter's draw in [0, 1); 0.5 means no jitter.
+    fn delay_jittered(&mut self, error: &str, random: f64) -> Option<Duration> {
+        self.fresh_since = None;
+        let network = matches!(
             error,
-            "relay_timeout" | "relay_unavailable" | "relay_resource_limit" | "clock_skew"
-        ) || (error == "auth_rejected" && self.reauth_rejected);
-        if !retryable || self.failures >= 5 {
+            "relay_timeout" | "relay_unavailable" | "relay_resource_limit" | "relay_protocol_error"
+        );
+        let rejected = error == "clock_skew" || (error == "auth_rejected" && self.reauth_rejected);
+        if !network && !(rejected && self.rejections < REJECTIONS) {
             self.reauth_rejected = false;
             self.clock_skew = false;
             return None;
         }
+        if rejected {
+            self.rejections += 1;
+        }
         self.clock_skew = error == "clock_skew";
-        let factor = 1_u32 << self.failures;
-        self.failures += 1;
-        Some(self.unit * factor)
+        let base = self
+            .unit
+            .saturating_mul(1_u32 << self.failures.min(16))
+            .min(self.cap);
+        self.failures = self.failures.saturating_add(1);
+        Some(
+            base.mul_f64(0.75 + 0.5 * random.clamp(0.0, 1.0))
+                .min(self.cap),
+        )
     }
     /// The category shown while an automatic retry is in progress.
     fn retrying(&self) -> Option<&'static str> {
@@ -721,13 +835,15 @@ async fn wait_after_failure(
     let delay = backoff.delay(error);
     // A rejected authentication that is being retried (re-authentication or
     // clock skew) is still an attempt to connect; it becomes `disconnected`
-    // only once the budget is spent, and then waits for Retry.
+    // only once the budget is spent, and then waits for Retry. A network
+    // failure waits `disconnected` (setup and invites stay available) and is
+    // shown as reconnecting until the next attempt ends.
     let state = if delay.is_some() && matches!(error, "auth_rejected" | "clock_skew") {
         "connecting"
     } else {
         "disconnected"
     };
-    update(tx, state, Some(error));
+    set_connection(tx, state, Some(error), Some(delay.is_some()));
     if let Some(delay) = delay {
         let sleep = tokio::time::sleep(delay);
         tokio::pin!(sleep);
@@ -1132,6 +1248,45 @@ async fn observe_inner(
         () => {{
             let own = keys.public_key().to_hex();
             publish_status(tx, |s| apply_presence(s, presence, &presence_seen, &own));
+        }};
+    }
+    // Time-based aging that does not depend on the joined-room check succeeding:
+    // statuses expire on the reader's clock (the relay keeps them), and presence
+    // states too old to mean anything are dropped.
+    macro_rules! expire_timed {
+        () => {{
+            let now_secs = nostr::Timestamp::now().as_secs();
+            let expired: Vec<String> = status_expiry
+                .iter()
+                .filter(|(_, at)| **at <= now_secs)
+                .map(|(k, _)| k.clone())
+                .collect();
+            for key in &expired {
+                status_expiry.remove(key);
+            }
+            let mine_expired = tx
+                .borrow()
+                .user_status
+                .mine
+                .as_ref()
+                .is_some_and(|m| m.expires_at.is_some_and(|at| at <= now_secs));
+            if mine_expired || !expired.is_empty() {
+                publish_status(tx, |s| {
+                    if mine_expired {
+                        s.user_status.mine = None;
+                    }
+                    for entry in s.recipients.entries.iter_mut() {
+                        if expired.contains(&entry.key) || (mine_expired && entry.key == own_key) {
+                            entry.status = None;
+                        }
+                    }
+                });
+            }
+            if presence_read_at.is_some_and(|at| at.elapsed() > policy.presence_fresh) {
+                presence_seen.clear();
+                presence_read_at = None;
+                project_presence!();
+            }
         }};
     }
     macro_rules! spawn_presence {
@@ -2049,27 +2204,20 @@ async fn observe_inner(
                             let joined=&s.catalog.rooms;
                             s.open_rooms.rooms.retain(|r|!joined.iter().any(|j|j.id==r.id));
                         });
-                        // Statuses expire on the reader's clock (the relay keeps them).
-                        let now_secs=nostr::Timestamp::now().as_secs();
-                        let expired:Vec<String>=status_expiry.iter().filter(|(_,at)|**at<=now_secs).map(|(k,_)|k.clone()).collect();
-                        for key in &expired {status_expiry.remove(key);}
-                        let mine_expired=tx.borrow().user_status.mine.as_ref().is_some_and(|m|m.expires_at.is_some_and(|at|at<=now_secs));
-                        if mine_expired || !expired.is_empty() {
-                            publish_status(tx,|s| {
-                                if mine_expired {s.user_status.mine=None;}
-                                for entry in s.recipients.entries.iter_mut() {
-                                    if expired.contains(&entry.key) || (mine_expired && entry.key==own_key) {entry.status=None;}
-                                }
-                            });
-                        }
+                        expire_timed!();
                         let listed=tx.borrow().open_rooms.state!="unavailable";
                         if open_after_catalog || (listed && !removed.is_empty()) {open_after_catalog=false;spawn_open_rooms!();}
-                        // Presence follows the joined-room check: states too old to
-                        // mean anything are dropped, then the shown keys are read again.
-                        if presence_read_at.is_some_and(|at|at.elapsed()>Duration::from_secs(crate::presence::FRESH_SECS)) {
-                            presence_seen.clear();presence_read_at=None;project_presence!();
-                        }
+                        // Presence follows the joined-room check: the shown keys are read again.
                         spawn_presence!();
+                    },
+                    // A re-check of a published catalog that only timed out or found the
+                    // relay busy says nothing about membership: the last verified catalog
+                    // and its views stay until a check succeeds or access is refused.
+                    Some(Ok(Err(error))) if fresh && catalog_transient(error) && relay_pin.is_some()
+                        && matches!(tx.borrow().catalog.state.as_str(),"partial"|"ready")=>{
+                        eprintln!("omarchy-buzz: joined-room check failed: {error}; last catalog kept");
+                        // Kept views still age: no status or presence outlives its time.
+                        expire_timed!();
                     },
                     failed @ (Some(Ok(Err(_)))|Some(Err(_))) if fresh && !cancelled=>{
                         let category=match failed {Some(Ok(Err(error)))=>catalog_category(error),_=>"room_catalog_unavailable"};
@@ -2112,14 +2260,18 @@ async fn observe_inner(
                 });
             },
             msg=conn.next_event(Duration::from_secs(30))=>match msg {
-                Ok(RelayMessage::Count { subscription_id, .. }) if pending.as_deref()==Some(subscription_id.as_str())=> {
+                Ok(msg) if probe_answer(&msg,pending.as_deref()).is_some()=> {
+                    match probe_answer(&msg,pending.as_deref()) {
+                        Some(ProbeAnswer::SignedOut)=>return ConnectionExit::Failure("relay_protocol_error"),
+                        Some(ProbeAnswer::Refused)=>eprintln!("omarchy-buzz: liveness probe refused by the relay; connection kept"),
+                        _=>{},
+                    }
                     pending=None;
                     due=tokio::time::Instant::now()+policy.interval;
-                    backoff.reset();
+                    backoff.healthy(tokio::time::Instant::now());
                     update(tx,"authenticated",None);
                     if !fresh {fresh=true;catalog_due=tokio::time::Instant::now();project_presence!();}
                 },
-                Ok(RelayMessage::Closed { subscription_id, .. }) if pending.as_deref()==Some(subscription_id.as_str())=>return ConnectionExit::Failure("relay_protocol_error"),
                 Ok(RelayMessage::Eose { subscription_id }) if live.is(&subscription_id)=> {
                     if live.eose(&subscription_id) {
                         let primed=live.primed_room().map(str::to_owned);
@@ -2253,6 +2405,9 @@ async fn observe_inner(
                     }
                 },
                 Ok(_)|Err(WsClientError::Timeout)=>{},
+                // An undecodable frame was read whole and is dropped like unrelated
+                // chatter: it cannot answer the probe, so liveness still holds.
+                Err(WsClientError::UnexpectedMessage(_)|WsClientError::Json(_))=>eprintln!("omarchy-buzz: undecodable relay frame ignored"),
                 Err(e)=>return ConnectionExit::Failure(category(&e)),
             }
         }

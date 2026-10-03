@@ -297,7 +297,10 @@ fn rejected_reauthentication_uses_the_network_budget() {
     b.reauth_rejected = true;
     assert_eq!(b.retrying(), Some("auth_rejected"));
     for seconds in [1, 2, 4, 8, 16] {
-        assert_eq!(b.delay("auth_rejected"), Some(Duration::from_secs(seconds)));
+        assert_eq!(
+            b.delay_jittered("auth_rejected", 0.5),
+            Some(Duration::from_secs(seconds))
+        );
     }
     assert!(b.delay("auth_rejected").is_none());
     // Exhaustion ends the automatic chain until Retry.
@@ -411,17 +414,34 @@ fn the_panel_accepts_exactly_the_connection_categories() {
 fn clock_skew_retries_with_the_network_budget() {
     let mut b = Backoff::default();
     for seconds in [1, 2, 4] {
-        assert_eq!(b.delay("clock_skew"), Some(Duration::from_secs(seconds)));
+        assert_eq!(
+            b.delay_jittered("clock_skew", 0.5),
+            Some(Duration::from_secs(seconds))
+        );
         assert_eq!(b.retrying(), Some("clock_skew"));
     }
-    // A network failure in between shares the budget and is shown as such.
-    assert_eq!(b.delay("relay_unavailable"), Some(Duration::from_secs(8)));
+    // A network failure in between lengthens the delay and is shown as such,
+    // but does not spend one of the five retried rejections.
+    assert_eq!(
+        b.delay_jittered("relay_unavailable", 0.5),
+        Some(Duration::from_secs(8))
+    );
     assert_eq!(b.retrying(), None);
-    assert_eq!(b.delay("clock_skew"), Some(Duration::from_secs(16)));
+    for seconds in [16, 30] {
+        assert_eq!(
+            b.delay_jittered("clock_skew", 0.5),
+            Some(Duration::from_secs(seconds))
+        );
+    }
     assert!(b.delay("clock_skew").is_none());
     assert_eq!(b.retrying(), None);
+    // Network failures are still retried after the rejections ran out.
+    assert!(b.delay("relay_unavailable").is_some());
     b.reset();
-    assert_eq!(b.delay("clock_skew"), Some(Duration::from_secs(1)));
+    assert_eq!(
+        b.delay_jittered("clock_skew", 0.5),
+        Some(Duration::from_secs(1))
+    );
     b.reset();
     assert_eq!(b.retrying(), None);
 }

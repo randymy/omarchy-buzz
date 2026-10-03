@@ -40,6 +40,7 @@ Item {
     if (panelOpen && historyState === "snapshot") roomActivity = RoomActivity.markSeen(roomActivity, selectedRoomId)
     // Opening the panel or Retry reconnects a lost agent session; nothing polls.
     if (panelOpen && agentService.autoConnect) agentService.retry()
+    if (panelOpen) reconnectOnOpen()
   }
   function notifyActivity() {
     if (notificationsEnabled && !sampleMode && !notificationProcess.running && !notificationCooldown.running) {
@@ -150,6 +151,17 @@ Item {
   property string connection: "unavailable"
   property string category: "helper_unavailable"
   property var clockSkewSeconds: null
+  // `status.reconnecting`: the helper retries a lost relay connection on its
+  // own (`disconnected` or `connecting`; `category` names the failure).
+  property bool helperReconnecting: false
+  // The panel restarts an unexpectedly ended bridge on its own: after 1, 2, 5
+  // and 10 seconds, then every 30 seconds. Fixtures leave this off.
+  property bool autoRestart: autoConnect && !sampleMode
+  property int bridgeRestarts: 0
+  property double bridgeStartedAt: 0
+  property double reconnectRequestedAt: 0
+  readonly property bool reconnecting: !sampleMode && (bridgeRestart.running
+    || helperReconnecting && (connection === "disconnected" || connection === "connecting"))
   property string instanceId: ""
   property string relay: ""
   property bool sessionFailed: true
@@ -587,9 +599,9 @@ Item {
     ? (historyLive ? "Live" : automaticHistorySupported ? "Auto-refreshing snapshot" : "Snapshot") + " · " + historyRows.length + (historyRows.length === 1 ? " message" : " messages") + " shown · completeness unknown"
       + (!historyHasMore ? "" : historyCategory === "history_older_unheld" ? " · older messages exist but are not held" : " · older history available")
       + (historyOlderState === "unavailable" && !olderLoading ? " · older messages could not be loaded" : "") : ({request_busy: "Helper busy · refresh again", history_timeout: "History request timed out", history_invalid: "History response could not be validated", history_access_denied: "History unavailable for this room"})[historyCategory] || "History not available yet"
-  readonly property string barLabel: sampleMode ? "TEST" : category === "clock_skew" && connection !== "authenticated" ? "Clock" : ({unconfigured: "Setup", connecting: "Connecting", authenticated: "Connected", identity_locked: "Locked", disconnected: "Offline", unavailable: "Error"})[connection] || "Error"
-  readonly property string barSymbol: sampleMode ? "T" : category === "clock_skew" && connection !== "authenticated" ? "!" : ({unconfigured: "?", connecting: "…", authenticated: "✓", identity_locked: "!", disconnected: "○", unavailable: "!"})[connection] || "!"
-  readonly property string statusLabel: sampleMode ? "Sample data" : category === "incompatible_response" ? "Incompatible helper" : category === "identity_access_pending" ? "Waiting for secret store unlock" : category === "clock_skew" && connection !== "authenticated" ? clockSkewText(clockSkewSeconds) : ({
+  readonly property string barLabel: sampleMode ? "TEST" : category === "clock_skew" && connection !== "authenticated" ? "Clock" : reconnecting ? "Reconnecting" : ({unconfigured: "Setup", connecting: "Connecting", authenticated: "Connected", identity_locked: "Locked", disconnected: "Offline", unavailable: "Error"})[connection] || "Error"
+  readonly property string barSymbol: sampleMode ? "T" : category === "clock_skew" && connection !== "authenticated" ? "!" : reconnecting ? "…" : ({unconfigured: "?", connecting: "…", authenticated: "✓", identity_locked: "!", disconnected: "○", unavailable: "!"})[connection] || "!"
+  readonly property string statusLabel: sampleMode ? "Sample data" : category === "incompatible_response" ? "Incompatible helper" : category === "identity_access_pending" ? "Waiting for secret store unlock" : category === "clock_skew" && connection !== "authenticated" ? clockSkewText(clockSkewSeconds) : reconnecting ? (sessionFailed ? "Helper unavailable · reconnecting…" : "Reconnecting…") : ({
     unconfigured: "Setup required", connecting: "Connecting", authenticated: historyState === "snapshot" ? "Authenticated · recent snapshot" : historyState === "loading" ? "Authenticated · history loading"
       : noRoomsJoined && selectedRoom === null ? "Authenticated · no rooms joined yet" : "Authenticated · history unavailable",
     identity_locked: "Identity locked", disconnected: "Disconnected", unavailable: "Helper unavailable"
@@ -605,7 +617,7 @@ Item {
     : (category === "config_unavailable" || category === "invalid_config")
     ? "Check your local helper configuration, then Retry. Credentials do not belong in that file."
     : category === "relay_resource_limit"
-    ? "The relay sent more than this client accepts before sign-in finished (oversized or too many messages), so the connection was closed. The helper retries for a short while on its own; if it keeps happening, the relay may be misbehaving."
+    ? "The relay sent more than this client accepts before sign-in finished (oversized or too many messages), so the connection was closed. The helper keeps retrying on its own; if it keeps happening, the relay may be misbehaving."
     : category === "clock_skew" && connection !== "authenticated"
     ? "This computer's clock disagrees with the relay's, so the relay refuses its sign-in. This often happens after the machine was suspended. On Omarchy run sudo systemctl restart systemd-timesyncd (or check timedatectl), then Retry. The helper keeps trying for a short while on its own."
     : (connection === "identity_locked" || category === "identity_access_pending")
@@ -2425,6 +2437,9 @@ Item {
     connection = "connecting"
     category = ""
     clockSkewSeconds = null
+    helperReconnecting = false
+    bridgeStartedAt = 0
+    bridgeRestart.stop()
   }
   // `status.clockSkewSeconds`: relay minus local seconds, informational only.
   // Absent from helpers older than `clock_skew`; bounded to ±10 years.
@@ -2473,7 +2488,38 @@ Item {
     relay = ""
     connection = "unavailable"
     category = reason
+    helperReconnecting = false
     bridge.running = false
+    scheduleBridgeRestart()
+  }
+  // A bridge that ended (helper restarted or reinstalled, daemon gone, a bad
+  // frame or no hello) is started again after a delay. An incompatible helper
+  // needs a new release first, and a relative helper path never works.
+  function scheduleBridgeRestart() {
+    if (!autoRestart || bridgeRestart.running || bridge.running || category === "incompatible_response"
+        || !helperExecutable.startsWith("/")) return
+    if (bridgeStartedAt > 0 && Date.now() - bridgeStartedAt >= 60000) bridgeRestarts = 0
+    bridgeRestart.interval = [1000, 2000, 5000, 10000][bridgeRestarts] || 30000
+    bridgeRestarts = Math.min(bridgeRestarts + 1, 4)
+    bridgeRestart.start()
+  }
+  function startBridge() {
+    if (!helperExecutable.startsWith("/")) { fail("helper_unavailable"); return }
+    beginSession()
+    bridge.running = true
+    handshake.restart()
+  }
+  // Opening the panel reconnects at once, at most every 5 seconds, when the
+  // relay or the bridge is lost (not when setup, a locked identity or an
+  // incompatible helper needs the user).
+  function reconnectOnOpen() {
+    if (sampleMode || !autoRestart || Date.now() - reconnectRequestedAt < 5000) return
+    var lost = sessionFailed ? !bridge.running && category !== "incompatible_response"
+      : connection === "disconnected" && bridge.running && instanceId !== ""
+    if (!lost) return
+    reconnectRequestedAt = Date.now()
+    if (sessionFailed) startBridge()
+    else send("retry_connection")
   }
   function clearJoin() {
     joinSetup = {state: "idle", inviteCode: null, joinPolicy: null, claim: null, category: null}
@@ -2625,6 +2671,9 @@ Item {
     if (states.indexOf(state.connection) === -1
         || (state.category !== null && categories.indexOf(state.category) === -1)
         || !validClockSkew(state.clockSkewSeconds)
+        // Absent from helpers older than automatic reconnection.
+        || (state.reconnecting !== undefined && typeof state.reconnecting !== "boolean")
+        || (state.reconnecting === true && state.connection === "authenticated")
         || (state.identity !== null && (!boundedString(state.identity, 64) || !/^[a-f0-9]{64}$/.test(state.identity)))
         || (state.relay !== null && (!boundedString(state.relay, 2048) || !/^wss?:\/\//.test(state.relay) || state.relay.indexOf("@") !== -1))) {
       fail("invalid_response"); return false
@@ -2806,12 +2855,14 @@ Item {
     threadSummariesSupported = supportsHistory && frame.capabilities.indexOf("thread_summaries") !== -1
     olderHistorySupported = supportsHistory && frame.capabilities.indexOf("older_history") !== -1
     liveUpdatesSupported = supportsHistory && frame.capabilities.indexOf("live_updates") !== -1
+    if (frame.type === "hello") bridgeStartedAt = Date.now()
     instanceId = frame.instanceId
     generation = frame.generation
     relay = state.relay || ""
     connection = state.connection
     category = state.category || ""
     clockSkewSeconds = state.clockSkewSeconds === undefined ? null : state.clockSkewSeconds
+    helperReconnecting = state.reconnecting === true
     sendSupported = supportsSend
     identity = state.identity || ""
     dmOpenSupported = supportsDmOpen
@@ -2970,12 +3021,11 @@ Item {
     if (sampleMode) return
     if (agentService.autoConnect) agentService.retry()
     if (!sessionFailed && bridge.running && instanceId !== "") send("retry_connection")
-    else {
-      if (!helperExecutable.startsWith("/")) { fail("helper_unavailable"); return }
-      beginSession()
-      bridge.running = true
-      handshake.restart()
-    }
+    else startBridge()
+  }
+  Timer {
+    id: bridgeRestart
+    onTriggered: if (root.autoRestart && root.sessionFailed && !bridge.running) root.startBridge()
   }
   Component.onCompleted: {
     notificationSettingsDirProcess.running = true
@@ -3215,7 +3265,9 @@ Item {
       root.sessionFailed = true
       root.relay = ""
       root.connection = "unavailable"
+      root.helperReconnecting = false
       if (!root.category) root.category = "helper_unavailable"
+      root.scheduleBridgeRestart()
     }
   }
 }

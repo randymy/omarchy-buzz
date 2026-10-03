@@ -152,7 +152,7 @@ clock: on the NIP-11 `GET` it already makes for the relay signer, and with one
 `HEAD /info` after each rejected authentication (never more often). The offset
 is informational only. It never adjusts event timestamps, AUTH signing, token
 expirations or the system clock, and it never authorizes or retries anything
-beyond the existing bounded backoff; it only selects the `clock_skew` category
+beyond the existing bounded budget (five retried rejections); it only selects the `clock_skew` category
 and the panel's hint to fix the clock. The `Date` header is unauthenticated
 beyond TLS to the configured origin, so a relay can make the panel show a wrong
 offset, nothing more. It is bounded to ±10 years and cleared on a relay change.
@@ -166,7 +166,11 @@ offset, nothing more. It is bounded to ±10 years and cleared on a relay change.
   not prove these behaviors.
 - Connection freshness uses exact-ID COUNT probes every twenty seconds with a
   five-second response deadline. This bounds detection of silent failures; it
-  does not certify agent health or live message synchronization.
+  does not certify agent health or live message synchronization. A `CLOSED`
+  refusal of the exact probe counts as an answer (relays refuse COUNT when
+  busy). Lost connections are retried without limit, at most every 30 seconds;
+  only a rejected authentication or a local configuration or identity problem
+  stops the retries.
 - ACP permission defaults and credential handling require separate review before
   integrated agent launch. This plugin currently launches no agents.
 - Future approval controls must defer enforcement to an authoritative backend.

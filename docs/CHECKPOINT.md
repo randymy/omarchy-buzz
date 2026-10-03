@@ -3612,3 +3612,41 @@ service or Rust change, not installed.
   avatar into that box. The file loader is unchanged.
 - Evidence: `scripts/preview --avatar-gallery`, `node tests/avatar_library.cjs`.
 - Not done: the agent editor's avatar field does not offer the gallery yet.
+
+## Automatic reconnection — October 3
+
+- Reported: after a VPN switch Buzz stayed disconnected until **Retry
+  connection**, and the community connection was lost "once in a while"; three
+  helper reinstalls left the panel's bridge ended overnight.
+- Helper `Backoff`: `relay_timeout`, `relay_unavailable`, `relay_resource_limit`
+  and now `relay_protocol_error` are retried without limit (1, 2, 4… s, capped
+  at 30 s, jittered to 75–125 % and never above the cap). Delays start over
+  only after 60 s of fresh session (`Backoff::healthy`), not on the first probe
+  answer. Rejected re-authentication and `clock_skew` keep their five retries
+  (counted separately, so network failures no longer spend them); a rejected
+  first authentication, configuration and identity failures still wait for
+  Retry. This replaces the shared 1/2/4/8/16 budget described above.
+- `status.reconnecting` (new, boolean) is true while an automatic retry is
+  scheduled or under way (`disconnected`/`connecting` with the failure's
+  category) and never while `authenticated`. The panel shows "Reconnecting…"
+  (bar "Reconnecting", amber account dot). Older panels ignore the field;
+  older helpers omit it. No capability or category was added.
+- Liveness: a `CLOSED` reply to the exact COUNT probe ("rate-limited:",
+  "error:") now counts as an answer and keeps the session; only
+  "auth-required:" reconnects (with backoff). Undecodable frames on an
+  authenticated connection are dropped instead of ending it. Passive liveness
+  from relay pings was not built: the pinned ws-client answers pings inside
+  `recv_one` and never surfaces them.
+- A background joined-room check that fails transiently (timeout, unavailable,
+  busy, rate-limited) keeps the last verified catalog, history, thread and
+  roster; a changed relay identity, a denial or an invalid answer still clears
+  them. A 401/403 from the relay's `/info` is `discovery_denied` (formerly
+  `discovery_unavailable`), so a refusal is never mistaken for an outage; the
+  panel still shows `room_catalog_unavailable`.
+- Panel: an ended `ui-bridge` restarts after 1, 2, 5, 10 s, then every 30 s
+  (`autoRestart`, on with `autoConnect`; not for `incompatible_response`); the
+  delays start over after a bridge that lived 60 s. Opening the panel retries
+  at once, at most every 5 s, when the relay connection or the bridge is lost.
+  `--bridge` now restarts the daemon and expects the bridge back without Retry.
+- Not built: reacting to network changes (`ip monitor`, NetworkManager). The
+  30 s cap bounds the delay after a VPN or Wi-Fi change.
