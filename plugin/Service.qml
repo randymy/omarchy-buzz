@@ -479,8 +479,9 @@ Item {
     peopleViewState = view.state
     peopleViewCategory = view.category
     if (!sameProjection(peopleEntries, view.entries)) peopleEntries = view.entries
-    if (view.state === "snapshot") rememberNames(view.entries)
     if (served) {
+      // Only a newly served read is evidence: the helper repeats its last one.
+      rememberNames(view.entries)
       var keys = view.entries.map(function(entry) { return entry.key })
       peopleServed = peopleServed.filter(function(key) { return keys.indexOf(key) === -1 }).concat(keys).slice(-200)
     }
@@ -2657,9 +2658,11 @@ Item {
       // Loading frames for a same-room refresh carry an empty roster.
       if (!(recipients.state === "loading" && recipientsRetained())) {
         recipientsRoomId = recipients.roomId
+        // Only a changed member list is new evidence; repeats must not undo a newer name.
+        var rosterChanged = !sameProjection(recipientEntries, recipients.entries) || recipientsState !== recipients.state
         if (!sameProjection(recipientEntries, recipients.entries)) recipientEntries = recipients.entries
         if (!sameProjection(agentProfiles, agents)) agentProfiles = agents
-        if (recipients.state === "snapshot") rememberNames(recipients.entries)
+        if (recipients.state === "snapshot" && rosterChanged) rememberNames(recipients.entries)
         recipientsState = recipients.state
         recipientsCategory = recipients.category
         recipientsPartial = recipients.partial

@@ -62,6 +62,14 @@ ShellRoot {
         if (service.messageAuthorName(fdax) !== "FDAX") throw new Error("Known name lost in another room")
         service.rememberNames([{key: fdax, name: "FDAX renamed"}])
         if (service.messageAuthorName(fdax) !== "FDAX renamed") throw new Error("Newer name not remembered")
+        // A directory read the helper repeats in later frames is not new evidence:
+        // it must not undo a newer name learned from a member list.
+        var directory = {state: "snapshot", requestId: "people-1", entries: [{key: fdax, name: "FDAX old"}], category: ""}
+        service.applyPeople(directory)
+        if (service.knownNames[fdax] !== "FDAX old") throw new Error("Served directory name not remembered")
+        service.rememberNames([{key: fdax, name: "FDAX renamed"}])
+        service.applyPeople(directory)
+        if (service.knownNames[fdax] !== "FDAX renamed") throw new Error("Repeated directory read undid a newer name")
         var many = []
         for (var n = 0; n < service.knownNamesLimit + 5; n++) many.push({key: ("000" + n).slice(-4).repeat(16), name: "P" + n})
         service.rememberNames(many)
