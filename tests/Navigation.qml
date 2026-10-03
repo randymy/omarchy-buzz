@@ -12,6 +12,7 @@ ShellRoot {
   id: test
   property real stage: 0
   property int ticks: 0
+  property bool busy: false
   property int closeRequests: 0
   readonly property string me: "b".repeat(64)
   readonly property string other: "a".repeat(64)
@@ -160,6 +161,10 @@ ShellRoot {
     running: true
     repeat: true
     onTriggered: {
+      // keyClick spins a nested event loop that fires this Timer again; a nested
+      // tick would rerun the stage and tear the test down under its own handler.
+      if (test.busy) return
+      test.busy = true
       try {
         test.ticks++
         if (test.ticks > 100) throw new Error("Timed out at stage " + test.stage + " (view " + view.width + " × " + view.height + ")")
@@ -320,6 +325,8 @@ ShellRoot {
       } catch (error) {
         console.error(error.message || error)
         Qt.exit(1)
+      } finally {
+        test.busy = false
       }
     }
   }
