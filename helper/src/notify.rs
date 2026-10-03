@@ -191,21 +191,65 @@ pub fn busy() -> bool {
     WAITING.load(std::sync::atomic::Ordering::SeqCst) >= QUEUE
 }
 
+/// Whether a queued notification may still be shown: the session is the one it
+/// was made in (generation), is authenticated, and still lists the room. Checked
+/// again right before delivery, because a notification can wait behind a slow
+/// notification server while the community, connection or room access changes.
+pub fn still_current(
+    status: &crate::protocol::Status,
+    generation: u64,
+    room: &str,
+) -> Option<&'static str> {
+    if status.generation != generation
+        || status.connection != "authenticated"
+        || !status.catalog.rooms.iter().any(|r| r.id == room)
+    {
+        Some("notify_scope_changed")
+    } else {
+        None
+    }
+}
+
+type Sender = fn(&Call) -> Result<u32, &'static str>;
+
 /// Delivers in the background. The panel is answered before the bus is asked,
 /// so a stuck notification server never delays other requests; a failure is
-/// reported on stderr as its category only (never the text).
-pub fn spawn(notice: Notice) {
+/// reported on stderr as its category only (never the text). The scope is
+/// rechecked against the current status once the turn comes, and a notice that
+/// is no longer current is dropped (category only).
+pub fn spawn(
+    notice: Notice,
+    generation: u64,
+    status: tokio::sync::watch::Receiver<crate::protocol::Status>,
+) {
+    spawn_with(notice, generation, status, send);
+}
+
+fn spawn_with(
+    notice: Notice,
+    generation: u64,
+    status: tokio::sync::watch::Receiver<crate::protocol::Status>,
+    sender: Sender,
+) {
     WAITING.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     tokio::spawn(async move {
         let result = {
             let _turn = TURN.lock().await;
-            let call = call(&notice);
-            match tokio::time::timeout(DEADLINE, tokio::task::spawn_blocking(move || send(&call)))
+            let stale = still_current(&status.borrow(), generation, &notice.room);
+            if let Some(category) = stale {
+                Err(category)
+            } else {
+                let call = call(&notice);
+                match tokio::time::timeout(
+                    DEADLINE,
+                    tokio::task::spawn_blocking(move || sender(&call)),
+                )
                 .await
-            {
-                Ok(Ok(result)) => result.map(|_| ()),
-                Ok(Err(_)) => Err("notify_failed"),
-                Err(_) => Err("notify_timeout"),
+                {
+                    Ok(Ok(result)) => result.map(|_| ()),
+                    Ok(Err(_)) => Err("notify_failed"),
+                    Err(_) => Err("notify_timeout"),
+                }
             }
         };
         WAITING.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
@@ -340,9 +384,9 @@ mod tests {
 
     /// Runs `body` against a private bus whose fake notification server records
     /// the arguments it receives and answers `reply` (an id, or an error).
-    fn with_fake_server(
+    pub(super) fn with_fake_server(
         reply: Option<u32>,
-        body: impl FnOnce(&Connection, &Mutex<Vec<String>>),
+        body: impl FnOnce(&Connection, &Mutex<Vec<String>>, &str),
     ) -> bool {
         let Some((mut daemon, address)) = private_bus() else {
             return false;
@@ -382,7 +426,7 @@ mod tests {
                 let _ = server.process(Duration::from_millis(20));
             }
         });
-        body(&connect(&address), &seen);
+        body(&connect(&address), &seen, &address);
         stop.store(true, Ordering::SeqCst);
         thread.join().unwrap();
         let _ = daemon.kill();
@@ -393,7 +437,7 @@ mod tests {
     #[test]
     fn notify_reaches_a_fake_server_with_every_argument() {
         let n = notice("Alex in #general", "a <b> & c", ROOM, Some(THREAD)).unwrap();
-        with_fake_server(Some(42), |client, seen| {
+        with_fake_server(Some(42), |client, seen, _| {
             assert_eq!(deliver(client, &call(&n)), Ok(42));
             let seen = seen.lock().unwrap();
             assert_eq!(seen.len(), 1);
@@ -416,7 +460,7 @@ mod tests {
 
     #[test]
     fn server_error_and_missing_server_are_bounded_categories() {
-        with_fake_server(None, |client, _| {
+        with_fake_server(None, |client, _, _| {
             assert_eq!(deliver(client, &call(&plain())), Err("notify_failed"));
         });
         // A bus where nobody owns the notification name.
@@ -454,5 +498,90 @@ mod unavailable_tests {
             None => std::env::remove_var(key),
         }
         assert_eq!(result, Err("notify_unavailable"));
+    }
+}
+
+#[cfg(test)]
+mod queued_tests {
+    use super::*;
+    use crate::protocol::{Room, Status};
+    const ROOM: &str = "11111111-1111-4111-8111-111111111111";
+    static ADDRESS: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
+    fn status() -> Status {
+        let mut s = Status::new(&crate::config::Config::default());
+        s.connection = "authenticated".into();
+        s.generation = 4;
+        s.catalog.rooms.push(Room {
+            id: ROOM.into(),
+            name: "general".into(),
+            description: String::new(),
+            kind: "stream".into(),
+            participants: Vec::new(),
+            hidden: false,
+        });
+        s
+    }
+    fn to_private_bus(call: &Call) -> Result<u32, &'static str> {
+        let address = ADDRESS.lock().unwrap().clone();
+        let mut channel = dbus::channel::Channel::open_private(&address).unwrap();
+        channel.register().unwrap();
+        deliver(&Connection::from(channel), call)
+    }
+
+    #[test]
+    fn current_needs_generation_authentication_and_room() {
+        let s = status();
+        assert_eq!(still_current(&s, 4, ROOM), None);
+        assert!(still_current(&s, 3, ROOM).is_some());
+        assert!(still_current(&s, 4, "22222222-2222-4222-8222-222222222222").is_some());
+        let mut out = s.clone();
+        out.connection = "disconnected".into();
+        assert!(still_current(&out, 4, ROOM).is_some());
+        let mut gone = s;
+        gone.catalog.rooms.clear();
+        assert!(still_current(&gone, 4, ROOM).is_some());
+    }
+
+    /// Queues one notification behind a held turn (a slow notification server),
+    /// lets `change` alter the status meanwhile, and counts what the server got.
+    fn delivered_after(change: impl FnOnce(&mut Status)) -> usize {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let mut total = 0;
+        super::tests::with_fake_server(Some(7), |_, seen, address| {
+            *ADDRESS.lock().unwrap() = address.to_owned();
+            runtime.block_on(async {
+                let (tx, rx) = tokio::sync::watch::channel(status());
+                let turn = TURN.lock().await;
+                let n = notice("Alex", "private preview", ROOM, None).unwrap();
+                spawn_with(n, 4, rx, to_private_bus);
+                tokio::task::yield_now().await;
+                tx.send_modify(change);
+                drop(turn);
+                for _ in 0..50 {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    if WAITING.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+                        break;
+                    }
+                }
+            });
+            total = seen.lock().unwrap().len();
+        });
+        total
+    }
+
+    #[test]
+    fn a_queued_notification_is_dropped_when_the_scope_changes() {
+        assert_eq!(delivered_after(|s| s.generation = 5), 0);
+        assert_eq!(delivered_after(|s| s.catalog.rooms.clear()), 0);
+        assert_eq!(delivered_after(|s| s.connection = "disconnected".into()), 0);
+    }
+
+    #[test]
+    fn a_queued_notification_in_the_same_scope_is_delivered() {
+        assert_eq!(delivered_after(|_| {}), 1);
     }
 }

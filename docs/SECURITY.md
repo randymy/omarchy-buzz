@@ -44,7 +44,7 @@ replaces control and bidi characters with spaces, and is the only place that
 escapes `&`, `<` and `>` (Omarchy's server renders bodies as styled text). The
 call runs on the blocking pool, one at a time with a 3 s call timeout and a 5 s
 deadline, so a stuck notification server never blocks the IPC loop; the panel is
-answered when the request is accepted, and a failure is written to the daemon's
+answered when the request is accepted. Just before delivery the helper rechecks the current status (same generation, authenticated, room still in the catalog) and drops a stale notice, so a notification queued behind a slow server is never shown after a community switch, disconnect or lost access. A failure is written to the daemon's
 stderr as a category only (`notify_unavailable`, `notify_timeout`,
 `notify_failed`), never the text. A panel whose helper lacks `desktop_notify`
 falls back to `omarchy notification send` with the fixed title "New Buzz

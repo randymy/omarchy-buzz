@@ -127,7 +127,7 @@ async fn client(
                     let refused=notify::refusal((r.instance_id.as_deref(),r.generation),(instance.as_str(),status.borrow().generation),notify::busy());
                     if let Some(category)=refused {write(&mut out,&serde_json::json!({"version":1,"type":"error","id":r.id,"category":category,"instanceId":instance})).await?;continue;}
                     let notice=notify::notice(r.title.as_deref().unwrap_or_default(),r.body.as_deref().unwrap_or_default(),r.room_id.as_deref().unwrap_or_default(),r.root_id.as_deref()).expect("checked by protocol::request");
-                    notify::spawn(notice);
+                    notify::spawn(notice,r.generation.unwrap_or_default(),status.clone());
                 }
                 if r.kind=="set_relay" || r.kind=="create_identity" {
                     let refused={let current=status.borrow();
