@@ -196,6 +196,8 @@ struct Script {
     people_filters: Vec<Value>,
     // A room whose history reads the relay refuses (access lost).
     deny_history: Option<String>,
+    // A roster read for this room is refused (the room-detail read uses it).
+    deny_roster: Option<String>,
 }
 #[derive(Clone, Copy, PartialEq)]
 enum DmReply {
@@ -299,6 +301,7 @@ async fn recheck_fixture_aging(
         people: Vec::new(),
         people_filters: Vec::new(),
         deny_history: None,
+        deny_roster: None,
     }));
     let (count_tx, discoveries) = watch::channel(0_usize);
     let count_tx = std::sync::Arc::new(count_tx);
@@ -533,7 +536,8 @@ async fn recheck_fixture_aging(
                         39002 if filter.get("#p").is_some() => ok(&serde_json::to_string(&joined.iter().map(|room| membership(room)).collect::<Vec<_>>()).unwrap()),
                         39002 => {
                             let room = tagged("#d").remove(0);
-                            if joined.contains(&room) { ok(&serde_json::to_string(&vec![membership(&room)]).unwrap()) } else { FORBIDDEN.into() }
+                            let refused = script.lock().unwrap().deny_roster.as_deref() == Some(room.as_str());
+                            if joined.contains(&room) && !refused { ok(&serde_json::to_string(&vec![membership(&room)]).unwrap()) } else { FORBIDDEN.into() }
                         }
                         // Unscoped: member and open channels, each with its visibility tag,
                         // plus one private channel the viewer could not see in pinned Buzz.
@@ -1033,6 +1037,43 @@ async fn denied_history_read_revokes_the_room_detail_too() {
     })
     .await
     .expect("denied history fixture deadline");
+}
+
+/// A refused room-detail read revokes the room like any other room read: it
+/// leaves the catalog and its history and recipients go too.
+#[tokio::test]
+async fn denied_detail_read_revokes_the_room() {
+    let _network_fixture = crate::NETWORK_TEST_LOCK.lock().await;
+    timeout(Duration::from_secs(20), async {
+        let mut f = recheck_fixture(None).await;
+        let b = f.b.clone();
+        f.establish().await;
+        f.script.lock().unwrap().deny_roster = Some(b.clone());
+        f.commands
+            .send(Command::FetchRoomDetail(b.clone()))
+            .await
+            .unwrap();
+        let s = snapshot(&mut f.status, |s| {
+            !s.catalog.rooms.iter().any(|r| r.id == b)
+        })
+        .await;
+        assert_eq!(
+            s.room_detail.category.as_deref(),
+            Some("room_detail_access_denied")
+        );
+        assert!(s.room_detail.members.is_empty() && s.room_detail.role.is_empty());
+        assert_ne!(
+            s.history.room_id.as_deref(),
+            Some(b.as_str()).filter(|_| s.history.state == "snapshot")
+        );
+        assert!(
+            !(s.recipients.state == "snapshot"
+                && s.recipients.room_id.as_deref() == Some(b.as_str()))
+        );
+        f.finish().await;
+    })
+    .await
+    .expect("denied detail fixture deadline");
 }
 
 #[tokio::test]

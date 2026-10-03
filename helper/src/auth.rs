@@ -2378,7 +2378,15 @@ async fn observe_inner(
                 }
                 if let Some(Ok((ticket,room,result)))=result {
                     let listed=tx.borrow().catalog.rooms.iter().any(|r|r.id==room && r.kind=="stream");
-                    if ticket==detail_ticket && fresh && listed {
+                    if ticket==detail_ticket && fresh && listed && matches!(&result,Err("room_detail_access_denied")) {
+                        // A refused read revokes the room like any other room read.
+                        let revoked_delivery=revoke_room!(&room);
+                        publish_status(tx,|s| {
+                            revoke_views(s,&room);
+                            s.activity=activity.summaries();
+                            if let Some(delivery)=revoked_delivery {s.delivery=delivery;}
+                        });
+                    } else if ticket==detail_ticket && fresh && listed {
                         publish_status(tx,|s|s.room_detail=match result {
                             Ok(detail) if detail.room==room=>detail.into(),
                             Ok(_)=>crate::protocol::RoomDetailView::unavailable(Some(room),Some("room_detail_invalid")),
