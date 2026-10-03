@@ -652,10 +652,13 @@ pub enum Command {
     ),
     /// Refresh the open rooms this identity has not joined.
     FetchOpenRooms,
-    /// `room_manage`: create a room or change one (request id).
+    /// `room_manage`: create a room or change one (request id, and the session
+    /// generation the request was checked against: rechecked before signing, as
+    /// community commands recheck theirs).
     RoomChange(
         crate::rooms::Change,
         String,
+        u64,
         tokio::sync::oneshot::Sender<Option<&'static str>>,
     ),
     /// `room_manage`: read a joined stream room's roster, roles and topic.

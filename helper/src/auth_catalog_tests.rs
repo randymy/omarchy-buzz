@@ -931,6 +931,63 @@ async fn background_room_check_keeps_published_views() {
     background_check(Outcome::Same).await;
 }
 
+/// A room mutation checked against generation N and consumed after the session
+/// moved to N+1 (another client switched communities in between) is refused
+/// before it is prepared or signed; the same request at the current generation
+/// is accepted.
+#[tokio::test]
+async fn room_mutation_checked_for_an_older_session_is_not_signed() {
+    let _network_fixture = crate::NETWORK_TEST_LOCK.lock().await;
+    timeout(Duration::from_secs(20), async {
+        let mut f = recheck_fixture(None).await;
+        wait_status(&mut f.status, |s| {
+            s.catalog.state == "partial" && s.catalog.rooms.len() == 2
+        })
+        .await;
+        let create = |name: &str| crate::rooms::Change::Create {
+            name: name.into(),
+            about: String::new(),
+            private: false,
+        };
+        let checked = f.status.borrow().generation;
+        // The community changes after the IPC check, before the command runs.
+        f.injector.send_modify(|s| s.generation = checked + 1);
+        let (reply, answer) = oneshot::channel();
+        f.commands
+            .send(Command::RoomChange(
+                create("stale"),
+                "00000000-0000-4000-8000-0000000000a1".into(),
+                checked,
+                reply,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(answer.await.unwrap(), Some("room_scope_changed"));
+        {
+            let s = f.status.borrow();
+            assert_eq!(s.room_action.state, "idle", "a stale request was prepared");
+            assert!(s.room_action.request_id.is_none());
+        }
+        // The same request for the current session is signed and sent.
+        let (reply, answer) = oneshot::channel();
+        f.commands
+            .send(Command::RoomChange(
+                create("current"),
+                "00000000-0000-4000-8000-0000000000a2".into(),
+                checked + 1,
+                reply,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(answer.await.unwrap(), None);
+        let s = snapshot(&mut f.status, |s| s.room_action.state == "sending").await;
+        assert_eq!(s.room_action.action.as_deref(), Some("create"));
+        f.finish().await;
+    })
+    .await
+    .expect("room mutation scope fixture deadline");
+}
+
 #[tokio::test]
 async fn removed_selected_room_clears_its_views_and_revokes_its_delivery() {
     background_check(Outcome::RemoveSelected).await;

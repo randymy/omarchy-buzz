@@ -242,7 +242,7 @@ async fn client(
                     "create_room"|"update_room"|"set_room_topic"|"add_room_member"|"remove_room_member"=>{
                         let change=match protocol::room_change(&r) {Some(c)=>c,None=>{write(&mut out,&serde_json::json!({"version":1,"type":"error","id":r.id,"category":"room_invalid","instanceId":instance})).await?;continue;}};
                         let (reply,receiver)=tokio::sync::oneshot::channel();send_reply=Some(receiver);
-                        Some(protocol::Command::RoomChange(change,r.id.clone(),reply))},
+                        Some(protocol::Command::RoomChange(change,r.id.clone(),r.generation.unwrap(),reply))},
                     "fetch_room_detail"=>Some(protocol::Command::FetchRoomDetail(r.room_id.clone().unwrap())),
                     "load_more_rooms"=>Some(protocol::Command::RefreshRooms(true)),
                     "refresh_rooms"=>Some(protocol::Command::RefreshRooms(false)),

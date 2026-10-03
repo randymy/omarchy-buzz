@@ -496,7 +496,7 @@ pub(crate) async fn offline_command(
             return community_done(result, reply, tx, setup) || claimed;
         }
         Command::RoomAction(_, _, _, reply)
-        | Command::RoomChange(_, _, reply)
+        | Command::RoomChange(_, _, _, reply)
         | Command::MintInvite(_, _, reply)
         | Command::DownloadAttachment(_, _, reply)
         | Command::ThumbnailAttachment(_, _, reply)
@@ -1561,8 +1561,11 @@ async fn observe_inner(
                     // A dropped/timed-out write may already have reached the relay.
                     send_frame!(serde_json::json!(["EVENT",event]));
                 },
-                Some(Command::RoomChange(change,request_id,reply))=> {
+                Some(Command::RoomChange(change,request_id,generation,reply))=> {
                     if reply.is_closed() {continue;}
+                    // Another client may have switched communities after the request was
+                    // checked: it is not signed for the session that is current now.
+                    if generation!=tx.borrow().generation {let _=reply.send(Some("room_scope_changed"));continue;}
                     let prepared={let status=tx.borrow();actions.prepare_change(&change,&request_id,keys,&status,fresh,relay_pin.is_some())};
                     let (view,event)=match prepared {Ok(p)=>p,Err(category)=>{let _=reply.send(Some(category));continue;}};
                     if reply.send(None).is_err() {
