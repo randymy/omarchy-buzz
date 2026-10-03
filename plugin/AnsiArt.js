@@ -211,6 +211,64 @@ function storedArt(text) {
   return isAnsi(text) ? sanitize(text) : Identicon.normalizeArt(text)
 }
 
+// Rows and widest row of art as typed, before any clipping: escape sequences
+// are not counted, control characters and a final newline are ignored.
+function measure(text) {
+  var lines = [0], match
+  TOKEN.lastIndex = 0
+  while ((match = TOKEN.exec(text)) !== null) {
+    var token = match[0]
+    if (token.charCodeAt(0) === 0x1b) continue
+    if (token === "\n") { lines.push(0); continue }
+    if (!DROPPED.test(token)) lines[lines.length - 1]++
+  }
+  while (lines.length > 0 && lines[lines.length - 1] === 0) lines.pop()
+  return {rows: lines.length, cols: lines.reduce(function(widest, n) { return Math.max(widest, n) }, 0)}
+}
+
+// Checks art pasted or typed by hand with the limits the avatar keeps, and says
+// what is wrong in plain words. {ok, art, errors, rows, cols, colored}: art is
+// the stored form (storedArt) and only set when ok; errors is empty when ok.
+// Plain art: at most 6 lines of 12 columns, no tabs or other control
+// characters (blank lines before the art are ignored). Colored art (it holds
+// escape sequences, as a .ans file does): at most 60 rows of 120 columns and
+// 256 KiB; other escape sequences are removed, as when a file is loaded.
+function check(text) {
+  var result = {ok: false, art: "", errors: [], rows: 0, cols: 0, colored: false}
+  if (typeof text !== "string") { result.errors.push("Nothing to save yet."); return result }
+  if (text.length > MAX_INPUT) { result.errors.push("Too large: at most 256 KiB."); return result }
+  text = text.replace(/\r\n?/g, "\n")
+  var colored = isAnsi(text)
+  result.colored = colored
+  var size
+  if (colored) {
+    size = measure(text.slice(0, text.indexOf("\x1a") === -1 ? text.length : text.indexOf("\x1a")))
+  } else {
+    // Leading blank lines are ignored (the avatar does not show them).
+    var lines = text.replace(/^(?:[^\S\n]*\n)+/, "").split("\n").map(function(line) { return line.replace(/\s+$/, "") })
+    while (lines.length && lines[lines.length - 1] === "") lines.pop()
+    text = lines.join("\n")
+    size = {rows: lines.length, cols: Identicon.columns(text)}
+    if (/[\u0000-\u0009\u000b-\u001f\u007f-\u009f‎‏‪-‮⁦-⁩؜﻿]/.test(text))
+      result.errors.push("Invalid characters: tabs and other control characters are not allowed. Use spaces.")
+  }
+  result.rows = size.rows
+  result.cols = size.cols
+  var maxRows = colored ? MAX_ROWS : Identicon.MAX_LINES, maxCols = colored ? MAX_COLUMNS : Identicon.MAX_COLUMNS
+  if (size.cols > maxCols) result.errors.push("Too wide: " + size.cols + " columns, at most " + maxCols + ".")
+  if (size.rows > maxRows) result.errors.push("Too tall: " + size.rows + " lines, at most " + maxRows + ".")
+  if (size.rows === 0 || size.cols === 0) {
+    if (result.errors.length === 0) result.errors.push("Nothing to save yet.")
+    return result
+  }
+  if (result.errors.length > 0) return result
+  var art = storedArt(text)
+  if (art === "") { result.errors.push("There is no visible art to save."); return result }
+  result.art = art
+  result.ok = true
+  return result
+}
+
 // Brightness of stored grid art: 0.5–3 in steps of 0.25. New file art starts at 1.5.
 var MIN_BRIGHTNESS = 0.5
 var MAX_BRIGHTNESS = 3

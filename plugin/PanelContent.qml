@@ -1676,7 +1676,7 @@ FocusScope {
                   pixelSize: Style.font.body
                 }
                 SettingsNote {
-                  text: "Use a .ans or .txt file as your avatar on this machine. It is kept locally, not published; others still see your identicon."
+                  text: "Pick an avatar from the gallery, paste your own art, or use a .ans or .txt file. It is kept locally, not published; others still see your identicon."
                 }
               }
               AvatarFileLoader {
@@ -1700,6 +1700,15 @@ FocusScope {
                 fieldName: "buzzMyAvatarBrightness"
                 value: root.myAvatarBrightness > 0 ? root.myAvatarBrightness : AnsiArt.DEFAULT_BRIGHTNESS
                 onChosen: function(value) { root.agentService.setOwnAvatarArt(root.service.identity, root.myAvatarArt, value) }
+              }
+              // Built-in ASCII avatars to browse, and a box to paste your own art into.
+              AvatarGallery {
+                Layout.fillWidth: true
+                key: root.myAvatarAvailable ? root.service.identity : ""
+                savedArt: root.myAvatarArt
+                onSaveRequested: function(art) {
+                  if (root.myAvatarAvailable) root.agentService.setOwnAvatarArt(root.service.identity, art, AnsiArt.DEFAULT_BRIGHTNESS)
+                }
               }
             }
             SettingsNote {
