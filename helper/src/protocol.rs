@@ -109,6 +109,10 @@ pub fn request(bytes: &[u8]) -> Result<Request, &'static str> {
             | "fetch_recipients"
             | "search_people"
             | "send_message"
+            | "edit_message"
+            | "delete_message"
+            | "add_reaction"
+            | "remove_reaction"
             | "open_dm"
             | "set_relay"
             | "create_identity"
@@ -140,6 +144,10 @@ pub fn request(bytes: &[u8]) -> Result<Request, &'static str> {
             | "fetch_thread"
             | "fetch_recipients"
             | "send_message"
+            | "edit_message"
+            | "delete_message"
+            | "add_reaction"
+            | "remove_reaction"
             | "join_room"
             | "leave_room"
             | "upload_attachment"
@@ -170,7 +178,15 @@ pub fn request(bytes: &[u8]) -> Result<Request, &'static str> {
     // in; so do community changes that replace or leave the session's relay.
     if matches!(
         r.kind.as_str(),
-        "send_message" | "open_dm" | "join_community" | "switch_community" | "leave_community"
+        "send_message"
+            | "edit_message"
+            | "delete_message"
+            | "add_reaction"
+            | "remove_reaction"
+            | "open_dm"
+            | "join_community"
+            | "switch_community"
+            | "leave_community"
     ) {
         let id = uuid::Uuid::parse_str(&r.id).map_err(|_| "invalid_request")?;
         if id.to_string() != r.id {
@@ -207,7 +223,23 @@ pub fn request(bytes: &[u8]) -> Result<Request, &'static str> {
                 return Err("invalid_request");
             }
         }
+    } else if r.kind == "edit_message" {
+        // Shape only; `sending` checks the target and that the text changes nothing else.
+        let text = r.text.as_deref().ok_or("invalid_request")?;
+        if text.trim().is_empty() || text.len() > 4096 || text.contains('\0') {
+            return Err("invalid_request");
+        }
+        if r.mentions.is_some() {
+            return Err("invalid_request");
+        }
     } else if (r.text.is_some() && r.kind != "set_status") || r.mentions.is_some() {
+        return Err("invalid_request");
+    }
+    if matches!(
+        r.kind.as_str(),
+        "edit_message" | "delete_message" | "add_reaction" | "remove_reaction"
+    ) && !r.event_id.as_deref().is_some_and(is_hash)
+    {
         return Err("invalid_request");
     }
     if r.kind == "open_dm" {
@@ -315,6 +347,12 @@ pub fn request(bytes: &[u8]) -> Result<Request, &'static str> {
             Some(serde_json::Value::Number(_)) if r.expires_in_hours.is_some() => {}
             _ => return Err("invalid_request"),
         }
+    } else if matches!(r.kind.as_str(), "add_reaction" | "remove_reaction") {
+        // Shape only; `sending` applies `history::chip_emoji`.
+        match raw.get("emoji") {
+            Some(serde_json::Value::String(e)) if !e.is_empty() && e.len() <= 128 => {}
+            _ => return Err("invalid_request"),
+        }
     } else if raw.get("emoji").is_some() {
         return Err("invalid_request");
     }
@@ -335,7 +373,12 @@ pub fn request(bytes: &[u8]) -> Result<Request, &'static str> {
         if !r.event_id.as_deref().is_some_and(is_hash) {
             return Err("invalid_request");
         }
-    } else if raw.get("eventId").is_some() {
+    } else if raw.get("eventId").is_some()
+        && !matches!(
+            r.kind.as_str(),
+            "edit_message" | "delete_message" | "add_reaction" | "remove_reaction"
+        )
+    {
         return Err("invalid_request");
     }
     if matches!(
@@ -373,8 +416,27 @@ pub fn request(bytes: &[u8]) -> Result<Request, &'static str> {
     }
     Ok(r)
 }
+/// Requests that publish through the single message-delivery slot.
+pub fn publishes_message(kind: &str) -> bool {
+    matches!(
+        kind,
+        "send_message" | "edit_message" | "delete_message" | "add_reaction" | "remove_reaction"
+    )
+}
+/// What a send request publishes. The target is an event id; `SendIntent::text`
+/// carries an edit's new text or a reaction's emoji.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum Action {
+    #[default]
+    Post,
+    Edit(String),
+    Delete(String),
+    React(String),
+    Unreact(String),
+}
 #[derive(Clone)]
 pub struct SendIntent {
+    pub action: Action,
     pub request_id: String,
     pub room: String,
     pub root_id: Option<String>,
@@ -1116,7 +1178,7 @@ impl Status {
     }
 }
 pub fn envelope(kind: &str, id: Option<&str>, instance: &str, s: &Status) -> serde_json::Value {
-    serde_json::json!({"version":1,"type":kind,"id":id,"instanceId":instance,"generation":s.generation,"capabilities":["connection_status","room_catalog","room_history","message_send","thread_send","room_recipients","history_auto_refresh","room_activity","agent_profiles","thread_replies","thread_summaries","dm_open","older_history","live_updates","setup_assist","community_join","invite_mint","attachments","user_status","presence","communities","people_search"],"backendRevision":crate::compatibility::BUZZ_REVISION,"status":s})
+    serde_json::json!({"version":1,"type":kind,"id":id,"instanceId":instance,"generation":s.generation,"capabilities":["connection_status","room_catalog","room_history","message_send","thread_send","room_recipients","history_auto_refresh","room_activity","agent_profiles","thread_replies","thread_summaries","dm_open","older_history","live_updates","setup_assist","community_join","invite_mint","attachments","user_status","presence","communities","people_search","message_actions"],"backendRevision":crate::compatibility::BUZZ_REVISION,"status":s})
 }
 pub async fn read_line<R: tokio::io::AsyncBufRead + Unpin>(
     r: &mut R,
@@ -1472,7 +1534,8 @@ mod state_tests {
                 "user_status",
                 "presence",
                 "communities",
-                "people_search"
+                "people_search",
+                "message_actions"
             ])
         );
         assert_eq!(v["status"]["catalog"]["state"], "unavailable");
@@ -1480,6 +1543,54 @@ mod state_tests {
         assert_eq!(v["status"]["dmOpen"]["state"], "idle");
         assert!(v["status"]["dmOpen"]["channelId"].is_null());
         assert!(v.get("privateKey").is_none());
+    }
+    #[test]
+    fn message_action_requests_are_exactly_shaped() {
+        let room = "11111111-1111-4111-8111-111111111111";
+        let id = "22222222-2222-4222-8222-222222222222";
+        let target = "b".repeat(64);
+        let base = |kind: &str| {
+            serde_json::json!({"version":1,"id":id,"type":kind,"roomId":room,"eventId":target,
+                "generation":1,"instanceId":"i"})
+        };
+        let with = |mut v: serde_json::Value, key: &str, value: serde_json::Value| {
+            v[key] = value;
+            serde_json::to_vec(&v).unwrap()
+        };
+        let ok = |bytes: Vec<u8>| request(&bytes).is_ok();
+        assert!(ok(with(base("edit_message"), "text", "new".into())));
+        assert!(ok(with(base("add_reaction"), "emoji", "👍".into())));
+        assert!(ok(with(base("remove_reaction"), "emoji", "👍".into())));
+        assert!(ok(serde_json::to_vec(&base("delete_message")).unwrap()));
+        let bad = [
+            with(base("edit_message"), "text", "".into()),
+            with(base("edit_message"), "text", "  ".into()),
+            with(base("edit_message"), "text", "x".repeat(4097).into()),
+            with(base("edit_message"), "mentions", serde_json::json!([])),
+            serde_json::to_vec(&base("edit_message")).unwrap(),
+            serde_json::to_vec(&base("add_reaction")).unwrap(),
+            with(base("add_reaction"), "emoji", "".into()),
+            with(base("add_reaction"), "emoji", "x".repeat(129).into()),
+            with(base("delete_message"), "text", "x".into()),
+            with(base("delete_message"), "emoji", "x".into()),
+            with(base("delete_message"), "eventId", "short".into()),
+            with(base("delete_message"), "rootId", target.clone().into()),
+            with(base("delete_message"), "roomId", "../x".into()),
+            with(base("delete_message"), "id", "not-a-uuid".into()),
+            with(base("delete_message"), "generation", 0.into()),
+        ];
+        for bytes in bad {
+            assert!(
+                request(&bytes).is_err(),
+                "{}",
+                String::from_utf8_lossy(&bytes)
+            );
+        }
+        for missing in ["eventId", "instanceId"] {
+            let mut v = base("delete_message");
+            v.as_object_mut().unwrap().remove(missing);
+            assert!(request(&serde_json::to_vec(&v).unwrap()).is_err());
+        }
     }
     #[test]
     fn versions_and_identifiers_are_fenced() {

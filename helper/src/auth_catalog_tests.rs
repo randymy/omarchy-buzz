@@ -745,6 +745,7 @@ async fn background_check(outcome: Outcome) {
         );
         let generation = f.status.borrow().generation;
         let intent = crate::protocol::SendIntent {
+            action: Default::default(),
             request_id: uuid::Uuid::new_v4().to_string(),
             room: a.clone(),
             root_id: None,
@@ -797,6 +798,7 @@ async fn background_check(outcome: Outcome) {
                 f.commands
                     .send(Command::SendChecked(
                         crate::protocol::SendIntent {
+                            action: Default::default(),
                             request_id: uuid::Uuid::new_v4().to_string(),
                             room: a.clone(),
                             root_id: None,

@@ -112,7 +112,7 @@ async fn integrated(mode: u8) {
         }
         let sent_at=tokio::time::Instant::now();
         let generation=rx.borrow().generation;
-        let submission=SendIntent{request_id:uuid::Uuid::new_v4().to_string(),room,root_id:None,text:"observer fixture".into(),mentions:if mentioning {vec![recipient_key]} else {vec![]},generation};
+        let submission=SendIntent{action:Default::default(),request_id:uuid::Uuid::new_v4().to_string(),room,root_id:None,text:"observer fixture".into(),mentions:if mentioning {vec![recipient_key]} else {vec![]},generation};
         if checking {
             let (reply,received)=tokio::sync::oneshot::channel();commands.send(Command::SendChecked(submission.clone(),reply)).await.unwrap();assert_eq!(received.await.unwrap(),None);
             let original=rx.borrow().delivery.clone();assert_eq!(original.state,"sending");
