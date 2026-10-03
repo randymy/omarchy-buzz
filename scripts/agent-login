@@ -4,12 +4,20 @@
   agent-login <harness>            open a terminal running the vendor's own login,
                                    detached into its own user scope
   agent-login --status <harness>   print signed-in, signed-out or unknown
+  agent-login https://<url>        (as the vendor CLI's $BROWSER) open a sign-in
+                                   page in the user's own desktop session
 
 The login runs the bundle's pinned vendor CLI with HOME and the vendor config
 directory pointed at ~/.local/state/omarchy-buzz-agent-preview/<harness>/.
 Codex uses `codex -c forced_login_method="chatgpt" login`; Claude Code uses
 `claude --settings <forceLoginMethod=claudeai> auth login --claudeai`. Vendor
 output stays in that terminal; this tool never reads or prints credentials.
+
+Both CLIs open their sign-in page through $BROWSER, which points back at this
+script. That page opens with the user's real home and session (normally a new
+tab in the browser they are already signed in to), not the isolated profile:
+only the CLI's credentials stay in the shared profile. Pages outside the
+vendors' sign-in hosts are not opened; the CLI still prints the address.
 
 --status only inspects file metadata (lstat) of the vendor credential file in
 the shared profile: provider/auth.json for Codex, provider/.credentials.json
@@ -23,6 +31,7 @@ harness_missing, profile_unsafe, terminal_unavailable, login_requires_terminal.
 import argparse
 import json
 import os
+import pwd
 from pathlib import Path
 import platform
 import shlex
@@ -43,6 +52,9 @@ _CODEX = CODEX_PLATFORMS.get({'arm64': 'aarch64', 'amd64': 'x86_64'}.get(platfor
 NATIVE = {'codex': 'adapter/node_modules/@openai/codex-%s/vendor/%s/bin/codex' % _CODEX,
           'claude-code': 'claude/claude'}
 FLOATING = 'omarchy-launch-floating-terminal-with-presentation'
+SIGN_IN_HOSTS = ('claude.com', 'claude.ai', 'platform.claude.com', 'console.anthropic.com',
+                 'auth.openai.com', 'chatgpt.com')
+SESSION = ('DISPLAY', 'WAYLAND_DISPLAY', 'DBUS_SESSION_BUS_ADDRESS', 'XDG_RUNTIME_DIR')
 
 
 class Refused(Exception):
@@ -133,6 +145,8 @@ def login_environment(profile, harness, ambient):
            CONFIG_ENV[harness]: str(profile / 'provider')}
     if harness == 'claude-code':
         env['DISABLE_AUTOUPDATER'] = '1'
+    # The CLI hands its sign-in page to this script, which opens it outside the profile.
+    env['BROWSER'] = str(Path(__file__).resolve())
     # Desktop handles only, so the vendor CLI can open the sign-in page. No
     # provider keys, tokens, proxies, Node options or Buzz credentials.
     for key in ('DISPLAY', 'WAYLAND_DISPLAY', 'DBUS_SESSION_BUS_ADDRESS', 'XDG_RUNTIME_DIR'):
@@ -176,12 +190,53 @@ def detached_argv(argv, ambient_path):
     return argv
 
 
+def sign_in_url(url):
+    """An https URL on a vendor sign-in host, else None."""
+    import urllib.parse
+    try:
+        parts = urllib.parse.urlsplit(url)
+    except ValueError:
+        return None
+    if parts.scheme != 'https' or parts.username or parts.password or parts.port not in (None, 443):
+        return None
+    if parts.hostname not in SIGN_IN_HOSTS:
+        return None
+    return url
+
+
+def browser_environment(ambient):
+    """The user's own home and desktop session: none of the profile's XDG/vendor paths."""
+    env = {'HOME': pwd.getpwuid(os.getuid()).pw_dir, 'PATH': '/usr/bin:/bin',
+           'LANG': ambient.get('LANG', 'C.UTF-8')}
+    for key in SESSION:
+        if key in ambient:
+            env[key] = ambient[key]
+    return env
+
+
+def open_sign_in(url, ambient):
+    """$BROWSER entry point: open a vendor sign-in page in the user's session, detached."""
+    if sign_in_url(url) is None:
+        return fail('sign_in_url_refused')
+    opener = shutil.which('xdg-open', path='/usr/bin:/bin')
+    if opener is None:
+        return fail('browser_unavailable')
+    argv = detached_argv([opener, url], '/usr/bin:/bin')
+    import subprocess
+    subprocess.Popen(argv, env=browser_environment(ambient), stdin=subprocess.DEVNULL,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+                     close_fds=True, cwd='/')
+    return 0
+
+
 def fail(category, code=1):
     print(json.dumps({'error': category}), file=sys.stderr)
     return code
 
 
 def main():
+    if len(sys.argv) == 2 and sys.argv[1].startswith('https://'):
+        return open_sign_in(sys.argv[1], os.environ)
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('harness')
     p.add_argument('--status', action='store_true', help='print signed-in, signed-out or unknown')

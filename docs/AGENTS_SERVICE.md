@@ -839,8 +839,18 @@ sandbox, `codex -c forced_login_method="chatgpt" login` or `claude --settings
 <subscription-settings.json> auth login --claudeai`, with `HOME`, `XDG_*_HOME`
 and `CODEX_HOME`/`CLAUDE_CONFIG_DIR` in the shared profile, plus only
 `DISPLAY`, `WAYLAND_DISPLAY`, `DBUS_SESSION_BUS_ADDRESS`, `XDG_RUNTIME_DIR`
-and `TERM` from the caller. Vendor output stays in that terminal. The browser
-opened for sign-in sees the profile's `HOME`, as with the earlier preview.
+and `TERM` from the caller. Vendor output stays in that terminal. Both CLIs
+open their sign-in page through `$BROWSER`, set to `agent-login` itself: given
+one `https://` address on a vendor sign-in host (`claude.com`, `claude.ai`,
+`platform.claude.com`, `console.anthropic.com`, `auth.openai.com`,
+`chatgpt.com`), it runs `xdg-open` detached, with the user's real `HOME` (from
+the password database) and only the desktop session variables. The page
+therefore opens in the browser the user is already signed in to, usually as a
+new tab, and needs only an **Authorize** click; only the CLI's credentials stay
+in the shared profile. Any other address is refused
+(`sign_in_url_refused`) and the CLI's printed address remains the fallback.
+Earlier builds opened the browser inside the profile, which started a separate,
+empty browser profile under `config/`.
 
 `agent-login --status <harness>` prints one word and exits 0. It never opens
 the credential file; it uses `lstat` on `provider/auth.json` (Codex) or
