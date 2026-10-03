@@ -1,5 +1,5 @@
 use crate::{
-    config,
+    config, notify,
     protocol::{self, Status},
 };
 use std::{
@@ -119,6 +119,15 @@ async fn client(
                         else if current.dm_open.state=="sending" && current.dm_open.request_id.as_deref()!=Some(r.id.as_str()) {Some("dm_open_busy")}
                         else {None}};
                     if let Some(category)=refused {write(&mut out,&serde_json::json!({"version":1,"type":"error","id":r.id,"category":category,"instanceId":instance})).await?;continue;}
+                }
+                if r.kind=="notify" {
+                    // A desktop notification belongs to the session it came from. It is
+                    // shown by the helper itself (session bus, no subprocess), so the
+                    // text never reaches an argument; the answer does not wait for the bus.
+                    let refused=notify::refusal((r.instance_id.as_deref(),r.generation),(instance.as_str(),status.borrow().generation),notify::busy());
+                    if let Some(category)=refused {write(&mut out,&serde_json::json!({"version":1,"type":"error","id":r.id,"category":category,"instanceId":instance})).await?;continue;}
+                    let notice=notify::notice(r.title.as_deref().unwrap_or_default(),r.body.as_deref().unwrap_or_default(),r.room_id.as_deref().unwrap_or_default(),r.root_id.as_deref()).expect("checked by protocol::request");
+                    notify::spawn(notice);
                 }
                 if r.kind=="set_relay" || r.kind=="create_identity" {
                     let refused={let current=status.borrow();
@@ -497,6 +506,39 @@ mod setup_tests {
         tokio::spawn(client(server, rx, commands, "setup-fixture".into()));
         let (read, write) = test.into_split();
         (BufReader::new(read).lines(), write)
+    }
+
+    #[tokio::test]
+    async fn notify_in_another_scope_is_refused_before_anything_is_shown() {
+        let status = Status::new(&config::Config::default());
+        let generation = status.generation;
+        let (_tx, rx) = watch::channel(status);
+        let (commands, mut received) = mpsc::channel(1);
+        let (mut lines, mut write) = connect(rx, commands);
+        let mut seen = String::new();
+        assert_eq!(next(&mut lines, &mut seen).await["type"], "hello");
+        let id = "11111111-1111-4111-8111-111111111111";
+        let sentinel = "synthetic-private-preview";
+        for (instance, generation) in [
+            ("stale-instance", generation),
+            ("setup-fixture", generation + 1),
+        ] {
+            let request = serde_json::json!({"version":1,"id":id,"type":"notify","title":sentinel,
+                "body":sentinel,"roomId":"22222222-2222-4222-8222-222222222222",
+                "instanceId":instance,"generation":generation});
+            write
+                .write_all(&serde_json::to_vec(&request).unwrap())
+                .await
+                .unwrap();
+            write.write_all(b"\n").await.unwrap();
+            let frame = answer(&mut lines, &mut seen, id).await;
+            assert_eq!(
+                (frame["type"].as_str(), frame["category"].as_str()),
+                (Some("error"), Some("notify_scope_changed"))
+            );
+            assert!(!frame.to_string().contains(sentinel));
+        }
+        assert!(received.try_recv().is_err());
     }
 
     #[tokio::test]

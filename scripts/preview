@@ -165,6 +165,11 @@ elif [[ ${1:-} == --room-activity ]]; then
 elif [[ ${1:-} == --notifications ]]; then
   cp "$project_root/tests/Notifications.qml" "$preview_dir/shell.qml"
   mkdir -m 700 "$preview_dir/fake-bin"
+  # A stand-in for the helper's ui-bridge: it records what the panel writes to its stdin.
+  printf '#!/bin/sh\ncat >> "$BUZZ_NOTIFY_RECORD"\n' > "$preview_dir/fake-bin/fake-helper"
+  chmod 700 "$preview_dir/fake-bin/fake-helper"
+  export BUZZ_FAKE_HELPER="$preview_dir/fake-bin/fake-helper"
+  export BUZZ_NOTIFY_RECORD="$preview_dir/notify-record"
   printf '#!/bin/sh\nprintf "<%%s>\\n" "$@" >> "$BUZZ_ACTIVITY_RECORD"\n' > "$preview_dir/fake-bin/omarchy"
   chmod 700 "$preview_dir/fake-bin/omarchy"
   export BUZZ_ACTIVITY_RECORD="$preview_dir/activity-record"
@@ -235,24 +240,48 @@ if [[ ${1:-} == --notifications ]]; then
   room_a=11111111-1111-4111-8111-111111111111
   room_b=22222222-2222-4222-8222-222222222222
   thread=$(printf 'c%.0s' {1..64})
+  # With desktop_notify the panel writes `notify` requests to the helper (plain text; the
+  # helper escapes the body) and starts no process with them.
   : > "$preview_dir/expected-notifications"
   expect() {
-    printf '<%s>\n' notification send --app-name Buzz -u normal -t 8000 "$1" "$2" \
-      --exec omarchy-shell -q shell summon community.buzz "$3" >> "$preview_dir/expected-notifications"
+    jq -Sc -n --arg t "$1" --arg b "$2" --arg r "$3" --arg th "${4:-}" \
+      '{version:1,type:"notify",title:$t,body:$b,roomId:$r,generation:1,instanceId:"notify-fixture"} + (if $th == "" then {} else {rootId:$th} end)' \
+      >> "$preview_dir/expected-notifications"
   }
-  expect 'Alex mentioned you in #general' 'hi &lt;img src=http://x/y.png&gt; &amp; you' '{"room":"'$room_a'"}'
-  expect ' -t replied in #general' ' --exec' '{"room":"'$room_a'","thread":"'$thread'"}'
-  expect 'Alex in #general' 'New message from Alex' '{"room":"'$room_a'"}'
-  expect 'Alex (direct message)' '2 new messages. Latest: yo' '{"room":"'$room_b'"}'
-  expect 'Sam mentioned you in #general' 'ping' '{"room":"'$room_a'"}'
-  expect 'Direct message' 'New message' '{"room":"'$room_b'"}'
-  expect 'Zed mentioned you in #general' 'New message from Zed' '{"room":"'$room_a'"}'
-  if ! cmp -s "$preview_dir/expected-notifications" "$BUZZ_ACTIVITY_RECORD"; then
-    echo "preview: notification argv differs from the expected titles, bodies and click targets" >&2
-    diff "$preview_dir/expected-notifications" "$BUZZ_ACTIVITY_RECORD" >&2 || true
+  expect 'Alex mentioned you in #general' 'hi <img src=http://x/y.png> & you' "$room_a"
+  expect '-t replied in #general' '--exec' "$room_a" "$thread"
+  expect 'Alex in #general' 'New message from Alex' "$room_a"
+  expect 'Alex (direct message)' '2 new messages. Latest: yo' "$room_b"
+  expect 'Sam mentioned you in #general' 'ping' "$room_a"
+  expect 'Direct message' 'New message' "$room_b"
+  expect 'Zed mentioned you in #general' 'New message from Zed' "$room_a"
+  jq -Sc 'select(.type == "notify") | del(.id)' "$BUZZ_NOTIFY_RECORD" > "$preview_dir/actual-notifications"
+  if ! cmp -s "$preview_dir/expected-notifications" "$preview_dir/actual-notifications"; then
+    echo "preview: notify requests differ from the expected titles, bodies and click targets" >&2
+    diff "$preview_dir/expected-notifications" "$preview_dir/actual-notifications" >&2 || true
     exit 1
   fi
-  echo "PASS: notifications are titled by sender and room with escaped plain bodies, honour the mode and text settings, stay quiet for the open focused room, and click through to the room and thread"
+  if [[ $(jq -r 'select(.type == "notify") | .id' "$BUZZ_NOTIFY_RECORD" | grep -Ecx '[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}') != 7 ]]; then
+    echo "preview: notify requests lack a correlation UUID" >&2
+    exit 1
+  fi
+  # Without desktop_notify the only process is the content-free fallback: fixed title, no
+  # body, and no message text, sender or room name anywhere in its argv.
+  : > "$preview_dir/expected-fallback"
+  for target in '{"room":"'$room_a'"}' '{"room":"'$room_a'","thread":"'$thread'"}'; do
+    printf '<%s>\n' notification send --app-name Buzz -u normal -t 8000 'New Buzz message' \
+      --exec omarchy-shell -q shell summon community.buzz "$target" >> "$preview_dir/expected-fallback"
+  done
+  if ! cmp -s "$preview_dir/expected-fallback" "$BUZZ_ACTIVITY_RECORD"; then
+    echo "preview: fallback argv is not the content-free notification" >&2
+    diff "$preview_dir/expected-fallback" "$BUZZ_ACTIVITY_RECORD" >&2 || true
+    exit 1
+  fi
+  if grep -Eqi 'leak|secret|hidden|general|alex|zed|sam|quiet|img|yo' "$BUZZ_ACTIVITY_RECORD"; then
+    echo "preview: message text, sender or room name reached a process argument" >&2
+    exit 1
+  fi
+  echo "PASS: with desktop_notify, titles, bodies and click targets travel only over the helper bridge (no process gets the text); without it the fallback argv is content-free; modes, text setting, suppression and click-through still apply"
 fi
 if [[ ${1:-} == --communities ]]; then
   # One remembered room per community (relay and identity), nothing else.

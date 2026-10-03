@@ -19,6 +19,10 @@ serde_json = "1"
 toml = "0.8"
 url = "2"
 keyring = { version = "=3.6.3", default-features = false, features = ["sync-secret-service", "crypto-rust"] }
+# Desktop notifications call the session bus directly (src/notify.rs). This is
+# the crate keyring's sync-secret-service already resolves (same version, no
+# extra features), so Cargo.lock gains no package, only a direct edge.
+dbus = "=0.9.12"
 rpassword = "7"
 zeroize = "1"
 listenfd = "1"

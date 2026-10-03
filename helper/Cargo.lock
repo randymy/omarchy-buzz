@@ -1475,6 +1475,7 @@ dependencies = [
  "base64 0.22.1",
  "buzz-sdk",
  "buzz-ws-client",
+ "dbus",
  "futures-util",
  "keyring",
  "listenfd",

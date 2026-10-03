@@ -1,6 +1,8 @@
 // Desktop notification wording and policy, following Buzz Desktop's
 // formatMessageNotification. Pure presentation of the helper's bounded notice;
-// the helper already classified, sanitized and truncated it.
+// the helper already classified, sanitized and truncated it. The text here is
+// plain: the helper escapes the body for the styled-text notification server
+// (notify.rs), exactly once, when it shows the notification.
 var modes = ["direct", "mentions", "dms", "all", "none"];
 
 // Which kinds each preference lets through. "thread" is a reply in a thread I
@@ -18,16 +20,12 @@ function allows(mode, kind) {
 }
 
 // The Omarchy sender script reads a leading "-" word as an option or --exec.
-// Relay text is one argument, so a space keeps it from ever matching a flag.
+// Nothing relayed is sent as an argument any more (the helper shows the
+// notification itself; the fallback line is fixed), so this guard is unused by
+// the current senders; it stays for any future argv use.
 function arg(text) {
   var value = String(text);
   return value.charAt(0) === "-" ? " " + value : value;
-}
-
-// The Omarchy notification server renders the body as styled text (tags, and
-// images that would be fetched), so message text is escaped to stay literal.
-function escapeBody(text) {
-  return String(text).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
 function plural(count) {
@@ -51,5 +49,5 @@ function compose(notice, dm, includeText) {
     if (includeText && notice.snippet) body += ". Latest: " + notice.snippet;
   } else if (includeText && notice.snippet) body = notice.snippet;
   else body = sender ? fallback + " from " + sender : fallback;
-  return {title: title, body: escapeBody(body)};
+  return {title: title, body: body};
 }

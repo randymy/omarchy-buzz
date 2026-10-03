@@ -75,6 +75,9 @@ Keep the committed Cargo.lock pinned. The helper now selects the system D-Bus
 library through keyring's `sync-secret-service` feature. On Arch, install
 `pkgconf` and `dbus` before building; the target system must provide
 `libdbus-1.so.3` at runtime and a usable session D-Bus/Secret Service provider.
+Desktop notifications (`notify` request, `desktop_notify` capability) use the same
+`dbus` crate directly, pinned `=0.9.12` as `keyring` resolves it (no new package in
+Cargo.lock), to call `org.freedesktop.Notifications.Notify` without any subprocess.
 The system-linked ARM64 CI build and isolated keyring test passed in
 [run 36621010979](https://github.com/randymy/omarchy-buzz/actions/runs/36621010979)
 at source `8928adc`; target-machine linkage, IPC, socket reactivation and private keyring tests also passed on Omarchy.

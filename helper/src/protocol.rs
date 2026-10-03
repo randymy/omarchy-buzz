@@ -69,6 +69,10 @@ pub struct Request {
     pub visibility: Option<String>,
     /// `add_room_member`/`remove_room_member` only: the member's key (hex).
     pub key: Option<String>,
+    /// `notify` only: the notification's title and plain body text. The helper
+    /// sanitizes, bounds and escapes them (`notify`).
+    pub title: Option<String>,
+    pub body: Option<String>,
 }
 fn is_hash(value: &str) -> bool {
     crate::attachments::is_hash(value)
@@ -151,6 +155,7 @@ pub fn request(bytes: &[u8]) -> Result<Request, &'static str> {
             | "fetch_room_detail"
             | "load_more_rooms"
             | "refresh_rooms"
+            | "notify"
     ) {
         return Err("unsupported_request");
     }
@@ -173,6 +178,7 @@ pub fn request(bytes: &[u8]) -> Result<Request, &'static str> {
             | "add_room_member"
             | "remove_room_member"
             | "fetch_room_detail"
+            | "notify"
     ) {
         let room = r.room_id.as_deref().ok_or("invalid_request")?;
         let parsed = uuid::Uuid::parse_str(room).map_err(|_| "invalid_request")?;
@@ -183,7 +189,10 @@ pub fn request(bytes: &[u8]) -> Result<Request, &'static str> {
         return Err("invalid_request");
     }
     if r.kind == "fetch_thread"
-        || (matches!(r.kind.as_str(), "send_message" | "upload_attachment") && root_present)
+        || (matches!(
+            r.kind.as_str(),
+            "send_message" | "upload_attachment" | "notify"
+        ) && root_present)
     {
         let root = r.root_id.as_deref().ok_or("invalid_request")?;
         if root.len() != 64
@@ -214,6 +223,7 @@ pub fn request(bytes: &[u8]) -> Result<Request, &'static str> {
             | "set_room_topic"
             | "add_room_member"
             | "remove_room_member"
+            | "notify"
     ) {
         let id = uuid::Uuid::parse_str(&r.id).map_err(|_| "invalid_request")?;
         if id.to_string() != r.id {
@@ -282,6 +292,19 @@ pub fn request(bytes: &[u8]) -> Result<Request, &'static str> {
             }
         }
     } else if r.participants.is_some() {
+        return Err("invalid_request");
+    }
+    if r.kind == "notify" {
+        // Bounded here; `notify::notice` replaces controls and bidi characters.
+        let title = r.title.as_deref().ok_or("invalid_request")?;
+        let body = r.body.as_deref().ok_or("invalid_request")?;
+        if title.len() > crate::notify::RAW_TITLE_BYTES
+            || body.len() > crate::notify::RAW_BODY_BYTES
+            || crate::notify::notice(title, body, "", None).is_none()
+        {
+            return Err("invalid_request");
+        }
+    } else if raw.get("title").is_some() || raw.get("body").is_some() {
         return Err("invalid_request");
     }
     if r.kind == "search_people" {
@@ -1438,7 +1461,7 @@ impl Status {
     }
 }
 pub fn envelope(kind: &str, id: Option<&str>, instance: &str, s: &Status) -> serde_json::Value {
-    serde_json::json!({"version":1,"type":kind,"id":id,"instanceId":instance,"generation":s.generation,"capabilities":["connection_status","room_catalog","room_history","message_send","thread_send","room_recipients","history_auto_refresh","room_activity","agent_profiles","thread_replies","thread_summaries","dm_open","older_history","live_updates","setup_assist","community_join","invite_mint","attachments","user_status","presence","communities","people_search","message_actions","room_manage"],"backendRevision":crate::compatibility::BUZZ_REVISION,"status":s})
+    serde_json::json!({"version":1,"type":kind,"id":id,"instanceId":instance,"generation":s.generation,"capabilities":["connection_status","room_catalog","room_history","message_send","thread_send","room_recipients","history_auto_refresh","room_activity","agent_profiles","thread_replies","thread_summaries","dm_open","older_history","live_updates","setup_assist","community_join","invite_mint","attachments","user_status","presence","communities","people_search","message_actions","room_manage","desktop_notify"],"backendRevision":crate::compatibility::BUZZ_REVISION,"status":s})
 }
 pub async fn read_line<R: tokio::io::AsyncBufRead + Unpin>(
     r: &mut R,
@@ -1501,6 +1524,72 @@ mod tests {
         )
         .is_err());
         assert!(request(&vec![b'a'; LIMIT + 1]).is_err());
+    }
+    #[test]
+    fn notify_requests_are_scoped_and_bounded() {
+        let id = "11111111-1111-4111-8111-111111111111";
+        let room = "22222222-2222-4222-8222-222222222222";
+        let thread = "c".repeat(64);
+        let ok = serde_json::json!({"version":1,"id":id,"type":"notify","title":"Alex","body":"hi <b>",
+            "roomId":room,"generation":3,"instanceId":"i-1"});
+        let r = request(ok.to_string().as_bytes()).unwrap();
+        assert_eq!(
+            (r.title.as_deref(), r.body.as_deref()),
+            (Some("Alex"), Some("hi <b>"))
+        );
+        assert_eq!((r.generation, r.root_id), (Some(3), None));
+        let mut threaded = ok.clone();
+        threaded["rootId"] = thread.clone().into();
+        assert_eq!(
+            request(threaded.to_string().as_bytes()).unwrap().root_id,
+            Some(thread)
+        );
+        // An empty body is fine (the text-off wording has one); an empty title is not.
+        let mut empty = ok.clone();
+        empty["body"] = "".into();
+        assert!(request(empty.to_string().as_bytes()).is_ok());
+        let mut bad: Vec<serde_json::Value> = Vec::new();
+        let mut with = |key: &str, value: serde_json::Value| {
+            let mut v = ok.clone();
+            if value.is_null() {
+                v.as_object_mut().unwrap().remove(key);
+            } else {
+                v[key] = value;
+            }
+            bad.push(v);
+        };
+        with("title", serde_json::Value::Null);
+        with("body", serde_json::Value::Null);
+        with("title", "".into());
+        with("title", " \n\u{200e} ".into());
+        with(
+            "title",
+            "x".repeat(crate::notify::RAW_TITLE_BYTES + 1).into(),
+        );
+        with("body", "x".repeat(crate::notify::RAW_BODY_BYTES + 1).into());
+        with("roomId", serde_json::Value::Null);
+        with("roomId", "not-a-room".into());
+        with("roomId", "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA".into());
+        with("rootId", "abc".into());
+        with("rootId", "C".repeat(64).into());
+        with("generation", serde_json::Value::Null);
+        with("generation", 0.into());
+        with("instanceId", serde_json::Value::Null);
+        with("id", "ui-1".into());
+        with("text", "private".into());
+        with("mentions", serde_json::json!([]));
+        for v in bad {
+            assert_eq!(
+                request(v.to_string().as_bytes()).err(),
+                Some("invalid_request"),
+                "{v}"
+            );
+        }
+        // Other requests never carry notification fields.
+        for key in ["title", "body"] {
+            let v = serde_json::json!({"version":1,"id":"ui-1","type":"get_snapshot",key:"x"});
+            assert!(request(v.to_string().as_bytes()).is_err());
+        }
     }
     #[test]
     fn mint_requests_are_bounded() {
@@ -1796,7 +1885,8 @@ mod state_tests {
                 "communities",
                 "people_search",
                 "message_actions",
-                "room_manage"
+                "room_manage",
+                "desktop_notify"
             ])
         );
         assert_eq!(v["status"]["catalog"]["state"], "unavailable");

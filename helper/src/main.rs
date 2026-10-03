@@ -20,6 +20,7 @@ mod join;
 mod ledger;
 mod live;
 mod media;
+mod notify;
 mod presence;
 mod protocol;
 mod query;
