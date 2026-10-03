@@ -277,6 +277,8 @@ struct FreshnessPolicy {
     // and the re-publication interval while online or away.
     presence_gap: Duration,
     presence_heartbeat: Duration,
+    // Shown presence states older than this are dropped (`presence::FRESH_SECS`).
+    presence_fresh: Duration,
 }
 const FRESHNESS: FreshnessPolicy = FreshnessPolicy {
     interval: Duration::from_secs(20),
@@ -287,6 +289,7 @@ const FRESHNESS: FreshnessPolicy = FreshnessPolicy {
     status_gap: crate::user_status::GAP,
     presence_gap: crate::presence::GAP,
     presence_heartbeat: crate::presence::HEARTBEAT,
+    presence_fresh: Duration::from_secs(crate::presence::FRESH_SECS),
 };
 #[derive(Debug, PartialEq)]
 enum ProbeAnswer {
@@ -1279,9 +1282,7 @@ async fn observe_inner(
                     }
                 });
             }
-            if presence_read_at
-                .is_some_and(|at| at.elapsed() > Duration::from_secs(crate::presence::FRESH_SECS))
-            {
+            if presence_read_at.is_some_and(|at| at.elapsed() > policy.presence_fresh) {
                 presence_seen.clear();
                 presence_read_at = None;
                 project_presence!();

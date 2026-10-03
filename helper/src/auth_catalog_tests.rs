@@ -178,6 +178,8 @@ struct Script {
     status_reply: DmReply,
     status_events: Vec<Event>,
     statuses: Vec<Event>,
+    // When set, the other member's fixed status expires at this time.
+    other_status_expires: Option<u64>,
     // How a kind 20001 heartbeat is answered, every one received, the state
     // the relay keeps per author, how many presence reads were served, and
     // whether those reads are signed by a key other than the relay's.
@@ -257,6 +259,16 @@ async fn recheck_fixture(first: Option<Discovery>) -> Recheck {
     recheck_fixture_every(first, Duration::from_millis(400)).await
 }
 async fn recheck_fixture_every(first: Option<Discovery>, catalog: Duration) -> Recheck {
+    recheck_fixture_aging(first, catalog, FRESHNESS.presence_fresh, None).await
+}
+/// `recheck_fixture_every` with a shorter presence age-out, and the other
+/// member's status expiring at `other_status_expires`.
+async fn recheck_fixture_aging(
+    first: Option<Discovery>,
+    catalog: Duration,
+    presence_fresh: Duration,
+    other_status_expires: Option<u64>,
+) -> Recheck {
     let user = Keys::generate();
     let other = Keys::generate();
     let relay_keys = Keys::generate();
@@ -274,6 +286,7 @@ async fn recheck_fixture_every(first: Option<Discovery>, catalog: Duration) -> R
         status_reply: DmReply::Silent,
         status_events: Vec::new(),
         statuses: Vec::new(),
+        other_status_expires,
         presence_reply: DmReply::Silent,
         presence_events: Vec::new(),
         presence: std::collections::BTreeMap::new(),
@@ -546,8 +559,10 @@ async fn recheck_fixture_every(first: Option<Discovery>, catalog: Duration) -> R
                         30315 => {
                             assert_eq!(tagged("#d"), vec!["general".to_string()]);
                             let authors = tagged("authors");
-                            let mut events = script.lock().unwrap().statuses.clone();
-                            events.push(note(&other, 30315, "Out sick", vec![Tag::parse(["d", "general"]).unwrap(), Tag::parse(["emoji", "🤒"]).unwrap()]));
+                            let (mut events, expires) = {let script = script.lock().unwrap(); (script.statuses.clone(), script.other_status_expires)};
+                            let mut tags = vec![Tag::parse(["d", "general"]).unwrap(), Tag::parse(["emoji", "🤒"]).unwrap()];
+                            if let Some(at) = expires {tags.push(Tag::parse(["expiration", at.to_string().as_str()]).unwrap());}
+                            events.push(note(&other, 30315, "Out sick", tags));
                             events.retain(|e| authors.contains(&e.pubkey.to_hex()));
                             ok(&serde_json::to_string(&events).unwrap())
                         }
@@ -614,6 +629,7 @@ async fn recheck_fixture_every(first: Option<Discovery>, catalog: Duration) -> R
                 status_gap: Duration::from_millis(300),
                 presence_gap: Duration::from_millis(300),
                 presence_heartbeat: Duration::from_millis(1500),
+                presence_fresh,
                 ..FRESHNESS
             },
             &mut sender,

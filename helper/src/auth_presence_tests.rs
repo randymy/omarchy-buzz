@@ -243,3 +243,77 @@ async fn the_last_panel_leaving_publishes_offline_once() {
     .await
     .expect("presence detach fixture deadline");
 }
+
+#[tokio::test]
+async fn statuses_and_presence_age_out_while_room_checks_keep_failing() {
+    let _network_fixture = crate::NETWORK_TEST_LOCK.lock().await;
+    timeout(Duration::from_secs(40), async {
+        // The other member's status expires in a few seconds; presence read
+        // more than two seconds ago is too old to show.
+        let expires = nostr::Timestamp::now().as_secs() + 4;
+        let mut f = recheck_fixture_aging(
+            None,
+            Duration::from_millis(400),
+            Duration::from_secs(2),
+            Some(expires),
+        )
+        .await;
+        let own = f.status.borrow().identity.clone().unwrap();
+        wait_status(&mut f.status, |s| {
+            s.catalog.state == "partial" && s.catalog.rooms.len() == 2
+        })
+        .await;
+        let a = f.a.clone();
+        f.commands
+            .send(Command::FetchRecipients(a.clone()))
+            .await
+            .unwrap();
+        f.script.lock().unwrap().presence_reply = DmReply::Open;
+        assert_eq!(set(&f, Mode::Auto, true).await, None);
+        let other = |s: &Status| s.recipients.entries.iter().find(|e| e.key != own).cloned();
+        snapshot(&mut f.status, |s| {
+            s.recipients.state == "snapshot"
+                && other(s)
+                    .is_some_and(|e| e.status.is_some() && e.presence.as_deref() == Some("away"))
+        })
+        .await;
+        // From now on every joined-room check fails as an unavailable relay.
+        let checks = {
+            let mut script = f.script.lock().unwrap();
+            for _ in 0..60 {
+                script.next.push_back(Discovery {
+                    rooms: None,
+                    gate: None,
+                    changed: false,
+                });
+            }
+            *f.discoveries.borrow()
+        };
+        // The kept views still age: the expired status and the old presence go.
+        timeout(Duration::from_secs(15), async {
+            loop {
+                {
+                    let s = f.status.borrow();
+                    if other(&s).is_some_and(|e| e.status.is_none() && e.presence.is_none())
+                        && s.presence.peers.is_empty()
+                    {
+                        break;
+                    }
+                }
+                f.status.changed().await.unwrap();
+            }
+        })
+        .await
+        .expect("expired status and old presence were still shown");
+        let s = f.status.borrow().clone();
+        assert_eq!(s.connection, "authenticated");
+        assert!(s.catalog.state == "partial" && s.catalog.rooms.len() == 2);
+        assert_eq!(s.recipients.state, "snapshot");
+        // Only failed checks ran meanwhile: none of them read presence again.
+        assert!(*f.discoveries.borrow() > checks + 2);
+        assert!(!f.script.lock().unwrap().next.is_empty());
+        f.finish().await;
+    })
+    .await
+    .expect("aging fixture deadline");
+}
