@@ -4,6 +4,7 @@ import importlib.machinery
 import importlib.util
 import json
 import os
+import pwd
 from pathlib import Path
 import shlex
 import subprocess
@@ -561,6 +562,26 @@ class AgentLogin(unittest.TestCase):
                         "HTTPS_PROXY", "BUZZ_PRIVATE_KEY", "CODEX_HOME"):
                 self.assertNotIn(key, env)
             self.assertEqual(login_tool.login_environment(profile, "codex", {})["CODEX_HOME"], str(profile / "provider"))
+            self.assertEqual(env["BROWSER"], str(SCRIPTS / "agent-login"))
+
+    def test_sign_in_page_opens_in_the_users_own_session(self):
+        for url in ("https://claude.com/cai/oauth/authorize?code=true&state=x",
+                    "https://auth.openai.com/oauth/authorize?response_type=code"):
+            self.assertEqual(login_tool.sign_in_url(url), url)
+        for url in ("http://claude.com/x", "https://evil.example/x", "https://claude.com.evil.example/x",
+                    "https://user:pw@claude.com/x", "https://claude.com:8443/x", "file:///etc/passwd"):
+            self.assertIsNone(login_tool.sign_in_url(url), url)
+        ambient = {"HOME": "/profile/home", "XDG_CONFIG_HOME": "/profile/config", "CLAUDE_CONFIG_DIR": "/p",
+                   "CODEX_HOME": "/p", "BROWSER": "x", "WAYLAND_DISPLAY": "wayland-1",
+                   "XDG_RUNTIME_DIR": "/run/user/1000", "DBUS_SESSION_BUS_ADDRESS": "unix:path=/x"}
+        env = login_tool.browser_environment(ambient)
+        self.assertEqual(env["HOME"], pwd.getpwuid(os.getuid()).pw_dir)
+        for key in ("XDG_CONFIG_HOME", "CLAUDE_CONFIG_DIR", "CODEX_HOME", "BROWSER"):
+            self.assertNotIn(key, env)
+        self.assertEqual({k: env[k] for k in ("WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS")},
+                         {k: ambient[k] for k in ("WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS")})
+        refused = run("agent-login", "https://evil.example/x")
+        self.assertEqual((refused.returncode, json.loads(refused.stderr)), (1, {"error": "sign_in_url_refused"}))
 
     def test_terminal_launch_dry_run(self):
         with tempfile.TemporaryDirectory() as temporary:
