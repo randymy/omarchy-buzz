@@ -230,8 +230,9 @@ Item {
   readonly property bool recipientPickerLocked: deliveryState === "sending" || deliveryState === "unknown" || deliveryState === "rejected" || deliveryCategory === "send_request_reused"
   readonly property string recipientsLabel: recipientsState === "loading" ? "Loading recipients" : recipientsState === "snapshot" ? (recipientsPartial ? "Partial recipient list · " : "Room recipients · ") + recipientEntries.length : "Recipients unavailable"
 
+  // A message action and a send share the helper's one publication slot.
   readonly property bool canSend: sendSupported && !sampleMode && !sessionFailed && connection === "authenticated"
-    && selectedRoom !== null && deliveryState !== "sending" && deliveryState !== "unknown" && deliveryState !== "rejected" && deliveryCategory !== "send_request_reused"
+    && selectedRoom !== null && deliveryState !== "sending" && actionState !== "sending" && deliveryState !== "unknown" && deliveryState !== "rejected" && deliveryCategory !== "send_request_reused"
     && replyReady && recipientIntentValid && (draftText.trim().length > 0 || pendingFor(replyRootId).length > 0)
     && draftText.indexOf("\u0000") === -1 && utf8Size(draftText) <= 4096 && !uploadingFor(replyRootId)
   // The room and the open thread each have a composer. Editing or submitting one
@@ -258,7 +259,7 @@ Item {
       && (chosen.length === 0 || (recipientsSupported && recipientsState === "snapshot"
         && chosen.every(function(key) { return recipientEntries.some(function(entry) { return entry.key === key }) })))
       && (text.trim().length > 0 || pendingFor(rootId).length > 0) && text.indexOf("\u0000") === -1 && utf8Size(text) <= 4096
-      && !uploadingFor(rootId)
+      && !uploadingFor(rootId) && actionState !== "sending"
   }
   // A file still being checked or uploaded for this draft holds Send.
   function uploadingFor(rootId) {

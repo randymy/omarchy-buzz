@@ -148,6 +148,15 @@ ShellRoot {
       check(inside(test.mine, "buzzMessageEditor").length === 1 && one(test.mine, "buzzEditField").text === "hello team (fixed)", "A refused edit lost the editor or its text")
       check(/refused/.test(one(test.mine, "buzzActionNote").text), "Refusal not explained: " + inside(test.mine, "buzzActionNote").length)
       check(inside(test.mine, "buzzMessageBody").length === 0, "Original shown during a refused edit")
+      // A send and a message action share the helper's one publication slot:
+      // neither composer may submit while an action is pending.
+      var saved = service.drafts
+      var next = Object.assign({}, saved); next[service.composerKey] = "queued text"; service.drafts = next
+      check(service.canSend && service.canSendFor(""), "A ready draft could not be sent")
+      service.actionState = "sending"
+      check(!service.canSend && !service.canSendFor(""), "Composer could submit while a message action was pending")
+      service.actionState = "rejected"
+      service.drafts = saved
       click(one(test.mine, "buzzEditSave"))
     }, until: function() { return service.actionState === "acknowledged" && inside(test.mine, "buzzMessageBody").length === 1 && /hello team \(fixed\) \(edited\)/.test(bodyOf(test.mine)) }},
     {run: function() {
