@@ -10,6 +10,8 @@ ShellRoot {
   Buzz.Service {
     id: service
     autoConnect: false
+    // Started explicitly below, then restarted on its own after the daemon exits.
+    autoRestart: true
     helperExecutable: Quickshell.env("BUZZ_TEST_HELPER")
   }
   Buzz.Service {
@@ -27,7 +29,7 @@ ShellRoot {
     running: true
     onTriggered: {
       test.ticks++
-      if (test.ticks > 45) {
+      if (test.ticks > 65) {
         console.error("Bridge test timed out at stage " + test.stage)
         Qt.exit(1)
       }
@@ -49,7 +51,20 @@ ShellRoot {
           console.error("Helper exit retained usable session state")
           Qt.exit(1)
         }
-        console.log("PASS: actual QML bridge, setup state, missing helper, retry and daemon exit")
+        if (!service.reconnecting || service.statusLabel !== "Helper unavailable · reconnecting…" || service.barLabel !== "Reconnecting") {
+          console.error("Ended bridge was not shown as reconnecting: " + service.statusLabel + " / " + service.barLabel)
+          Qt.exit(1)
+        }
+        // The daemon comes back (a helper restart or reinstall): the bridge
+        // reconnects without Retry.
+        daemon.running = true
+        test.stage = 4
+      } else if (test.stage === 4 && service.connection === "unconfigured" && !service.sessionFailed) {
+        if (service.reconnecting) {
+          console.error("Restarted bridge still shown as reconnecting")
+          Qt.exit(1)
+        }
+        console.log("PASS: actual QML bridge, setup state, missing helper, retry, daemon exit and automatic bridge restart")
         Qt.quit()
       }
     }

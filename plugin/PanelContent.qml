@@ -532,14 +532,15 @@ FocusScope {
   // may set feedbackOpener to record the call instead of opening a browser.
   readonly property string feedbackUrl: "https://github.com/randymy/omarchy-buzz/issues/new"
   property var feedbackOpener: null
-  // sample, online, connecting, unset or offline.
+  // sample, online, connecting, reconnecting, unset or offline.
   readonly property string accountState: !service ? "offline" : service.sampleMode ? "sample"
     : service.connection === "authenticated" && !service.sessionFailed ? "online"
+    : service.reconnecting ? "reconnecting"
     : service.connection === "connecting" ? "connecting"
     : service.connection === "unconfigured" ? "unset" : "offline"
   readonly property string accountStateLabel: ({sample: "Sample data", online: "Online", connecting: "Connecting",
-    unset: "Not set up", offline: "Offline"})[accountState]
-  readonly property color accountStateColor: ({online: "#3fb950", connecting: "#d29922", offline: Color.urgent})[accountState] || Color.muted
+    reconnecting: "Reconnecting…", unset: "Not set up", offline: "Offline"})[accountState]
+  readonly property color accountStateColor: ({online: "#3fb950", connecting: "#d29922", reconnecting: "#d29922", offline: Color.urgent})[accountState] || Color.muted
   readonly property bool myKeyKnown: !!service && /^[a-f0-9]{64}$/.test(service.identity)
   // My roster name when a verified roster lists me; otherwise my key's short
   // form, as message authors without a profile name are shown ("Me" only in
