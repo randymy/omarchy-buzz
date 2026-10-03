@@ -208,6 +208,28 @@ def main():
                 client.sendall(json.dumps(join).encode() + b"\n")
                 error = frames.matching(join["id"])
                 assert error["type"] == "error" and error["category"] == "relay_unavailable", error
+                # Room mutations carry the session scope they were made in (as sends do): a stale
+                # instance or generation is refused before anything is prepared or signed, and a
+                # current one reaches the session check (no session here: relay_unavailable).
+                room_uuid, key = "00000000-0000-4000-8000-000000000002", "a" * 64
+                mutations = {
+                    "create_room": {"name": "New", "visibility": "open"},
+                    "update_room": {"roomId": room_uuid, "name": "New"},
+                    "set_room_topic": {"roomId": room_uuid, "topic": "T"},
+                    "add_room_member": {"roomId": room_uuid, "key": key},
+                    "remove_room_member": {"roomId": room_uuid, "key": key},
+                }
+                for number, (kind, fields) in enumerate(mutations.items()):
+                    base_request = {"version": 1, "id": f"00000000-0000-4000-8000-0000000001{number:02d}", "type": kind, **fields}
+                    for scope, category in (
+                        ({"instanceId": "other-instance", "generation": hello["generation"]}, "room_scope_changed"),
+                        ({"instanceId": hello["instanceId"], "generation": hello["generation"] + 1}, "room_scope_changed"),
+                        ({"instanceId": hello["instanceId"], "generation": hello["generation"]}, "relay_unavailable"),
+                    ):
+                        payload = {**base_request, **scope}
+                        client.sendall(json.dumps(payload).encode() + b"\n")
+                        error = frames.matching(payload["id"])
+                        assert error["type"] == "error" and error["category"] == category, (kind, scope, error)
                 # A status needs a working session: refused, nothing signed or saved.
                 status_set = {"version": 1, "id": "00000000-0000-4000-8000-000000000003", "type": "set_status",
                               "text": "In a meeting", "emoji": "\U0001f5e3\ufe0f", "expiresInHours": 4}

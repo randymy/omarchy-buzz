@@ -101,6 +101,8 @@ def refresh_detail(room_id):
               "members": [{"key": k, "name": n, "role": r} for k, r, n in members[room_id]]}
 
 
+MUTATIONS = ("create_room", "update_room", "set_room_topic", "add_room_member", "remove_room_member")
+stale_next = False
 save()
 emit("hello")
 for line in sys.stdin:
@@ -108,7 +110,20 @@ for line in sys.stdin:
     record["requests"].append(request)
     save()
     kind = request["type"]
-    if kind == "load_more_rooms":
+    if kind in MUTATIONS:
+        # Room mutations are bound to the session they were made in, like sends.
+        assert request["generation"] == 1 and request["instanceId"] == INSTANCE, request
+        if stale_next:
+            # Another panel switched communities first: refused before anything is signed.
+            stale_next = False
+            record["refused"] = record.get("refused", 0) + 1
+            save()
+            print(json.dumps({"version": 1, "type": "error", "id": request["id"], "instanceId": INSTANCE,
+                              "category": "room_scope_changed"}), flush=True)
+            continue
+    if kind == "fixture_stale":
+        stale_next = True
+    elif kind == "load_more_rooms":
         counts["more"] += 1
         more.update(state="loading", category=None)
         emit()
@@ -139,7 +154,7 @@ for line in sys.stdin:
         emit(request_id=request["id"])
     elif kind == "create_room":
         assert UUID.fullmatch(request["id"]) and request["visibility"] in ("open", "private"), request
-        assert sorted(request) == ["about", "id", "name", "type", "version", "visibility"], request
+        assert sorted(request) == ["about", "generation", "id", "instanceId", "name", "type", "version", "visibility"], request
         counts["create"] += 1
         if counts["create"] == 1:
             act(request, "create", False, "blocked: you may not create rooms here")
@@ -150,7 +165,7 @@ for line in sys.stdin:
             act(request, "create", True)
     elif kind == "update_room":
         # Only what changed is sent: at least one of name and about, never a copy of the rest.
-        assert set(request) <= {"about", "id", "name", "roomId", "type", "version"} and set(request) & {"about", "name"}, request
+        assert set(request) <= {"about", "generation", "id", "instanceId", "name", "roomId", "type", "version"} and set(request) & {"about", "name"}, request
         counts["update"] += 1
         if counts["update"] == 1:
             act(request, "details", False, "restricted: actor not authorized for name/about changes")
@@ -163,19 +178,19 @@ for line in sys.stdin:
                     r["description"] = abouts[r["id"]][:ROW_ABOUT]
             act(request, "details", True, hold=1.5 if counts["update"] == 3 else 0)
     elif kind == "set_room_topic":
-        assert sorted(request) == ["id", "roomId", "topic", "type", "version"], request
+        assert sorted(request) == ["generation", "id", "instanceId", "roomId", "topic", "type", "version"], request
         topics[request["roomId"]] = request["topic"]
         act(request, "topic", True)
         refresh_detail(request["roomId"])
         emit()
     elif kind == "add_room_member":
-        assert sorted(request) == ["id", "key", "roomId", "type", "version"] and re.fullmatch("[a-f0-9]{64}", request["key"]), request
+        assert sorted(request) == ["generation", "id", "instanceId", "key", "roomId", "type", "version"] and re.fullmatch("[a-f0-9]{64}", request["key"]), request
         members[request["roomId"]].append((request["key"], "member", "Pat" if request["key"] == PAT else ""))
         act(request, "add_member", True)
         refresh_detail(request["roomId"])
         emit()
     elif kind == "remove_room_member":
-        assert sorted(request) == ["id", "key", "roomId", "type", "version"], request
+        assert sorted(request) == ["generation", "id", "instanceId", "key", "roomId", "type", "version"], request
         members[request["roomId"]] = [m for m in members[request["roomId"]] if m[0] != request["key"]]
         act(request, "remove_member", True)
         refresh_detail(request["roomId"])

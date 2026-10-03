@@ -1190,6 +1190,11 @@ fn request(value: serde_json::Value) -> Result<crate::protocol::Request, &'stati
 }
 fn frame(kind: &str, extra: serde_json::Value) -> serde_json::Value {
     let mut value = serde_json::json!({"version":1,"id":REQUEST,"type":kind});
+    // Room mutations are bound to the session, like sends.
+    if crate::protocol::binds_room_scope(kind) {
+        value["instanceId"] = "test-instance".into();
+        value["generation"] = 1.into();
+    }
     for (k, v) in extra.as_object().unwrap() {
         value[k] = v.clone();
     }
@@ -1360,4 +1365,64 @@ fn room_requests_have_exact_shapes_and_map_to_changes() {
     assert!(request(frame("fetch_room_detail", serde_json::json!({}))).is_err());
     assert!(request(frame("load_more_rooms", serde_json::json!({}))).is_ok());
     assert!(request(frame("refresh_rooms", serde_json::json!({}))).is_ok());
+}
+
+#[test]
+fn room_mutations_are_bound_to_the_session_scope() {
+    let member = key(3).public_key().to_hex();
+    let mutations = [
+        (
+            "create_room",
+            serde_json::json!({"name":"N","visibility":"open"}),
+        ),
+        ("update_room", serde_json::json!({"roomId":ROOM,"name":"N"})),
+        (
+            "set_room_topic",
+            serde_json::json!({"roomId":ROOM,"topic":"T"}),
+        ),
+        (
+            "add_room_member",
+            serde_json::json!({"roomId":ROOM,"key":member}),
+        ),
+        (
+            "remove_room_member",
+            serde_json::json!({"roomId":ROOM,"key":member}),
+        ),
+    ];
+    for (kind, extra) in mutations {
+        assert!(crate::protocol::binds_room_scope(kind), "{kind}");
+        let good = request(frame(kind, extra.clone())).unwrap();
+        // Current scope passes; a stale instance or generation is refused.
+        assert!(
+            crate::protocol::room_scope_ok(&good, "test-instance", 1),
+            "{kind}"
+        );
+        assert!(
+            !crate::protocol::room_scope_ok(&good, "other-instance", 1),
+            "{kind}"
+        );
+        assert!(
+            !crate::protocol::room_scope_ok(&good, "test-instance", 2),
+            "{kind}"
+        );
+        // A request that omits or mangles its scope is not a request at all.
+        for field in ["instanceId", "generation"] {
+            let mut missing = frame(kind, extra.clone());
+            missing.as_object_mut().unwrap().remove(field);
+            assert!(request(missing).is_err(), "{kind} without {field}");
+        }
+        for (field, value) in [
+            ("generation", serde_json::json!(0)),
+            ("instanceId", serde_json::json!("../instance")),
+        ] {
+            let mut bad = frame(kind, extra.clone());
+            bad[field] = value;
+            assert!(request(bad).is_err(), "{kind} with bad {field}");
+        }
+    }
+    // Reads and joins stay unscoped: the fields are refused there.
+    assert!(!crate::protocol::binds_room_scope("fetch_room_detail"));
+    let mut read = frame("fetch_room_detail", serde_json::json!({"roomId":ROOM}));
+    read["generation"] = 1.into();
+    assert!(request(read).is_err());
 }

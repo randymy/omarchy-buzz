@@ -209,6 +209,11 @@ pub fn request(bytes: &[u8]) -> Result<Request, &'static str> {
             | "join_community"
             | "switch_community"
             | "leave_community"
+            | "create_room"
+            | "update_room"
+            | "set_room_topic"
+            | "add_room_member"
+            | "remove_room_member"
     ) {
         let id = uuid::Uuid::parse_str(&r.id).map_err(|_| "invalid_request")?;
         if id.to_string() != r.id {
@@ -503,6 +508,21 @@ pub enum Action {
     Delete(String),
     React(String),
     Unreact(String),
+}
+/// Room mutations that carry the scope they were made in (`instanceId` and
+/// `generation`, as sends do): another panel may have switched communities
+/// before this one learned of it, and a stale create or edit would otherwise
+/// land in the newly active community.
+pub fn binds_room_scope(kind: &str) -> bool {
+    matches!(
+        kind,
+        "create_room" | "update_room" | "set_room_topic" | "add_room_member" | "remove_room_member"
+    )
+}
+/// The request's scope is this daemon's `instance` and the session's current
+/// `generation`. Checked before anything is prepared or signed.
+pub fn room_scope_ok(r: &Request, instance: &str, generation: u64) -> bool {
+    r.instance_id.as_deref() == Some(instance) && r.generation == Some(generation)
 }
 /// The publishing room requests the helper answers by the relay's `OK`
 /// (`join::RoomActions`), one at a time.

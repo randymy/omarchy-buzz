@@ -869,6 +869,7 @@ Item {
     if (roomActionLocal === "failed") return ({room_not_open: "That room is no longer open to join. Refresh the list.",
       leave_rejected: "Only a joined room can be left here.", relay_unavailable: "Not connected. Try again when connected.",
       room_invalid: "That change is not valid for this room. Check the room and the text, then try again.",
+      room_scope_changed: "Community changed, nothing was sent.",
       setup_busy: "Another room change is in progress."})[roomActionCategory] || "Nothing was sent. Try again."
     if (roomActionRequestId === "" || roomAction.requestId !== roomActionRequestId) return roomActionLocal === "sending" ? "Sending…" : ""
     var words = roomActionWords[roomAction.action]
@@ -918,7 +919,9 @@ Item {
     roomActionRequestId = correlationUuid()
     roomActionLocal = "sending"
     roomActionCategory = ""
-    var request = {version: 1, id: roomActionRequestId, type: type}
+    // Bound to the session this panel is showing, as sends are: the helper
+    // refuses it (room_scope_changed) if the community changed meanwhile.
+    var request = {version: 1, id: roomActionRequestId, type: type, generation: generation, instanceId: instanceId}
     Object.keys(fields).forEach(function(name) { request[name] = fields[name] })
     bridge.write(JSON.stringify(request) + "\n")
     roomActionTimeout.restart()
@@ -2842,7 +2845,7 @@ Item {
     if (frame && frame.version === 1 && frame.type === "error" && ["request_busy", "send_busy", "send_scope_changed", "send_request_reused", "send_invalid", "send_unavailable", "send_access_denied", "send_ledger_unavailable", "delivery_unknown",
         "dm_open_busy", "dm_open_scope_changed", "dm_open_request_reused", "dm_open_invalid", "dm_open_unavailable", "dm_open_access_denied", "dm_open_unknown",
         "setup_invalid_relay", "identity_exists", "identity_unavailable", "relay_unavailable", "setup_busy", "setup_not_allowed", "config_unavailable",
-        "invite_invalid", "invite_relay_mismatch", "invite_rejected", "invite_rate_limited", "policy_required", "room_not_open", "join_rejected", "leave_rejected", "room_invalid",
+        "invite_invalid", "invite_relay_mismatch", "invite_rejected", "invite_rate_limited", "policy_required", "room_not_open", "join_rejected", "leave_rejected", "room_invalid", "room_scope_changed",
         "invite_forbidden", "attachment_unknown", "attachment_forbidden", "attachment_mismatch", "attachment_too_large", "attachment_invalid",
         "attachment_type_refused", "attachment_storage_unavailable", "status_invalid", "status_rate_limited", "status_rejected",
         "join_invalid", "join_rate_limited", "join_busy", "join_last", "join_full", "community_unknown", "name_invalid", "leave_owner"].indexOf(frame.category) !== -1) {

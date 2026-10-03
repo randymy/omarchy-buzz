@@ -133,6 +133,14 @@ ShellRoot {
           type("buzzNewRoomAbout", test.longAbout)
           click("buzzNewRoomPrivate")
           check(one("buzzNewRoomPrivate").selected && one("buzzNewRoomCreate").enabled, "Private choice or Create not taken")
+          // Another panel switched communities first: the helper refuses the stale request.
+          service.send("fixture_stale")
+          click("buzzNewRoomCreate")
+          advance(31)
+        } else if (test.stage === 31 && service.roomActionLocal === "failed") {
+          check(service.roomActionCategory === "room_scope_changed" && service.roomAction.state === "idle", "Stale scope not refused: " + service.roomActionCategory)
+          check(one("buzzNewRoomStatus").text === "Community changed, nothing was sent.", "Stale refusal text wrong: " + one("buzzNewRoomStatus").text)
+          check(one("buzzNewRoomCreate").enabled, "Create stays blocked after a refusal")
           click("buzzNewRoomCreate")
           advance(4)
         } else if (test.stage === 4 && service.roomAction.state === "rejected") {
@@ -256,9 +264,13 @@ ShellRoot {
           var removed = requests("remove_room_member")
           var creates = requests("create_room")
           var more = requests("load_more_rooms")
-          if (!(topics.length === 1 && adds.length === 2 && removed.length === 1 && creates.length === 2 && more.length === 2
+          if (!(topics.length === 1 && adds.length === 2 && removed.length === 1 && creates.length === 3 && more.length === 2
               && requests("update_room").length === 3 && requests("refresh_rooms").length >= 1)) return
           check(more.every(function(r) { return Object.keys(r).sort().join(",") === "id,type,version" }), "Load more requests wrong")
+          // Every mutation carries the session scope it was made in.
+          check(creates.every(function(r) { return r.generation === service.generation && r.instanceId === service.instanceId }),
+            "A room request is not bound to the session: " + JSON.stringify(creates[0]))
+          check(JSON.parse(record.text()).refused === 1, "The stale request was not the only refusal")
           check(creates.every(function(r) { return r.name === "Plans" && r.about === test.longAbout && r.visibility === "private" }),
             "Create requests wrong: " + JSON.stringify(creates))
           check(topics[0].topic === "Ship it" && topics[0].roomId === test.created, "Topic request wrong")
@@ -267,8 +279,8 @@ ShellRoot {
           // A name-only edit sent only the name: the long description is not rewritten.
           var updates = requests("update_room")
           check(updates.length === 3 && updates.slice(0, 2).every(function(r) {
-            return Object.keys(r).sort().join(",") === "about,id,roomId,type,version" && r.about === test.longAbout + "!"
-          }) && Object.keys(updates[2]).sort().join(",") === "id,name,roomId,type,version" && updates[2].name === "Plans 2",
+            return Object.keys(r).sort().join(",") === "about,generation,id,instanceId,roomId,type,version" && r.about === test.longAbout + "!"
+          }) && Object.keys(updates[2]).sort().join(",") === "generation,id,instanceId,name,roomId,type,version" && updates[2].name === "Plans 2",
             "Update requests wrong: " + JSON.stringify(updates))
           check(removed[0].roomId === test.created && removed[0].key !== service.identity, "Removal request wrong")
           console.log("PASS: Load more keeps the loaded rooms, retries after a timeout and merges the next page; New room sends a trimmed name, description and visibility, shows the relay's refusal as said, then selects the room once it is listed; Room settings shows topic and members to everyone and lets owners and admins edit details and the topic, add members by key or from DMs and remove others after confirmation, with every relay refusal shown in its own words; the panel accepts the helper's full capability list")

@@ -109,6 +109,10 @@ async fn client(
                     write(&mut out,&serde_json::json!({"version":1,"type":"error","id":r.id,"category":"send_scope_changed","instanceId":instance})).await?;
                     continue;
                 }
+                if protocol::binds_room_scope(&r.kind) && !protocol::room_scope_ok(&r,&instance,status.borrow().generation) {
+                    write(&mut out,&serde_json::json!({"version":1,"type":"error","id":r.id,"category":"room_scope_changed","instanceId":instance})).await?;
+                    continue;
+                }
                 if r.kind=="open_dm" {
                     let refused={let current=status.borrow();
                         if r.instance_id.as_deref()!=Some(instance.as_str()) || r.generation!=Some(current.generation) {Some("dm_open_scope_changed")}

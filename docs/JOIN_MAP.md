@@ -188,6 +188,12 @@ with their role words (`owner`, `admin`, `member`, `guest`, `bot`, else `unknown
 Owners and admins see edit controls from the verified role; everyone else sees the topic and members. The relay,
 not this role, is the authority.
 
+**Session scope.** The five mutations (`create_room`, `update_room`, `set_room_topic`, `add_room_member`,
+`remove_room_member`) carry `instanceId` and `generation` like `send_message`; the helper refuses a stale or
+mismatched scope with `room_scope_changed` in `ipc.rs` before anything is prepared or signed (another panel may
+have switched communities first), and a request without them is malformed. The panel shows "Community changed,
+nothing was sent." Reads (`fetch_room_detail`) and `join_room`/`leave_room` stay unscoped, as before.
+
 **Editing never rewrites what was not edited.** The catalog row's description is a 256-byte display copy, so an
 edit must not round-trip it. `update_room` carries only the fields the user changed (a name-only edit has no
 `about` tag); the description's edit baseline is `roomDetail.about`, the relay's full text up to 1024 bytes, and a
