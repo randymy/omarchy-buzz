@@ -1247,6 +1247,47 @@ async fn observe_inner(
             publish_status(tx, |s| apply_presence(s, presence, &presence_seen, &own));
         }};
     }
+    // Time-based aging that does not depend on the joined-room check succeeding:
+    // statuses expire on the reader's clock (the relay keeps them), and presence
+    // states too old to mean anything are dropped.
+    macro_rules! expire_timed {
+        () => {{
+            let now_secs = nostr::Timestamp::now().as_secs();
+            let expired: Vec<String> = status_expiry
+                .iter()
+                .filter(|(_, at)| **at <= now_secs)
+                .map(|(k, _)| k.clone())
+                .collect();
+            for key in &expired {
+                status_expiry.remove(key);
+            }
+            let mine_expired = tx
+                .borrow()
+                .user_status
+                .mine
+                .as_ref()
+                .is_some_and(|m| m.expires_at.is_some_and(|at| at <= now_secs));
+            if mine_expired || !expired.is_empty() {
+                publish_status(tx, |s| {
+                    if mine_expired {
+                        s.user_status.mine = None;
+                    }
+                    for entry in s.recipients.entries.iter_mut() {
+                        if expired.contains(&entry.key) || (mine_expired && entry.key == own_key) {
+                            entry.status = None;
+                        }
+                    }
+                });
+            }
+            if presence_read_at
+                .is_some_and(|at| at.elapsed() > Duration::from_secs(crate::presence::FRESH_SECS))
+            {
+                presence_seen.clear();
+                presence_read_at = None;
+                project_presence!();
+            }
+        }};
+    }
     macro_rules! spawn_presence {
         () => {{
             if presence.configured() && fresh && presence_jobs.is_empty() {
@@ -2162,33 +2203,21 @@ async fn observe_inner(
                             let joined=&s.catalog.rooms;
                             s.open_rooms.rooms.retain(|r|!joined.iter().any(|j|j.id==r.id));
                         });
-                        // Statuses expire on the reader's clock (the relay keeps them).
-                        let now_secs=nostr::Timestamp::now().as_secs();
-                        let expired:Vec<String>=status_expiry.iter().filter(|(_,at)|**at<=now_secs).map(|(k,_)|k.clone()).collect();
-                        for key in &expired {status_expiry.remove(key);}
-                        let mine_expired=tx.borrow().user_status.mine.as_ref().is_some_and(|m|m.expires_at.is_some_and(|at|at<=now_secs));
-                        if mine_expired || !expired.is_empty() {
-                            publish_status(tx,|s| {
-                                if mine_expired {s.user_status.mine=None;}
-                                for entry in s.recipients.entries.iter_mut() {
-                                    if expired.contains(&entry.key) || (mine_expired && entry.key==own_key) {entry.status=None;}
-                                }
-                            });
-                        }
+                        expire_timed!();
                         let listed=tx.borrow().open_rooms.state!="unavailable";
                         if open_after_catalog || (listed && !removed.is_empty()) {open_after_catalog=false;spawn_open_rooms!();}
-                        // Presence follows the joined-room check: states too old to
-                        // mean anything are dropped, then the shown keys are read again.
-                        if presence_read_at.is_some_and(|at|at.elapsed()>Duration::from_secs(crate::presence::FRESH_SECS)) {
-                            presence_seen.clear();presence_read_at=None;project_presence!();
-                        }
+                        // Presence follows the joined-room check: the shown keys are read again.
                         spawn_presence!();
                     },
                     // A re-check of a published catalog that only timed out or found the
                     // relay busy says nothing about membership: the last verified catalog
                     // and its views stay until a check succeeds or access is refused.
                     Some(Ok(Err(error))) if fresh && catalog_transient(error) && relay_pin.is_some()
-                        && matches!(tx.borrow().catalog.state.as_str(),"partial"|"ready")=>eprintln!("omarchy-buzz: joined-room check failed: {error}; last catalog kept"),
+                        && matches!(tx.borrow().catalog.state.as_str(),"partial"|"ready")=>{
+                        eprintln!("omarchy-buzz: joined-room check failed: {error}; last catalog kept");
+                        // Kept views still age: no status or presence outlives its time.
+                        expire_timed!();
+                    },
                     failed @ (Some(Ok(Err(_)))|Some(Err(_))) if fresh && !cancelled=>{
                         let category=match failed {Some(Ok(Err(error)))=>catalog_category(error),_=>"room_catalog_unavailable"};
                         // A failed check proves nothing about any room: clear every dependent view.
