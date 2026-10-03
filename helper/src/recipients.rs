@@ -250,6 +250,121 @@ pub fn profiles(recipients: &mut Recipients, events: &[Event], now: u64) {
         }
     }
 }
+/// Desktop's directory page size (`DIRECTORY_PAGE_SIZE`); one page is read.
+pub const PEOPLE: usize = 50;
+/// The longest search text sent to the relay.
+pub const QUERY_BYTES: usize = 64;
+/// One person from the relay's kind 0 directory: a verified key and a
+/// self-asserted display name (empty when the profile has none).
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+pub struct Person {
+    pub key: String,
+    pub name: String,
+}
+/// Search text as sent to the relay: controls and bidi formatting become spaces,
+/// trimmed, at most `QUERY_BYTES`. Empty selects the directory listing.
+pub fn people_query(raw: &str) -> String {
+    sanitize(raw, QUERY_BYTES)
+}
+fn nip05(event: &Event) -> String {
+    serde_json::from_str::<serde_json::Value>(&event.content)
+        .ok()
+        .and_then(|v| v.get("nip05")?.as_str().map(|s| sanitize(s, 64)))
+        .unwrap_or_default()
+}
+/// Desktop's `match_score` (`nostr_convert/user_search.rs`): display name,
+/// then nip05, then a key prefix; exact > prefix > substring; 0 is no match.
+fn score(q: &str, name: &str, handle: &str, key: &str) -> u32 {
+    let field = |f: &str, exact, prefix, contains| {
+        let f = f.to_lowercase();
+        if f.is_empty() {
+            0
+        } else if f == q {
+            exact
+        } else if f.starts_with(q) {
+            prefix
+        } else if f.contains(q) {
+            contains
+        } else {
+            0
+        }
+    };
+    field(name, 1000, 900, 800)
+        .max(field(handle, 700, 600, 500))
+        .max(if key.starts_with(q) { 400 } else { 0 })
+}
+/// People from one directory or search read (`query` as `people_query`). Any
+/// event with a bad signature, another kind, a future time or too many events
+/// rejects the whole read. Per author the newest kind 0 (the lower id on a tie)
+/// counts; this identity is excluded. An empty query lists by name as Desktop's
+/// `list_user_search_results`; a typed one keeps matches ranked as
+/// `rank_user_search_results` (relay order breaks ties).
+pub fn people(
+    own: PublicKey,
+    query: &str,
+    events: &[Event],
+    now: u64,
+) -> Result<Vec<Person>, &'static str> {
+    if events.len() > PEOPLE
+        || events.iter().any(|e| {
+            e.verify().is_err()
+                || e.kind.as_u16() != 0
+                || e.created_at.as_secs() > now.saturating_add(60)
+        })
+    {
+        return Err("people_invalid");
+    }
+    let mut latest: BTreeMap<String, (usize, &Event)> = BTreeMap::new();
+    for (order, event) in events.iter().enumerate() {
+        let key = event.pubkey.to_hex();
+        if latest.get(&key).is_none_or(|(_, old)| {
+            event.created_at > old.created_at
+                || (event.created_at == old.created_at && event.id < old.id)
+        }) {
+            latest.insert(key, (order, event));
+        }
+    }
+    let q = query.to_lowercase();
+    // (rank, relay order, display name, nip05, key)
+    let mut found: Vec<(u32, usize, String, String, String)> = latest
+        .into_iter()
+        .filter(|(key, _)| *key != own.to_hex())
+        .filter_map(|(key, (order, event))| {
+            let (name, handle) = (name(event), nip05(event));
+            let rank = if q.is_empty() {
+                1
+            } else {
+                score(&q, &name, &handle, &key)
+            };
+            (rank > 0).then_some((rank, order, name, handle, key))
+        })
+        .collect();
+    if q.is_empty() {
+        found.sort_by_cached_key(|(_, _, name, handle, key)| {
+            let shown = [name, handle, key].into_iter().find(|s| !s.is_empty());
+            (shown.map(|s| s.to_lowercase()), key.clone())
+        });
+    } else {
+        found.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    }
+    Ok(found
+        .into_iter()
+        .take(PEOPLE)
+        .map(|(_, _, name, _, key)| Person { key, name })
+        .collect())
+}
+/// One signed directory or search read; see `people`.
+pub async fn find_people(
+    relay: &str,
+    keys: &Keys,
+    text: &str,
+) -> Result<Vec<Person>, &'static str> {
+    let request = QueryRequest::People {
+        query: text.to_owned(),
+    };
+    let events = query(relay, keys, &request).await?;
+    people(keys.public_key(), text, &events, Timestamp::now().as_secs())
+}
 pub async fn fetch(
     relay: &str,
     keys: &Keys,

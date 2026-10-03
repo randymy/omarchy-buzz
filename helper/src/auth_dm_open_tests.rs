@@ -187,3 +187,77 @@ async fn unanswered_open_is_busy_then_unknown() {
     .await
     .expect("unanswered DM open fixture deadline");
 }
+
+async fn search(f: &mut Recheck, id: &str, query: &str) -> Status {
+    f.commands
+        .send(Command::SearchPeople(id.into(), query.into()))
+        .await
+        .unwrap();
+    let id = id.to_owned();
+    snapshot(&mut f.status, |s| {
+        s.people.request_id.as_deref() == Some(id.as_str()) && s.people.state != "loading"
+    })
+    .await
+}
+
+#[tokio::test]
+async fn served_people_may_be_opened_and_others_may_not() {
+    let _network_fixture = crate::NETWORK_TEST_LOCK.lock().await;
+    timeout(Duration::from_secs(20), async {
+        let mut f = recheck_fixture_every(None, Duration::from_secs(60)).await;
+        let _ = roster_member(&mut f).await;
+        let ann = Keys::generate();
+        let stranger = Keys::generate().public_key().to_hex();
+        let profile = |name: &str| {
+            note(
+                &ann,
+                0,
+                &format!(r#"{{"display_name":"{name}"}}"#),
+                Vec::new(),
+            )
+        };
+        f.script.lock().unwrap().people = vec![profile("Ann")];
+        // Nothing is served yet: the key is unknown to the helper.
+        assert_eq!(
+            open(&f, FIRST, vec![ann.public_key().to_hex()]).await,
+            Some("dm_open_access_denied")
+        );
+        let s = search(&mut f, "ui-1", "").await;
+        assert_eq!(s.people.state, "snapshot");
+        assert_eq!(s.people.entries.len(), 1);
+        assert_eq!(s.people.entries[0].name, "Ann");
+        assert_eq!(s.people.entries[0].key, ann.public_key().to_hex());
+        let s = search(&mut f, "ui-2", "an").await;
+        assert_eq!(s.people.query, "an");
+        assert_eq!(s.people.entries.len(), 1);
+        assert_eq!(
+            f.script.lock().unwrap().people_filters,
+            vec![
+                json!({"kinds":[0],"limit":50,"page":1}),
+                json!({"kinds":[0],"search":"an","search_mode":"prefix","limit":50,"page":1}),
+            ]
+        );
+        // A later, narrower read does not make the earlier key refused.
+        f.script.lock().unwrap().people = Vec::new();
+        let s = search(&mut f, "ui-3", "zzz").await;
+        assert!(s.people.entries.is_empty() && s.people.state == "snapshot");
+        f.script.lock().unwrap().dm = DmReply::Open;
+        assert_eq!(open(&f, FIRST, vec![ann.public_key().to_hex()]).await, None);
+        snapshot(&mut f.status, |s| s.dm_open.state == "acknowledged").await;
+        assert_eq!(
+            open(&f, SECOND, vec![stranger]).await,
+            Some("dm_open_access_denied")
+        );
+        // A read with a forged event fails whole and serves nothing.
+        let mut forged = profile("Forged");
+        forged.content = r#"{"display_name":"Changed"}"#.into();
+        f.script.lock().unwrap().people = vec![forged];
+        let s = search(&mut f, "ui-4", "").await;
+        assert_eq!(s.people.state, "unavailable");
+        assert_eq!(s.people.category.as_deref(), Some("people_invalid"));
+        assert!(s.people.entries.is_empty());
+        f.finish().await;
+    })
+    .await
+    .expect("people fixture deadline");
+}

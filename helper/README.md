@@ -34,7 +34,7 @@ an explicit retry. Retry reloads configuration after setup. A pending keyring op
 
 Protocol version 1 requests are JSON lines with `version`, `id`, `type`;
 allowed types are `get_snapshot`, `subscribe`, `retry_connection`, and
-`fetch_recent`, `fetch_thread`, `close_thread`, `fetch_recipients`, `send_message`, `open_dm`, and the
+`fetch_recent`, `fetch_thread`, `close_thread`, `fetch_recipients`, `search_people`, `send_message`, `open_dm`, and the
 setup-assist requests `set_relay` (`url`: 1–2048 bytes, no control characters, then the
 same canonical check as `setup relay`) and `create_identity` (no other fields). Setup
 requests are accepted only while the connection is `unconfigured`, `disconnected` or

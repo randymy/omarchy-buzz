@@ -75,6 +75,7 @@ fn update(tx: &watch::Sender<Status>, state: &str, category: Option<&str>) {
             s.thread = Thread::unavailable(None, None, None);
             s.activity.clear();
             s.recipients = crate::protocol::RecipientsView::unavailable(None, None);
+            s.people = crate::protocol::PeopleView::unavailable(None, "", None);
             s.open_rooms = crate::protocol::OpenRooms::unavailable(None);
             // Nothing is known about the status without a session; a failure's
             // category stays readable.
@@ -171,6 +172,7 @@ fn apply_loaded_config(
                     s.thread = Thread::unavailable(None, None, None);
                     s.activity.clear();
                     s.recipients = crate::protocol::RecipientsView::unavailable(None, None);
+                    s.people = crate::protocol::PeopleView::unavailable(None, "", None);
                     s.setup = crate::protocol::JoinSetup::default();
                     s.open_rooms = crate::protocol::OpenRooms::unavailable(None);
                     s.room_action = crate::protocol::RoomAction::default();
@@ -694,6 +696,18 @@ fn recipients_category(error: &str) -> &'static str {
         _ => "recipients_unavailable",
     }
 }
+fn people_category(error: &str) -> &'static str {
+    match error {
+        "query_timeout" | "people_timeout" => "people_timeout",
+        "people_invalid"
+        | "query_oversized"
+        | "query_invalid_response"
+        | "query_invalid_signature"
+        | "query_invalid_scope"
+        | "query_redirect_rejected" => "people_invalid",
+        _ => "people_unavailable",
+    }
+}
 async fn wait_after_failure(
     error: &str,
     backoff: &mut Backoff,
@@ -940,6 +954,9 @@ async fn observe_inner(
     let mut activity_cursor = 0_usize;
     let mut recipient_jobs = tokio::task::JoinSet::new();
     let mut recipient_ticket = 0_u64;
+    // The latest people directory or search read; a newer request replaces it.
+    let mut people_jobs = tokio::task::JoinSet::new();
+    let mut people_ticket = 0_u64;
     // Older pages held for the selected room. Every path that resets that
     // room's history (`drop_older!`) discards them and any in-flight older read.
     let mut held = crate::history::Held::default();
@@ -1459,6 +1476,20 @@ async fn observe_inner(
                         (ticket,generation,room,epoch,result)
                     });
                 },
+                Some(Command::SearchPeople(request,query))=> {
+                    people_jobs.abort_all();people_jobs=tokio::task::JoinSet::new();people_ticket=people_ticket.wrapping_add(1);
+                    if !fresh || relay_pin.is_none() {
+                        publish_status(tx, |s|s.people=crate::protocol::PeopleView::unavailable(Some(&request),&query,Some("people_unavailable")));
+                        continue;
+                    }
+                    let generation=tx.borrow().generation;
+                    publish_status(tx, |s|s.people=crate::protocol::PeopleView {state:"loading".into(),..crate::protocol::PeopleView::unavailable(Some(&request),&query,None)});
+                    let ticket=people_ticket;let relay=relay.to_owned();let keys=keys.clone();
+                    people_jobs.spawn(async move {
+                        let result=match timeout(Duration::from_secs(15),crate::recipients::find_people(&relay,&keys,&query)).await {Ok(r)=>r,Err(_)=>Err("people_timeout")};
+                        (ticket,generation,request,query,result)
+                    });
+                },
                 Some(Command::CloseThread)=> {
                     thread_refetch=None;
                     thread_jobs.abort_all();thread_jobs=tokio::task::JoinSet::new();thread_ticket=thread_ticket.wrapping_add(1);
@@ -1724,6 +1755,28 @@ async fn observe_inner(
                         });
                         // A newly shown roster: read its members' presence now.
                         spawn_presence!();
+                    }
+                }
+            },
+            result=people_jobs.join_next(), if !people_jobs.is_empty()=> {
+                if matches!(&result,Some(Err(e)) if !e.is_cancelled()) {
+                    people_jobs.abort_all();people_jobs=tokio::task::JoinSet::new();people_ticket=people_ticket.wrapping_add(1);
+                    publish_status(tx, |s|{let (request,query)=(s.people.request_id.clone(),s.people.query.clone());s.people=crate::protocol::PeopleView::unavailable(request.as_deref(),&query,Some("people_unavailable"));});
+                }
+                if let Some(Ok((ticket,generation,request,query,result)))=result {
+                    let current=ticket==people_ticket && generation==tx.borrow().generation && fresh;
+                    if current {
+                        match result {
+                            Ok(entries)=> {
+                                // Only keys served here may later open a DM (`dm_open::allowed`).
+                                opener.remember(entries.iter().map(|p|p.key.clone()));
+                                publish_status(tx, |s|s.people=crate::protocol::PeopleView {state:"snapshot".into(),request_id:Some(request),query,entries,category:None});
+                            },
+                            Err(error)=> {
+                                eprintln!("omarchy-buzz: people read failed: {error}");
+                                publish_status(tx, |s|s.people=crate::protocol::PeopleView::unavailable(Some(&request),&query,Some(people_category(error))));
+                            },
+                        }
                     }
                 }
             },
@@ -2130,6 +2183,8 @@ async fn observe_inner(
                     presence_seen.clear();presence_read_at=None;
                     open_jobs.abort_all();open_jobs=tokio::task::JoinSet::new();open_ticket=open_ticket.wrapping_add(1);
                     recipient_jobs.abort_all();recipient_jobs=tokio::task::JoinSet::new();recipient_ticket=recipient_ticket.wrapping_add(1);
+                    people_jobs.abort_all();people_jobs=tokio::task::JoinSet::new();people_ticket=people_ticket.wrapping_add(1);
+                    opener.forget_served();
                     fresh=false;
                     jobs.abort_all();
                     history_jobs.abort_all(); history_jobs=tokio::task::JoinSet::new(); history_ticket=history_ticket.wrapping_add(1); drop_older!();

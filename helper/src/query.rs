@@ -65,6 +65,12 @@ pub enum QueryRequest {
     Presence {
         authors: Vec<nostr::PublicKey>,
     },
+    /// Desktop's people directory (`search_users`; empty `query` lists kind 0
+    /// profiles) and NIP-50 prefix search, one page of `recipients::PEOPLE`.
+    /// `query` is already normalized by `recipients::people_query`.
+    People {
+        query: String,
+    },
     DmVisibility,
     /// Unscoped channel metadata: member channels plus every open channel
     /// (`channel_members.rs` `get_accessible_channel_ids`), for open rooms.
@@ -87,6 +93,12 @@ impl QueryRequest {
             }
             Self::Presence { authors } if !authors.is_empty() && authors.len() <= 20 => {
                 serde_json::json!({"kinds":[20001],"authors":authors.iter().map(|p|p.to_hex()).collect::<Vec<_>>(),"limit":authors.len()})
+            }
+            Self::People { query } if query.is_empty() => {
+                serde_json::json!({"kinds":[0],"limit":crate::recipients::PEOPLE,"page":1})
+            }
+            Self::People { query } if query.len() <= crate::recipients::QUERY_BYTES => {
+                serde_json::json!({"kinds":[0],"search":query,"search_mode":"prefix","limit":crate::recipients::PEOPLE,"page":1})
             }
             // NIP-DV per-viewer hidden-DM snapshot (docs/nips/NIP-DV.md:104-110).
             Self::DmVisibility => {
@@ -131,6 +143,7 @@ impl QueryRequest {
     fn budget(&self) -> (usize, usize) {
         match self {
             Self::ThreadReplies { .. } => (THREAD_PAGE_EVENTS, THREAD_PAGE_BYTES),
+            Self::People { .. } => (crate::recipients::PEOPLE, RESPONSE_BYTES),
             _ => (MAX_EVENTS, RESPONSE_BYTES),
         }
     }
@@ -148,6 +161,7 @@ impl QueryRequest {
             Self::Profiles { authors } => {
                 event.kind.as_u16() == 0 && authors.contains(&event.pubkey)
             }
+            Self::People { .. } => event.kind.as_u16() == 0,
             Self::AgentProfiles { authors } => {
                 event.kind.as_u16() == 10100 && authors.contains(&event.pubkey)
             }

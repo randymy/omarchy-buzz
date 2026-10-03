@@ -63,6 +63,41 @@ and `sending.rs` (gate at `sending.rs:88`, generic `build_event` at 254-289)
 need no DM-specific change once the catalog admits them.
 (b) New DM: a signed kind 41010 submission outside the kind 9 send ledger,
 plus the 39000 follow-up query; new request kind in `protocol.rs:38-46`.
+The people to choose from are described under "People picker".
+
+## People picker (New message)
+
+Desktop's `NewMessageScreen` lists the community's people, not one room's
+members: `search_users` (`desktop/src-tauri/src/commands/profile.rs:265-330`)
+sends a NIP-98 signed `POST /query`. An empty query is
+`{"kinds":[0],"limit":50,"page":N}`; typed text is NIP-50
+`{"kinds":[0],"search":q,"search_mode":"prefix","limit":50,"page":N}`. Results
+are ranked locally (`nostr_convert/user_search.rs`: name, then nip05, then key
+prefix; exact > prefix > substring; an empty query lists by name) and up to 8
+become chips; the search box clears after each pick.
+
+The helper does the same through its own signed `/query` path
+(`QueryRequest::People`, one page of 50; no paging). `search_people`
+(`{"query": "..."}`, at most 256 bytes on the wire, normalized to 64 bytes of
+plain text) is answered in `status.people`: `state` (`unavailable`, `loading`,
+`snapshot`), the echoed `requestId` and normalized `query`, `entries`
+(`key`, sanitized `name`, at most 50) and a `people_*` failure category. The
+panel shows a view only for the request it made. The capability is
+`people_search`.
+
+`recipients::people` rejects the whole read for a bad signature, another kind
+or a future time; keeps the newest kind 0 per author (lower id on a tie);
+leaves out this identity; sanitizes names like roster names. Keys it serves are
+remembered per connection (`dm_open::Opener`, last 200) and, with the room
+roster and existing DM participants, are the only keys `dm_open::allowed`
+accepts; the panel's own check (`dmKeyAllowed`) mirrors it but is not the
+authority. The list shows existing DM partners first, then the directory or
+search, and the open room's members only while the read has not answered.
+
+Not done: Desktop's paging past the first 50, agent filtering
+(`getMentionableAgentPubkeys`), the archived-identity filter and typo-tolerant
+ranking. A relay that does not honor `search`/`page` simply returns what it
+returns; the helper still caps and verifies it.
 
 ## Risks
 

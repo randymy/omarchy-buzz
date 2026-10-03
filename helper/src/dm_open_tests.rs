@@ -326,3 +326,51 @@ fn ok_is_matched_by_exact_event_id_and_parsed_strictly() {
         Some((DM.to_string(), false))
     );
 }
+
+#[test]
+fn keys_the_helper_served_are_allowed_and_others_are_not() {
+    let viewer = key('1');
+    let s = status();
+    let mut opener = Opener::default();
+    let open = |o: &mut Opener, id: u8, who: &str| {
+        let result = o
+            .prepare(&intent(id, vec![who.to_owned()]), &viewer, &s, true, true)
+            .map(|_| ());
+        o.abandon();
+        result
+    };
+    // Known only from the relay's directory: refused until the helper serves it.
+    assert_eq!(
+        open(&mut opener, 1, &hex('5')),
+        Err("dm_open_access_denied")
+    );
+    opener.remember([hex('5')]);
+    assert!(open(&mut opener, 2, &hex('5')).is_ok());
+    assert_eq!(
+        open(&mut opener, 3, &hex('6')),
+        Err("dm_open_access_denied")
+    );
+    // Still never the viewer, and a fresh connection forgets what was served.
+    opener.remember([hex('1')]);
+    assert_eq!(open(&mut opener, 4, &hex('1')), Err("dm_open_invalid"));
+    opener.forget_served();
+    assert_eq!(
+        open(&mut opener, 5, &hex('5')),
+        Err("dm_open_access_denied")
+    );
+}
+
+#[test]
+fn served_keys_are_bounded_oldest_first() {
+    let mut opener = Opener::default();
+    let many: Vec<String> = (0..SERVED + 5).map(|n| format!("{n:064x}")).collect();
+    opener.remember(many.clone());
+    assert_eq!(opener.served.len(), SERVED);
+    let s = status();
+    assert!(!allowed(&s, &opener.served, &many[0]));
+    assert!(allowed(&s, &opener.served, &many[SERVED + 4]));
+    // Serving a key again keeps it, however long ago it first came.
+    opener.remember([many[5].clone()]);
+    opener.remember((0..SERVED - 2).map(|n| format!("{:064x}", n + 10_000)));
+    assert!(allowed(&s, &opener.served, &many[5]));
+}

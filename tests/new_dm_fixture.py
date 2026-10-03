@@ -12,6 +12,12 @@ INSTANCE = "new-dm-fixture"
 STREAM = {"id": ROOM, "name": "Synthetic room", "description": "", "kind": "stream", "participants": [], "hidden": False}
 OPENED = {"id": DM, "name": "Synthetic person", "description": "", "kind": "dm", "participants": [SELF, MEMBER], "hidden": False}
 ROSTER = [{"key": SELF, "name": "Me"}, {"key": MEMBER, "name": "Synthetic person"}]
+DANA = "d" * 64
+# The relay's directory as the helper projects it: the viewer is already left out.
+DIRECTORY = [{"key": MEMBER, "name": "Synthetic person"}, {"key": DANA, "name": "Directory Dana"}] + [
+    {"key": ("%02x" % (0x20 + n)) * 32, "name": "Directory Person %d" % n} for n in range(8)]
+HANDLE_ONLY = {"key": "5a" * 32, "name": "Zoe"}
+NO_PEOPLE = {"state": "unavailable", "requestId": None, "query": "", "entries": [], "category": None}
 IDLE = {"state": "idle", "requestId": None, "channelId": None, "created": None, "category": None}
 assert sys.argv[1:] == ["ui-bridge"]
 record = {"requests": []}
@@ -21,7 +27,8 @@ status = {"connection": "authenticated", "identity": SELF,
           "history": {"state": "unavailable", "roomId": None, "rows": [], "hasMore": None, "category": None},
           "recipients": {"state": "unavailable", "roomId": None, "entries": [], "partial": False, "category": None},
           "delivery": {"requestId": None, "roomId": None, "eventId": None, "state": "idle", "category": None},
-          "dmOpen": dict(IDLE)}
+          "dmOpen": dict(IDLE), "people": dict(NO_PEOPLE)}
+failed_once = False
 
 def save():
     path = os.environ["BUZZ_SEND_RECORD"]
@@ -33,7 +40,7 @@ def save():
 def emit(kind="status", request_id=None):
     print(json.dumps({"version": 1, "type": kind, "id": request_id,
                       "instanceId": INSTANCE, "generation": 7,
-                      "capabilities": ["connection_status", "room_catalog", "room_history", "message_send", "room_recipients", "dm_open"],
+                      "capabilities": ["connection_status", "room_catalog", "room_history", "message_send", "room_recipients", "dm_open", "people_search"],
                       "status": status}), flush=True)
 
 def note(entry):
@@ -78,6 +85,23 @@ while True:
         note("fetch_recipients " + request["roomId"][:8])
         status["recipients"] = {"state": "snapshot", "roomId": request["roomId"], "entries": ROSTER,
                                 "partial": False, "category": None}
+        emit(request_id=request["id"])
+    elif kind == "search_people":
+        assert sorted(request) == ["id", "query", "type", "version"]
+        query = request["query"]
+        note("search_people:" + query)
+        status["people"] = {"state": "loading", "requestId": request["id"], "query": query, "entries": [], "category": None}
+        emit()
+        if query == "fail" and not failed_once:
+            # The first read of "fail" fails; a retry is answered.
+            failed_once = True
+            status["people"] = {"state": "unavailable", "requestId": request["id"], "query": query, "entries": [], "category": "people_timeout"}
+        else:
+            found = [p for p in DIRECTORY if query.lower() in p["name"].lower()]
+            if query == "dana":
+                # The helper also matches nip05 handles: a name without the query.
+                found.append(HANDLE_ONLY)
+            status["people"] = {"state": "snapshot", "requestId": request["id"], "query": query, "entries": found, "category": None}
         emit(request_id=request["id"])
     elif kind in ("subscribe", "get_snapshot"):
         emit(request_id=request["id"])
