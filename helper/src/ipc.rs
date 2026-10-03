@@ -181,7 +181,7 @@ async fn client(
                     // The panel sends its preference again once connected.
                     write(&mut out,&serde_json::json!({"version":1,"type":"error","id":r.id,"category":"relay_unavailable","instanceId":instance})).await?;continue;
                 }
-                if r.kind=="join_room" || r.kind=="leave_room" {
+                if protocol::publishes_room_change(&r.kind) {
                     let busy={let current=status.borrow();current.room_action.state=="sending" && current.room_action.request_id.as_deref()!=Some(r.id.as_str())};
                     if busy {write(&mut out,&serde_json::json!({"version":1,"type":"error","id":r.id,"category":"setup_busy","instanceId":instance})).await?;continue;}
                 }
@@ -191,7 +191,7 @@ async fn client(
                 }
                 let mut send_reply=None;
                 let setup=matches!(r.kind.as_str(),"set_relay"|"create_identity"|"claim_invite"|"accept_invite"|"mint_invite");
-                let room_action=r.kind=="join_room" || r.kind=="leave_room";
+                let room_action=protocol::publishes_room_change(&r.kind);
                 let user_status=r.kind=="set_status" || r.kind=="clear_status";
                 let media=matches!(r.kind.as_str(),"download_attachment"|"thumbnail_attachment"|"open_download"|"upload_attachment"|"remove_pending_attachment");
                 let community=matches!(r.kind.as_str(),"join_community"|"switch_community"|"rename_community"|"leave_community");
@@ -235,6 +235,13 @@ async fn client(
                     "join_room"|"leave_room"=>{let (reply,receiver)=tokio::sync::oneshot::channel();send_reply=Some(receiver);
                         let action=if r.kind=="join_room" {crate::join::Action::Join} else {crate::join::Action::Leave};
                         Some(protocol::Command::RoomAction(action,r.id.clone(),r.room_id.clone().unwrap(),reply))},
+                    "create_room"|"update_room"|"set_room_topic"|"add_room_member"|"remove_room_member"=>{
+                        let change=match protocol::room_change(&r) {Some(c)=>c,None=>{write(&mut out,&serde_json::json!({"version":1,"type":"error","id":r.id,"category":"room_invalid","instanceId":instance})).await?;continue;}};
+                        let (reply,receiver)=tokio::sync::oneshot::channel();send_reply=Some(receiver);
+                        Some(protocol::Command::RoomChange(change,r.id.clone(),reply))},
+                    "fetch_room_detail"=>Some(protocol::Command::FetchRoomDetail(r.room_id.clone().unwrap())),
+                    "load_more_rooms"=>Some(protocol::Command::RefreshRooms(true)),
+                    "refresh_rooms"=>Some(protocol::Command::RefreshRooms(false)),
                     "download_attachment"=>{let (reply,receiver)=tokio::sync::oneshot::channel();send_reply=Some(receiver);Some(protocol::Command::DownloadAttachment(r.event_id.clone().unwrap(),r.hash.clone().unwrap(),reply))},
                     "thumbnail_attachment"=>{let (reply,receiver)=tokio::sync::oneshot::channel();send_reply=Some(receiver);Some(protocol::Command::ThumbnailAttachment(r.event_id.clone().unwrap(),r.hash.clone().unwrap(),reply))},
                     "open_download"=>{let (reply,receiver)=tokio::sync::oneshot::channel();send_reply=Some(receiver);Some(protocol::Command::OpenDownload(r.path.clone().unwrap(),reply))},

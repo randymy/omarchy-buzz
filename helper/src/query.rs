@@ -25,8 +25,15 @@ static IN_FLIGHT: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
 
 /// Initial discovery reads only; member is always the enrolled signing identity.
 pub enum QueryRequest {
+    /// A page of this identity's kind 39002 snapshots, newest first; `before`
+    /// is the previous page's last `(created_at, id)` (`until` + `before_id`).
     JoinedRooms {
         limit: u16,
+        before: Option<(u64, EventId)>,
+    },
+    /// The 39002 rosters of known rooms, to confirm membership by room.
+    RoomRosters {
+        rooms: Vec<Uuid>,
     },
     RoomMetadata {
         rooms: Vec<Uuid>,
@@ -112,10 +119,19 @@ impl QueryRequest {
                 serde_json::json!({"kinds":[30622],"#p":[keys.public_key().to_hex()],"limit":1})
             }
             Self::OpenRooms => serde_json::json!({"kinds":[39000],"limit":MAX_EVENTS}),
-            Self::JoinedRooms { limit } if (1..=50).contains(limit) => {
-                serde_json::json!({"kinds":[39002],"#p":[keys.public_key().to_hex()],"limit":limit})
+            Self::JoinedRooms { limit, before } if (1..=50).contains(limit) => {
+                let mut filter = serde_json::json!({"kinds":[39002],"#p":[keys.public_key().to_hex()],"limit":limit});
+                // Both or neither, as for history pages.
+                if let Some((until, id)) = before {
+                    filter["until"] = serde_json::json!(until);
+                    filter["before_id"] = serde_json::json!(id.to_hex());
+                }
+                filter
             }
-            Self::RoomMetadata { rooms } if !rooms.is_empty() && rooms.len() <= 20 => {
+            Self::RoomRosters { rooms } if !rooms.is_empty() && rooms.len() <= 50 => {
+                serde_json::json!({"kinds":[39002],"#d":rooms.iter().map(Uuid::to_string).collect::<Vec<_>>(),"limit":rooms.len()})
+            }
+            Self::RoomMetadata { rooms } if !rooms.is_empty() && rooms.len() <= 50 => {
                 serde_json::json!({"kinds":[39000],"#d":rooms.iter().map(Uuid::to_string).collect::<Vec<_>>(),"limit":rooms.len()})
             }
             Self::RoomHistory {
@@ -242,6 +258,15 @@ impl QueryRequest {
                     && event.tags.iter().any(|t| {
                         t.as_slice().first().map(String::as_str) == Some("p")
                             && t.as_slice().get(1) == Some(&keys.public_key().to_hex())
+                    })
+            }
+            Self::RoomRosters { rooms } => {
+                event.kind.as_u16() == 39002
+                    && event.tags.iter().any(|t| {
+                        t.as_slice().first().map(String::as_str) == Some("d")
+                            && t.as_slice()
+                                .get(1)
+                                .is_some_and(|id| rooms.iter().any(|room| room.to_string() == *id))
                     })
             }
             Self::RoomMetadata { rooms } => {

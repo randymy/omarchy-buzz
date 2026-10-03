@@ -526,7 +526,10 @@ impl Action {
 struct Pending {
     request_id: String,
     room: String,
-    action: Action,
+    /// `join`, `leave`, or a `rooms::Change` word.
+    action: &'static str,
+    /// The category an `OK false` becomes.
+    rejected: &'static str,
     event_id: String,
     deadline: Instant,
 }
@@ -594,20 +597,108 @@ impl RoomActions {
         .map_err(|_| "relay_unavailable")?
         .sign_with_keys(keys)
         .map_err(|_| "relay_unavailable")?;
+        Ok((
+            self.start(request_id, room, action.word(), action.rejected(), &event),
+            event,
+        ))
+    }
+    fn start(
+        &mut self,
+        request_id: &str,
+        room: &str,
+        action: &'static str,
+        rejected: &'static str,
+        event: &Event,
+    ) -> RoomAction {
         self.pending = Some(Pending {
             request_id: request_id.into(),
             room: room.into(),
             action,
+            rejected,
             event_id: event.id.to_hex(),
             deadline: Instant::now() + ACTION_TIMEOUT,
         });
-        Ok((view("sending", self.pending.as_ref().unwrap(), None), event))
+        view("sending", self.pending.as_ref().unwrap(), None, None)
+    }
+    /// Checks and signs a room creation or management change (`rooms`). The
+    /// target must be a joined stream room; removal names a member of the
+    /// room's verified roster other than this identity (that is a leave).
+    /// Whether this identity may do it is the relay's decision, not checked.
+    pub fn prepare_change(
+        &mut self,
+        change: &crate::rooms::Change,
+        request_id: &str,
+        keys: &Keys,
+        status: &Status,
+        fresh: bool,
+        trusted: bool,
+    ) -> Result<(RoomAction, Event), &'static str> {
+        use crate::rooms::Change;
+        if self.pending.is_some() || status.room_action.request_id.as_deref() == Some(request_id) {
+            return Err("setup_busy");
+        }
+        if !fresh || !trusted || status.connection != "authenticated" {
+            return Err("relay_unavailable");
+        }
+        let new_room = uuid::Uuid::new_v4();
+        let room = change.room(new_room);
+        let stream = status
+            .catalog
+            .rooms
+            .iter()
+            .any(|r| r.id == room.to_string() && r.kind == "stream");
+        if !matches!(change, Change::Create { .. }) && !stream {
+            return Err("room_invalid");
+        }
+        let rostered = |key: &nostr::PublicKey| {
+            status.room_detail.state == "snapshot"
+                && status.room_detail.room_id.as_deref() == Some(room.to_string().as_str())
+                && status
+                    .room_detail
+                    .members
+                    .iter()
+                    .any(|m| m.key == key.to_hex())
+        };
+        match change {
+            Change::RemoveMember { key, .. } if *key == keys.public_key() || !rostered(key) => {
+                return Err("room_invalid")
+            }
+            Change::AddMember { key, .. }
+                if *key == keys.public_key()
+                    || (status.room_detail.members.len() < crate::rooms::MEMBERS
+                        && rostered(key)) =>
+            {
+                return Err("room_invalid")
+            }
+            _ => {}
+        }
+        let event = change
+            .build(room)?
+            .sign_with_keys(keys)
+            .map_err(|_| "relay_unavailable")?;
+        let started = self.start(
+            request_id,
+            &room.to_string(),
+            change.word(),
+            change.rejected(),
+            &event,
+        );
+        Ok((started, event))
     }
     /// Forgets a prepared action whose caller left before its EVENT was written.
     pub fn abandon(&mut self) {
         self.pending = None;
     }
     pub fn acknowledge(&mut self, event_id: &str, accepted: bool) -> Option<RoomAction> {
+        self.acknowledge_with(event_id, accepted, "")
+    }
+    /// As `acknowledge`; a refusal carries the relay's own words (`detail`).
+    pub fn acknowledge_with(
+        &mut self,
+        event_id: &str,
+        accepted: bool,
+        message: &str,
+    ) -> Option<RoomAction> {
         if !self
             .pending
             .as_ref()
@@ -617,22 +708,37 @@ impl RoomActions {
         }
         let pending = self.pending.take()?;
         Some(if accepted {
-            view("acknowledged", &pending, None)
+            view("acknowledged", &pending, None, None)
         } else {
-            view("rejected", &pending, Some(pending.action.rejected()))
+            let detail = refusal(message);
+            view("rejected", &pending, Some(pending.rejected), detail)
         })
     }
     /// Timeout, disconnect or re-authentication: the relay may have applied it.
     pub fn unknown(&mut self) -> Option<RoomAction> {
         let pending = self.pending.take()?;
-        Some(view("unknown", &pending, Some("relay_unavailable")))
+        Some(view("unknown", &pending, Some("relay_unavailable"), None))
     }
 }
 
-fn view(state: &str, pending: &Pending, category: Option<&str>) -> RoomAction {
+/// The relay's `OK false` text for the panel: plain, one line, at most
+/// `REFUSAL_BYTES`. Relay words are shown, never interpreted.
+pub const REFUSAL_BYTES: usize = 200;
+pub fn refusal(message: &str) -> Option<String> {
+    let text = crate::recipients::sanitize(message, REFUSAL_BYTES);
+    (!text.is_empty()).then_some(text)
+}
+
+fn view(
+    state: &str,
+    pending: &Pending,
+    category: Option<&str>,
+    detail: Option<String>,
+) -> RoomAction {
     RoomAction {
         state: state.into(),
-        action: Some(pending.action.word().into()),
+        action: Some(pending.action.into()),
+        detail,
         request_id: Some(pending.request_id.clone()),
         room_id: Some(pending.room.clone()),
         category: category.map(str::to_owned),

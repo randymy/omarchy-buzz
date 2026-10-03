@@ -3,7 +3,7 @@ pub const LIMIT: usize = 65536;
 // Status frames can contain 100 held channel rows and up to 200 thread replies;
 // `maximum_projected_snapshot_fits_ipc_frame` measures the worst case.
 // Incoming commands retain the smaller LIMIT; only projected output uses this.
-pub const RESPONSE_LIMIT: usize = 1024 * 1024;
+pub const RESPONSE_LIMIT: usize = 2 * 1024 * 1024;
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Request {
@@ -55,11 +55,20 @@ pub struct Request {
     /// `switch_community`/`rename_community`/`leave_community`: a configured
     /// community's relay (canonicalized and checked by the helper).
     pub relay: Option<String>,
-    /// `rename_community` only: the new local label (sanitized by the helper).
+    /// `rename_community` (the new local label, sanitized by the helper) and
+    /// `create_room`/`update_room` (the room name, checked by `rooms`).
     pub name: Option<String>,
     /// `search_people` only: the typed search text, empty for the directory.
     /// The helper normalizes and bounds it (`recipients::people_query`).
     pub query: Option<String>,
+    /// `create_room` (optional) and `update_room`: the room description.
+    pub about: Option<String>,
+    /// `set_room_topic` only.
+    pub topic: Option<String>,
+    /// `create_room` only: `open` or `private`.
+    pub visibility: Option<String>,
+    /// `add_room_member`/`remove_room_member` only: the member's key (hex).
+    pub key: Option<String>,
 }
 fn is_hash(value: &str) -> bool {
     crate::attachments::is_hash(value)
@@ -134,6 +143,14 @@ pub fn request(bytes: &[u8]) -> Result<Request, &'static str> {
             | "switch_community"
             | "rename_community"
             | "leave_community"
+            | "create_room"
+            | "update_room"
+            | "set_room_topic"
+            | "add_room_member"
+            | "remove_room_member"
+            | "fetch_room_detail"
+            | "load_more_rooms"
+            | "refresh_rooms"
     ) {
         return Err("unsupported_request");
     }
@@ -151,6 +168,11 @@ pub fn request(bytes: &[u8]) -> Result<Request, &'static str> {
             | "join_room"
             | "leave_room"
             | "upload_attachment"
+            | "update_room"
+            | "set_room_topic"
+            | "add_room_member"
+            | "remove_room_member"
+            | "fetch_room_detail"
     ) {
         let room = r.room_id.as_deref().ok_or("invalid_request")?;
         let parsed = uuid::Uuid::parse_str(room).map_err(|_| "invalid_request")?;
@@ -287,13 +309,51 @@ pub fn request(bytes: &[u8]) -> Result<Request, &'static str> {
     } else if raw.get("relay").is_some() {
         return Err("invalid_request");
     }
-    if r.kind == "rename_community" {
-        // Shape only; the helper sanitizes and bounds it (`config::label`).
+    if matches!(
+        r.kind.as_str(),
+        "rename_community" | "create_room" | "update_room"
+    ) {
+        // Shape only; the helper sanitizes and bounds it (`config::label`,
+        // `rooms::plain`).
         let name = r.name.as_deref().ok_or("invalid_request")?;
         if name.trim().is_empty() || name.len() > 1024 || name.contains('\0') {
             return Err("invalid_request");
         }
     } else if raw.get("name").is_some() {
+        return Err("invalid_request");
+    }
+    // Room management (`rooms`): shape only; `rooms::plain` bounds the text.
+    let shaped = |value: &Option<String>| {
+        value
+            .as_deref()
+            .is_some_and(|v| v.len() <= 2048 && !v.contains('\0'))
+    };
+    match r.kind.as_str() {
+        "create_room" if raw.get("about").is_none() || shaped(&r.about) => {}
+        "update_room" if shaped(&r.about) => {}
+        "create_room" | "update_room" => return Err("invalid_request"),
+        _ if raw.get("about").is_some() => return Err("invalid_request"),
+        _ => {}
+    }
+    if r.kind == "set_room_topic" {
+        if !shaped(&r.topic) {
+            return Err("invalid_request");
+        }
+    } else if raw.get("topic").is_some() {
+        return Err("invalid_request");
+    }
+    if r.kind == "create_room" {
+        if !matches!(r.visibility.as_deref(), Some("open" | "private")) {
+            return Err("invalid_request");
+        }
+    } else if raw.get("visibility").is_some() {
+        return Err("invalid_request");
+    }
+    if matches!(r.kind.as_str(), "add_room_member" | "remove_room_member") {
+        if !r.key.as_deref().is_some_and(canonical_key) {
+            return Err("invalid_request");
+        }
+    } else if raw.get("key").is_some() {
         return Err("invalid_request");
     }
     if r.kind == "claim_invite" || r.kind == "join_community" {
@@ -408,6 +468,11 @@ pub fn request(bytes: &[u8]) -> Result<Request, &'static str> {
             | "clear_status"
             | "set_presence"
             | "rename_community"
+            | "create_room"
+            | "update_room"
+            | "set_room_topic"
+            | "add_room_member"
+            | "remove_room_member"
     ) {
         let id = uuid::Uuid::parse_str(&r.id).map_err(|_| "invalid_request")?;
         if id.to_string() != r.id {
@@ -433,6 +498,62 @@ pub enum Action {
     Delete(String),
     React(String),
     Unreact(String),
+}
+/// The publishing room requests the helper answers by the relay's `OK`
+/// (`join::RoomActions`), one at a time.
+pub fn publishes_room_change(kind: &str) -> bool {
+    matches!(
+        kind,
+        "join_room"
+            | "leave_room"
+            | "create_room"
+            | "update_room"
+            | "set_room_topic"
+            | "add_room_member"
+            | "remove_room_member"
+    )
+}
+/// The `rooms::Change` a checked `create_room`..`remove_room_member` request
+/// names; none when its text is outside `rooms` bounds.
+pub fn room_change(r: &Request) -> Option<crate::rooms::Change> {
+    use crate::rooms::{plain, Change, ABOUT_BYTES, NAME_BYTES, TOPIC_BYTES};
+    let room = || {
+        r.room_id
+            .as_deref()
+            .and_then(|v| uuid::Uuid::parse_str(v).ok())
+    };
+    let key = || {
+        r.key
+            .as_deref()
+            .and_then(|v| nostr::PublicKey::from_hex(v).ok())
+    };
+    let name = || plain(r.name.as_deref()?, NAME_BYTES).filter(|n| !n.is_empty());
+    let about = || plain(r.about.as_deref().unwrap_or_default(), ABOUT_BYTES);
+    Some(match r.kind.as_str() {
+        "create_room" => Change::Create {
+            name: name()?,
+            about: about()?,
+            private: r.visibility.as_deref() == Some("private"),
+        },
+        "update_room" => Change::Details {
+            room: room()?,
+            name: name()?,
+            about: about()?,
+        },
+        "set_room_topic" => Change::Topic {
+            room: room()?,
+            topic: plain(r.topic.as_deref()?, TOPIC_BYTES)?,
+        },
+        "add_room_member" => Change::AddMember {
+            room: room()?,
+            key: key()?,
+        },
+        "remove_room_member" => Change::RemoveMember {
+            room: room()?,
+            key: key()?,
+        },
+        _ => return None,
+    })
 }
 #[derive(Clone)]
 pub struct SendIntent {
@@ -500,6 +621,16 @@ pub enum Command {
     ),
     /// Refresh the open rooms this identity has not joined.
     FetchOpenRooms,
+    /// `room_manage`: create a room or change one (request id).
+    RoomChange(
+        crate::rooms::Change,
+        String,
+        tokio::sync::oneshot::Sender<Option<&'static str>>,
+    ),
+    /// `room_manage`: read a joined stream room's roster, roles and topic.
+    FetchRoomDetail(String),
+    /// Read the joined-room catalog again now; `true` also loads its next page.
+    RefreshRooms(bool),
     /// Publish kind 9021 (join) or 9022 (leave) for a room: request id, room.
     RoomAction(
         crate::join::Action,
@@ -683,12 +814,18 @@ impl OpenRooms {
 pub struct RoomAction {
     /// `idle`, `sending`, `acknowledged`, `rejected` or `unknown`.
     pub state: String,
-    /// `join` or `leave`; `null` when idle.
+    /// `join`, `leave`, `create`, `details`, `topic`, `add_member` or
+    /// `remove_member`; `null` when idle. For `create`, `room_id` is the new room.
     pub action: Option<String>,
     pub request_id: Option<String>,
     pub room_id: Option<String>,
-    /// `join_rejected`, `leave_rejected` or `relay_unavailable` (unknown).
+    /// `<action>_rejected` (`join_rejected`, `leave_rejected`, `create_rejected`,
+    /// `edit_rejected`, `member_add_rejected`, `member_remove_rejected`) or
+    /// `relay_unavailable` (unknown).
     pub category: Option<String>,
+    /// Only with `rejected`: the relay's own refusal text, plain, bounded
+    /// (`join::REFUSAL_BYTES`).
+    pub detail: Option<String>,
 }
 impl Default for RoomAction {
     fn default() -> Self {
@@ -697,6 +834,71 @@ impl Default for RoomAction {
             action: None,
             request_id: None,
             room_id: None,
+            category: None,
+            detail: None,
+        }
+    }
+}
+/// One member of a room's verified roster (`rooms::Detail`).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct RoomMember {
+    pub key: String,
+    /// A profile name hint; empty when unknown.
+    pub name: String,
+    pub role: String,
+}
+/// A joined stream room's relay-signed roster, roles and topic
+/// (`room_manage`). Owners and admins come first.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RoomDetailView {
+    /// `unavailable`, `loading` or `snapshot`.
+    pub state: String,
+    pub room_id: Option<String>,
+    pub topic: String,
+    /// `open` or `private` in a snapshot, else empty.
+    pub visibility: String,
+    /// This identity's role in a snapshot, else empty.
+    pub role: String,
+    pub members: Vec<RoomMember>,
+    /// Members past `rooms::MEMBERS` are not listed.
+    pub truncated: bool,
+    /// `room_detail_unavailable`, `room_detail_invalid` or
+    /// `room_detail_access_denied`.
+    pub category: Option<String>,
+}
+impl RoomDetailView {
+    pub fn unavailable(room: Option<String>, category: Option<&str>) -> Self {
+        Self {
+            state: "unavailable".into(),
+            room_id: room,
+            topic: String::new(),
+            visibility: String::new(),
+            role: String::new(),
+            members: Vec::new(),
+            truncated: false,
+            category: category.map(str::to_owned),
+        }
+    }
+}
+impl From<crate::rooms::Detail> for RoomDetailView {
+    fn from(d: crate::rooms::Detail) -> Self {
+        Self {
+            state: "snapshot".into(),
+            room_id: Some(d.room),
+            topic: d.topic,
+            visibility: d.visibility,
+            role: d.role,
+            members: d
+                .members
+                .into_iter()
+                .map(|m| RoomMember {
+                    key: m.key,
+                    name: m.name,
+                    role: m.role,
+                })
+                .collect(),
+            truncated: d.truncated,
             category: None,
         }
     }
@@ -1044,10 +1246,17 @@ pub struct Room {
     pub hidden: bool,
 }
 #[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Catalog {
     pub state: String,
     pub rooms: Vec<Room>,
     pub category: Option<String>,
+    /// More joined rooms: `none`, `available`, `loading`, `failed` or `limit`
+    /// (`catalog::MAX_ROOMS` are held; later rooms are not loadable here).
+    pub more: String,
+    /// Only with `more` = `failed`: `room_catalog_unavailable` or
+    /// `room_catalog_timeout`.
+    pub more_category: Option<String>,
 }
 impl Catalog {
     pub fn unavailable(category: Option<&str>) -> Self {
@@ -1055,6 +1264,8 @@ impl Catalog {
             state: "unavailable".into(),
             rooms: Vec::new(),
             category: category.map(str::to_owned),
+            more: "none".into(),
+            more_category: None,
         }
     }
     pub fn loading() -> Self {
@@ -1139,6 +1350,7 @@ pub struct Status {
     pub setup: JoinSetup,
     pub open_rooms: OpenRooms,
     pub room_action: RoomAction,
+    pub room_detail: RoomDetailView,
     pub invites: Invites,
     pub download: Download,
     /// At most `media::THUMBNAILS`, most recent last.
@@ -1171,6 +1383,7 @@ impl Status {
             setup: JoinSetup::default(),
             open_rooms: OpenRooms::unavailable(None),
             room_action: RoomAction::default(),
+            room_detail: RoomDetailView::unavailable(None, None),
             invites: Invites::default(),
             download: Download::default(),
             thumbnails: Vec::new(),
@@ -1183,7 +1396,7 @@ impl Status {
     }
 }
 pub fn envelope(kind: &str, id: Option<&str>, instance: &str, s: &Status) -> serde_json::Value {
-    serde_json::json!({"version":1,"type":kind,"id":id,"instanceId":instance,"generation":s.generation,"capabilities":["connection_status","room_catalog","room_history","message_send","thread_send","room_recipients","history_auto_refresh","room_activity","agent_profiles","thread_replies","thread_summaries","dm_open","older_history","live_updates","setup_assist","community_join","invite_mint","attachments","user_status","presence","communities","people_search","message_actions"],"backendRevision":crate::compatibility::BUZZ_REVISION,"status":s})
+    serde_json::json!({"version":1,"type":kind,"id":id,"instanceId":instance,"generation":s.generation,"capabilities":["connection_status","room_catalog","room_history","message_send","thread_send","room_recipients","history_auto_refresh","room_activity","agent_profiles","thread_replies","thread_summaries","dm_open","older_history","live_updates","setup_assist","community_join","invite_mint","attachments","user_status","presence","communities","people_search","message_actions","room_manage"],"backendRevision":crate::compatibility::BUZZ_REVISION,"status":s})
 }
 pub async fn read_line<R: tokio::io::AsyncBufRead + Unpin>(
     r: &mut R,
@@ -1540,7 +1753,8 @@ mod state_tests {
                 "presence",
                 "communities",
                 "people_search",
-                "message_actions"
+                "message_actions",
+                "room_manage"
             ])
         );
         assert_eq!(v["status"]["catalog"]["state"], "unavailable");
@@ -1963,7 +2177,7 @@ mod state_tests {
         status.relay = Some("x".repeat(2048));
         status.identity = Some("a".repeat(64));
         // Quotes/backslashes expand on JSON encoding. Projection replaces controls.
-        status.catalog.rooms = (0..20)
+        status.catalog.rooms = (0..crate::catalog::MAX_ROOMS)
             .map(|_| Room {
                 id: "00000000-0000-4000-8000-000000000001".into(),
                 name: "\\".repeat(128),
@@ -2117,6 +2331,23 @@ mod state_tests {
             request_id: Some("00000000-0000-4000-8000-000000000005".into()),
             room_id: Some("00000000-0000-4000-8000-000000000006".into()),
             category: Some("leave_rejected".into()),
+            detail: Some("\\".repeat(crate::join::REFUSAL_BYTES)),
+        };
+        status.room_detail = RoomDetailView {
+            state: "snapshot".into(),
+            room_id: Some("00000000-0000-4000-8000-000000000006".into()),
+            topic: "\\".repeat(crate::rooms::TOPIC_BYTES),
+            visibility: "private".into(),
+            role: "owner".into(),
+            members: (0..crate::rooms::MEMBERS)
+                .map(|_| RoomMember {
+                    key: "e".repeat(64),
+                    name: "\\".repeat(64),
+                    role: "unknown".into(),
+                })
+                .collect(),
+            truncated: true,
+            category: None,
         };
         status.download = Download {
             state: "downloading".into(),

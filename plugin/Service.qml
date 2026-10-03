@@ -2623,7 +2623,7 @@ Item {
   function boundedString(value, limit) { return typeof value === "string" && value.length <= limit }
   function acceptFrame(line) {
     if (sessionFailed) return false
-    if (!boundedString(line, 1048576)) { fail("invalid_response"); return false }
+    if (!boundedString(line, 2097152)) { fail("invalid_response"); return false }
     var frame
     try { frame = JSON.parse(line) } catch (_) { fail("invalid_response"); return false }
     if (frame && frame.version === 1 && frame.type === "error" && ["request_busy", "send_busy", "send_scope_changed", "send_request_reused", "send_invalid", "send_unavailable", "send_access_denied", "send_ledger_unavailable", "delivery_unknown",

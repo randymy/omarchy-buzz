@@ -188,6 +188,7 @@ fn apply_loaded_config(
                     s.setup = crate::protocol::JoinSetup::default();
                     s.open_rooms = crate::protocol::OpenRooms::unavailable(None);
                     s.room_action = crate::protocol::RoomAction::default();
+                    s.room_detail = crate::protocol::RoomDetailView::unavailable(None, None);
                     s.download = Default::default();
                     s.thumbnails.clear();
                     s.pending_attachments.clear();
@@ -494,6 +495,7 @@ pub(crate) async fn offline_command(
             return community_done(result, reply, tx, setup) || claimed;
         }
         Command::RoomAction(_, _, _, reply)
+        | Command::RoomChange(_, _, reply)
         | Command::MintInvite(_, _, reply)
         | Command::DownloadAttachment(_, _, reply)
         | Command::ThumbnailAttachment(_, _, reply)
@@ -1060,6 +1062,20 @@ async fn observe_inner(
     let mut fresh = false;
     let mut jobs: tokio::task::JoinSet<Result<crate::catalog::Catalog, &'static str>> =
         tokio::task::JoinSet::new();
+    // `rooms` paging: pages the background check reads again, where the next one
+    // continues, and the "Load more" read (it never overlaps a background check).
+    let mut catalog_pages = 1_usize;
+    let mut catalog_next: Option<crate::catalog::Cursor> = None;
+    let mut more_jobs: tokio::task::JoinSet<(u64, Result<crate::catalog::Catalog, &'static str>)> =
+        tokio::task::JoinSet::new();
+    let mut more_ticket = 0_u64;
+    // `room_manage`: one verified roster and topic read at a time.
+    let mut detail_jobs: tokio::task::JoinSet<(
+        u64,
+        String,
+        Result<crate::rooms::Detail, &'static str>,
+    )> = tokio::task::JoinSet::new();
+    let mut detail_ticket = 0_u64;
     let mut history_jobs = tokio::task::JoinSet::new();
     let mut history_ticket = 0_u64;
     let mut thread_jobs = tokio::task::JoinSet::new();
@@ -1543,6 +1559,54 @@ async fn observe_inner(
                     publish_status(tx,|s|s.room_action=view);
                     // A dropped/timed-out write may already have reached the relay.
                     send_frame!(serde_json::json!(["EVENT",event]));
+                },
+                Some(Command::RoomChange(change,request_id,reply))=> {
+                    if reply.is_closed() {continue;}
+                    let prepared={let status=tx.borrow();actions.prepare_change(&change,&request_id,keys,&status,fresh,relay_pin.is_some())};
+                    let (view,event)=match prepared {Ok(p)=>p,Err(category)=>{let _=reply.send(Some(category));continue;}};
+                    if reply.send(None).is_err() {
+                        actions.abandon();
+                        continue;
+                    }
+                    publish_status(tx,|s|s.room_action=view);
+                    // A dropped/timed-out write may already have reached the relay.
+                    send_frame!(serde_json::json!(["EVENT",event]));
+                },
+                Some(Command::FetchRoomDetail(room))=> {
+                    detail_jobs.abort_all();detail_jobs=tokio::task::JoinSet::new();detail_ticket=detail_ticket.wrapping_add(1);
+                    let allowed=fresh && relay_pin.is_some() && tx.borrow().catalog.rooms.iter().any(|r|r.id==room && r.kind=="stream");
+                    let parsed=uuid::Uuid::parse_str(&room).ok().filter(|id|id.to_string()==room);
+                    let Some(id)=parsed.filter(|_|allowed) else {
+                        publish_status(tx,|s|s.room_detail=crate::protocol::RoomDetailView::unavailable(Some(room),Some("room_detail_access_denied")));
+                        continue;
+                    };
+                    // A held view of this room stays shown while it is read again.
+                    publish_status(tx,|s|{
+                        if !(s.room_detail.state=="snapshot" && s.room_detail.room_id.as_deref()==Some(room.as_str())) {
+                            s.room_detail=crate::protocol::RoomDetailView {state:"loading".into(),..crate::protocol::RoomDetailView::unavailable(Some(room.clone()),None)};
+                        }
+                    });
+                    let ticket=detail_ticket;let relay=relay.to_owned();let keys=keys.clone();let pin=relay_pin.unwrap();
+                    detail_jobs.spawn(async move {
+                        let result=match timeout(Duration::from_secs(15),crate::rooms::fetch_detail(&relay,&keys,pin,id)).await {Ok(r)=>r,Err(_)=>Err("room_detail_unavailable")};
+                        (ticket,room,result)
+                    });
+                },
+                Some(Command::RefreshRooms(more))=> {
+                    let status=tx.borrow();
+                    let ready=fresh && relay_pin.is_some() && matches!(status.catalog.state.as_str(),"partial"|"ready");
+                    drop(status);
+                    if !ready {continue;}
+                    if !more {jobs.abort_all();catalog_due=tokio::time::Instant::now();continue;}
+                    let Some(cursor)=catalog_next.filter(|_|catalog_pages<crate::catalog::MAX_PAGES && more_jobs.is_empty()) else {continue;};
+                    jobs.abort_all();
+                    publish_status(tx,|s|{s.catalog.more="loading".into();s.catalog.more_category=None;});
+                    more_ticket=more_ticket.wrapping_add(1);
+                    let ticket=more_ticket;let relay=relay.to_owned();let keys=keys.clone();let pin=relay_pin.unwrap();
+                    more_jobs.spawn(async move {
+                        let result=match timeout(Duration::from_secs(15),crate::catalog::discover_more(&relay,&keys,pin,cursor)).await {Ok(r)=>r,Err(_)=>Err("discovery_timeout")};
+                        (ticket,result)
+                    });
                 },
                 Some(Command::OpenDm(intent,reply))=> {
                     if reply.is_closed() {continue;}
@@ -2173,9 +2237,12 @@ async fn observe_inner(
                     Some(Ok(Ok(catalog))) if fresh=> {
                         *relay_pin=Some(catalog.signer);
                         let skew=catalog.clock_skew;
+                        catalog_next=catalog.next;
+                        let more=crate::rooms::more(catalog.has_more,catalog_pages);
                         let next_catalog=crate::protocol::Catalog {
                             state:catalog.state.into(),category:Some(catalog.category.into()),
-                            rooms:catalog.rooms.into_iter().map(|r|crate::protocol::Room {id:r.id,name:r.name,description:r.description,kind:r.kind.into(),participants:r.participants,hidden:r.hidden}).collect(),
+                            rooms:catalog.rooms.into_iter().map(crate::rooms::project).collect(),
+                            more:more.into(),more_category:None,
                         };
                         // A room that left the joined set loses its views, jobs and pending
                         // delivery as an access denial would; remaining rooms keep theirs.
@@ -2252,7 +2319,7 @@ async fn observe_inner(
                 }
                 if !cancelled {catalog_due=tokio::time::Instant::now()+policy.catalog;}
             },
-            _=tokio::time::sleep_until(catalog_due), if fresh && jobs.is_empty()=> {
+            _=tokio::time::sleep_until(catalog_due), if fresh && jobs.is_empty() && more_jobs.is_empty()=> {
                 // Re-checking a published catalog keeps every view and job until the
                 // result is known; only a first check shows loading.
                 let background=relay_pin.is_some() && matches!(tx.borrow().catalog.state.as_str(),"partial"|"ready");
@@ -2263,11 +2330,50 @@ async fn observe_inner(
                     publish_status(tx, |s| {s.activity.clear();s.catalog=crate::protocol::Catalog::loading();s.history=History::unavailable(None,None);s.recipients=crate::protocol::RecipientsView::unavailable(None,None);});
                 }
                 let relay=relay.to_owned();let keys=keys.clone();let pin=*relay_pin;
+                // Every room already listed is read again (or confirmed), never dropped.
+                let known:Vec<String>=tx.borrow().catalog.rooms.iter().map(|r|r.id.clone()).collect();
+                let pages=catalog_pages;
                 jobs.spawn(async move {
-                    match timeout(Duration::from_secs(15),crate::catalog::discover(&relay,&keys,pin)).await {
+                    match timeout(Duration::from_secs(15+5*(pages as u64-1)),crate::catalog::discover_pages(&relay,&keys,pin,pages,&known)).await {
                         Ok(result)=>result,Err(_)=>Err("discovery_timeout"),
                     }
                 });
+            },
+            result=more_jobs.join_next(), if !more_jobs.is_empty()=> {
+                match result {
+                    Some(Ok((ticket,page))) if ticket==more_ticket && fresh=> match page {
+                        Ok(page)=> {
+                            catalog_pages+=1;
+                            catalog_next=page.next;
+                            let more=crate::rooms::more(page.has_more,catalog_pages);
+                            let rows:Vec<crate::protocol::Room>=page.rooms.into_iter().map(crate::rooms::project).collect();
+                            publish_status(tx,|s|{
+                                s.catalog.rooms=crate::rooms::merge(&s.catalog.rooms,rows);
+                                s.catalog.more=more.into();s.catalog.more_category=None;
+                            });
+                        },
+                        Err(error)=> {
+                            let category=if error=="discovery_timeout" || error=="query_timeout" {"room_catalog_timeout"} else {"room_catalog_unavailable"};
+                            publish_status(tx,|s|{s.catalog.more="failed".into();s.catalog.more_category=Some(category.into());});
+                        },
+                    },
+                    Some(Err(error)) if !error.is_cancelled()=>publish_status(tx,|s|{s.catalog.more="failed".into();s.catalog.more_category=Some("room_catalog_unavailable".into());}),
+                    _=>{},
+                }
+                // The background check follows, over the pages now held.
+                catalog_due=tokio::time::Instant::now()+policy.catalog;
+            },
+            result=detail_jobs.join_next(), if !detail_jobs.is_empty()=> {
+                if let Some(Ok((ticket,room,result)))=result {
+                    let listed=tx.borrow().catalog.rooms.iter().any(|r|r.id==room && r.kind=="stream");
+                    if ticket==detail_ticket && fresh && listed {
+                        publish_status(tx,|s|s.room_detail=match result {
+                            Ok(detail) if detail.room==room=>detail.into(),
+                            Ok(_)=>crate::protocol::RoomDetailView::unavailable(Some(room),Some("room_detail_invalid")),
+                            Err(category)=>crate::protocol::RoomDetailView::unavailable(Some(room),Some(category)),
+                        });
+                    }
+                }
             },
             msg=conn.next_event(Duration::from_secs(30))=>match msg {
                 Ok(msg) if probe_answer(&msg,pending.as_deref()).is_some()=> {
@@ -2349,6 +2455,8 @@ async fn observe_inner(
                     recipient_jobs.abort_all();recipient_jobs=tokio::task::JoinSet::new();recipient_ticket=recipient_ticket.wrapping_add(1);
                     people_jobs.abort_all();people_jobs=tokio::task::JoinSet::new();people_ticket=people_ticket.wrapping_add(1);
                     opener.forget_served();
+                    more_jobs.abort_all();more_jobs=tokio::task::JoinSet::new();more_ticket=more_ticket.wrapping_add(1);
+                    detail_jobs.abort_all();detail_jobs=tokio::task::JoinSet::new();detail_ticket=detail_ticket.wrapping_add(1);
                     fresh=false;
                     jobs.abort_all();
                     history_jobs.abort_all(); history_jobs=tokio::task::JoinSet::new(); history_ticket=history_ticket.wrapping_add(1); drop_older!();
@@ -2377,7 +2485,7 @@ async fn observe_inner(
                             if let Some((scope,hashes))=sent {s.pending_attachments.retain(|p|!(p.scope==scope && hashes.contains(&p.hash)));}
                         });
                     }
-                    else if let Some(view)=actions.acknowledge(&ok.event_id,ok.accepted) {
+                    else if let Some(view)=actions.acknowledge_with(&ok.event_id,ok.accepted,&ok.message) {
                         // Re-check joined rooms now; open rooms follow that result.
                         if view.state=="acknowledged" && fresh {jobs.abort_all();catalog_due=tokio::time::Instant::now();open_after_catalog=true;}
                         publish_status(tx, |s|s.room_action=view);
