@@ -194,6 +194,8 @@ struct Script {
     // those reads sent.
     people: Vec<Event>,
     people_filters: Vec<Value>,
+    // A room whose history reads the relay refuses (access lost).
+    deny_history: Option<String>,
 }
 #[derive(Clone, Copy, PartialEq)]
 enum DmReply {
@@ -296,6 +298,7 @@ async fn recheck_fixture_aging(
         presence_forged: false,
         people: Vec::new(),
         people_filters: Vec::new(),
+        deny_history: None,
     }));
     let (count_tx, discoveries) = watch::channel(0_usize);
     let count_tx = std::sync::Arc::new(count_tx);
@@ -589,7 +592,8 @@ async fn recheck_fixture_aging(
                         }
                         9 => {
                             let room = tagged("#h").remove(0);
-                            if joined.contains(&room) {
+                            let refused = script.lock().unwrap().deny_history.as_deref() == Some(room.as_str());
+                            if joined.contains(&room) && !refused {
                                 let row = note(&other, 40002, "synthetic room text", vec![Tag::parse(["h", room.as_str()]).unwrap()]);
                                 let bounds = note(&relay_keys, 39006, r#"{"has_more":false,"next_cursor":null}"#,
                                     vec![Tag::parse(["h", room.as_str()]).unwrap(), Tag::parse(["d", &format!("{room}:head")]).unwrap()]);
@@ -986,6 +990,49 @@ async fn room_mutation_checked_for_an_older_session_is_not_signed() {
     })
     .await
     .expect("room mutation scope fixture deadline");
+}
+
+/// Access lost through a denied history read (not a catalog check): the room
+/// leaves the catalog and every view of it goes, the room detail included, and
+/// the next catalog check cannot repair what it no longer lists.
+#[tokio::test]
+async fn denied_history_read_revokes_the_room_detail_too() {
+    let _network_fixture = crate::NETWORK_TEST_LOCK.lock().await;
+    timeout(Duration::from_secs(20), async {
+        let mut f = recheck_fixture(None).await;
+        let b = f.b.clone();
+        f.establish().await;
+        {
+            let s = f.status.borrow();
+            assert_eq!(s.room_detail.state, "snapshot");
+            assert_eq!(s.room_detail.room_id.as_deref(), Some(b.as_str()));
+        }
+        f.script.lock().unwrap().deny_history = Some(b.clone());
+        f.commands
+            .send(Command::FetchRecent(b.clone()))
+            .await
+            .unwrap();
+        let s = snapshot(&mut f.status, |s| {
+            !s.catalog.rooms.iter().any(|r| r.id == b)
+        })
+        .await;
+        assert_eq!(s.history.category.as_deref(), Some("history_access_denied"));
+        assert_eq!(s.recipients.state, "unavailable");
+        assert_eq!(s.room_detail.state, "unavailable");
+        assert_eq!(s.room_detail.room_id.as_deref(), Some(b.as_str()));
+        assert_eq!(
+            s.room_detail.category.as_deref(),
+            Some("room_detail_access_denied")
+        );
+        assert!(
+            s.room_detail.members.is_empty()
+                && s.room_detail.role.is_empty()
+                && s.room_detail.topic.is_empty()
+        );
+        f.finish().await;
+    })
+    .await
+    .expect("denied history fixture deadline");
 }
 
 #[tokio::test]
