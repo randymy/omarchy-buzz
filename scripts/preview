@@ -49,6 +49,18 @@ elif [[ ${1:-} == --communities ]]; then
   export BUZZ_TEST_HELPER="$preview_dir/helper-fixture"
   export BUZZ_SEND_RECORD="$preview_dir/send-record.json"
   printf '{"requests":[]}\n' > "$BUZZ_SEND_RECORD"
+elif [[ ${1:-} == --room-manage ]]; then
+  # Load more, New room and Room settings, with synthetic helper frames. The
+  # helper's announced capability list (protocol.rs) is handed to the test: the
+  # panel must accept all of it.
+  cp "$project_root/tests/RoomManage.qml" "$preview_dir/shell.qml"
+  cp "$project_root/tests/room_manage_fixture.py" "$preview_dir/helper-fixture"
+  export BUZZ_TEST_HELPER="$preview_dir/helper-fixture"
+  export BUZZ_SEND_RECORD="$preview_dir/send-record.json"
+  printf '{"requests":[]}\n' > "$BUZZ_SEND_RECORD"
+  BUZZ_HELPER_CAPABILITIES=$(grep -o '"capabilities":\[[^]]*\]' "$project_root/helper/src/protocol.rs" | head -1 | sed 's/^"capabilities"://')
+  jq -e 'type == "array" and length > 0' <<<"$BUZZ_HELPER_CAPABILITIES" >/dev/null || { echo "preview: could not read the helper's capability list" >&2; exit 1; }
+  export BUZZ_HELPER_CAPABILITIES
 elif [[ ${1:-} == --welcome ]]; then
   # Synthetic helper and agent frames only. BUZZ_WELCOME_CAPTURE_DIR optionally
   # saves the welcome pane to welcome.png.

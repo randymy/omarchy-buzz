@@ -129,3 +129,64 @@ and `https://<host>/invite/<code>`, plus a message telling newcomers to install
 Buzz for Omarchy (or Buzz Desktop elsewhere), choose the relay, create an
 identity and paste the invite. Details in `docs/CHECKPOINT.md`, "Invite people
 from Settings".
+
+## Rooms: paging, creation and settings
+
+Capability `room_manage` (branch `rooms-manage`). Desktop references: `commands/channels.rs`
+(`create_channel`, `update_channel`, `set_channel_topic`, `add_channel_members`,
+`remove_channel_member`), `events.rs` (the builders), `channels/fetch.rs` (`query_relay_all`,
+`advance_directory_cursor`). The helper uses the pinned `buzz_sdk` builders and signs with the session key.
+
+**Paging the joined rooms.** The old read was one `{"kinds":[39002],"#p":[me],"limit":20}`: joined rooms and DMs
+past 20 were dropped without a word. Now `catalog::discover_pages` reads pages of 50 (`PAGE`), newest first, and
+continues with `until` + `before_id` set to the previous page's last `(created_at, id)` (Desktop's composite
+cursor; a timestamp alone can skip rows). The pinned relay's `/query` is the same endpoint Desktop pages; this
+was **not** run against a live relay here. Bounds: 4 pages (`MAX_PAGES`, 200 rooms), 50 ids per metadata read,
+and the status frame bound moved from 1 MiB to 2 MiB (`protocol::RESPONSE_LIMIT`, the panel's frame check)
+because 200 worst-case rows alone are about 270 KB. A page newer than its cursor, or over 50 events, rejects the catalog.
+
+- *Load more.* `load_more_rooms` starts `catalog::discover_more` from the cursor the last read returned
+  (`hasMore` is "the last page was full", so an exactly full last page offers one empty read). It runs beside the
+  background check (the check is cancelled, and cannot start while it runs) and **merges**: a failure sets
+  `catalog.more` = `failed` (`room_catalog_timeout` or `room_catalog_unavailable`) and keeps every room;
+  success appends the page's rooms and raises the page count. `catalog.more` is `none`, `available`, `loading`,
+  `failed` or `limit` (200 held).
+- *Refresh without loss.* The 30 s check re-reads `pages` pages. A roster change moves a room's 39002 to the
+  front of the order, so a listed room can fall past the last page without having been left. For every listed
+  room missing from the pages the helper reads that room's own roster (`#d`, up to 50 per read; a refusal
+  asks room by room and a refused room is simply not confirmed) and keeps it only if the relay-signed roster
+  still names this identity. Two snapshots of one room across pages keep the newer. Leaving, or being removed, is
+  therefore still noticed. `auth.rs` touches: the paging variables, the success arm's `more` field and cursor, the
+  `discover_pages` call (timeout 15 s + 5 s per extra page), two job arms and the new commands.
+- `refresh_rooms` asks for the check at once (used to wait for a just-created room).
+
+**Create and manage.** One change at a time through the join/leave slot (`join::RoomActions`), answered only by
+the relay's `OK` for the exact event id; no `OK` in 15 s, a disconnect or re-authentication is `unknown`.
+
+| Request | Event | Relay rule (side_effects.rs) |
+| --- | --- | --- |
+| `create_room` (name, about?, visibility) | 9007: `h` new UUID, `name`, `visibility`, `channel_type` `stream`, `about` | any member |
+| `update_room` (name, about) | 9002: `h`, `name`, `about` | owner or admin |
+| `set_room_topic` | 9002: `h`, `topic` | any member (the panel offers it to owners and admins) |
+| `add_room_member` (key) | 9000: `h`, `p` | owner or admin |
+| `remove_room_member` (key) | 9001: `h`, `p` | owner or admin; others only |
+
+The helper checks only what it can know: a joined stream room as target, text bounds (name 128, description 512,
+topic 256 bytes, no controls; the relay stores names without a leading `#`), a removal naming a member of the
+**verified roster** (`fetch_room_detail`) other than this identity (that is leaving), an addition not already on a
+fully shown roster. It does not decide permissions: a refusal arrives as `rejected` with `create_rejected`,
+`edit_rejected`, `member_add_rejected` or `member_remove_rejected` and the relay's own `OK false` words in
+`roomAction.detail` (sanitized, at most 200 bytes, plain text in the panel). A created room's id is the helper's
+fresh UUID, reported in `roomAction.roomId`; the panel selects it once the catalog lists it, polling
+`refresh_rooms` up to four times 2 s apart because the relay may take a moment (Desktop keeps a "pending owner"
+overlay for the same lag). After a change the panel reads the roster again, now and 1.5 s later.
+
+**Room detail.** `fetch_room_detail` reads the room's 39002 and 39000, each relay-signed, scoped to the room,
+exactly one of each; the roster must name this identity. `roomDetail` carries the topic (`topic` tag of the 39000),
+visibility (exactly one of `public`/`private`), the viewer's role, and up to 100 members (owners and admins first)
+with their role words (`owner`, `admin`, `member`, `guest`, `bot`, else `unknown`) and a profile-name hint.
+Owners and admins see edit controls from the verified role; everyone else sees the topic and members. The relay,
+not this role, is the authority.
+
+**Not done.** Role changes (Desktop's `change_channel_member_role`), archive/delete, TTL, purpose, visibility
+changes of an existing room and forum rooms; showing the topic in the room header; rosters over 100 members.

@@ -620,9 +620,15 @@ Item {
   property var catalogRooms: []
   property string catalogState: "unavailable"
   property string catalogCategory: ""
+  // Paging (`room_manage`): "none", "available", "loading", "failed" or "limit"
+  // (the most rooms the panel holds are listed). Absent from older helpers.
+  property string catalogMore: "none"
+  property string catalogMoreCategory: ""
   // No joined rooms yet ("Rooms · none joined") reads better than an empty partial count.
   readonly property string catalogLabel: sampleMode ? "Sample rooms" : noRoomsJoined ? "Rooms · none joined"
-    : ({unavailable: "Rooms unavailable", loading: "Loading rooms", partial: "Partial list · " + catalogRooms.length + " shown (limit 20)", ready: catalogRooms.length ? "Joined rooms · " + catalogRooms.length : "No joined rooms"})[catalogState]
+    : ({unavailable: "Rooms unavailable", loading: "Loading rooms", partial: "Partial list · " + catalogRooms.length + " shown" + (catalogMore === "available" || catalogMore === "loading" || catalogMore === "failed" ? " · more available" : catalogMore === "limit" ? " (limit " + maxRooms + ")" : ""), ready: catalogRooms.length ? "Joined rooms · " + catalogRooms.length : "No joined rooms"})[catalogState]
+  // The most joined rooms (DMs included) the helper lists (`catalog::MAX_ROOMS`).
+  readonly property int maxRooms: 200
   readonly property var rooms: sample ? sample.rooms : catalogRooms
   // Sample rooms predate room kinds and count as streams; validated frames always carry kind.
   readonly property var streamRooms: rooms.filter(function(room) { return room.kind !== "dm" })
@@ -802,7 +808,7 @@ Item {
   property string openRoomsState: "unavailable"
   property var openRooms: []
   property string openRoomsCategory: ""
-  property var roomAction: ({state: "idle", action: null, requestId: null, roomId: null, category: null})
+  property var roomAction: ({state: "idle", action: null, requestId: null, roomId: null, category: null, detail: null})
   property string roomActionRequestId: ""
   property string roomActionLocal: "idle"
   property string roomActionCategory: ""
@@ -841,21 +847,148 @@ Item {
     }
     return ""
   }
+  readonly property var roomActionWords: ({
+    join: ["Joining room…", "Joined. The room appears once the relay lists it."],
+    leave: ["Leaving room…", "Left the room."],
+    create: ["Creating room…", "Room created. It opens once the relay lists it."],
+    details: ["Saving room details…", "Room details saved."],
+    topic: ["Saving topic…", "Topic saved."],
+    add_member: ["Adding member…", "Member added."],
+    remove_member: ["Removing member…", "Member removed."]
+  })
+  readonly property var roomRefusalWords: ({
+    join: "The relay refused to add you to this room.",
+    leave: "The relay refused. If you are this room's only owner, make someone else an owner first.",
+    create: "The relay refused to create the room.",
+    details: "The relay refused to change the room details.",
+    topic: "The relay refused to change the topic.",
+    add_member: "The relay refused to add this member.",
+    remove_member: "The relay refused to remove this member."
+  })
   readonly property string roomActionLabel: {
     if (roomActionLocal === "failed") return ({room_not_open: "That room is no longer open to join. Refresh the list.",
       leave_rejected: "Only a joined room can be left here.", relay_unavailable: "Not connected. Try again when connected.",
-      setup_busy: "Another join or leave is in progress."})[roomActionCategory] || "Nothing was sent. Try again."
+      room_invalid: "That change is not valid for this room. Check the room and the text, then try again.",
+      setup_busy: "Another room change is in progress."})[roomActionCategory] || "Nothing was sent. Try again."
     if (roomActionRequestId === "" || roomAction.requestId !== roomActionRequestId) return roomActionLocal === "sending" ? "Sending…" : ""
-    if (roomAction.state === "sending") return roomAction.action === "join" ? "Joining room…" : "Leaving room…"
-    if (roomAction.state === "acknowledged") return roomAction.action === "join" ? "Joined. The room appears once the relay lists it." : "Left the room."
-    if (roomAction.state === "rejected") return roomAction.action === "join" ? "The relay refused to add you to this room."
-      : "The relay refused. If you are this room's only owner, make someone else an owner first."
+    var words = roomActionWords[roomAction.action]
+    if (roomAction.state === "sending") return words[0]
+    if (roomAction.state === "acknowledged") return words[1]
+    // The relay's own words follow ours, as text, never interpreted.
+    if (roomAction.state === "rejected") return roomRefusalWords[roomAction.action] + (roomAction.detail ? " Relay: " + roomAction.detail : "")
     if (roomAction.state === "unknown") return "No answer from the relay. Refresh to see whether it worked."
     return ""
   }
   readonly property string openRoomsLabel: openRoomsState === "loading" ? "Loading open rooms…"
     : openRoomsState === "snapshot" ? (openRooms.length ? "" : "No open rooms to join right now.")
     : openRoomsCategory ? "Open rooms could not be loaded. Try again." : ""
+
+  // Room creation and management (`room_manage`). The helper signs kinds 9007
+  // (create), 9002 (details, topic), 9000 and 9001 (members) with the session
+  // key and reports the relay's answer; who may do what is the relay's rule.
+  // The panel shows controls to owners and admins by the verified roster role,
+  // and shows a refusal as the relay words it.
+  property bool roomManageSupported: false
+  property var roomDetail: roomDetailIdle
+  readonly property bool roomManageAvailable: roomManageSupported && openRoomsAvailable && bridge.running
+  readonly property bool canManageRooms: roomManageAvailable && !roomActionBusy
+  readonly property bool canLoadMoreRooms: roomManageSupported && !sampleMode && !sessionFailed && connection === "authenticated"
+    && instanceId !== "" && bridge.running && (catalogMore === "available" || catalogMore === "failed")
+  readonly property string catalogMoreLabel: catalogMore === "loading" ? "Loading more rooms…"
+    : catalogMore === "failed" ? (catalogMoreCategory === "room_catalog_timeout" ? "Loading more rooms timed out. Try again."
+      : "Could not load more rooms. Try again.")
+    : catalogMore === "limit" ? "Showing the first " + catalogRooms.length + " rooms."
+    : ""
+  // Roster and topic of the selected room, once read for it.
+  readonly property bool roomDetailShown: roomDetail.state === "snapshot" && roomDetail.roomId === selectedRoomId && selectedRoomId !== ""
+  readonly property string roomRole: roomDetailShown ? roomDetail.role : ""
+  readonly property bool canEditRoom: canManageRooms && roomDetailShown && selectedRoom !== null && selectedRoom.kind === "stream"
+    && (roomRole === "owner" || roomRole === "admin")
+  readonly property string roomDetailLabel: roomDetailShown ? ""
+    : roomDetail.roomId === selectedRoomId && roomDetail.state === "loading" ? "Loading members and topic…"
+    : roomDetail.roomId === selectedRoomId && roomDetail.category === "room_detail_access_denied" ? "The relay does not list you in this room."
+    : roomDetail.roomId === selectedRoomId && roomDetail.category !== null ? "Members and topic could not be loaded. Try again."
+    : ""
+  function manageRequest(type, fields) {
+    if (!canManageRooms) return false
+    roomActionRequestId = correlationUuid()
+    roomActionLocal = "sending"
+    roomActionCategory = ""
+    var request = {version: 1, id: roomActionRequestId, type: type}
+    Object.keys(fields).forEach(function(name) { request[name] = fields[name] })
+    bridge.write(JSON.stringify(request) + "\n")
+    roomActionTimeout.restart()
+    return true
+  }
+  function validRoomText(text, limit, required) {
+    return typeof text === "string" && utf8Size(text.trim()) <= limit && (!required || text.trim() !== "")
+      && !/[\u0000-\u001f\u007f]/.test(text.trim())
+  }
+  function createRoom(name, about, priv) {
+    if (!validRoomText(name, 128, true) || !validRoomText(about, 512, false)) return false
+    var fields = {name: name.trim(), visibility: priv ? "private" : "open"}
+    if (about.trim() !== "") fields.about = about.trim()
+    return manageRequest("create_room", fields)
+  }
+  function updateRoomDetails(name, about) {
+    if (!canEditRoom || !validRoomText(name, 128, true) || !validRoomText(about, 512, false)) return false
+    return manageRequest("update_room", {roomId: selectedRoomId, name: name.trim(), about: about.trim()})
+  }
+  function setRoomTopic(topic) {
+    if (!canEditRoom || !validRoomText(topic, 256, false)) return false
+    return manageRequest("set_room_topic", {roomId: selectedRoomId, topic: topic.trim()})
+  }
+  function addRoomMember(key) {
+    var value = typeof key === "string" ? key.trim().toLowerCase() : ""
+    if (!canEditRoom || !/^[a-f0-9]{64}$/.test(value)) return false
+    return manageRequest("add_room_member", {roomId: selectedRoomId, key: value})
+  }
+  // Only a member of the verified roster, never this identity (that is leaving).
+  function removeRoomMember(key) {
+    if (!canEditRoom || key === identity || !roomDetail.members.some(function(m) { return m.key === key })) return false
+    return manageRequest("remove_room_member", {roomId: selectedRoomId, key: key})
+  }
+  // Forget the last change's outcome line (a view opens without yesterday's note).
+  function resetRoomRequest() {
+    if (roomActionBusy) return
+    roomActionLocal = "idle"
+    roomActionCategory = ""
+    roomActionRequestId = ""
+  }
+  // People the relay's own catalog shows this identity talking to one-to-one:
+  // verified keys with the DM's profile-name hint, never typed by anyone.
+  readonly property var dmPeople: {
+    var people = []
+    dmRooms.forEach(function(room) {
+      var others = (room.participants || []).filter(function(key) { return key !== identity })
+      if (others.length === 1) people.push({key: others[0], name: room.name})
+    })
+    return people
+  }
+  function refreshRoomDetail() {
+    if (!roomManageAvailable || selectedRoom === null || selectedRoom.kind !== "stream") return false
+    send("fetch_room_detail", selectedRoomId)
+    return true
+  }
+  function loadMoreRooms() {
+    if (!canLoadMoreRooms) return false
+    send("load_more_rooms")
+    return true
+  }
+  // A room just created is selected once the catalog lists it; the relay may
+  // take a moment, so the list is read again a few times meanwhile.
+  property int createPolls: 0
+  property string roomChangeNoted: ""
+  function noteRoomChange(action) {
+    // Once per accepted change, not once per status frame that repeats it.
+    if (action.state !== "acknowledged" || action.requestId !== roomActionRequestId || action.requestId === roomChangeNoted) return
+    roomChangeNoted = action.requestId
+    if (action.action === "create") { joinTarget = action.roomId; createPolls = 4; createPoll.restart() }
+    else if (["details", "topic", "add_member", "remove_member"].indexOf(action.action) !== -1) {
+      refreshRoomDetail()
+      detailRecheck.restart()
+    }
+  }
 
   // Communities (`communities`): join, switch, rename and leave, like Buzz
   // Desktop's account menu. The helper parses what the user pasted, checks the
@@ -1135,16 +1268,57 @@ Item {
     }
     return {state: value.state, rooms: clean, category: value.category || ""}
   }
+  readonly property var roomRefusals: ({join: "join_rejected", leave: "leave_rejected", create: "create_rejected", details: "edit_rejected",
+    topic: "edit_rejected", add_member: "member_add_rejected", remove_member: "member_remove_rejected"})
   function validatedRoomAction(value) {
+    // `detail` (the relay's refusal text) is absent from helpers without `room_manage`.
+    var keys = Object.keys(value || {}).sort().join(",")
     if (!value || typeof value !== "object" || Array.isArray(value)
-        || Object.keys(value).sort().join(",") !== "action,category,requestId,roomId,state"
+        || (keys !== "action,category,requestId,roomId,state" && keys !== "action,category,detail,requestId,roomId,state")
         || ["idle", "sending", "acknowledged", "rejected", "unknown"].indexOf(value.state) === -1) return null
+    var detail = value.detail === undefined ? null : value.detail
+    if (detail !== null && (value.state !== "rejected" || !boundedString(detail, 200) || utf8Size(detail) > 200 || !detail.trim()
+        || /[\u0000-\u001f\u007f]/.test(detail))) return null
     if (value.state === "idle")
-      return value.action === null && value.requestId === null && value.roomId === null && value.category === null ? value : null
-    if (["join", "leave"].indexOf(value.action) === -1 || !uuidValue(value.requestId) || !uuidValue(value.roomId)) return null
-    var expected = ({sending: null, acknowledged: null, rejected: value.action + "_rejected", unknown: "relay_unavailable"})[value.state]
+      return value.action === null && value.requestId === null && value.roomId === null && value.category === null && detail === null
+        ? {state: "idle", action: null, requestId: null, roomId: null, category: null, detail: null} : null
+    if (Object.keys(roomRefusals).indexOf(value.action) === -1 || !uuidValue(value.requestId) || !uuidValue(value.roomId)) return null
+    var expected = ({sending: null, acknowledged: null, rejected: roomRefusals[value.action], unknown: "relay_unavailable"})[value.state]
     if (value.category !== expected) return null
-    return {state: value.state, action: value.action, requestId: value.requestId, roomId: value.roomId, category: value.category}
+    return {state: value.state, action: value.action, requestId: value.requestId, roomId: value.roomId, category: value.category, detail: detail}
+  }
+  readonly property var memberRoles: ["owner", "admin", "member", "guest", "bot", "unknown"]
+  readonly property var roomDetailIdle: ({state: "unavailable", roomId: null, topic: "", visibility: "", role: "", members: [], truncated: false, category: null})
+  // The verified roster, roles and topic of a joined stream room. Names are
+  // profile hints; roles are the relay's, shown as said.
+  function validatedRoomDetail(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)
+        || Object.keys(value).sort().join(",") !== "category,members,role,roomId,state,topic,truncated,visibility"
+        || ["unavailable", "loading", "snapshot"].indexOf(value.state) === -1
+        || (value.roomId !== null && !uuidValue(value.roomId))
+        || (value.category !== null && ["room_detail_unavailable", "room_detail_invalid", "room_detail_access_denied"].indexOf(value.category) === -1)
+        || !boundedString(value.topic, 1024) || utf8Size(value.topic) > 256 || /[\u0000-\u001f\u007f]/.test(value.topic)
+        || typeof value.truncated !== "boolean" || !Array.isArray(value.members) || value.members.length > 100) return null
+    if (value.state !== "snapshot") {
+      return value.members.length === 0 && value.topic === "" && value.visibility === "" && value.role === "" && !value.truncated
+        && (value.state !== "loading" || value.roomId !== null) ? {state: value.state, roomId: value.roomId, topic: "", visibility: "", role: "",
+          members: [], truncated: false, category: value.category} : null
+    }
+    if (value.roomId === null || value.category !== null || ["open", "private"].indexOf(value.visibility) === -1
+        || memberRoles.indexOf(value.role) === -1) return null
+    var seen = ({})
+    var clean = []
+    for (var i = 0; i < value.members.length; i++) {
+      var member = value.members[i]
+      if (!member || typeof member !== "object" || Array.isArray(member) || Object.keys(member).sort().join(",") !== "key,name,role"
+          || typeof member.key !== "string" || !/^[a-f0-9]{64}$/.test(member.key) || seen[member.key]
+          || !boundedString(member.name, 256) || utf8Size(member.name) > 64 || /[\u0000-\u001f\u007f]/.test(member.name)
+          || memberRoles.indexOf(member.role) === -1) return null
+      seen[member.key] = true
+      clean.push({key: member.key, name: member.name, role: member.role})
+    }
+    return {state: "snapshot", roomId: value.roomId, topic: value.topic, visibility: value.visibility, role: value.role,
+      members: clean, truncated: value.truncated, category: null}
   }
   function selectJoinedRoom() {
     if (joinTarget === "" || !streamRooms.some(function(room) { return room.id === root.joinTarget })) return
@@ -2371,9 +2545,11 @@ Item {
     catalogRooms = []
     catalogState = "unavailable"
     catalogCategory = ""
+    catalogMore = "none"
+    catalogMoreCategory = ""
     if (!sampleMode) selectedRoomId = ""
   }
-  readonly property var knownCapabilities: ["connection_status", "room_catalog", "room_history", "message_send", "room_recipients", "history_auto_refresh", "room_activity", "agent_profiles", "thread_replies", "thread_send", "thread_summaries", "dm_open", "older_history", "live_updates", "setup_assist", "community_join", "invite_mint", "attachments", "user_status", "presence", "communities", "people_search", "message_actions"]
+  readonly property var knownCapabilities: ["connection_status", "room_catalog", "room_history", "message_send", "room_recipients", "history_auto_refresh", "room_activity", "agent_profiles", "thread_replies", "thread_send", "thread_summaries", "dm_open", "older_history", "live_updates", "setup_assist", "community_join", "invite_mint", "attachments", "user_status", "presence", "communities", "people_search", "message_actions", "room_manage"]
   // Distinct known names only, so the length bound follows the list.
   function validCapabilities(capabilities) {
     return Array.isArray(capabilities) && capabilities.length >= 1 && capabilities.length <= knownCapabilities.length
@@ -2398,7 +2574,7 @@ Item {
   }
   function validatedCatalog(catalog) {
     if (!catalog || ["unavailable", "loading", "partial", "ready"].indexOf(catalog.state) === -1
-        || !Array.isArray(catalog.rooms) || catalog.rooms.length > 20
+        || !Array.isArray(catalog.rooms) || catalog.rooms.length > maxRooms
         || (catalog.category !== null && ["room_catalog_unavailable", "room_catalog_partial", "room_catalog_timeout", "room_catalog_invalid", "room_catalog_unsupported", "relay_identity_unavailable", "relay_identity_changed"].indexOf(catalog.category) === -1)) return null
     var clean = []
     var ids = ({})
@@ -2413,7 +2589,14 @@ Item {
       clean.push({id: room.id, name: room.name, description: room.description, kind: room.kind, participants: room.participants.slice(), hidden: room.hidden})
     }
     if (["unavailable", "loading"].indexOf(catalog.state) !== -1 && clean.length !== 0) return null
-    return {state: catalog.state, rooms: clean, category: catalog.category || ""}
+    // Paging fields are absent from helpers without `room_manage`.
+    var more = catalog.more === undefined ? "none" : catalog.more
+    var moreCategory = catalog.moreCategory === undefined ? null : catalog.moreCategory
+    if (["none", "available", "loading", "failed", "limit"].indexOf(more) === -1
+        || (more === "failed") !== (moreCategory !== null)
+        || (moreCategory !== null && ["room_catalog_unavailable", "room_catalog_timeout"].indexOf(moreCategory) === -1)
+        || (more !== "none" && ["partial", "ready"].indexOf(catalog.state) === -1)) return null
+    return {state: catalog.state, rooms: clean, category: catalog.category || "", more: more, moreCategory: moreCategory || ""}
   }
   // Reaction chips: absent from helpers without `message_actions`; else at most
   // 16 distinct native emoji with a count and whether this identity reacted.
@@ -2618,7 +2801,8 @@ Item {
     openRooms = []
     openRoomsState = "unavailable"
     openRoomsCategory = ""
-    roomAction = {state: "idle", action: null, requestId: null, roomId: null, category: null}
+    roomAction = {state: "idle", action: null, requestId: null, roomId: null, category: null, detail: null}
+    roomDetail = roomDetailIdle
   }
   function boundedString(value, limit) { return typeof value === "string" && value.length <= limit }
   function acceptFrame(line) {
@@ -2629,7 +2813,7 @@ Item {
     if (frame && frame.version === 1 && frame.type === "error" && ["request_busy", "send_busy", "send_scope_changed", "send_request_reused", "send_invalid", "send_unavailable", "send_access_denied", "send_ledger_unavailable", "delivery_unknown",
         "dm_open_busy", "dm_open_scope_changed", "dm_open_request_reused", "dm_open_invalid", "dm_open_unavailable", "dm_open_access_denied", "dm_open_unknown",
         "setup_invalid_relay", "identity_exists", "identity_unavailable", "relay_unavailable", "setup_busy", "setup_not_allowed", "config_unavailable",
-        "invite_invalid", "invite_relay_mismatch", "invite_rejected", "invite_rate_limited", "policy_required", "room_not_open", "join_rejected", "leave_rejected",
+        "invite_invalid", "invite_relay_mismatch", "invite_rejected", "invite_rate_limited", "policy_required", "room_not_open", "join_rejected", "leave_rejected", "room_invalid",
         "invite_forbidden", "attachment_unknown", "attachment_forbidden", "attachment_mismatch", "attachment_too_large", "attachment_invalid",
         "attachment_type_refused", "attachment_storage_unavailable", "status_invalid", "status_rate_limited", "status_rejected",
         "join_invalid", "join_rate_limited", "join_busy", "join_last", "join_full", "community_unknown", "name_invalid", "leave_owner"].indexOf(frame.category) !== -1) {
@@ -2770,7 +2954,7 @@ Item {
         || (state.relay !== null && (!boundedString(state.relay, 2048) || !/^wss?:\/\//.test(state.relay) || state.relay.indexOf("@") !== -1))) {
       fail("invalid_response"); return false
     }
-    var catalog = {state: "unavailable", rooms: [], category: ""}
+    var catalog = {state: "unavailable", rooms: [], category: "", more: "none", moreCategory: ""}
     if (frame.capabilities.indexOf("room_catalog") !== -1) {
       catalog = validatedCatalog(state.catalog)
       if (!catalog) { fail("invalid_response"); return false }
@@ -2809,6 +2993,9 @@ Item {
     var open = supportsJoin ? validatedOpenRooms(state.openRooms, catalog) : null
     var action = supportsJoin ? validatedRoomAction(state.roomAction) : null
     if (supportsJoin && (!join || !open || !action)) { fail("invalid_response"); return false }
+    var supportsRoomManage = frame.capabilities.indexOf("room_manage") !== -1
+    var detail = supportsRoomManage ? validatedRoomDetail(state.roomDetail) : roomDetailIdle
+    if (supportsRoomManage && !detail) { fail("invalid_response"); return false }
     var shownStatus = supportsStatus ? validatedUserStatus(state.userStatus) : null
     if (supportsStatus && !shownStatus) { fail("invalid_response"); return false }
     var shownPresence = supportsPresence ? validatedPresence(state.presence) : null
@@ -2846,7 +3033,7 @@ Item {
     var previousCatalogState = catalogState
     var generationBefore = generation
     var resyncingCatalog = resyncStage === "catalog"
-    if (state.connection !== "authenticated") catalog = {state: "unavailable", rooms: [], category: ""}
+    if (state.connection !== "authenticated") catalog = {state: "unavailable", rooms: [], category: "", more: "none", moreCategory: ""}
     if (frame.generation !== generation || state.connection !== "authenticated") clearCatalog()
     var selectedBeforeCatalog = selectedRoomId
     var quietCatalog = catalog.state === "loading" && frame.instanceId === instanceId && connection === "authenticated"
@@ -2860,6 +3047,8 @@ Item {
       if (!sameProjection(catalogRooms, catalog.rooms)) catalogRooms = catalog.rooms
       catalogState = catalog.state
       catalogCategory = catalog.category
+      catalogMore = catalog.more
+      catalogMoreCategory = catalog.moreCategory
     }
     if (["partial", "ready"].indexOf(catalogState) !== -1
         && !catalogRooms.some(function(room) { return room.id === root.selectedRoomId })) {
@@ -2975,13 +3164,16 @@ Item {
     }
     if (createdIdentity !== "" && createdIdentity !== identity) createdIdentity = ""
     communityJoinSupported = supportsJoin
-    if (!supportsJoin) { loseInvite(); loseRoomAction(); clearJoin() }
+    if (!supportsJoin) { loseInvite(); loseRoomAction(); clearJoin(); roomManageSupported = false }
     else {
       if (!sameProjection(joinSetup, join)) joinSetup = join
       if (!sameProjection(openRooms, open.rooms)) openRooms = open.rooms
       openRoomsState = open.state
       openRoomsCategory = open.category
       if (!sameProjection(roomAction, action)) roomAction = action
+      roomManageSupported = supportsRoomManage
+      if (!sameProjection(roomDetail, detail)) roomDetail = detail
+      noteRoomChange(action)
       if (frame.type === "status" && inviteState === "sending" && frame.id === inviteRequestId && frame.instanceId === inviteInstance) {
         inviteTimeout.stop()
         inviteState = "idle"
@@ -3108,6 +3300,7 @@ Item {
       if (kind === "fetch_older") { request.roomId = roomId; pendingOlderRequestId = request.id }
       // The first argument is the search text here, not a room.
       if (kind === "search_people") { request.query = roomId; peopleRequestId = request.id }
+      if (kind === "fetch_room_detail") request.roomId = roomId
       bridge.write(JSON.stringify(request) + "\n")
     }
   }
@@ -3291,6 +3484,23 @@ Item {
       root.thumbnailRequestHash = ""
       root.pumpThumbnails()
     }
+  }
+  Timer {
+    id: createPoll
+    interval: 2000
+    repeat: true
+    onTriggered: {
+      if (root.joinTarget === "" || root.createPolls <= 0 || !root.openRoomsAvailable) { stop(); return }
+      root.createPolls--
+      root.send("refresh_rooms")
+    }
+  }
+  Timer {
+    // The relay refreshes its roster and metadata snapshots a moment after it
+    // accepts a change; read them once more.
+    id: detailRecheck
+    interval: 1500
+    onTriggered: root.refreshRoomDetail()
   }
   Timer {
     id: roomActionTimeout
