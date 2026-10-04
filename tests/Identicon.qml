@@ -5,6 +5,7 @@ import Quickshell
 import qs.Commons
 import "plugin" as Buzz
 import "plugin/Identicon.js" as Identicon
+import "plugin/PlainText.js" as PlainText
 
 ShellRoot {
   id: test
@@ -71,10 +72,10 @@ ShellRoot {
         // The component: identicon colored by key, neutral glyph in the foreground color.
         if (keyed.text !== Identicon.glyph("a".repeat(64)) || !Qt.colorEqual(keyed.color, Identicon.color("a".repeat(64)))
             || keyed.font.pixelSize !== Style.font.caption || keyed.objectName !== "buzzAvatar"
-            || keyed.Controls.ToolTip.text !== "Fixture · aaaaaaaa…")
+            || keyed.Controls.ToolTip.text !== PlainText.tip("Fixture · aaaaaaaa…"))
           throw new Error("Keyed avatar rendered wrong")
         if (neutral.text !== Identicon.neutralGlyph() || !Qt.colorEqual(neutral.color, Color.foreground)
-            || neutral.Controls.ToolTip.text !== "Mira")
+            || neutral.Controls.ToolTip.text !== PlainText.tip("Mira"))
           throw new Error("Neutral avatar rendered wrong")
         // Pasted art replaces the glyph, bounded to 6 x 12 with controls removed.
         pasted.art = "0123456789abcdefgh\n\tb\u0007c\u202ed\r\n3\n4\n5\n6\n7\n8"
