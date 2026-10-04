@@ -1192,6 +1192,7 @@ async fn observe_inner(
                             .rows
                             .iter()
                             .map(|r| r.author.clone())
+                            .chain(s.thread.rows.iter().map(|r| r.row.author.clone()))
                             .collect::<Vec<_>>(),
                         s.recipients
                             .entries
@@ -2244,6 +2245,7 @@ async fn observe_inner(
                                 Thread::unavailable(Some(room.clone()),Some(root.clone()),Some(thread_category(error)))
                             },
                         });
+                        if tx.borrow().thread.state=="snapshot" {spawn_profiles!();}
                         if live.primed_for(Some(room.as_str())) && tx.borrow().thread.state=="snapshot" && thread_refetch.is_none() {
                             thread_refetch=Some(tokio::time::Instant::now()+policy.live_poll);
                         }
