@@ -121,13 +121,15 @@ const colors = Library.COLORS.map((c) => c.hex);
 assert.equal(colors.length, 14);
 assert.equal(new Set(colors).size, colors.length, 'palette colors are distinct');
 for (const c of colors) assert.ok(AnsiArt.validTint(c), `${c} is a valid stored color`);
-for (const back of ['#000000', '#1a1b26', '#2b2b2b', '#ffffff', '#f5f0e6', '#eff1f5', '#808080']) {
+for (const back of ['#000000', '#1a1b26', '#2b2b2b', '#ffffff', '#f5f0e6', '#eff1f5', '#808080', '#a0a0a0']) {
   for (const c of colors) {
     const shown = Library.readable(c, back);
     assert.match(shown, /^#[0-9a-f]{6}$/);
     assert.ok(Library.contrast(shown, back) >= 3, `${c} on ${back} -> ${shown}`);
   }
 }
+// On a mid-gray, colors move toward the side that can reach 3:1 and stay distinct.
+assert.ok(new Set(Library.COLORS.map(c => Library.readable(c.hex, '#a0a0a0'))).size >= 10, 'mid-gray collapses the palette');
 assert.equal(Library.readable('#ef4444', '#1a1b26'), '#ef4444', 'readable colors are unchanged');
 assert.equal(Library.readable('#ef4444', '#ff1a1b26'), '#ef4444', 'a leading alpha is ignored');
 assert.notEqual(Library.readable('#fde047', '#ffffff'), '#fde047', 'yellow is darkened on white');

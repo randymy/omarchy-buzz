@@ -913,8 +913,8 @@ function contrast(a, b) {
   return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05)
 }
 function hex2(n) { return ("0" + Math.round(n).toString(16)).slice(-2) }
-// A #rrggbb color, moved toward black or white (whichever the background
-// is not) until it reaches a 3:1 contrast against it. Colors that already
+// A #rrggbb color, moved toward black or white (whichever contrasts more with
+// the background) until it reaches a 3:1 contrast against it. Colors that already
 // read well are returned unchanged. background is a color string: only its
 // last six hex digits are used (a leading alpha is ignored). "" is returned
 // when either is not a #rrggbb color.
@@ -922,7 +922,9 @@ function readable(hex, background) {
   var back = typeof background === "string" ? "#" + background.slice(-6).toLowerCase() : ""
   if (typeof hex !== "string" || !/^#[0-9a-f]{6}$/.test(hex) || !/^#[0-9a-f]{6}$/.test(back)) return ""
   if (contrast(hex, back) >= 3) return hex
-  var target = luminance(back) > 0.4 ? 0 : 255
+  // Toward whichever of black and white contrasts more: on a mid-gray neither
+  // luminance side is safe, and white can stay under 3:1.
+  var target = contrast("#000000", back) >= contrast("#ffffff", back) ? 0 : 255
   for (var step = 1; step <= 20; step++) {
     var t = step / 20, out = "#"
     for (var at = 1; at <= 5; at += 2) out += hex2(parseInt(hex.slice(at, at + 2), 16) * (1 - t) + target * t)
