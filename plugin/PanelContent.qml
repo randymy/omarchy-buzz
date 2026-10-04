@@ -815,9 +815,10 @@ FocusScope {
   readonly property bool myAvatarAvailable: !!service && !service.sampleMode && !!agentService
     && /^[a-f0-9]{64}$/.test(service.identity)
   readonly property string myAvatarArt: myAvatarAvailable ? agentService.avatarArtForKey(service.identity) : ""
+  readonly property string myAvatarTint: myAvatarAvailable ? agentService.avatarTintForKey(service.identity) : ""
   readonly property real myAvatarBrightness: myAvatarAvailable ? agentService.avatarBrightnessForKey(service.identity) : 0
-  function openAvatarCard(key, name, art, brightness) {
-    avatarCard.show(key, name, art, brightness)
+  function openAvatarCard(key, name, art, brightness, tint) {
+    avatarCard.show(key, name, art, brightness, tint)
     return true
   }
   // A direct message shows the first participant other than this identity.
@@ -1728,6 +1729,7 @@ FocusScope {
               name: root.myName
               art: root.myAvatarArt
               brightness: root.myAvatarBrightness
+              tint: root.myAvatarTint
               pixelSize: root.sidebarAvatarSize
               // Your own presence on the avatar's corner; the connection dot stays at the end.
               PresenceDot {
@@ -1846,6 +1848,7 @@ FocusScope {
                   name: "You"
                   art: root.myAvatarArt
                   brightness: root.myAvatarBrightness
+                  tint: root.myAvatarTint
                   pixelSize: Style.font.body
                 }
                 SettingsNote {
@@ -1879,8 +1882,9 @@ FocusScope {
                 Layout.fillWidth: true
                 key: root.myAvatarAvailable ? root.service.identity : ""
                 savedArt: root.myAvatarArt
-                onSaveRequested: function(art) {
-                  if (root.myAvatarAvailable) root.agentService.setOwnAvatarArt(root.service.identity, art, AnsiArt.DEFAULT_BRIGHTNESS)
+                savedTint: root.myAvatarTint
+                onSaveRequested: function(art, tint) {
+                  if (root.myAvatarAvailable) root.agentService.setOwnAvatarArt(root.service.identity, art, AnsiArt.DEFAULT_BRIGHTNESS, tint)
                 }
               }
             }
@@ -3170,7 +3174,7 @@ FocusScope {
                 threadLink: true
                 threadSelected: !!root.service && root.service.threadRootId === row.id
                 onThreadRequested: root.toggleThread(row.id)
-                onAvatarRequested: function(key, name, art, brightness) { root.openAvatarCard(key, name, art, brightness) }
+                onAvatarRequested: function(key, name, art, brightness, tint) { root.openAvatarCard(key, name, art, brightness, tint) }
               }
             }
           }
@@ -3291,7 +3295,7 @@ FocusScope {
               service: root.service
               row: root.threadOpen ? root.service.threadRoot : ({})
               showDate: true
-              onAvatarRequested: function(key, name, art, brightness) { root.openAvatarCard(key, name, art, brightness) }
+              onAvatarRequested: function(key, name, art, brightness, tint) { root.openAvatarCard(key, name, art, brightness, tint) }
             }
             Item {
               objectName: "buzzThreadDetails"
@@ -3325,7 +3329,7 @@ FocusScope {
                 topPadding: row.grouped ? Style.space(3) : Style.space(8)
                 service: root.service
                 row: JSON.parse(payload)
-                onAvatarRequested: function(key, name, art, brightness) { root.openAvatarCard(key, name, art, brightness) }
+                onAvatarRequested: function(key, name, art, brightness, tint) { root.openAvatarCard(key, name, art, brightness, tint) }
               }
             }
           }
@@ -3391,6 +3395,7 @@ FocusScope {
             name: root.myName
             art: root.myAvatarArt
             brightness: root.myAvatarBrightness
+            tint: root.myAvatarTint
             pixelSize: Style.font.caption
           }
           ColumnLayout {

@@ -276,6 +276,8 @@ var DEFAULT_BRIGHTNESS = 1.5
 function validBrightness(value) {
   return typeof value === "number" && value >= MIN_BRIGHTNESS && value <= MAX_BRIGHTNESS && value * 4 === Math.round(value * 4)
 }
+// A plain-art color kept on disk: exactly #rrggbb in lowercase, nothing else.
+function validTint(value) { return typeof value === "string" && /^#[0-9a-f]{6}$/.test(value) }
 function clampBrightness(value) {
   if (typeof value !== "number" || !isFinite(value)) return DEFAULT_BRIGHTNESS
   return Math.min(MAX_BRIGHTNESS, Math.max(MIN_BRIGHTNESS, Math.round(value * 4) / 4))
