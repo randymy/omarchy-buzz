@@ -176,9 +176,16 @@ pub fn deliver(connection: &Connection, call: &Call) -> Result<u32, &'static str
     Ok(id)
 }
 
-/// Opens the session bus and delivers. Blocking: run it off the async loop.
-pub fn send(call: &Call) -> Result<u32, &'static str> {
+/// Opens the session bus, asks `current` (the scope recheck) once connected and
+/// only then delivers, so a slow connect never shows a stale notice. Blocking:
+/// run it off the async loop. The `dbus` crate has no connect or authentication
+/// timeout (only the method call has one, [`CALL_TIMEOUT`]); the caller instead
+/// keeps its queue slot until this returns, which bounds a stall to one thread.
+pub fn send(call: &Call, current: &dyn Fn() -> Option<&'static str>) -> Result<u32, &'static str> {
     let connection = Connection::new_session().map_err(|_| "notify_unavailable")?;
+    if let Some(category) = current() {
+        return Err(category);
+    }
     deliver(&connection, call)
 }
 
@@ -210,19 +217,31 @@ pub fn still_current(
     }
 }
 
-type Sender = fn(&Call) -> Result<u32, &'static str>;
+type Sender = fn(&Call, &dyn Fn() -> Option<&'static str>) -> Result<u32, &'static str>;
+
+/// One counted place in the queue; released when dropped.
+struct Slot;
+impl Drop for Slot {
+    fn drop(&mut self) {
+        WAITING.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
 
 /// Delivers in the background. The panel is answered before the bus is asked,
 /// so a stuck notification server never delays other requests; a failure is
 /// reported on stderr as its category only (never the text). The scope is
-/// rechecked against the current status once the turn comes, and a notice that
-/// is no longer current is dropped (category only).
+/// rechecked inside the blocking work, after the bus is connected and right
+/// before `Notify`, and a notice that is no longer current is dropped. The turn
+/// and the queue slot move into that blocking work: they are released only when
+/// it really returns, so at most one blocking D-Bus operation exists and the
+/// queue limit counts it. The async side stops waiting after [`DEADLINE`] (the
+/// IPC loop is never blocked) but cannot release them early.
 pub fn spawn(
     notice: Notice,
     generation: u64,
     status: tokio::sync::watch::Receiver<crate::protocol::Status>,
 ) {
-    spawn_with(notice, generation, status, send);
+    spawn_with(notice, generation, status, send, DEADLINE);
 }
 
 fn spawn_with(
@@ -230,29 +249,25 @@ fn spawn_with(
     generation: u64,
     status: tokio::sync::watch::Receiver<crate::protocol::Status>,
     sender: Sender,
+    deadline: Duration,
 ) {
     WAITING.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let slot = Slot;
     tokio::spawn(async move {
-        let result = {
-            let _turn = TURN.lock().await;
-            let stale = still_current(&status.borrow(), generation, &notice.room);
-            if let Some(category) = stale {
-                Err(category)
-            } else {
-                let call = call(&notice);
-                match tokio::time::timeout(
-                    DEADLINE,
-                    tokio::task::spawn_blocking(move || sender(&call)),
-                )
-                .await
-                {
-                    Ok(Ok(result)) => result.map(|_| ()),
-                    Ok(Err(_)) => Err("notify_failed"),
-                    Err(_) => Err("notify_timeout"),
-                }
-            }
+        let turn = TURN.lock().await;
+        let call = call(&notice);
+        let room = notice.room;
+        let work = tokio::task::spawn_blocking(move || {
+            let _held = (turn, slot);
+            sender(&call, &|| {
+                still_current(&status.borrow(), generation, &room)
+            })
+        });
+        let result = match tokio::time::timeout(deadline, work).await {
+            Ok(Ok(result)) => result.map(|_| ()),
+            Ok(Err(_)) => Err("notify_failed"),
+            Err(_) => Err("notify_timeout"),
         };
-        WAITING.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
         if let Err(category) = result {
             eprintln!("{category}");
         }
@@ -384,6 +399,8 @@ mod tests {
 
     /// Runs `body` against a private bus whose fake notification server records
     /// the arguments it receives and answers `reply` (an id, or an error).
+    /// Milliseconds the fake server waits before answering (a stalled server).
+    pub(super) static STALL_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     pub(super) fn with_fake_server(
         reply: Option<u32>,
         body: impl FnOnce(&Connection, &Mutex<Vec<String>>, &str),
@@ -408,6 +425,7 @@ mod tests {
                     items.next();
                 }
                 record.lock().unwrap().push(fields.join("|"));
+                std::thread::sleep(Duration::from_millis(STALL_MS.load(Ordering::SeqCst)));
                 let _ = match reply {
                     Some(id) => connection
                         .channel()
@@ -492,7 +510,7 @@ mod unavailable_tests {
             "11111111-1111-4111-8111-111111111111",
             None,
         );
-        let result = send(&call(&notice.unwrap()));
+        let result = send(&call(&notice.unwrap()), &|| None);
         match saved {
             Some(value) => std::env::set_var(key, value),
             None => std::env::remove_var(key),
@@ -506,7 +524,7 @@ mod queued_tests {
     use super::*;
     use crate::protocol::{Room, Status};
     const ROOM: &str = "11111111-1111-4111-8111-111111111111";
-    static ADDRESS: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+    pub(super) static ADDRESS: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
 
     fn status() -> Status {
         let mut s = Status::new(&crate::config::Config::default());
@@ -522,11 +540,30 @@ mod queued_tests {
         });
         s
     }
-    fn to_private_bus(call: &Call) -> Result<u32, &'static str> {
+    pub(super) static IN_FLIGHT: std::sync::atomic::AtomicUsize =
+        std::sync::atomic::AtomicUsize::new(0);
+    pub(super) static MOST: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    pub(super) static CONNECT_MS: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(0);
+    pub(super) fn to_private_bus(
+        call: &Call,
+        current: &dyn Fn() -> Option<&'static str>,
+    ) -> Result<u32, &'static str> {
+        use std::sync::atomic::Ordering::SeqCst;
+        let now = IN_FLIGHT.fetch_add(1, SeqCst) + 1;
+        MOST.fetch_max(now, SeqCst);
+        // A slow connect, then the scope recheck, then the call (as `send` does).
+        std::thread::sleep(Duration::from_millis(CONNECT_MS.load(SeqCst)));
         let address = ADDRESS.lock().unwrap().clone();
         let mut channel = dbus::channel::Channel::open_private(&address).unwrap();
         channel.register().unwrap();
-        deliver(&Connection::from(channel), call)
+        let connection = Connection::from(channel);
+        let result = match current() {
+            Some(category) => Err(category),
+            None => deliver(&connection, call),
+        };
+        IN_FLIGHT.fetch_sub(1, SeqCst);
+        result
     }
 
     #[test]
@@ -557,7 +594,7 @@ mod queued_tests {
                 let (tx, rx) = tokio::sync::watch::channel(status());
                 let turn = TURN.lock().await;
                 let n = notice("Alex", "private preview", ROOM, None).unwrap();
-                spawn_with(n, 4, rx, to_private_bus);
+                spawn_with(n, 4, rx, to_private_bus, DEADLINE);
                 tokio::task::yield_now().await;
                 tx.send_modify(change);
                 drop(turn);
@@ -583,5 +620,109 @@ mod queued_tests {
     #[test]
     fn a_queued_notification_in_the_same_scope_is_delivered() {
         assert_eq!(delivered_after(|_| {}), 1);
+    }
+}
+
+#[cfg(test)]
+mod stalled_tests {
+    use super::*;
+    use crate::protocol::{Room, Status};
+    use std::sync::atomic::Ordering::SeqCst;
+    const ROOM: &str = "11111111-1111-4111-8111-111111111111";
+
+    fn status() -> Status {
+        let mut s = Status::new(&crate::config::Config::default());
+        s.connection = "authenticated".into();
+        s.generation = 4;
+        s.catalog.rooms.push(Room {
+            id: ROOM.into(),
+            name: "general".into(),
+            description: String::new(),
+            kind: "stream".into(),
+            participants: Vec::new(),
+            hidden: false,
+        });
+        s
+    }
+    fn reset() {
+        super::queued_tests::IN_FLIGHT.store(0, SeqCst);
+        super::queued_tests::MOST.store(0, SeqCst);
+        super::queued_tests::CONNECT_MS.store(0, SeqCst);
+        super::tests::STALL_MS.store(0, SeqCst);
+    }
+    fn runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    }
+    fn queue(rx: &tokio::sync::watch::Receiver<Status>, count: usize, deadline: Duration) {
+        for _ in 0..count {
+            let n = notice("Alex", "private", ROOM, None).unwrap();
+            spawn_with(
+                n,
+                4,
+                rx.clone(),
+                super::queued_tests::to_private_bus,
+                deadline,
+            );
+        }
+    }
+    async fn idle() {
+        for _ in 0..200 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            if WAITING.load(SeqCst) == 0 {
+                return;
+            }
+        }
+        panic!("notifications never finished");
+    }
+
+    #[test]
+    fn a_stalled_server_never_has_two_blocking_calls_or_frees_its_slot() {
+        reset();
+        super::tests::STALL_MS.store(700, SeqCst);
+        let mut delivered = 0;
+        super::tests::with_fake_server(Some(1), |_, seen, address| {
+            *super::queued_tests::ADDRESS.lock().unwrap() = address.to_owned();
+            runtime().block_on(async {
+                let (_tx, rx) = tokio::sync::watch::channel(status());
+                // The async side gives up after 100 ms; the first call stalls 700 ms.
+                queue(&rx, 3, Duration::from_millis(100));
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                assert_eq!(WAITING.load(SeqCst), 3, "a timed-out call freed its slot");
+                queue(&rx, 2, Duration::from_millis(100));
+                assert!(busy(), "the queue limit does not count the stalled call");
+                super::tests::STALL_MS.store(0, SeqCst);
+                idle().await;
+            });
+            delivered = seen.lock().unwrap().len();
+        });
+        assert_eq!(
+            super::queued_tests::MOST.load(SeqCst),
+            1,
+            "more than one blocking call at once"
+        );
+        assert_eq!(delivered, 5);
+    }
+
+    #[test]
+    fn a_slow_connect_cannot_deliver_a_stale_notice() {
+        reset();
+        super::queued_tests::CONNECT_MS.store(400, SeqCst);
+        let mut delivered = usize::MAX;
+        super::tests::with_fake_server(Some(1), |_, seen, address| {
+            *super::queued_tests::ADDRESS.lock().unwrap() = address.to_owned();
+            runtime().block_on(async {
+                let (tx, rx) = tokio::sync::watch::channel(status());
+                // The caller stops waiting after 50 ms; the connect finishes later.
+                queue(&rx, 1, Duration::from_millis(50));
+                tokio::time::sleep(Duration::from_millis(150)).await;
+                tx.send_modify(|s| s.generation = 5);
+                idle().await;
+            });
+            delivered = seen.lock().unwrap().len();
+        });
+        assert_eq!(delivered, 0);
     }
 }

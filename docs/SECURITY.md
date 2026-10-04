@@ -42,7 +42,7 @@ UUID and 64-hex ids), expiry 8000 ms. The helper bounds the title (200 bytes)
 and body (300 bytes after sanitizing; a request over 800/1200 bytes is refused),
 replaces control and bidi characters with spaces, and is the only place that
 escapes `&`, `<` and `>` (Omarchy's server renders bodies as styled text). The
-call runs on the blocking pool, one at a time with a 3 s call timeout and a 5 s
+call runs on the blocking pool, one at a time (the turn and queue slot are held by the blocking work itself until it returns, and the scope is rechecked there after the bus connects, just before `Notify`), with a 3 s call timeout and a 5 s
 deadline, so a stuck notification server never blocks the IPC loop; the panel is
 answered when the request is accepted. Just before delivery the helper rechecks the current status (same generation, authenticated, room still in the catalog) and drops a stale notice, so a notification queued behind a slow server is never shown after a community switch, disconnect or lost access. A failure is written to the daemon's
 stderr as a category only (`notify_unavailable`, `notify_timeout`,
