@@ -88,6 +88,7 @@ fn set_connection(
             s.recipients = crate::protocol::RecipientsView::unavailable(None, None);
             s.room_detail = crate::protocol::RoomDetailView::unavailable(None, None);
             s.people = crate::protocol::PeopleView::unavailable(None, "", None);
+            s.profiles.clear();
             s.open_rooms = crate::protocol::OpenRooms::unavailable(None);
             // Nothing is known about the status without a session; a failure's
             // category stays readable.
@@ -186,6 +187,7 @@ fn apply_loaded_config(
                     s.activity.clear();
                     s.recipients = crate::protocol::RecipientsView::unavailable(None, None);
                     s.people = crate::protocol::PeopleView::unavailable(None, "", None);
+                    s.profiles.clear();
                     s.setup = crate::protocol::JoinSetup::default();
                     s.open_rooms = crate::protocol::OpenRooms::unavailable(None);
                     s.room_action = crate::protocol::RoomAction::default();
@@ -1092,6 +1094,14 @@ async fn observe_inner(
     // The latest people directory or search read; a newer request replaces it.
     let mut people_jobs = tokio::task::JoinSet::new();
     let mut people_ticket = 0_u64;
+    // Names of history authors the roster does not list: one bounded read per
+    // history refresh, none while another is in flight (see `profiles.rs`).
+    let mut profile_cache = crate::profiles::Cache::default();
+    let mut profile_jobs: tokio::task::JoinSet<(
+        u64,
+        Vec<nostr::PublicKey>,
+        Result<std::collections::BTreeMap<String, String>, &'static str>,
+    )> = tokio::task::JoinSet::new();
     // Older pages held for the selected room. Every path that resets that
     // room's history (`drop_older!`) discards them and any in-flight older read.
     let mut held = crate::history::Held::default();
@@ -1170,6 +1180,48 @@ async fn observe_inner(
                 };
                 (ticket, generation, room, result)
             });
+        }};
+    }
+    macro_rules! spawn_profiles {
+        () => {{
+            if fresh && profile_jobs.is_empty() && relay_pin.is_some() {
+                let (authors, mut skip, generation) = {
+                    let s = tx.borrow();
+                    (
+                        s.history
+                            .rows
+                            .iter()
+                            .map(|r| r.author.clone())
+                            .chain(s.thread.rows.iter().map(|r| r.row.author.clone()))
+                            .collect::<Vec<_>>(),
+                        s.recipients
+                            .entries
+                            .iter()
+                            .map(|e| e.key.clone())
+                            .collect::<std::collections::BTreeSet<_>>(),
+                        s.generation,
+                    )
+                };
+                // This identity is always on the roster, whose read names it.
+                skip.insert(own_key.clone());
+                let asked = profile_cache.wanted(&authors, &skip, std::time::Instant::now());
+                if !asked.is_empty() {
+                    let relay = relay.to_owned();
+                    let keys = keys.clone();
+                    profile_jobs.spawn(async move {
+                        let result = match timeout(
+                            Duration::from_secs(15),
+                            crate::profiles::fetch(&relay, &keys, &asked),
+                        )
+                        .await
+                        {
+                            Ok(r) => r,
+                            Err(_) => Err("profiles_timeout"),
+                        };
+                        (generation, asked, result)
+                    });
+                }
+            }
         }};
     }
     macro_rules! spawn_open_rooms {
@@ -2026,6 +2078,19 @@ async fn observe_inner(
                     }
                 }
             },
+            result=profile_jobs.join_next(), if !profile_jobs.is_empty()=> {
+                if let Some(Ok((generation,asked,result)))=result {
+                    if generation==tx.borrow().generation && fresh {
+                        let now=std::time::Instant::now();
+                        match result {
+                            Ok(found)=>profile_cache.record(&asked,found,now),
+                            Err(error)=> {eprintln!("omarchy-buzz: author profile read failed: {error}");profile_cache.fail(&asked,now);},
+                        }
+                        let served=profile_cache.served(now);
+                        publish_status(tx,|s|s.profiles=served);
+                    }
+                }
+            },
             result=people_jobs.join_next(), if !people_jobs.is_empty()=> {
                 if matches!(&result,Some(Err(e)) if !e.is_cancelled()) {
                     people_jobs.abort_all();people_jobs=tokio::task::JoinSet::new();people_ticket=people_ticket.wrapping_add(1);
@@ -2180,6 +2245,7 @@ async fn observe_inner(
                                 Thread::unavailable(Some(room.clone()),Some(root.clone()),Some(thread_category(error)))
                             },
                         });
+                        if tx.borrow().thread.state=="snapshot" {spawn_profiles!();}
                         if live.primed_for(Some(room.as_str())) && tx.borrow().thread.state=="snapshot" && thread_refetch.is_none() {
                             thread_refetch=Some(tokio::time::Instant::now()+policy.live_poll);
                         }
@@ -2213,6 +2279,7 @@ async fn observe_inner(
                         Err(error)=> {eprintln!("omarchy-buzz: older history read failed: {error}");"unavailable"},
                     };
                     if let Some(view)=project!() {publish_status(tx,|s|s.history=view);}
+                    spawn_profiles!();
                 },
                 Some(Err(error)) if !error.is_cancelled()=> {
                     held.older_state="unavailable";
@@ -2249,6 +2316,7 @@ async fn observe_inner(
                             s.activity=activity.summaries();
                             s.history=projected;
                         });
+                        if fetched {spawn_profiles!();}
                         // The live subscription is (re)armed only after a verified
                         // head page for the selected room in a fresh session.
                         if fetched && fresh && live.room().is_none() && live.can_arm(tokio::time::Instant::now()) {

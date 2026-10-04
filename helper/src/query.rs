@@ -68,6 +68,11 @@ pub enum QueryRequest {
     AgentProfiles {
         authors: Vec<nostr::PublicKey>,
     },
+    /// Kind 0 profiles of message authors the roster does not list
+    /// (`profiles::fetch`), at most `profiles::BATCH` keys.
+    AuthorProfiles {
+        authors: Vec<nostr::PublicKey>,
+    },
     /// `user_status`: kind 30315 on the `d:general` coordinate (Desktop's
     /// `fetchUserStatusLookup` filter, `hooks.ts:198-250`).
     UserStatuses {
@@ -97,6 +102,11 @@ impl QueryRequest {
                 serde_json::json!({"kinds":[39002],"#d":[room.to_string()],"limit":1})
             }
             Self::Profiles { authors } if !authors.is_empty() && authors.len() <= 20 => {
+                serde_json::json!({"kinds":[0],"authors":authors.iter().map(|p|p.to_hex()).collect::<Vec<_>>(),"limit":authors.len()})
+            }
+            Self::AuthorProfiles { authors }
+                if !authors.is_empty() && authors.len() <= crate::profiles::BATCH =>
+            {
                 serde_json::json!({"kinds":[0],"authors":authors.iter().map(|p|p.to_hex()).collect::<Vec<_>>(),"limit":authors.len()})
             }
             Self::AgentProfiles { authors } if !authors.is_empty() && authors.len() <= 20 => {
@@ -184,7 +194,7 @@ impl QueryRequest {
                                 .is_some_and(|id| *id == room.to_string())
                     })
             }
-            Self::Profiles { authors } => {
+            Self::Profiles { authors } | Self::AuthorProfiles { authors } => {
                 event.kind.as_u16() == 0 && authors.contains(&event.pubkey)
             }
             Self::People { .. } => event.kind.as_u16() == 0,

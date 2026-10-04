@@ -417,6 +417,43 @@ fn metadata_request_is_typed_and_bounded() {
 }
 
 #[test]
+fn author_profile_request_is_exact_kind_zero_and_bounded_to_fifty() {
+    let viewer = Keys::generate();
+    let a = Keys::generate();
+    let request = QueryRequest::AuthorProfiles {
+        authors: vec![a.public_key()],
+    };
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&request.body(&viewer).unwrap()).unwrap(),
+        serde_json::json!([{"kinds":[0],"authors":[a.public_key().to_hex()],"limit":1}])
+    );
+    let profile = EventBuilder::new(Kind::Custom(0), r#"{"name":"A"}"#)
+        .sign_with_keys(&a)
+        .unwrap();
+    assert!(request.matches(&profile, &viewer));
+    let other = EventBuilder::new(Kind::Custom(0), "{}")
+        .sign_with_keys(&viewer)
+        .unwrap();
+    assert!(!request.matches(&other, &viewer));
+    let note = EventBuilder::new(Kind::Custom(1), "x")
+        .sign_with_keys(&a)
+        .unwrap();
+    assert!(!request.matches(&note, &viewer));
+    let fifty = vec![a.public_key(); crate::profiles::BATCH];
+    assert!(QueryRequest::AuthorProfiles { authors: fifty }
+        .body(&viewer)
+        .is_ok());
+    assert!(QueryRequest::AuthorProfiles { authors: vec![] }
+        .body(&viewer)
+        .is_err());
+    assert!(QueryRequest::AuthorProfiles {
+        authors: vec![a.public_key(); crate::profiles::BATCH + 1]
+    }
+    .body(&viewer)
+    .is_err());
+}
+
+#[test]
 fn agent_profile_request_is_exact_author_and_bounded() {
     let viewer = Keys::generate();
     let agent = Keys::generate();

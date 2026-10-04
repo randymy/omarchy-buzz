@@ -22,6 +22,7 @@ mod live;
 mod media;
 mod notify;
 mod presence;
+mod profiles;
 mod protocol;
 mod query;
 #[cfg(test)]
