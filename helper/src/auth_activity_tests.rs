@@ -121,6 +121,8 @@ async fn scenario(select_background_before_denial: bool) {
                             match request[0]["kinds"].as_array().unwrap()[0].as_u64().unwrap() {
                                 39002 => ok(&serde_json::to_string(&members).unwrap()),
                                 39000 => ok(&serde_json::to_string(&metadata).unwrap()),
+                                // Names of authors the roster does not list: none have a profile here.
+                                0 => ok("[]"),
                                 9 => {
                                     let room = request[0]["#h"][0].as_str().unwrap();
                                     if room == b_for_server {
@@ -271,6 +273,8 @@ async fn thread_reply_reaches_notice_through_the_recent_read() {
                             match request[0]["kinds"].as_array().unwrap()[0].as_u64().unwrap() {
                                 39002 => ok(&serde_json::to_string(&members).unwrap()),
                                 39000 => ok(&serde_json::to_string(&metadata).unwrap()),
+                                // Names of authors the roster does not list: none have a profile here.
+                                0 => ok("[]"),
                                 9 if request[0]["top_level"] == true => ok(&head),
                                 9 => {
                                     // The production shape of the recent read: no extension flags.

@@ -188,6 +188,7 @@ Item {
     onExited: function(exitCode) {
       if (exitCode !== 0) return
       root.notificationSettingsDirReady = true
+      root.scheduleNamesSave()
       notificationSettingsFile.reload()
       if (root.notificationSettingsLoaded && root.notificationPreferenceDirty) notificationSettingsSave.restart()
     }
@@ -247,6 +248,77 @@ Item {
     printErrors: false
     blockLoading: true
     onLoaded: root.loadViewSettings(text())
+  }
+  // The names the helper served for the current community, kept across shell
+  // restarts so authors are not hex keys while the first member list is still
+  // loading. Presentation only: plain text, one community (`scope` is its relay
+  // and identity), at most `knownNamesLimit` names; mentions still use exact
+  // keys. Anything that does not validate is ignored.
+  readonly property string namesPath: notificationSettingsDir + "/names.json"
+  property var persistedNames: ({scope: "", entries: []})
+  function validServedName(name) {
+    return boundedString(name, 64) && utf8Size(name) <= 64 && name.trim() !== ""
+      && !/[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069\u200e\u200f\u061c]/.test(name)
+  }
+  function loadNames(raw) {
+    try {
+      var parsed = JSON.parse(raw)
+      if (!parsed || parsed.version !== 1 || !validRememberedScope(parsed.scope) || !Array.isArray(parsed.names)
+          || parsed.names.length > knownNamesLimit) return
+      var seen = ({})
+      var entries = []
+      for (var i = 0; i < parsed.names.length; i++) {
+        var entry = parsed.names[i]
+        if (!entry || typeof entry.key !== "string" || !/^[a-f0-9]{64}$/.test(entry.key) || seen[entry.key]
+            || !validServedName(entry.name)) return
+        seen[entry.key] = true
+        entries.push({key: entry.key, name: entry.name})
+      }
+      persistedNames = {scope: parsed.scope, entries: entries}
+      adoptPersistedNames()
+    } catch (error) { /* Missing or malformed names are not used. */ }
+  }
+  // Only for the community they were served for; names learned since win.
+  function adoptPersistedNames() {
+    if (persistedNames.scope === "" || persistedNames.scope !== knownNamesScope) return
+    var next = ({})
+    var order = []
+    for (var i = 0; i < persistedNames.entries.length; i++) {
+      var entry = persistedNames.entries[i]
+      if (knownNames[entry.key] !== undefined) continue
+      next[entry.key] = entry.name
+      order.push(entry.key)
+    }
+    for (var j = 0; j < knownNameOrder.length; j++) {
+      next[knownNameOrder[j]] = knownNames[knownNameOrder[j]]
+      order.push(knownNameOrder[j])
+    }
+    while (order.length > knownNamesLimit) delete next[order.shift()]
+    knownNameOrder = order
+    knownNames = next
+  }
+  function scheduleNamesSave() {
+    if (sampleMode || !notificationSettingsDirReady || !validRememberedScope(knownNamesScope) || namesSave.running) return
+    namesSave.start()
+  }
+  FileView {
+    id: namesFile
+    path: root.namesPath
+    watchChanges: false
+    atomicWrites: true
+    printErrors: false
+    blockLoading: true
+    onLoaded: root.loadNames(text())
+  }
+  // At most one write every three seconds.
+  Timer {
+    id: namesSave
+    interval: 3000
+    onTriggered: {
+      if (!root.notificationSettingsDirReady || !root.validRememberedScope(root.knownNamesScope)) return
+      var names = root.knownNameOrder.map(function(key) { return {key: key, name: root.knownNames[key]} })
+      namesFile.setText(JSON.stringify({version: 1, scope: root.knownNamesScope, names: names}) + "\n")
+    }
   }
   property string helperExecutable: Quickshell.env("HOME") + "/.local/bin/omarchy-buzz"
   property string connection: "unavailable"
@@ -308,7 +380,11 @@ Item {
     && resyncStage === "" && actionState !== "sending" && deliveryState !== "sending"
   // Presentation only: the helper decides who may edit or delete (own messages).
   readonly property var quickReactions: ["👍", "❤️", "😂", "🎉", "🙏", "😮", "😢", "🚀"]
-  property int recipientsRetryBudget: 0
+  // A transient member-list failure (unavailable, timeout, busy; never access
+  // denied) is read again while the room stays selected: after 2, 5 and 15
+  // seconds, then every 30 seconds. `recipientsRetryAttempt` counts the tries.
+  property var recipientsRetryDelays: [2000, 5000, 15000, 30000]
+  property int recipientsRetryAttempt: 0
   property string recipientsRetryRoom: ""
   property string recipientsRetryInstance: ""
   property int recipientsRetryGeneration: 0
@@ -449,11 +525,36 @@ Item {
     while (order.length > knownNamesLimit) delete next[order.shift()]
     knownNameOrder = order
     knownNames = next
+    scheduleNamesSave()
   }
   function forgetNames(scope) {
     knownNamesScope = scope
     knownNameOrder = []
     knownNames = ({})
+    profileEntries = []
+    adoptPersistedNames()
+  }
+  // Names of message authors the member list does not list, read by the helper
+  // from their signed profiles (`author_profiles`); the last list seen, so a
+  // repeated status does not undo a newer name.
+  property var profileEntries: []
+  function validatedProfiles(value) {
+    if (!Array.isArray(value) || value.length > 200) return null
+    var seen = ({})
+    var entries = []
+    for (var i = 0; i < value.length; i++) {
+      var entry = value[i]
+      if (!entry || typeof entry.key !== "string" || !/^[a-f0-9]{64}$/.test(entry.key) || seen[entry.key]
+          || typeof entry.name !== "string" || !validServedName(entry.name)) return null
+      seen[entry.key] = true
+      entries.push({key: entry.key, name: entry.name})
+    }
+    return entries
+  }
+  function applyProfiles(entries) {
+    if (sameProjection(profileEntries, entries)) return
+    profileEntries = entries
+    rememberNames(entries)
   }
   // Existing conversations first, then the relay's directory or search, then
   // the open room's members while that read has not answered. Those typed
@@ -2487,6 +2588,15 @@ Item {
       : threadHasMore ? "First " + threadRows.length + " replies · more exist"
       : threadRows.length + (threadRows.length === 1 ? " reply" : " replies"))
       + (threadCategory === "thread_replies_hidden" ? " · some hidden" : "")
+  function scheduleRecipientsRetry() {
+    if (recipientsRetry.running || !recipientsSupported || selectedRoomId === "") return
+    recipientsRetry.interval = recipientsRetryDelays[Math.min(recipientsRetryAttempt, recipientsRetryDelays.length - 1)]
+    recipientsRetryAttempt++
+    recipientsRetryRoom = selectedRoomId
+    recipientsRetryInstance = instanceId
+    recipientsRetryGeneration = generation
+    recipientsRetry.start()
+  }
   function clearRecipients() {
     recipientsRetry.stop()
     pendingRecipientsRequestId = ""
@@ -2508,7 +2618,7 @@ Item {
       pendingRecipientsRequestId = ""
     } else clearRecipients()
     if (!available) return
-    recipientsRetryBudget = 2
+    recipientsRetryAttempt = 0
     recipientsRetryRoom = selectedRoomId
     recipientsRetryInstance = instanceId
     recipientsRetryGeneration = generation
@@ -2599,7 +2709,7 @@ Item {
     catalogMoreCategory = ""
     if (!sampleMode) selectedRoomId = ""
   }
-  readonly property var knownCapabilities: ["connection_status", "room_catalog", "room_history", "message_send", "room_recipients", "history_auto_refresh", "room_activity", "agent_profiles", "thread_replies", "thread_send", "thread_summaries", "dm_open", "older_history", "live_updates", "setup_assist", "community_join", "invite_mint", "attachments", "user_status", "presence", "communities", "people_search", "message_actions", "room_manage", "desktop_notify"]
+  readonly property var knownCapabilities: ["connection_status", "room_catalog", "room_history", "message_send", "room_recipients", "history_auto_refresh", "room_activity", "agent_profiles", "thread_replies", "thread_send", "thread_summaries", "dm_open", "older_history", "live_updates", "setup_assist", "community_join", "invite_mint", "attachments", "user_status", "presence", "communities", "people_search", "message_actions", "room_manage", "desktop_notify", "author_profiles"]
   // Distinct known names only, so the length bound follows the list.
   function validCapabilities(capabilities) {
     return Array.isArray(capabilities) && capabilities.length >= 1 && capabilities.length <= knownCapabilities.length
@@ -2972,10 +3082,7 @@ Item {
           clearRecipients()
           recipientsCategory = "recipients_unavailable"
         }
-        if (frame.category === "request_busy" && recipientsRetryBudget > 0) {
-          recipientsRetryBudget--
-          recipientsRetry.restart()
-        }
+        if (frame.category === "request_busy") scheduleRecipientsRetry()
       }
       // Only the read-only recipient lookup gets bounded, scope-fenced retries.
       // Message submissions are never retried automatically.
@@ -3039,6 +3146,9 @@ Item {
     var supportsPeople = frame.capabilities.indexOf("people_search") !== -1
     var people = supportsPeople ? validatedPeople(state.people) : null
     if (supportsPeople && !people) { fail("invalid_response"); return false }
+    var supportsProfiles = frame.capabilities.indexOf("author_profiles") !== -1
+    var authorProfiles = supportsProfiles ? validatedProfiles(state.profiles) : null
+    if (supportsProfiles && !authorProfiles) { fail("invalid_response"); return false }
     var supportsJoin = frame.capabilities.indexOf("community_join") !== -1
     var join = supportsJoin ? validatedJoinSetup(state.setup) : null
     var open = supportsJoin ? validatedOpenRooms(state.openRooms, catalog) : null
@@ -3164,12 +3274,17 @@ Item {
         recipientsRoomId = recipients.roomId
         // Only a changed member list is new evidence; repeats must not undo a newer name.
         var rosterChanged = !sameProjection(recipientEntries, recipients.entries) || recipientsState !== recipients.state
+        var recipientsFailed = recipients.state === "unavailable" && recipientsState !== "unavailable"
+          && ["recipients_unavailable", "recipients_timeout"].indexOf(recipients.category) !== -1
+        if (recipients.state === "snapshot" && rosterChanged) { recipientsRetry.stop(); recipientsRetryAttempt = 0 }
         if (!sameProjection(recipientEntries, recipients.entries)) recipientEntries = recipients.entries
         if (!sameProjection(agentProfiles, agents)) agentProfiles = agents
         if (recipients.state === "snapshot" && rosterChanged) rememberNames(recipients.entries)
         recipientsState = recipients.state
         recipientsCategory = recipients.category
         recipientsPartial = recipients.partial
+        // The helper reports a failed read as a status, not an error frame.
+        if (recipientsFailed) scheduleRecipientsRetry()
       }
     }
     roomActivitySupported = supportsActivity
@@ -3207,6 +3322,7 @@ Item {
         || incomingScope !== scopeBefore) clearPeople()
     peopleSupported = supportsPeople
     if (people) applyPeople(people)
+    if (authorProfiles) applyProfiles(authorProfiles)
     setupAssistSupported = frame.capabilities.indexOf("setup_assist") !== -1
     if (frame.type === "status" && setupState === "sending" && frame.id === setupRequestId && frame.instanceId === setupInstance) {
       setupTimeout.stop()
@@ -3441,6 +3557,7 @@ Item {
           || root.selectedRoomId !== root.recipientsRetryRoom
           || root.instanceId !== root.recipientsRetryInstance
           || root.generation !== root.recipientsRetryGeneration) return
+      if (!root.recipientsSupported) return
       if (!root.recipientsRetained()) root.recipientsState = "loading"
       root.send("fetch_recipients", root.selectedRoomId)
     }

@@ -362,3 +362,221 @@ async fn older_page_is_held_across_head_refresh_and_dropped_on_reselect() {
     .await
     .expect("older history observer fixture deadline");
 }
+
+/// Authors the roster does not list are named by one bounded kind 0 read that
+/// piggybacks on the history refresh; it is not repeated by the next refresh.
+#[tokio::test]
+async fn unlisted_authors_are_named_once_from_signed_profiles() {
+    let _fixture = crate::NETWORK_TEST_LOCK.lock().await;
+    timeout(Duration::from_secs(25), async {
+        let user = Keys::generate();
+        let relay = Keys::generate();
+        let stranger = Keys::generate();
+        let signer = relay.public_key();
+        let public = user.public_key();
+        let room = uuid::Uuid::new_v4().to_string();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("ws://{}/", listener.local_addr().unwrap());
+        let now = nostr::Timestamp::now().as_secs();
+        let membership = event(
+            &relay,
+            39002,
+            "",
+            vec![
+                Tag::parse(["d", &room]).unwrap(),
+                Tag::parse(["p", &public.to_hex()]).unwrap(),
+            ],
+        );
+        let metadata = event(
+            &relay,
+            39000,
+            "",
+            vec![
+                Tag::parse(["d", &room]).unwrap(),
+                Tag::parse(["name", "Synthetic Room"]).unwrap(),
+                Tag::parse(["t", "stream"]).unwrap(),
+            ],
+        );
+        let stamp = |who: &Keys, content: &str, at: u64| {
+            EventBuilder::new(Kind::Custom(40002), content)
+                .tags([Tag::parse(["h", &room]).unwrap()])
+                .custom_created_at(nostr::Timestamp::from(at))
+                .sign_with_keys(who)
+                .unwrap()
+        };
+        let rows = vec![
+            stamp(&stranger, "from outside the roster", now - 20),
+            stamp(&user, "mine", now - 10),
+        ];
+        let profile = EventBuilder::new(
+            Kind::Custom(0),
+            json!({"name": "Stranger \u{202e}Name"}).to_string(),
+        )
+        .sign_with_keys(&stranger)
+        .unwrap();
+        let heads = Arc::new(AtomicUsize::new(0));
+        let lookups = Arc::new(tokio::sync::Mutex::new(Vec::<Value>::new()));
+        let (head_count, seen) = (heads.clone(), lookups.clone());
+        let (server_room, server_relay, server_origin) =
+            (room.clone(), relay.clone(), origin.clone());
+        let (finish_send, mut finish_wait) = oneshot::channel::<()>();
+        let server = AbortTask(tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut ws = accept_async(tcp).await.unwrap();
+            ws.send(Message::Text(json!(["AUTH", "initial"]).to_string().into()))
+                .await
+                .unwrap();
+            let Some(Ok(Message::Text(text))) = ws.next().await else {
+                panic!("AUTH expected")
+            };
+            let frame: Value = serde_json::from_str(&text).unwrap();
+            let auth: Event = serde_json::from_value(frame[1].clone()).unwrap();
+            assert!(auth
+                .tags
+                .iter()
+                .any(|t| t.as_slice() == ["relay", server_origin.as_str()]));
+            ws.send(Message::Text(
+                json!(["OK", auth.id.to_hex(), true, ""]).to_string().into(),
+            ))
+            .await
+            .unwrap();
+            let _websocket = AbortTask(tokio::spawn(async move {
+                while let Some(Ok(Message::Text(text))) = ws.next().await {
+                    let value: Value = serde_json::from_str(&text).unwrap();
+                    if matches!(value[0].as_str(), Some("REQ" | "CLOSE")) {
+                        continue;
+                    }
+                    ws.send(Message::Text(
+                        json!(["COUNT", value[1], {"count": 0}]).to_string().into(),
+                    ))
+                    .await
+                    .unwrap();
+                }
+            }));
+            let bounds = event(
+                &server_relay,
+                39006,
+                r#"{"has_more":false,"next_cursor":null}"#,
+                vec![
+                    Tag::parse(["h", &server_room]).unwrap(),
+                    Tag::parse(["d", &format!("{server_room}:head")]).unwrap(),
+                ],
+            );
+            loop {
+                let (mut stream, _) = tokio::select! {
+                    accepted = listener.accept() => accepted.unwrap(),
+                    _ = &mut finish_wait => break,
+                };
+                let (head, body) = request(&mut stream).await;
+                let payload = if head.starts_with("get /info ") {
+                    json!({"self": signer.to_hex()}).to_string()
+                } else {
+                    let body = body.unwrap();
+                    if body[0]["kinds"] == json!([9, 40002]) && body[0].get("top_level").is_none() {
+                        "[]".to_string()
+                    } else if body[0]["kinds"] == json!([39002]) {
+                        serde_json::to_string(&vec![membership.clone()]).unwrap()
+                    } else if body[0]["kinds"] == json!([39000]) {
+                        serde_json::to_string(&vec![metadata.clone()]).unwrap()
+                    } else if body[0]["kinds"] == json!([0]) {
+                        seen.lock().await.push(body.clone());
+                        serde_json::to_string(&vec![profile.clone()]).unwrap()
+                    } else {
+                        head_count.fetch_add(1, Ordering::SeqCst);
+                        let mut page = rows.clone();
+                        page.push(bounds.clone());
+                        serde_json::to_string(&page).unwrap()
+                    }
+                };
+                let _ = stream
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            payload.len(),
+                            payload
+                        )
+                        .as_bytes(),
+                    )
+                    .await;
+            }
+        }));
+        let config = config::Config {
+            relay: Some(origin.clone()),
+            identity: Some(public.to_hex()),
+            communities: Vec::new(),
+        };
+        let (tx, mut status) = watch::channel(Status::new(&config));
+        let (commands, mut command_rx) = mpsc::channel(4);
+        let mut conn = connect_identity(&origin, &user).await.unwrap();
+        let observer = AbortTask(tokio::spawn(async move {
+            let mut pin = None;
+            let mut backoff = Backoff::default();
+            observe_connection(
+                &mut conn,
+                &user,
+                &origin,
+                &mut pin,
+                &tx,
+                &mut command_rx,
+                &mut backoff,
+                FreshnessPolicy {
+                    interval: Duration::from_secs(2),
+                    response: Duration::from_secs(1),
+                    ..FRESHNESS
+                },
+            )
+            .await
+        }));
+        wait_status(&mut status, |s| s.catalog.rooms.len() == 1).await;
+        assert!(status.borrow().profiles.is_empty());
+        commands
+            .send(crate::protocol::Command::FetchRecent(room.clone()))
+            .await
+            .unwrap();
+        wait_status(&mut status, |s| !s.profiles.is_empty()).await;
+        {
+            let s = status.borrow();
+            assert_eq!(s.profiles.len(), 1);
+            assert_eq!(s.profiles[0].key, stranger.public_key().to_hex());
+            // The signed name is served sanitized: no bidi control survives.
+            assert_eq!(s.profiles[0].name, "Stranger  Name");
+        }
+        {
+            let asked = lookups.lock().await;
+            assert_eq!(asked.len(), 1);
+            let mut authors: Vec<String> = asked[0][0]["authors"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|a| a.as_str().unwrap().to_owned())
+                .collect();
+            authors.sort();
+            let mut expected = vec![stranger.public_key().to_hex()];
+            expected.sort();
+            assert_eq!(authors, expected);
+            assert_eq!(asked[0][0]["kinds"], json!([0]));
+            assert_eq!(asked[0][0]["limit"], json!(1));
+        }
+        // This identity (a row author too) was not asked about. The next automatic
+        // head refresh does not ask again: the name is cached.
+        let before = heads.load(Ordering::SeqCst);
+        timeout(Duration::from_secs(8), async {
+            while heads.load(Ordering::SeqCst) == before {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("automatic head refresh");
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(
+            lookups.lock().await.len(),
+            1,
+            "known or missing keys were read again"
+        );
+        drop(observer);
+        let _ = finish_send.send(());
+        drop(server);
+    })
+    .await
+    .expect("author profile observer fixture deadline");
+}

@@ -69,6 +69,15 @@ payloads must remain disabled. Adding logging must preserve this requirement.
 No enrolled identity means no relay authentication attempt. Do not use a real
 identity or live relay merely to test IPC.
 
+Author names (`author_profiles` capability): history authors the room roster does
+not list are looked up with one signed `{"kinds":[0],"authors":[...]}` read of at
+most 50 keys after a history refresh (never on a timer, never while one is in
+flight, never for this identity or a roster member). Names are verified,
+sanitized like roster names and served in `status.profiles` (at most 200, plain
+presentation hints). A key read without a name is not asked again for 10 minutes,
+a failed read for 60 seconds. The panel also keeps served names in
+`$XDG_STATE_HOME/omarchy-buzz/names.json` (per community, at most 1000, validated on load).
+
 Build with Rust 1.95, the tested toolchain and inspected Buzz pin. An older
 minimum supported version has not been established for this resolved lockfile.
 Keep the committed Cargo.lock pinned. The helper now selects the system D-Bus
