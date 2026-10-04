@@ -116,4 +116,25 @@ assert.deepEqual(errors('\x1b[31mx\n'.repeat(61)), ['Too tall: 61 lines, at most
 assert.ok(AnsiArt.check('\x1b[2J\x1b[H\x1b[31mhi\x1b[5C\x1b]0;t\x07there').ok, 'cursor sequences are removed, not refused');
 assert.equal(AnsiArt.check('\x1b[2J\x1b[Hhi').art, AnsiArt.sanitize('\x1b[2J\x1b[Hhi'));
 
+// The color row: a distinct palette that stays readable (3:1) on dark and light panels.
+const colors = Library.COLORS.map((c) => c.hex);
+assert.equal(colors.length, 14);
+assert.equal(new Set(colors).size, colors.length, 'palette colors are distinct');
+for (const c of colors) assert.ok(AnsiArt.validTint(c), `${c} is a valid stored color`);
+for (const back of ['#000000', '#1a1b26', '#2b2b2b', '#ffffff', '#f5f0e6', '#eff1f5', '#808080']) {
+  for (const c of colors) {
+    const shown = Library.readable(c, back);
+    assert.match(shown, /^#[0-9a-f]{6}$/);
+    assert.ok(Library.contrast(shown, back) >= 3, `${c} on ${back} -> ${shown}`);
+  }
+}
+assert.equal(Library.readable('#ef4444', '#1a1b26'), '#ef4444', 'readable colors are unchanged');
+assert.equal(Library.readable('#ef4444', '#ff1a1b26'), '#ef4444', 'a leading alpha is ignored');
+assert.notEqual(Library.readable('#fde047', '#ffffff'), '#fde047', 'yellow is darkened on white');
+for (const bad of ['red', 'red; x', '#zzzzzz', '#ABCDEF', '#fff', '#1234567', '#ef4444\n', '', null, 7, undefined]) {
+  assert.equal(AnsiArt.validTint(bad), false, `${JSON.stringify(bad)} is not a stored color`);
+  assert.equal(Library.readable(bad, '#000000'), '');
+}
+assert.equal(Library.readable('#ef4444', 'bad'), '');
+
 console.log(`PASS: ${entries.length} avatars in ${categories.length} categories, all valid plain ASCII in stored form; gallery helpers and paste checks`);

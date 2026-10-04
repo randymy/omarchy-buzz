@@ -5,12 +5,13 @@ import qs.Ui as Ui
 import qs.Commons
 import "AnsiArt.js" as AnsiArt
 import "AvatarLibrary.js" as AvatarLibrary
+import "PlainText.js" as PlainText
 
 // Avatar gallery for Settings: browse the built-in ASCII avatars (Previous,
 // Next, Shuffle, a category filter, Left and Right arrow keys) or paste or
 // type your own art, checked live with the same limits the avatar keeps. Each
 // choice is previewed with the real avatar at the sizes it appears; Save hands
-// the art to the owner (saveRequested), which keeps it on this machine through
+// the art and its color to the owner (saveRequested), which keeps it on this machine through
 // the existing avatar store. Nothing is sent anywhere, and no art is ever run
 // or interpreted: it is drawn as plain text by BuzzAvatar.
 FocusScope {
@@ -20,6 +21,9 @@ FocusScope {
   property string key: ""
   // The art kept now, to tell a saved choice from a new one.
   property string savedArt: ""
+  // The color kept now (#rrggbb for plain art, "" for the default), and the one shown.
+  property string savedTint: ""
+  property string tint: savedTint
   // "gallery" or "create".
   property string mode: "gallery"
   // "" for every avatar, or one of AvatarLibrary.CATEGORIES.
@@ -31,7 +35,7 @@ FocusScope {
   property real barSize: Math.max(6, Math.round(Style.font.caption * 0.8))
   property real messageSize: Style.font.caption
   property real profileSize: Style.font.body * 2
-  signal saveRequested(string art)
+  signal saveRequested(string art, string tint)
 
   readonly property var list: AvatarLibrary.indexes(category)
   readonly property int total: list.length
@@ -39,8 +43,9 @@ FocusScope {
   readonly property var custom: AnsiArt.check(customText)
   readonly property string customArt: custom.ok ? custom.art : ""
   readonly property real customBrightness: custom.colored ? AnsiArt.DEFAULT_BRIGHTNESS : 0
-  readonly property bool entrySaved: !!entry && AnsiArt.storedArt(entry.art) === savedArt
-  readonly property bool customSaved: custom.ok && custom.art === savedArt
+  readonly property bool entrySaved: !!entry && AnsiArt.storedArt(entry.art) === savedArt && tint === savedTint
+  // Colored (.ans) art has its own colors, so the color row does not apply to it.
+  readonly property bool customSaved: custom.ok && custom.art === savedArt && (custom.colored || tint === savedTint)
   readonly property string counter: !entry ? "" : (Math.min(position, total - 1) + 1) + " / " + total + " · " + entry.category
 
   implicitWidth: column.implicitWidth
@@ -56,14 +61,15 @@ FocusScope {
     category = name
     position = 0
   }
-  function saveEntry() { if (entry) saveRequested(entry.art) }
-  function saveCustom() { if (custom.ok) saveRequested(custom.art) }
+  function saveEntry() { if (entry) saveRequested(entry.art, tint) }
+  function saveCustom() { if (custom.ok) saveRequested(custom.art, custom.colored ? "" : tint) }
   // Copies the shown avatar into the Create tab to change it.
   function customize() {
     if (!entry) return
     customText = entry.art
     mode = "create"
   }
+  onSavedTintChanged: tint = savedTint
   onCustomTextChanged: if (customField.text !== customText) customField.text = customText
   onModeChanged: if (mode === "gallery") forceActiveFocus()
 
@@ -75,6 +81,7 @@ FocusScope {
     id: previews
     property string art: ""
     property real brightness: 0
+    property string tint: ""
     property string objectPrefix: ""
     spacing: Style.space(16)
     Repeater {
@@ -90,6 +97,7 @@ FocusScope {
           name: "Preview"
           art: previews.art
           brightness: previews.brightness
+          tint: previews.tint
           pixelSize: modelData.size
         }
         Text {
@@ -100,6 +108,83 @@ FocusScope {
           opacity: 0.6
           font.family: Style.font.family
           font.pixelSize: Style.font.caption
+        }
+      }
+    }
+  }
+  // The color row: Default (the theme's text color) and the palette, each
+  // shown as it will read on the panel. The shown color is root.tint.
+  component Swatches: ColumnLayout {
+    id: swatches
+    property string objectPrefix: ""
+    property bool active: true
+    spacing: Style.space(2)
+    opacity: active ? 1 : 0.4
+    Text {
+      text: swatches.active ? "Color" : "Color (colored art keeps its own colors)"
+      textFormat: Text.PlainText
+      color: Color.foreground
+      opacity: 0.7
+      font.family: Style.font.family
+      font.pixelSize: Style.font.caption
+    }
+    Flow {
+      Layout.fillWidth: true
+      spacing: Style.space(2)
+      Repeater {
+        model: [{name: "Default", hex: ""}].concat(AvatarLibrary.COLORS)
+        delegate: Item {
+          id: swatch
+          required property var modelData
+          objectName: swatches.objectPrefix + "Swatch"
+          readonly property string hex: modelData.hex
+          readonly property bool selected: root.tint === hex
+          readonly property color fill: hex === "" ? Color.foreground : AvatarLibrary.readable(hex, Color.popups.background.toString())
+          width: Style.font.body * 1.5
+          height: width
+          activeFocusOnTab: swatches.active
+          Accessible.role: Accessible.RadioButton
+          Accessible.name: modelData.name
+          Accessible.checked: selected
+          function choose() { if (swatches.active) root.tint = hex }
+          Keys.onSpacePressed: choose()
+          Keys.onReturnPressed: choose()
+          Rectangle {
+            anchors.fill: parent
+            radius: width / 2
+            color: "transparent"
+            border.width: swatch.selected ? 2 : swatch.activeFocus ? 1 : 0
+            border.color: swatch.selected ? Color.foreground : Color.popups.border
+          }
+          Rectangle {
+            anchors.centerIn: parent
+            width: parent.width - 8
+            height: width
+            radius: width / 2
+            color: swatch.fill
+            border.width: 1
+            border.color: Util.alpha(Color.foreground, 0.25)
+            Text {
+              anchors.centerIn: parent
+              visible: swatch.hex === ""
+              text: "A"
+              textFormat: Text.PlainText
+              color: Color.popups.background
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+              font.bold: true
+            }
+          }
+          MouseArea {
+            id: swatchMouse
+            anchors.fill: parent
+            enabled: swatches.active
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: { swatch.choose(); swatch.forceActiveFocus() }
+          }
+          Controls.ToolTip.visible: swatchMouse.containsMouse
+          Controls.ToolTip.text: PlainText.tip(modelData.hex === "" ? "Default (theme text color)" : modelData.name)
         }
       }
     }
@@ -172,6 +257,7 @@ FocusScope {
         Previews {
           objectPrefix: "buzzAvatarGalleryPreview"
           art: root.entry ? root.entry.art : ""
+          tint: root.tint
         }
         ColumnLayout {
           Layout.fillWidth: true
@@ -199,6 +285,11 @@ FocusScope {
             font.pixelSize: Style.font.caption
           }
         }
+      }
+      Swatches {
+        objectName: "buzzAvatarGalleryColors"
+        objectPrefix: "buzzAvatarGallery"
+        Layout.fillWidth: true
       }
       RowLayout {
         Layout.fillWidth: true
@@ -296,6 +387,12 @@ FocusScope {
         font.pixelSize: Style.font.caption
         font.bold: !root.custom.ok
       }
+      Swatches {
+        objectName: "buzzAvatarCustomColors"
+        objectPrefix: "buzzAvatarCustom"
+        active: !root.custom.colored
+        Layout.fillWidth: true
+      }
       RowLayout {
         Layout.fillWidth: true
         spacing: Style.space(8)
@@ -304,6 +401,7 @@ FocusScope {
           objectPrefix: "buzzAvatarCustomPreview"
           art: root.customArt
           brightness: root.customBrightness
+          tint: root.tint
         }
         Item { Layout.fillWidth: true }
         Ui.Button {

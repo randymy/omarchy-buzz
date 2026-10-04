@@ -894,3 +894,39 @@ function pick(list, position, unit) {
   var next = Math.min(list.length - 2, Math.floor(Math.min(0.999999, Math.max(0, unit)) * (list.length - 1)))
   return next >= position ? next + 1 : next
 }
+
+// The colors offered for plain art. Default ("") is the theme's own text color.
+var COLORS = [
+  {name: "Red", hex: "#ef4444"}, {name: "Orange", hex: "#f97316"}, {name: "Amber", hex: "#f59e0b"},
+  {name: "Yellow", hex: "#fde047"}, {name: "Lime", hex: "#a3e635"}, {name: "Green", hex: "#22c55e"},
+  {name: "Teal", hex: "#14b8a6"}, {name: "Cyan", hex: "#22d3ee"}, {name: "Sky", hex: "#38bdf8"},
+  {name: "Blue", hex: "#3b82f6"}, {name: "Indigo", hex: "#6366f1"}, {name: "Violet", hex: "#8b5cf6"},
+  {name: "Purple", hex: "#a855f7"}, {name: "Pink", hex: "#ec4899"}]
+
+function channel(hex, at) {
+  var v = parseInt(hex.slice(at, at + 2), 16) / 255
+  return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4)
+}
+function luminance(hex) { return 0.2126 * channel(hex, 1) + 0.7152 * channel(hex, 3) + 0.0722 * channel(hex, 5) }
+function contrast(a, b) {
+  var x = luminance(a), y = luminance(b)
+  return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05)
+}
+function hex2(n) { return ("0" + Math.round(n).toString(16)).slice(-2) }
+// A #rrggbb color, moved toward black or white (whichever the background
+// is not) until it reaches a 3:1 contrast against it. Colors that already
+// read well are returned unchanged. background is a color string: only its
+// last six hex digits are used (a leading alpha is ignored). "" is returned
+// when either is not a #rrggbb color.
+function readable(hex, background) {
+  var back = typeof background === "string" ? "#" + background.slice(-6).toLowerCase() : ""
+  if (typeof hex !== "string" || !/^#[0-9a-f]{6}$/.test(hex) || !/^#[0-9a-f]{6}$/.test(back)) return ""
+  if (contrast(hex, back) >= 3) return hex
+  var target = luminance(back) > 0.4 ? 0 : 255
+  for (var step = 1; step <= 20; step++) {
+    var t = step / 20, out = "#"
+    for (var at = 1; at <= 5; at += 2) out += hex2(parseInt(hex.slice(at, at + 2), 16) * (1 - t) + target * t)
+    if (contrast(out, back) >= 3) return out
+  }
+  return target === 0 ? "#000000" : "#ffffff"
+}

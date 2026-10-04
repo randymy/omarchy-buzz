@@ -4,6 +4,7 @@ import qs.Commons
 import "Identicon.js" as Identicon
 import "AnsiArt.js" as AnsiArt
 import "PlainText.js" as PlainText
+import "AvatarLibrary.js" as AvatarLibrary
 
 // A small monospace avatar: the key's identicon, or bounded pasted art when set.
 // Presentation only; the key is a public key or a persona id, never a secret.
@@ -20,6 +21,9 @@ Text {
   property real pixelSize: Style.font.caption
   // Grid art brightness (AnsiArt.adjust); 0 shows the colors as stored.
   property real brightness: 0
+  // Optional #rrggbb color for plain art (ignored for colored art and identicons),
+  // moved if needed so it reads on the panel; anything else is the default.
+  property string tint: ""
   // Message rows open a profile card; elsewhere the avatar only has a tooltip.
   property bool clickable: false
   signal activated()
@@ -31,6 +35,7 @@ Text {
   // (Render only: the stored form is unchanged, so saved files stay valid.)
   readonly property string shownArt: colored ? "" : Identicon.normalizeArt(art).replace(/^(?:[^\S\n]*\n)+/, "")
   readonly property bool usesArt: shownArt !== "" || usesColor
+  readonly property string tintColor: AvatarLibrary.readable(tint, Color.popups.background.toString())
   readonly property string keyColor: Identicon.color(key)
   // Three lines of five full blocks: the same advance and height as any identicon.
   readonly property string footprint: "█████\n█████\n█████"
@@ -38,7 +43,7 @@ Text {
   text: usesColor ? footprint : usesArt ? shownArt : Identicon.glyph(key)
   textFormat: Text.PlainText
   wrapMode: Text.NoWrap
-  color: usesColor ? "transparent" : usesArt || keyColor === "" ? Color.foreground : keyColor
+  color: usesColor ? "transparent" : usesArt ? (tintColor !== "" ? tintColor : Color.foreground) : keyColor === "" ? Color.foreground : keyColor
   font.family: Style.font.family
   font.pixelSize: pixelSize
   lineHeightMode: Text.FixedHeight

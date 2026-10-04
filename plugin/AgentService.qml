@@ -78,17 +78,24 @@ Item {
   // people keep seeing this user's identicon. Art is plain pasted text (6 × 12)
   // or sanitized ANSI grid art from a file (AnsiArt.js), never a file path.
   // Grid art is stored as {art, brightness} and shown auto-leveled at that
-  // brightness; a plain string (the earlier form) is shown as stored.
+  // brightness; a plain string (the earlier form) is shown as stored. Plain art
+  // with a chosen color is stored as {art, color} (color: lowercase #rrggbb).
+  // Colors read back are validated; an invalid one is dropped, never shown. The
+  // agent editor sets no color, so agent avatars draw in the default color.
   readonly property string avatarStateDir: (Quickshell.env("XDG_STATE_HOME").startsWith("/")
     ? Quickshell.env("XDG_STATE_HOME") : Quickshell.env("HOME") + "/.local/state") + "/omarchy-buzz"
   readonly property string avatarsPath: avatarStateDir + "/avatars.json"
   property var avatarArt: ({})
   // Brightness per id, for grid art stored in the {art, brightness} form only.
   property var avatarBrightness: ({})
+  // Color per id for plain art stored in the {art, color} form only.
+  property var avatarTint: ({})
   property bool avatarWritePending: false
   function avatarArtFor(id) { return typeof id === "string" && avatarArt.hasOwnProperty(id) ? avatarArt[id] : "" }
   // 0 when the art is shown as stored.
   function avatarBrightnessFor(id) { return typeof id === "string" && avatarBrightness.hasOwnProperty(id) ? avatarBrightness[id] : 0 }
+  // "" when the art is drawn in the default color.
+  function avatarTintFor(id) { return typeof id === "string" && avatarTint.hasOwnProperty(id) ? avatarTint[id] : "" }
   // The store id for a message author: this user's own key, or this machine's enrolled agent's persona id.
   function avatarIdForKey(key) {
     if (/^[a-f0-9]{64}$/.test(key) && avatarArt.hasOwnProperty(key)) return key
@@ -97,23 +104,29 @@ Item {
   }
   function avatarArtForKey(key) { return avatarArtFor(avatarIdForKey(key)) }
   function avatarBrightnessForKey(key) { return avatarBrightnessFor(avatarIdForKey(key)) }
+  function avatarTintForKey(key) { return avatarTintFor(avatarIdForKey(key)) }
   function validatedAvatars(raw) {
     // Missing or malformed files fail closed: no art is shown from them.
     var parsed
-    try { parsed = JSON.parse(raw) } catch (_) { return {art: {}, brightness: {}} }
+    try { parsed = JSON.parse(raw) } catch (_) { return {art: {}, brightness: {}, tint: {}} }
     if (!exactKeys(parsed, "avatars,version") || parsed.version !== 1 || !parsed.avatars
-        || typeof parsed.avatars !== "object" || Array.isArray(parsed.avatars)) return {art: {}, brightness: {}}
+        || typeof parsed.avatars !== "object" || Array.isArray(parsed.avatars)) return {art: {}, brightness: {}, tint: {}}
     var ids = Object.keys(parsed.avatars)
     // Up to 16 agents plus a few of this user's own identities.
-    var none = {art: {}, brightness: {}}
+    var none = {art: {}, brightness: {}, tint: {}}
     if (ids.length > 32) return none
-    var result = {art: {}, brightness: {}}
+    var result = {art: {}, brightness: {}, tint: {}}
     for (var i = 0; i < ids.length; i++) {
       var entry = parsed.avatars[ids[i]], art = entry
       if (entry && typeof entry === "object" && !Array.isArray(entry)) {
-        if (!exactKeys(entry, "art,brightness") || !AnsiArt.isAnsi(entry.art) || !AnsiArt.validBrightness(entry.brightness)) return none
+        var shape = Object.keys(entry).sort().join(",")
+        if (["art,brightness", "art,color"].indexOf(shape) === -1) return none
         art = entry.art
-        result.brightness[ids[i]] = entry.brightness
+        if (shape === "art,brightness") {
+          if (!AnsiArt.isAnsi(art) || !AnsiArt.validBrightness(entry.brightness)) return none
+          result.brightness[ids[i]] = entry.brightness
+        } else if (AnsiArt.isAnsi(art)) return none
+        else if (AnsiArt.validTint(entry.color)) result.tint[ids[i]] = entry.color
       }
       if (!(uuidV4(ids[i]) || /^[a-f0-9]{64}$/.test(ids[i])) || typeof art !== "string" || art === ""
           || art.length > 1048576 || AnsiArt.storedArt(art) !== art) return none
@@ -127,27 +140,34 @@ Item {
     if (!agent(id) || typeof text !== "string") return false
     return storeAvatarArt(id, text, true, brightness)
   }
+  // tint (plain art only): a lowercase #rrggbb, "" for the default color, or
+  // omitted to keep the current one; anything else is refused.
   // This user's own avatar, keyed by their public key (see above: local only).
-  function setOwnAvatarArt(key, text, brightness) {
+  function setOwnAvatarArt(key, text, brightness, tint) {
     if (typeof key !== "string" || !/^[a-f0-9]{64}$/.test(key) || typeof text !== "string") return false
-    return storeAvatarArt(key, text, false, brightness)
+    return storeAvatarArt(key, text, false, brightness, tint)
   }
-  function storeAvatarArt(id, text, prune, brightness) {
+  function storeAvatarArt(id, text, prune, brightness, tint) {
+    if (tint !== undefined && tint !== "" && !AnsiArt.validTint(tint)) return false
     var art = AnsiArt.storedArt(text)
     var level = !AnsiArt.isAnsi(art) ? 0 : typeof brightness === "number" ? AnsiArt.clampBrightness(brightness)
       : avatarBrightnessFor(id) || AnsiArt.DEFAULT_BRIGHTNESS
-    if (avatarArtFor(id) === art && avatarBrightnessFor(id) === level) return true
+    var shade = AnsiArt.isAnsi(art) || art === "" ? "" : tint === undefined ? avatarTintFor(id) : tint
+    if (avatarArtFor(id) === art && avatarBrightnessFor(id) === level && avatarTintFor(id) === shade) return true
     // Keep own-key art, and only agents the service still lists, so deleted
     // agents' art is dropped. Own art is set without pruning: the agent list
     // may be empty while the agent service is away.
-    var next = {}, nextBrightness = {}
+    var next = {}, nextBrightness = {}, nextTint = {}
     Object.keys(avatarArt).forEach(function(key) {
       if (key === id || (prune && uuidV4(key) && !root.agent(key))) return
       next[key] = root.avatarArt[key]
       if (root.avatarBrightness.hasOwnProperty(key)) nextBrightness[key] = root.avatarBrightness[key]
+      if (root.avatarTint.hasOwnProperty(key)) nextTint[key] = root.avatarTint[key]
     })
     if (art !== "") next[id] = art
     if (art !== "" && level > 0) nextBrightness[id] = level
+    if (art !== "" && shade !== "") nextTint[id] = shade
+    avatarTint = nextTint
     avatarBrightness = nextBrightness
     avatarArt = next
     avatarWritePending = true
@@ -158,7 +178,8 @@ Item {
     if (!avatarWritePending || !mainService || !mainService.notificationSettingsDirReady) return
     var avatars = {}
     Object.keys(avatarArt).forEach(function(key) {
-      avatars[key] = root.avatarBrightness.hasOwnProperty(key) ? {art: root.avatarArt[key], brightness: root.avatarBrightness[key]} : root.avatarArt[key]
+      avatars[key] = root.avatarBrightness.hasOwnProperty(key) ? {art: root.avatarArt[key], brightness: root.avatarBrightness[key]}
+        : root.avatarTint.hasOwnProperty(key) ? {art: root.avatarArt[key], color: root.avatarTint[key]} : root.avatarArt[key]
     })
     avatarsFile.setText(JSON.stringify({version: 1, avatars: avatars}) + "\n")
     avatarWritePending = false
@@ -188,6 +209,7 @@ Item {
     if (avatarWritePending) return
     var loaded = validatedAvatars(avatarsFile.text())
     avatarBrightness = loaded.brightness
+    avatarTint = loaded.tint
     avatarArt = loaded.art
   }
   // blockLoading makes text() wait for the file, so art is there on first render.

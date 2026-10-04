@@ -2,6 +2,9 @@
 // filter, shuffle staying in range, previews at the three avatar sizes, Save
 // through the existing avatar store, and pasting valid and invalid art into
 // Create your own. Synthetic frames only: no helper, relay, keys or network.
+// The color row: choosing a swatch recolors the previews, Save keeps shape and
+// color (a fresh service loads it), legacy records and invalid stored colors
+// draw in the default color, and colored (.ans) art leaves the row disabled.
 // BUZZ_GALLERY_CAPTURE (a .png path) also saves the gallery page there, and
 // BUZZ_GALLERY_SHEET a contact sheet of every avatar drawn by the real avatar.
 import QtQuick
@@ -18,6 +21,8 @@ ShellRoot {
   property int stage: 0
   property int ticks: 0
   property bool layoutWait: false
+  // Set while a stage runs, so a click's event loop cannot start it again.
+  property bool inStage: false
   readonly property string me: "b".repeat(64)
   readonly property string room: "11111111-1111-4111-8111-111111111111"
   readonly property string capturePath: Quickshell.env("BUZZ_GALLERY_CAPTURE")
@@ -57,6 +62,29 @@ ShellRoot {
     var text = reader.text()
     reader.destroy()
     return text
+  }
+  function freshOwn(what) {
+    var fresh = Qt.createQmlObject('import "plugin" as Buzz\nBuzz.Service { autoConnect: false }', test, "freshService")
+    var result = what === "tint" ? fresh.agents.avatarTintForKey(test.me) : fresh.agents.avatarArtForKey(test.me)
+    fresh.destroy()
+    return result
+  }
+  function writeStore(text) {
+    avatarsFile.setText(text)
+  }
+  function swatches(prefix) {
+    return findNamed(view, prefix + "Swatch", []).filter(function(item) { return item.visible })
+  }
+  function swatch(prefix, hex) {
+    var found = test.swatches(prefix).filter(function(item) { return item.hex === hex })
+    check(found.length === 1, "Swatch " + JSON.stringify(hex) + " missing")
+    return found[0]
+  }
+  function pick(prefix, hex) {
+    var item = test.swatch(prefix, hex)
+    // The Create tab sits lower than the test window shows, so it is chosen directly.
+    if (prefix === "buzzAvatarGallery") input.mouseClick(item, item.width / 2, item.height / 2)
+    else item.choose()
   }
   function freshOwnArt() {
     var fresh = Qt.createQmlObject('import "plugin" as Buzz\nBuzz.Service { autoConnect: false }', test, "freshService")
@@ -255,6 +283,116 @@ ShellRoot {
     service.agents.setOwnAvatarArt(test.me, "", 0)
   }
 
+  function colorCases(gallery) {
+    var back = Color.popups.background.toString()
+    var red = "#ef4444", sky = "#38bdf8"
+    gallery.tint = ""
+    gallery.setCategory("")
+    gallery.position = 1
+    var entry = AvatarLibrary.ENTRIES[1]
+    service.agents.setOwnAvatarArt(test.me, entry.art, 0)
+    test.settle()
+    // One swatch for the default and one for each palette color, all readable on this panel.
+    check(AvatarLibrary.COLORS.length === 14 && test.swatches("buzzAvatarGallery").length === 15, "Swatch count wrong: " + test.swatches("buzzAvatarGallery").length)
+    test.swatches("buzzAvatarGallery").forEach(function(item) {
+      check(item.hex === "" || AvatarLibrary.contrast(String(item.fill), "#" + back.slice(-6)) >= 3, "Swatch " + item.hex + " unreadable on the panel")
+    })
+    check(test.swatch("buzzAvatarGallery", "").selected && !test.swatch("buzzAvatarGallery", red).selected, "Default not selected at first")
+    var bar = one("buzzAvatarGalleryPreviewBar"), profile = one("buzzAvatarGalleryPreviewProfile")
+    check(String(bar.color) === String(Color.foreground) && bar.tint === "", "Previews not in the default color")
+    // Choosing a swatch recolors all three previews and marks the swatch.
+    test.pick("buzzAvatarGallery", red)
+    check(gallery.tint === red && test.swatch("buzzAvatarGallery", red).selected && !test.swatch("buzzAvatarGallery", "").selected, "Swatch not chosen")
+    ;["Bar", "Messages", "Profile"].forEach(function(size) {
+      var preview = one("buzzAvatarGalleryPreview" + size)
+      check(preview.tint === red && String(preview.color) === AvatarLibrary.readable(red, back), "Preview " + size + " not in the chosen color: " + preview.color)
+    })
+    // Choosing leaves the stored avatar alone until Save, which stores shape and color together.
+    check(test.storedOwn() === entry.art && service.agents.avatarTintForKey(test.me) === "", "Choosing a color changed the store")
+    check(one("buzzAvatarGallerySave").enabled && one("buzzAvatarGallerySave").text === "Save", "Save not offered for a new color")
+    one("buzzAvatarGallerySave").clicked()
+    check(test.storedOwn() === entry.art && service.agents.avatarTintForKey(test.me) === red, "Save did not keep the color")
+    var stored = JSON.parse(test.readStore())
+    check(JSON.stringify(stored) === JSON.stringify({version: 1, avatars: {[test.me]: {art: entry.art, color: red}}}), "Avatar file holds unexpected data: " + JSON.stringify(stored))
+    check(test.freshOwn("tint") === red && test.freshOwn("art") === entry.art, "A fresh service did not load the color")
+    check(one("buzzAvatarGallerySave").text === "Saved" && !one("buzzAvatarGallerySave").enabled, "Saved state not shown")
+    check(one("buzzMyAvatarPreview").tint === red && String(one("buzzMyAvatarPreview").color) === AvatarLibrary.readable(red, back), "The account avatar is not in the saved color")
+    // Another color is a change; going back to the default saves the plain form again.
+    test.pick("buzzAvatarGallery", sky)
+    check(one("buzzAvatarGallerySave").text === "Save" && one("buzzAvatarGallerySave").enabled, "A new color is not saveable")
+    test.pick("buzzAvatarGallery", red)
+    check(one("buzzAvatarGallerySave").text === "Saved", "Saved state not restored")
+    test.pick("buzzAvatarGallery", "")
+    one("buzzAvatarGallerySave").clicked()
+    check(JSON.parse(test.readStore()).avatars[test.me] === entry.art && test.freshOwn("tint") === "", "Default color not stored as plain art")
+    // The message row and the profile card draw the saved color as well.
+    test.pick("buzzAvatarGallery", sky)
+    one("buzzAvatarGallerySave").clicked()
+    view.openAvatarCard(test.me, "You", entry.art, 0, sky)
+    check(view.myAvatarTint === sky, "Account tint not exposed")
+    var card = findNamed(view, "buzzAvatarCard", [])[0]
+    check(!!card && findNamed(card, "buzzAvatar", []).some(function(item) { return item.tint === sky && item.usesArt }), "Profile card not in the saved color")
+    card.parent.close()
+    test.settle()
+    // Invalid colors are refused on the way in.
+    ;["red; border: 1px", "#zzzzzz", "#ABCDEF", "#fff", "red"].forEach(function(bad) {
+      check(!service.agents.setOwnAvatarArt(test.me, entry.art, 0, bad) && service.agents.avatarTintForKey(test.me) === sky, "Invalid color accepted: " + bad)
+    })
+    // Records on disk: legacy (no color) draws in the default, a valid color loads, an invalid one is ignored.
+    var art = entry.art, id = test.me
+    function load(record) {
+      test.writeStore(JSON.stringify({version: 1, avatars: {[id]: record}}) + "\n")
+      return test.freshOwn("tint")
+    }
+    check(load(art) === "" && test.freshOwn("art") === art, "Legacy record did not load with the default color")
+    check(load({art: art, color: "#a855f7"}) === "#a855f7", "Valid stored color not loaded")
+    ;["red; border: 1px", "#zzzzzz", "#ABCDEF", "#12345", "#1234567", "#ef4444\n", 7, null, ["#ef4444"], {}].forEach(function(bad) {
+      check(load({art: art, color: bad}) === "" && test.freshOwn("art") === art, "Invalid stored color not ignored: " + JSON.stringify(bad))
+    })
+    // Records with unknown fields are refused as a whole, as before.
+    check(load({art: art, color: "#ef4444", extra: 1}) === "" && test.freshOwn("art") === "", "Unknown field accepted")
+    check(load({art: art, brightness: 1.5}) === "" && test.freshOwn("art") === "", "Brightness on plain art accepted")
+    // Colored art has its own colors: a color on it is never stored or drawn.
+    var ansi = "\x1b[31m####\x1b[0m\n\x1b[32m@@@@\x1b[0m\n"
+    check(service.agents.setOwnAvatarArt(test.me, ansi, 1.5, sky) && service.agents.avatarTintForKey(test.me) === "", "A color was kept for colored art")
+    check(load({art: AnsiArt.sanitize(ansi), color: sky}) === "" && test.freshOwn("art") === "", "Colored art with a color accepted")
+    // Pasted plain art can be colored on the Create tab; colored art disables the row.
+    service.agents.setOwnAvatarArt(test.me, "", 0)
+    gallery.tint = ""
+    one("buzzAvatarGalleryTabCreate").clicked()
+    test.settle()
+    var colors = findNamed(view, "buzzAvatarCustomColors", [])[0]
+    test.setCustom(" /\\_/\\\n( o.o )")
+    check(colors.visible && colors.active && test.swatches("buzzAvatarCustom").length === 15, "Create tab has no color row for plain art")
+    test.pick("buzzAvatarCustom", sky)
+    check(gallery.tint === sky && one("buzzAvatarCustomPreviewBar").tint === sky && String(one("buzzAvatarCustomPreviewProfile").color) === AvatarLibrary.readable(sky, back),
+      "Create previews not in the chosen color: " + gallery.tint + " " + one("buzzAvatarCustomPreviewBar").tint + " " + one("buzzAvatarCustomPreviewProfile").color)
+    one("buzzAvatarCustomSave").clicked()
+    check(service.agents.avatarTintForKey(test.me) === sky && test.freshOwn("tint") === sky && one("buzzAvatarCustomSave").text === "Saved", "Pasted art color not saved")
+    test.setCustom(ansi)
+    check(!colors.active && colors.opacity < 1 && one("buzzAvatarCustomPreviewBar").usesColor, "Color row not disabled for colored art")
+    test.pick("buzzAvatarCustom", red)
+    check(gallery.tint === sky, "A disabled swatch changed the color")
+    one("buzzAvatarCustomSave").clicked()
+    check(service.agents.avatarArtForKey(test.me) === AnsiArt.sanitize(ansi) && service.agents.avatarTintForKey(test.me) === "" && test.freshOwn("tint") === "",
+      "Colored art saved with a color")
+    // Back to plain art: the row works again.
+    test.setCustom("ab\ncd")
+    check(colors.active, "Color row not enabled again for plain art")
+    // Edit a copy keeps the chosen color.
+    one("buzzAvatarGalleryTabGallery").clicked()
+    test.settle()
+    gallery.tint = red
+    one("buzzAvatarGalleryCustomize").clicked()
+    test.settle()
+    check(gallery.mode === "create" && gallery.tint === red && one("buzzAvatarCustomPreviewBar").tint === red, "Edit a copy lost the color")
+    one("buzzAvatarGalleryTabGallery").clicked()
+    test.settle()
+    service.agents.setOwnAvatarArt(test.me, "", 0)
+    gallery.tint = ""
+    check(test.freshOwn("art") === "" && JSON.parse(test.readStore()).avatars[test.me] === undefined, "Color cases left an avatar behind")
+  }
+
   // Every avatar drawn by the real avatar, for a person to look at.
   function contactSheet() {
     var sheet = Qt.createQmlObject('import QtQuick\nimport QtQuick.Layouts\nimport qs.Commons\nimport "plugin" as Buzz\n'
@@ -274,7 +412,8 @@ ShellRoot {
     running: true
     repeat: true
     onTriggered: {
-      if (test.layoutWait) return
+      if (test.layoutWait || test.inStage) return
+      test.inStage = true
       try {
         test.ticks++
         if (test.ticks > 200) throw new Error("Timed out at stage " + test.stage)
@@ -291,15 +430,17 @@ ShellRoot {
           test.filterCases(gallery)
           test.saveCases(gallery)
           test.createCases(gallery)
+          test.colorCases(gallery)
           check(test.storedOwn() === "", "Test left an avatar behind")
           if (test.capturePath === "" && test.sheetPath === "") {
-            console.log("PASS: the avatar gallery rotates with Previous, Next and the arrow keys, wraps at both ends, filters by category, shuffles inside the filtered list, previews the real avatar at bar, message and profile sizes, saves a library entry through the avatar store, and checks pasted art live (valid, too wide, too tall, invalid characters, too large, colored) before saving it")
+            console.log("PASS: the avatar gallery rotates with Previous, Next and the arrow keys, wraps at both ends, filters by category, shuffles inside the filtered list, previews the real avatar at bar, message and profile sizes, saves a library entry through the avatar store, and checks pasted art live (valid, too wide, too tall, invalid characters, too large, colored) before saving it; the color row recolors the previews, saves with the shape, ignores invalid stored colors and is disabled for colored art")
             Qt.quit()
             return
           }
           // For the picture: a few categories in, Cat-like entry first.
           gallery.setCategory("Animals")
           gallery.position = 0
+          gallery.tint = "#38bdf8"
           test.stage = 2
         } else if (test.stage === 2) {
           test.stage = 3
@@ -325,8 +466,11 @@ ShellRoot {
           test.stage = 4
         }
       } catch (error) {
+        test.stage = 99
         console.error(error.message || error)
         Qt.exit(1)
+      } finally {
+        test.inStage = false
       }
     }
   }

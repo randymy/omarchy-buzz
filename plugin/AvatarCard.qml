@@ -15,16 +15,18 @@ FocusScope {
   property string art: ""
   // Grid art brightness, as on the thumbnail (0: colors as stored).
   property real brightness: 0
+  property string tint: ""
   property bool opened: false
   signal closed()
   visible: opened
   z: 20
 
-  function show(authorKey, authorName, authorArt, authorBrightness) {
+  function show(authorKey, authorName, authorArt, authorBrightness, authorTint) {
     key = authorKey || ""
     name = authorName || ""
     art = authorArt || ""
     brightness = authorBrightness > 0 ? authorBrightness : 0
+    tint = authorTint || ""
     opened = true
     forceActiveFocus()
   }
@@ -121,6 +123,7 @@ FocusScope {
         key: root.key
         name: root.name
         art: root.colored ? "" : root.art
+        tint: root.tint
         pixelSize: Style.font.body * 2
       }
       Text {
