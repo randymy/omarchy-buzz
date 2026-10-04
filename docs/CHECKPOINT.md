@@ -3690,3 +3690,43 @@ service or Rust change, not installed.
 - Not verified: how Omarchy's notification UI renders the toast and what a
   click does (not visible to the agent); a failed `Notify` is not shown in the
   panel.
+
+## Release 0.0.29 — October 4
+
+Everything since 0.0.28, merged through PRs #6–#19, each reviewed by Codex
+until clean:
+
+- **Security:** every tooltip renders as plain text (#13; marketplace finding,
+  a status `<img>` contacted a remote host on hover). Notifications are sent
+  by the helper straight to `org.freedesktop.Notifications` over D-Bus; no
+  message text, sender or room ever appears in process arguments, and queued
+  notices are rechecked against the session and room access right before
+  delivery (#16; marketplace finding). Older helpers get a content-free
+  fallback.
+- **Connection:** reconnects without limit after network changes or relay
+  restarts (1 s → 30 s with jitter); a busy relay or an undecodable frame no
+  longer ends the session; temporary catalog failures keep the views; the
+  panel restarts its helper bridge itself (#10).
+- **Messaging:** New message picks people from the relay directory with
+  search, like Desktop (#7); edit and delete your own messages and react with
+  any emoji (#12); notifications name the sender and room and open it on click
+  (#11).
+- **Rooms:** create rooms, room settings (topic, details, members for owners
+  and admins, every change bound to the displayed session), and paging past 20
+  rooms up to 200 with a bounded activity poll (#15).
+- **Names:** a per-community name cache persisted to disk, continued retries
+  of a member list a busy relay refused, and signed profile lookup for authors
+  outside the member list, threads included (#9, #19).
+- **Avatars:** a gallery of 140 ASCII avatars and a paste-your-own box (#8),
+  with a color for the shape, contrast-checked against the theme (#17).
+- **Agents:** sign-in pages open in the user's own browser session (#6).
+- **Tests:** preview timers guarded against nested ticks (#14, ended about 30
+  Quickshell coredumps a day in test runs); identicon test updated for escaped
+  tooltips (#18). Release smoke now checks the full capability list.
+- **Downgrade note:** an older plugin rejects an avatar file containing a
+  `color` record, and an older helper lacks `desktop_notify` (the panel then
+  sends only a content-free notification).
+- **Verified:** see the release PR for the full sweep. Live on x86-64 against
+  the user's relay: reconnect after helper restart, names after the busy-relay
+  fix, one D-Bus notification. The maintainer used the installed build and
+  reported it ready; individual flows were not itemized.
