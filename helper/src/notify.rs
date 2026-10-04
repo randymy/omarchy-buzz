@@ -274,6 +274,17 @@ fn spawn_with(
     });
 }
 
+/// The notifier's queue (`TURN`, `WAITING`) and the test fakes (stall, bus
+/// address) are process-wide, so the tests that use them run one at a time even
+/// when the test harness runs tests in parallel (as the release build does).
+#[cfg(test)]
+static TEST_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+#[cfg(test)]
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    TEST_SERIAL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -294,6 +305,7 @@ mod tests {
 
     #[test]
     fn sanitizes_and_bounds_text() {
+        let _serial = crate::notify::serial();
         let n = notice("a\u{0}b\nc\u{202e}d", "x\ty\u{2066}z", ROOM, None).unwrap();
         assert_eq!((n.title.as_str(), n.body.as_str()), ("a b c d", "x y z"));
         let long = "é".repeat(400);
@@ -306,6 +318,7 @@ mod tests {
 
     #[test]
     fn body_is_escaped_once_and_title_is_not() {
+        let _serial = crate::notify::serial();
         let n = notice("<b>t</b>", "<img src=x> & you", ROOM, None).unwrap();
         let c = call(&n);
         assert_eq!(c.body, "&lt;img src=x&gt; &amp; you");
@@ -316,6 +329,7 @@ mod tests {
 
     #[test]
     fn call_mirrors_the_omarchy_sender() {
+        let _serial = crate::notify::serial();
         let c = call(&plain());
         assert_eq!(
             (c.app_name, c.replaces_id, c.app_icon, c.expire_timeout),
@@ -344,6 +358,7 @@ mod tests {
 
     #[test]
     fn thread_target_carries_the_root_and_no_text() {
+        let _serial = crate::notify::serial();
         let n = notice("Alex replied", "secret", ROOM, Some(THREAD)).unwrap();
         let argv: Vec<String> = serde_json::from_str(&click_argv(&n)).unwrap();
         assert_eq!(
@@ -355,6 +370,7 @@ mod tests {
 
     #[test]
     fn stale_scope_and_backlog_are_refused() {
+        let _serial = crate::notify::serial();
         assert_eq!(refusal((Some("i"), Some(2)), ("i", 2), false), None);
         for stale in [
             (Some("other"), Some(2)),
@@ -454,6 +470,7 @@ mod tests {
 
     #[test]
     fn notify_reaches_a_fake_server_with_every_argument() {
+        let _serial = crate::notify::serial();
         let n = notice("Alex in #general", "a <b> & c", ROOM, Some(THREAD)).unwrap();
         with_fake_server(Some(42), |client, seen, _| {
             assert_eq!(deliver(client, &call(&n)), Ok(42));
@@ -478,6 +495,7 @@ mod tests {
 
     #[test]
     fn server_error_and_missing_server_are_bounded_categories() {
+        let _serial = crate::notify::serial();
         with_fake_server(None, |client, _, _| {
             assert_eq!(deliver(client, &call(&plain())), Err("notify_failed"));
         });
@@ -500,6 +518,7 @@ mod unavailable_tests {
     use super::*;
     #[test]
     fn no_session_bus_is_notify_unavailable() {
+        let _serial = crate::notify::serial();
         // Tests run one at a time (RUST_TEST_THREADS=1); the variable is restored.
         let key = "DBUS_SESSION_BUS_ADDRESS";
         let saved = std::env::var_os(key);
@@ -568,6 +587,7 @@ mod queued_tests {
 
     #[test]
     fn current_needs_generation_authentication_and_room() {
+        let _serial = crate::notify::serial();
         let s = status();
         assert_eq!(still_current(&s, 4, ROOM), None);
         assert!(still_current(&s, 3, ROOM).is_some());
@@ -612,6 +632,7 @@ mod queued_tests {
 
     #[test]
     fn a_queued_notification_is_dropped_when_the_scope_changes() {
+        let _serial = crate::notify::serial();
         assert_eq!(delivered_after(|s| s.generation = 5), 0);
         assert_eq!(delivered_after(|s| s.catalog.rooms.clear()), 0);
         assert_eq!(delivered_after(|s| s.connection = "disconnected".into()), 0);
@@ -619,6 +640,7 @@ mod queued_tests {
 
     #[test]
     fn a_queued_notification_in_the_same_scope_is_delivered() {
+        let _serial = crate::notify::serial();
         assert_eq!(delivered_after(|_| {}), 1);
     }
 }
@@ -680,6 +702,7 @@ mod stalled_tests {
 
     #[test]
     fn a_stalled_server_never_has_two_blocking_calls_or_frees_its_slot() {
+        let _serial = crate::notify::serial();
         reset();
         super::tests::STALL_MS.store(700, SeqCst);
         let mut delivered = 0;
@@ -708,6 +731,7 @@ mod stalled_tests {
 
     #[test]
     fn a_slow_connect_cannot_deliver_a_stale_notice() {
+        let _serial = crate::notify::serial();
         reset();
         super::queued_tests::CONNECT_MS.store(400, SeqCst);
         let mut delivered = usize::MAX;
