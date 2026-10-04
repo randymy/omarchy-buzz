@@ -553,8 +553,13 @@ Item {
   }
   function applyProfiles(entries) {
     if (sameProjection(profileEntries, entries)) return
+    // Only a new or changed profile is new evidence: replaying unchanged ones
+    // would undo a newer name learned from a member list meanwhile.
+    var before = ({})
+    profileEntries.forEach(function(entry) { before[entry.key] = entry.name })
+    var changed = entries.filter(function(entry) { return before[entry.key] !== entry.name })
     profileEntries = entries
-    rememberNames(entries)
+    rememberNames(changed)
   }
   // Existing conversations first, then the relay's directory or search, then
   // the open room's members while that read has not answered. Those typed

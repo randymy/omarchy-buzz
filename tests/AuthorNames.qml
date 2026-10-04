@@ -193,6 +193,11 @@ ShellRoot {
           if (!accept(retries, {state: "snapshot", roomId: roomA, entries: [{key: person, name: "Late Name"}], agents: [], partial: true, category: null},
               {profiles: [{key: outsider, name: "Outsider"}]})) throw new Error("Repeat rejected")
           if (retries.messageAuthorName(outsider) !== "Renamed") throw new Error("Repeated profiles undid a newer name")
+          // A list that only gains an unrelated author does not replay the unchanged one.
+          if (!accept(retries, {state: "snapshot", roomId: roomA, entries: [{key: person, name: "Late Name"}], agents: [], partial: true, category: null},
+              {profiles: [{key: outsider, name: "Outsider"}, {key: "9".repeat(64), name: "Newcomer"}]})) throw new Error("Grown list rejected")
+          if (retries.messageAuthorName(outsider) !== "Renamed") throw new Error("A grown profile list undid a newer name")
+          if (retries.messageAuthorName("9".repeat(64)) !== "Newcomer") throw new Error("A new profile was not remembered")
           // A malformed profile list fails the session like any malformed status.
           if (accept(retries, {state: "snapshot", roomId: roomA, entries: [], agents: [], partial: true, category: null}, {profiles: [{key: "nope", name: "Bad"}]}))
             throw new Error("Malformed profiles accepted")
