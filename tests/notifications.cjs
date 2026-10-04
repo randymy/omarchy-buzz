@@ -22,9 +22,9 @@ assert.equal(text({sender: '', roomName: '', snippet: ''}).title, 'New message')
 assert.equal(text({snippet: 'secret'}, false, false).body, 'New message from Alex');
 assert.equal(text({snippet: 'secret', count: 3}, false, false).body, '3 new messages');
 assert.equal(text({count: 3}).body, '3 new messages. Latest: hello');
-// The server renders body markup: text stays literal.
-assert.equal(text({snippet: '<img src="http://x/y.png"> & <b>x</b>'}).body, '&lt;img src="http://x/y.png"&gt; &amp; &lt;b&gt;x&lt;/b&gt;');
-assert.ok(!/[<>]/.test(text({snippet: '<<img src=x>'}).body));
+// The body stays plain here: the helper escapes it once, for the styled-text server.
+assert.equal(text({snippet: '<img src="http://x/y.png"> & <b>x</b>'}).body, '<img src="http://x/y.png"> & <b>x</b>');
+assert.equal(model.escapeBody, undefined);
 // Words that look like options never lead an argument.
 assert.equal(model.arg('--exec'), ' --exec');
 assert.equal(model.arg('-t'), ' -t');

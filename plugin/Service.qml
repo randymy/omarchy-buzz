@@ -82,26 +82,36 @@ Item {
     notificationQueue = notificationQueue.concat([item]).slice(-5)
     sendNextNotification()
   }
+  // With a helper that has `desktop_notify`, the title, body and click target go to it
+  // over the bridge's stdin and the helper shows the notification on the session bus
+  // itself: no process is started, so no message text, sender or room name is ever in
+  // a process argument. A helper without it gets a content-free line through the
+  // Omarchy sender (fixed argv, ids only); the text is never sent that way.
+  property bool desktopNotifySupported: false
   function sendNextNotification() {
-    if (notificationProcess.running) return
-    var item = null
-    while (notificationQueue.length > 0 && !item) {
-      var candidate = notificationQueue[0]
+    var viaHelper = desktopNotifySupported && !sessionFailed && bridge.running && instanceId !== ""
+    if (!viaHelper && notificationProcess.running) return
+    while (notificationQueue.length > 0) {
+      var item = notificationQueue[0]
       notificationQueue = notificationQueue.slice(1)
-      if (noticeDeliverable(candidate)) item = candidate
+      if (!noticeDeliverable(item)) continue
+      var threadRoot = item.notice.threadRoot
+      if (viaHelper) {
+        var room = rooms.find(function(r) { return r.id === item.roomId })
+        var message = Notifications.compose(item.notice, room.kind === "dm", notificationText)
+        var request = {version: 1, id: correlationUuid(), type: "notify", title: message.title, body: message.body,
+          roomId: item.roomId, generation: generation, instanceId: instanceId}
+        if (threadRoot) request.rootId = threadRoot
+        bridge.write(JSON.stringify(request) + "\n")
+        continue
+      }
+      var target = JSON.stringify(threadRoot ? {room: item.roomId, thread: threadRoot} : {room: item.roomId})
+      notificationProcess.command = ["timeout", "5s", "omarchy", "notification", "send", "--app-name", "Buzz",
+        "-u", "normal", "-t", "8000", "New Buzz message",
+        "--exec", "omarchy-shell", "-q", "shell", "summon", "community.buzz", target]
+      notificationProcess.running = true
+      return
     }
-    if (!item) return
-    var room = rooms.find(function(r) { return r.id === item.roomId })
-    var message = Notifications.compose(item.notice, room.kind === "dm", notificationText)
-    var next = {title: message.title, body: message.body,
-      target: JSON.stringify(item.notice.threadRoot ? {room: item.roomId, thread: item.notice.threadRoot} : {room: item.roomId})}
-    // Fixed argv; relay text is only ever one argument (never a shell string,
-    // never an option: Notifications.arg keeps it from starting with "-"), and
-    // the click command carries only validated ids.
-    notificationProcess.command = ["timeout", "5s", "omarchy", "notification", "send", "--app-name", "Buzz",
-      "-u", "normal", "-t", "8000", Notifications.arg(next.title), Notifications.arg(next.body),
-      "--exec", "omarchy-shell", "-q", "shell", "summon", "community.buzz", next.target]
-    notificationProcess.running = true
   }
   // A notification click (Panel.open payload): show that room, and its thread.
   // Applied once the catalog and history are ready; abandoned after 15 s.
@@ -2589,7 +2599,7 @@ Item {
     catalogMoreCategory = ""
     if (!sampleMode) selectedRoomId = ""
   }
-  readonly property var knownCapabilities: ["connection_status", "room_catalog", "room_history", "message_send", "room_recipients", "history_auto_refresh", "room_activity", "agent_profiles", "thread_replies", "thread_send", "thread_summaries", "dm_open", "older_history", "live_updates", "setup_assist", "community_join", "invite_mint", "attachments", "user_status", "presence", "communities", "people_search", "message_actions", "room_manage"]
+  readonly property var knownCapabilities: ["connection_status", "room_catalog", "room_history", "message_send", "room_recipients", "history_auto_refresh", "room_activity", "agent_profiles", "thread_replies", "thread_send", "thread_summaries", "dm_open", "older_history", "live_updates", "setup_assist", "community_join", "invite_mint", "attachments", "user_status", "presence", "communities", "people_search", "message_actions", "room_manage", "desktop_notify"]
   // Distinct known names only, so the length bound follows the list.
   function validCapabilities(capabilities) {
     return Array.isArray(capabilities) && capabilities.length >= 1 && capabilities.length <= knownCapabilities.length
@@ -2856,7 +2866,8 @@ Item {
         "invite_invalid", "invite_relay_mismatch", "invite_rejected", "invite_rate_limited", "policy_required", "room_not_open", "join_rejected", "leave_rejected", "room_invalid", "room_scope_changed",
         "invite_forbidden", "attachment_unknown", "attachment_forbidden", "attachment_mismatch", "attachment_too_large", "attachment_invalid",
         "attachment_type_refused", "attachment_storage_unavailable", "status_invalid", "status_rate_limited", "status_rejected",
-        "join_invalid", "join_rate_limited", "join_busy", "join_last", "join_full", "community_unknown", "name_invalid", "leave_owner"].indexOf(frame.category) !== -1) {
+        "join_invalid", "join_rate_limited", "join_busy", "join_last", "join_full", "community_unknown", "name_invalid", "leave_owner",
+        "notify_scope_changed"].indexOf(frame.category) !== -1) {
       if (instanceId === "" || frame.instanceId !== instanceId) return false
       if (!boundedString(frame.id, 128) || !/^ui-[0-9]+$/.test(frame.id) && !uuidValue(frame.id)) { fail("invalid_response"); return false }
       if (frame.id === presenceRequestId && presenceRequestId !== "") {
@@ -3162,6 +3173,7 @@ Item {
       }
     }
     roomActivitySupported = supportsActivity
+    desktopNotifySupported = frame.capabilities.indexOf("desktop_notify") !== -1
     if (!supportsActivity || state.connection !== "authenticated" || typeof state.identity !== "string" || catalogState === "unavailable") {
       roomActivity = RoomActivity.fresh()
     } else if (catalogState !== "loading" && !quietCatalog) {
@@ -3596,6 +3608,7 @@ Item {
       root.losePendingDelivery()
       root.loseDmOpen()
       root.dmOpenSupported = false
+      root.desktopNotifySupported = false
       root.clearPeople()
       root.peopleSupported = false
       root.sendSupported = false

@@ -3650,3 +3650,43 @@ service or Rust change, not installed.
   `--bridge` now restarts the daemon and expects the bridge back without Retry.
 - Not built: reacting to network changes (`ip monitor`, NetworkManager). The
   30 s cap bounds the delay after a VPN or Wi-Fi change.
+
+## Notifications over D-Bus, none in argv — October 3
+
+- Finding (omacom/omarchy-plugin-marketplace#9501): default DM notifications put
+  up to 100 characters of private text, plus the sender and room name, in the
+  arguments of `omarchy notification send` and its `busctl` call, readable by
+  other local users on systems without `/proc` hidepid.
+- New helper capability `desktop_notify` (listed in `protocol.rs`,
+  `Service.qml` `knownCapabilities` and `tests/helper_smoke.py`) and request
+  `notify`: `title`, `body`, `roomId`, optional `rootId`, `generation`,
+  `instanceId` and a UUID `id`. A stale scope is refused with
+  `notify_scope_changed`; the title is at most 200 bytes and the body 300
+  after sanitizing (controls and bidi become spaces); an empty title is
+  invalid. The helper (`helper/src/notify.rs`) calls
+  `org.freedesktop.Notifications.Notify` on the session bus directly, with the
+  same arguments and hints as `omarchy-notification-send`, and escapes the body
+  (`& < >`) once; `Notifications.js` no longer escapes. The reply is the usual
+  status frame as soon as the request is accepted; delivery runs in the
+  background (one at a time, 3 s call timeout, 5 s deadline) and a failure is a
+  category on the daemon's stderr, never text.
+- Dependency: `dbus = "=0.9.12"`, the crate `keyring` already pulled in
+  (default features, system `libdbus`); `Cargo.lock` gains only the direct
+  edge. `zbus` was not needed.
+- Panel: with the capability, `sendNextNotification` writes the request to the
+  bridge and starts no process. Without it (older helper) it sends the fixed
+  "New Buzz message" with no body through `omarchy notification send`, with
+  only the click target in argv. Modes, text on/off, suppression and the
+  queue's revalidation are unchanged. `Notifications.arg` (the leading-dash
+  guard) is kept but no longer used.
+- Evidence: Rust unit tests for request validation, scope refusal, the Notify
+  argument and hint construction (including the `omarchy-exec-argv` JSON),
+  and real `Notify` calls against a fake notification server on a private
+  `dbus-daemon` (skipped when `dbus-daemon` is missing), including server
+  error, no owner and no bus; `scripts/preview --notifications` (IPC requests
+  carry the text and no process does; the fallback argv is content-free);
+  one real notification sent to the user session bus and seen on
+  `busctl --user monitor` with its returned id.
+- Not verified: how Omarchy's notification UI renders the toast and what a
+  click does (not visible to the agent); a failed `Notify` is not shown in the
+  panel.

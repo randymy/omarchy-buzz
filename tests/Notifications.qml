@@ -1,11 +1,15 @@
 // Offscreen check of rich desktop notifications: synthetic helper notices drive the
-// service, a fake `omarchy` records the argv (scripts/preview compares it exactly).
+// service. A fake helper (BUZZ_FAKE_HELPER) records what the panel writes to the bridge
+// and a fake `omarchy` records every argv; scripts/preview compares both exactly: with
+// `desktop_notify` the text travels only over the bridge and no process gets it, without
+// it the fallback argv is content-free.
 import QtQuick
 import Quickshell
 import "plugin" as Buzz
 
 ShellRoot {
-  Buzz.Service { id: service; autoConnect: false }
+  Buzz.Service { id: service; autoConnect: false; helperExecutable: Quickshell.env("BUZZ_FAKE_HELPER") }
+  Component.onCompleted: service.startBridge()
   property int step: 0
   property string roomA: "11111111-1111-4111-8111-111111111111"
   property string roomB: "22222222-2222-4222-8222-222222222222"
@@ -36,7 +40,9 @@ ShellRoot {
       history: {state: "snapshot", roomId: roomA, rows: [], hasMore: false, category: "history_completeness_unknown"},
       activity: [entry(roomA, a), entry(roomB, b)].slice(0, options.onlyA ? 1 : 2)}
     check(service.acceptFrame(JSON.stringify({version: 1, type: type, instanceId: "notify-fixture", generation: 1,
-      capabilities: ["connection_status", "room_catalog", "room_history", "room_activity"], status: status})), "valid frame rejected")
+      capabilities: ["connection_status", "room_catalog", "room_history", "room_activity"].concat(options.legacy ? [] : ["desktop_notify"]),
+      status: status})), "valid frame rejected")
+    check(service.desktopNotifySupported === !options.legacy, "capability was not followed")
   }
 
   Timer {
@@ -47,13 +53,12 @@ ShellRoot {
       try {
         step++
         if (step === 1) {
-          service.beginSession()
           accept("hello", null, null)
           check(service.notificationMode === "direct" && service.notificationText, "defaults are not mentions & DMs with text")
-          // 1. a mention: titled by sender and room, plain snippet, escaped for the styled-text server
+          // 1. a mention: titled by sender and room, plain snippet (the helper escapes it)
           accept("status", {seq: 1, kind: "mention", snippet: "hi <img src=http://x/y.png> & you"}, null)
         } else if (step === 2) {
-          // 2. a thread reply: the click target carries the thread; text that looks like options stays an argument
+          // 2. a thread reply: the click target carries the thread; option-like text is just text
           accept("status", {seq: 2, kind: "thread", sender: "-t", snippet: "--exec", threadRoot: thread}, null)
         } else if (step === 3) {
           // 3. general activity does not notify under "direct", nor does a repeated seq
@@ -132,6 +137,14 @@ ShellRoot {
           service.sendNextNotification()
           check(service.notificationQueue.length === 0, "notices survived a community switch")
         } else if (step === 10) {
+          // Back in the fixture community (a new scope, so a fresh baseline). A helper without
+          // desktop_notify: the fallback line never carries the text, sender or room name.
+          accept("status", null, null, {legacy: true})
+        } else if (step === 11) {
+          accept("status", {seq: 8, kind: "mention", sender: "Leak", roomName: "hidden-room", snippet: "secret words"}, null, {legacy: true})
+        } else if (step === 12) {
+          accept("status", {seq: 9, kind: "thread", sender: "Leak", roomName: "hidden-room", snippet: "secret words", threadRoot: thread}, null, {legacy: true})
+        } else if (step === 13) {
           console.log("Buzz offscreen notification check passed")
           Qt.quit()
         }

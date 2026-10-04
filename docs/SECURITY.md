@@ -23,7 +23,37 @@ no shell interpolation, a five-second process timeout, and a ten-second cooldown
 No message text, room names, or author names enter notifications. Initial/gap
 snapshots establish silent baselines. The bounded in-memory observer stores only
 public event IDs, scope and a timestamp floor; it is not persistent unread state.
-Private keys never enter the UI protocol or command arguments. Secret Service
+Private keys never enter the UI protocol or command arguments.
+
+Notification text never appears in process arguments (marketplace review
+omacom/omarchy-plugin-marketplace#9501: another local user could read the
+title, preview, sender and room name from `ps` while `omarchy notification send`
+and its `busctl` call ran, on systems without `/proc` hidepid). With the
+`desktop_notify` capability the panel sends one `notify` request over the
+`ui-bridge` stdin (title, body, room id, optional thread root id, and the
+`generation` and `instanceId` it was made in; a stale scope is refused with
+`notify_scope_changed`) and the helper calls
+`org.freedesktop.Notifications.Notify` on the session bus itself, with no
+subprocess. The arguments mirror `omarchy-notification-send`: app name `Buzz`,
+no replaced id or icon, no actions, hints `urgency` (byte 1) and
+`omarchy-exec-argv` (a JSON argv, `omarchy-shell -q shell summon
+community.buzz '{"room":...,"thread":...}'`, built only from the validated
+UUID and 64-hex ids), expiry 8000 ms. The helper bounds the title (200 bytes)
+and body (300 bytes after sanitizing; a request over 800/1200 bytes is refused),
+replaces control and bidi characters with spaces, and is the only place that
+escapes `&`, `<` and `>` (Omarchy's server renders bodies as styled text). The
+call runs on the blocking pool, one at a time (the turn and queue slot are held by the blocking work itself until it returns, and the scope is rechecked there after the bus connects, just before `Notify`), with a 3 s call timeout and a 5 s
+deadline, so a stuck notification server never blocks the IPC loop; the panel is
+answered when the request is accepted. Just before delivery the helper rechecks the current status (same generation, authenticated, room still in the catalog) and drops a stale notice, so a notification queued behind a slow server is never shown after a community switch, disconnect or lost access. A failure is written to the daemon's
+stderr as a category only (`notify_unavailable`, `notify_timeout`,
+`notify_failed`), never the text. A panel whose helper lacks `desktop_notify`
+falls back to `omarchy notification send` with the fixed title "New Buzz
+message", no body, and only the click target (ids) in argv: no message text,
+sender or room name is ever put in a process argument. The helper links the
+system `libdbus` through the `dbus` crate, pinned `=0.9.12` with default
+features, the version `keyring`'s sync-secret-service already resolved
+(`Cargo.lock` gains only a direct edge, no new package; `libdbus-sys` 0.2.7 is
+unchanged). Secret Service
 encryption and availability depend on the user's OS store. Unlock prompts can
 remain pending; the daemon bounds shutdown and does not duplicate key lookups.
 
@@ -198,11 +228,11 @@ this identity, DM room, reply in a thread this session knows I am in) and keeps
 one bounded notice per room: kind, room name, sender profile name (sanitized
 like roster names, empty when unknown), a snippet of at most 100 characters,
 event id and thread root, with the count of observed messages coalesced in a
-10-second window. The panel validates every field, builds the title and body,
-and escapes `&`, `<` and `>` because Omarchy's notification server renders
-bodies as styled text (it also strips `<img>`, but literal text is the
-contract). Each relay-controlled string is one argv word that never starts with
-`-` (the sender script would read it as an option) and the click command is
+10-second window. The panel validates every field and builds the plain title
+and body; the helper escapes `&`, `<` and `>` when it shows the notification
+because Omarchy's notification server renders bodies as styled text (it also
+strips `<img>`, but literal text is the contract). Nothing relay-controlled is
+an argv word (see above); the click command is
 `omarchy-shell -q shell summon community.buzz '{"room":...,"thread":...}'` with
 validated ids only: the panel ignores other rooms, junk ids and unknown fields.
 Thread replies come from one extra bounded read per activity poll (`kinds [9,40002]`, `#h`, limit 20, no `top_level`); signatures, kind, scope and time are verified like history, and the rows only feed the tracker. Queued notices are bound to relay, identity and generation and checked against the current catalog when sent.
