@@ -94,7 +94,7 @@ ShellRoot {
     })
   }
   function unitChecks() {
-    var rlo = String.fromCharCode(0x202e), zwsp = String.fromCharCode(0x200b), ideo = String.fromCharCode(0x3002)
+    var rlo = String.fromCharCode(0x202e), zwsp = String.fromCharCode(0x200b), ideo = String.fromCharCode(0x3002), fullE = String.fromCharCode(0xff45), uml = String.fromCharCode(0xfc), acute = String.fromCharCode(0x301), cyrA = String.fromCharCode(0x430)
     var urls = function(text) { return Links.detect(text).map(function(l) { return l.url }) }
     same(urls("see https://a.example/x, ok"), ["https://a.example/x"], "comma")
     same(urls("(https://a.example/x)"), ["https://a.example/x"], "parentheses")
@@ -110,7 +110,8 @@ ShellRoot {
     same(urls("https://a" + ideo + "example/ https://a.example\\evil"), ["https://a.example"], "IDNA dot, backslash")
     same(urls("https://a.example/" + "x".repeat(2048)), [], "over-long")
     check(urls("https://a.example/" + "x".repeat(2000)).length === 1, "A long URL within the cap was refused")
-    same(Links.hostOf("https://B" + String.fromCharCode(0xfc) + "cher.Example:81/x").host, "xn--bcher-kva.example", "punycode host")
+    same(urls("https://b" + uml + "cher.example/x https://" + fullE + "xample.com/ https://cafe" + acute + ".example/ https://" + cyrA + "pple.com/ https://caf" + uml + ".example/"), [], "international, full-width, decomposed and lookalike hosts")
+    same(urls("https://xample.com/" + uml + " https://a.example/p" + uml), ["https://xample.com/" + uml, "https://a.example/p" + uml], "non-ASCII path stays a link")
     same(Links.hostOf("https://Example.COM/x").host, "example.com", "lower-case host")
     var cases = ["<img src=x>", "<a href=\"javascript:alert(1)\">x</a>", "&lt;b&gt;", "&amp;lt;", "\" onclick=\"x", "<style>a{}</style>", "<script>x</script>",
       "<img src=\"https://evil.example/p.png\">", "https://a.example/?q=<b>&x=\"1\"", "'><svg onload=1>", rlo + "x", "</a><a href=\"https://b.example/\">", "&#60;img&#62;",
@@ -181,8 +182,13 @@ ShellRoot {
       check(PlainText.tip(q.tipSource).indexOf("&amp;b=2") !== -1 && PlainText.tip("<img src=x>").indexOf("<img") === -1, "Tooltip text is not escaped")
       q.hoveredIndex = -1
       var i = body(test.idn)
+      var literal = "visit https://b" + String.fromCharCode(0xfc) + "cher.example/x https://" + String.fromCharCode(0xff45) + "xample.com/ https://cafe" + String.fromCharCode(0x301)
+        + ".example/ https://" + String.fromCharCode(0x430) + "pple.com/ today https://ascii.example/ok"
+      check(i.shownText === literal, "International hosts were not shown as text: " + i.shownText)
+      same(i.urls, ["https://ascii.example/ok"], "only the ASCII host is a link")
       i.hoveredIndex = 0
-      check(/^Opens xn--bcher-kva\.example \(international name, shown as punycode\)\nhttps:\/\/b.cher\.example\/x$/.test(i.tipSource), "IDN tooltip wrong: " + i.tipSource)
+      check(i.tipSource === "Opens ascii.example
+https://ascii.example/ok", "Tooltip wrong: " + i.tipSource)
       i.hoveredIndex = -1
     }, until: function() { return true }},
     // 5: right-click on a link: the link menu, not the message actions.
@@ -217,12 +223,32 @@ ShellRoot {
       check(inside(test.mixed, "buzzLinkMenu").length === 0, "Close left the menu open")
       test.rightClick(test.mixed, "https://omarchy.org")
       click(one(test.mixed, "buzzLinkAsk"))
-    }, until: function() { return service.linkNote !== "" && test.requests().length >= 5 }},
+    }, until: function() { return service.linkNoteFor(test.mixed) !== "" && test.requests().length >= 5 }},
     {run: function() {
       var sent = test.requests()
-      same(sent.map(function(r) { return r.mode + " " + r.url }), ["browser https://example.com/docs", "floating https://omarchy.org", "browser https://example.com/docs", "floating https://example.com/a_(b)", "agent https://omarchy.org"], "menu requests (note: " + service.linkNote + ")")
-      check(/No default agent/.test(one(test.mixed, "buzzLinkNote").text), "A missing default agent was not said plainly: " + service.linkNote)
+      same(sent.map(function(r) { return r.mode + " " + r.url }), ["browser https://example.com/docs", "floating https://omarchy.org", "browser https://example.com/docs", "floating https://example.com/a_(b)", "agent https://omarchy.org"], "menu requests")
+      check(/No default agent/.test(one(test.mixed, "buzzLinkNote").text), "A missing default agent was not said plainly: " + service.linkNoteFor(test.mixed))
       check(inside(test.hostile, "buzzLinkNote").length === 0 && inside(test.plain, "buzzLinkNote").length === 0, "The note appeared on another message")
+    }, until: function() { return true }},
+    // 7b: two quick launches: the first (agent) fails after a delay, the second succeeds.
+    // Each answer belongs to the message it was asked from.
+    {run: function() {
+      check(service.linkPendingCount === 0, "Launches still pending: " + service.linkPendingCount)
+      // The pending launches are bounded: a full table refuses and says so.
+      var full = ({})
+      for (var n = 0; n < service.linkPendingLimit; n++) full["x" + n] = {row: "z", generation: service.generation, at: Date.now()}
+      service.linkPending = full
+      check(!message(test.query).openLink("https://example.com/?a=1&b=2", "browser") && /Too many/.test(service.linkNoteFor(test.query)), "A full pending table accepted a launch")
+      service.clearLinks()
+      check(service.linkPendingCount === 0 && service.linkNoteFor(test.query) === "", "Clearing left launches or notes")
+      check(message(test.mixed).openLink("https://omarchy.org", "agent"), "First launch refused")
+      check(message(test.query).openLink("https://example.com/?a=1&b=2", "browser"), "Second launch refused")
+      check(service.linkPendingCount === 2, "The first launch was forgotten: " + service.linkPendingCount)
+    }, until: function() { return service.linkPendingCount === 0 && test.requests().length >= 7 }},
+    {run: function() {
+      check(/No default agent/.test(one(test.mixed, "buzzLinkNote").text), "The first message lost its failure note: " + service.linkNoteFor(test.mixed))
+      check(inside(test.query, "buzzLinkNote").length === 0 && service.linkNoteFor(test.query) === "", "The second message shows a note it should not")
+      check(JSON.stringify(test.requests().slice(5).map(function(r) { return r.mode })) === '["agent","browser"]', "Launch requests wrong")
     }, until: function() { return true }},
     // 8: right-click off a link: the message's own actions, as before.
     {run: function() {
@@ -238,7 +264,7 @@ ShellRoot {
     }, until: function() { return true }},
     {run: function() {
       var sent = test.requests()
-      check(sent.length === 5 && sent.every(function(r) { return ["browser", "floating", "agent"].indexOf(r.mode) !== -1 && /^https:\/\//.test(r.url) && Object.keys(r).length === 7 }), "Unexpected requests: " + JSON.stringify(sent))
+      check(sent.length === 7 && sent.every(function(r) { return ["browser", "floating", "agent"].indexOf(r.mode) !== -1 && /^https:\/\//.test(r.url) && Object.keys(r).length === 7 }), "Unexpected requests: " + JSON.stringify(sent))
       console.log("PASS: only http(s) links are links (trailing punctuation and unbalanced parentheses left out, other schemes, credentials and over-long URLs never); the text of a link is the URL as typed; markup, javascript: anchors, entities and a right-to-left override render as literal text and no tag but numbered anchors can appear; click asks for browser and shift-click for floating; right-click on a link shows Open, Open floating, Copy link and Ask agent about this, each sending the right request or copying; right-click elsewhere keeps the message actions; the tooltip shows the host (punycode for international names) and the URL; a missing default agent is said plainly")
       Qt.quit()
     }, until: function() { return true }}

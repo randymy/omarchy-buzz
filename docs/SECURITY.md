@@ -181,7 +181,7 @@ Message text is plain text and is never interpreted as markup. The panel
 detects `http://` and `https://` addresses (`plugin/Links.js`: conservative
 pattern, trailing `.,;:!?` and unbalanced `)` or `]` left out, at most 2048
 characters, no credentials, backslash, IPv6 literal, invisible or
-direction-changing character) and `plugin/LinkText.qml` shows a message that
+direction-changing character, no non-ASCII host) and `plugin/LinkText.qml` shows a message that
 contains one as rich text built from fully escaped text: every character outside
 a link is escaped, each link is `<a href="buzz-link:N">` around its escaped
 text, where N indexes the detected list and the URL itself is never an `href`.
@@ -201,9 +201,15 @@ has a host, no control, whitespace, backslash or bidi-formatting character, at
 most 2048 bytes (also after normalization), and no `user:pass@` credentials.
 Credentials are refused rather than stripped: the part before `@` is a common
 way to make one host look like another, and a password has no place in a
-process argument. The URL passed on is the parser's normalized form (an
-internationalized host becomes punycode). A URL containing `--private` is
+process argument. The host must be plain ASCII as typed: an international, full-width, decomposed
+or look-alike name (for example a Cyrillic `a` in `apple.com`) is refused with
+`link_invalid`, and the parser's host must equal the typed host lower-cased. The
+panel's detector applies the same rule (such an address is shown as plain,
+copyable text, never a link), so the host in the tooltip is exactly the host the
+helper launches; there is no punycode conversion to disagree with the helper's
+IDNA normalization. The URL passed on is the parser's normalized form. A URL containing `--private` is
 refused because `omarchy-launch-browser` rewrites that word in its arguments.
+The panel tracks each launch by request id (at most 8, forgotten after 10 seconds, on a scope change or when the helper session fails), so a failure note lands on the message it was asked from even when another link was clicked meanwhile.
 
 Each mode runs one fixed program with a fixed argument list, with no shell and no
 string concatenation into a command line, inside its own transient user scope

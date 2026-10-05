@@ -4,8 +4,10 @@
 //! helper decides whether the URL is acceptable and what is launched. A URL is
 //! accepted only if it is `http` or `https`, parses, has a host, carries no
 //! credentials, no control, whitespace, backslash or bidi-formatting character,
-//! and is at most [`MAX_URL`] bytes. The URL passed on is the parser's
-//! normalized form (an internationalized host becomes its punycode form).
+//! and is at most [`MAX_URL`] bytes. The host must be plain ASCII as typed (an
+//! international, full-width, decomposed or lookalike name is refused, so the
+//! host the panel shows is the host that is opened) and the parser's host must
+//! equal it, lower-cased. The URL passed on is the parser's normalized form.
 //!
 //! `user:pass@host` URLs are refused, not stripped: the part before `@` is a
 //! common way to make one host look like another, and a password has no
@@ -85,7 +87,22 @@ pub fn validate(url: &str) -> Option<String> {
     if !after.starts_with(|c: char| c.is_alphanumeric() || c == '[') {
         return None;
     }
+    // The host must be plain ASCII as typed. The parser's IDNA mapping would
+    // otherwise turn a full-width, decomposed or lookalike name into another
+    // host than the one a person (or the panel's tooltip) sees.
+    let authority = after.split(['/', '?', '#']).next().unwrap_or_default();
+    let typed_host = match authority.strip_prefix('[') {
+        Some(rest) => &authority[..rest.find(']')? + 2],
+        None => authority.split(':').next().unwrap_or_default(),
+    };
+    if !typed_host.is_ascii() {
+        return None;
+    }
     let parsed = url::Url::parse(url).ok()?;
+    // And the host that is launched is that host, lower-cased and nothing else.
+    if parsed.host_str() != Some(typed_host.to_ascii_lowercase().as_str()) {
+        return None;
+    }
     if !matches!(parsed.scheme(), "http" | "https")
         || parsed.host_str().is_none_or(str::is_empty)
         || !parsed.username().is_empty()
@@ -266,8 +283,11 @@ mod tests {
             ("https://localhost/", "https://localhost/"),
             ("https://[::1]/", "https://[::1]/"),
             ("https://example.com/a%20b", "https://example.com/a%20b"),
-            // An internationalized host is passed on in its punycode form.
-            ("https://bücher.example/", "https://xn--bcher-kva.example/"),
+            // A non-ASCII character outside the host is fine.
+            (
+                "https://example.com/caf\u{e9}",
+                "https://example.com/caf%C3%A9",
+            ),
         ] {
             assert_eq!(validate(input).as_deref(), Some(expected), "{input}");
         }
@@ -313,6 +333,21 @@ mod tests {
             "https://example.com@evil.example/",
             "https://example.com:99999/",
             "https://exa<mple.com/",
+            // International, full-width, decomposed and lookalike hosts are refused
+            // (the panel shows them as text): the host shown must be the host opened.
+            "https://b\u{fc}cher.example/",
+            "https://\u{ff45}xample.com/",
+            "https://xample\u{ff0e}com/",
+            "https://cafe\u{301}.example/",
+            "https://caf\u{e9}.example/",
+            "https://\u{43f}\u{440}\u{438}\u{43c}\u{435}\u{440}.example/",
+            "https://\u{430}pple.com/",
+            "https://example.com\u{3002}evil.example/",
+            "https://xn--bcher-kva.example\u{e9}/",
+            "https://[::1\u{e9}]/",
+            // Spellings the parser would turn into another host.
+            "https://0x7f.1/",
+            "https://127.1/",
             "https://example.com/--private",
             "https://example.com/?x=--PRIVATE",
             "--private",

@@ -10,8 +10,11 @@
 //   - at most MAX_URL characters (a longer one is not shortened, it is skipped);
 //   - no credentials (`user@`), no backslash, no IPv6 literal, no invisible or
 //     direction-changing character, no whitespace;
-//   - the host starts with a letter or digit, has no empty label, and uses only
-//     letters, digits, `-` and non-ASCII letters;
+//   - the host is plain ASCII: it starts with a letter or digit, has no empty
+//     label, and uses only letters, digits, `.` and `-`. A host with any
+//     non-ASCII character (an international name, a full-width or decomposed
+//     lookalike) is shown as text and is never a link, so the host shown is
+//     exactly the one the helper launches;
 //   - trailing `.,;:!?` and unbalanced `)` or `]` are not part of the link.
 
 var MAX_URL = 2048
@@ -19,9 +22,6 @@ var MAX_URL = 2048
 // Characters that end a URL: whitespace, markup-ish punctuation, controls, and
 // invisible or direction-changing formatting characters.
 var URL_RUN = /https?:\/\/[^\s<>"'`\\^{}|\u0000-\u001f\u007f-\u009f\u061c\u180e\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060-\u2064\u2066-\u206f\ufeff\ufff9-\ufffb]+/gi
-// Separators that IDNA treats as a dot: a host using one would not be the
-// host it appears to be, so such a URL is not made a link.
-var IDNA_DOTS = /[\u3002\uff0e\uff61]/
 var TRAILING = ".,;:!?"
 
 function count(text, character) {
@@ -50,13 +50,13 @@ function authority(url) {
 // host and port of an acceptable URL, or null.
 function hostParts(url) {
   var auth = authority(url)
-  if (auth === "" || auth.indexOf("@") !== -1 || auth.indexOf("%") !== -1 || auth[0] === "[" || IDNA_DOTS.test(auth)) return null
+  if (auth === "" || auth.indexOf("@") !== -1 || auth.indexOf("%") !== -1 || auth[0] === "[" || /[^\x21-\x7e]/.test(auth)) return null
   var match = /^([^:]+)(?::([0-9]{1,5}))?$/.exec(auth)
   if (!match) return null
   var host = match[1]
   if (match[2] !== undefined && Number(match[2]) > 65535) return null
-  // Letters, digits, `-` and non-ASCII characters only; labels are not empty.
-  if (!/^[A-Za-z0-9\u00a1-\uffff](?:[A-Za-z0-9.\-\u00a1-\uffff]*[A-Za-z0-9\u00a1-\uffff])?$/.test(host)) return null
+  // ASCII letters, digits, `.` and `-` only; labels are not empty.
+  if (!/^[A-Za-z0-9](?:[A-Za-z0-9.\-]*[A-Za-z0-9])?$/.test(host)) return null
   if (host.indexOf("..") !== -1) return null
   return {host: host, port: match[2] === undefined ? "" : match[2]}
 }
@@ -122,62 +122,13 @@ function indexOf(href, count) {
 
 // --- Host display -----------------------------------------------------------
 
-function punycodeLabel(label) {
-  if (!/[^\u0000-\u007f]/.test(label)) return label
-  var base = 36, tMin = 1, tMax = 26, skew = 38, damp = 700, initialBias = 72, initialN = 128
-  var codePoints = Array.from(label).map(function(c) { return c.codePointAt(0) })
-  var output = codePoints.filter(function(c) { return c < 128 }).map(function(c) { return String.fromCharCode(c) }).join("")
-  var basic = output.length
-  var handled = basic
-  if (basic > 0) output += "-"
-  var digit = function(d) { return String.fromCharCode(d + 22 + 75 * (d < 26)) }
-  var adapt = function(delta, points, first) {
-    var k = 0
-    delta = first ? Math.floor(delta / damp) : delta >> 1
-    delta += Math.floor(delta / points)
-    for (; delta > ((base - tMin) * tMax) >> 1; k += base) delta = Math.floor(delta / (base - tMin))
-    return Math.floor(k + (base - tMin + 1) * delta / (delta + skew))
-  }
-  var n = initialN, delta = 0, bias = initialBias
-  while (handled < codePoints.length) {
-    var m = Infinity
-    codePoints.forEach(function(c) { if (c >= n && c < m) m = c })
-    delta += (m - n) * (handled + 1)
-    n = m
-    for (var i = 0; i < codePoints.length; i++) {
-      var c = codePoints[i]
-      if (c < n) delta++
-      if (c === n) {
-        var q = delta
-        for (var k = base; ; k += base) {
-          var t = k <= bias ? tMin : (k >= bias + tMax ? tMax : k - bias)
-          if (q < t) break
-          output += digit(t + (q - t) % (base - t))
-          q = Math.floor((q - t) / (base - t))
-        }
-        output += digit(q)
-        bias = adapt(delta, handled + 1, handled === basic)
-        delta = 0
-        handled++
-      }
-    }
-    delta++
-    n++
-  }
-  return "xn--" + output
-}
-
-// The host a link goes to, as it will be reached: lower case, and punycode
-// (xn--) for any non-ASCII label, so a look-alike name cannot pass as another.
-// `international` says a non-ASCII label was converted. The conversion is the
-// plain punycode of the lower-cased name; the helper's parser has the last word.
+// The host a link goes to: the ASCII host exactly as the helper will launch it
+// (lower case). A host with any non-ASCII character is never a link, so there
+// is no international-name conversion to disagree with the helper's.
 function hostOf(url) {
   var parts = acceptable(url) ? hostParts(url) : null
-  if (!parts) return {host: "", port: "", international: false}
-  var lower = parts.host.toLowerCase()
-  var international = /[^\u0000-\u007f]/.test(lower)
-  var host = international ? lower.split(".").map(punycodeLabel).join(".") : lower
-  return {host: host, port: parts.port, international: international}
+  if (!parts) return {host: "", port: ""}
+  return {host: parts.host.toLowerCase(), port: parts.port}
 }
 
 // The text of a link's tooltip, before PlainText.tip(): the host first, then
@@ -185,6 +136,5 @@ function hostOf(url) {
 function describe(url) {
   var parts = hostOf(url)
   if (parts.host === "") return ""
-  var host = parts.host + (parts.port !== "" ? ":" + parts.port : "")
-  return "Opens " + host + (parts.international ? " (international name, shown as punycode)" : "") + "\n" + url
+  return "Opens " + parts.host + (parts.port !== "" ? ":" + parts.port : "") + "\n" + url
 }

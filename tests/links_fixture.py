@@ -10,6 +10,7 @@ import json
 import os
 import re
 import sys
+import time
 
 INSTANCE = "links-fixture"
 IDENTITY = "5" * 64
@@ -30,7 +31,7 @@ TEXTS = {
              "javascript:alert(1) file:///etc/passwd data:text/html,hi ftp://ftp.example/x mailto:a@example.com "
              "\u202etxt.exe https://ok.example/path",
     PLAIN: "no links here, just <b>markup</b> and &amp; things",
-    IDN: "visit https://b\u00fccher.example/x today",
+    IDN: "visit https://b\u00fccher.example/x https://\uff45xample.com/ https://cafe\u0301.example/ https://\u0430pple.com/ today https://ascii.example/ok",
     QUERY: "search https://example.com/?a=1&b=2 now",
 }
 
@@ -84,6 +85,7 @@ for line in sys.stdin:
         assert request["mode"] in ("browser", "floating", "agent"), request
         assert re.match(r"^https?://[^\s<>\"]+$", request["url"]), request
         if request["mode"] == "agent":
+            time.sleep(0.5)  # a slow launcher: the next request is answered after this failure
             print(json.dumps({"version": 1, "type": "error", "id": request["id"], "category": "link_agent_unconfigured",
                               "instanceId": INSTANCE}), flush=True)
         else:
