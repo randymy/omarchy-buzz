@@ -156,6 +156,7 @@ pub fn request(bytes: &[u8]) -> Result<Request, &'static str> {
             | "load_more_rooms"
             | "refresh_rooms"
             | "notify"
+            | "open_link"
     ) {
         return Err("unsupported_request");
     }
@@ -224,6 +225,7 @@ pub fn request(bytes: &[u8]) -> Result<Request, &'static str> {
             | "add_room_member"
             | "remove_room_member"
             | "notify"
+            | "open_link"
     ) {
         let id = uuid::Uuid::parse_str(&r.id).map_err(|_| "invalid_request")?;
         if id.to_string() != r.id {
@@ -316,7 +318,13 @@ pub fn request(bytes: &[u8]) -> Result<Request, &'static str> {
     } else if raw.get("query").is_some() {
         return Err("invalid_request");
     }
-    if r.kind == "set_relay" {
+    if r.kind == "open_link" {
+        // Shape only; `ipc` answers `link_invalid` after `links::validate`.
+        let url = r.url.as_deref().ok_or("invalid_request")?;
+        if url.is_empty() || url.len() > 4096 {
+            return Err("invalid_request");
+        }
+    } else if r.kind == "set_relay" {
         // Shape only; `ipc` refuses a non-canonical relay with a category.
         let url = r.url.as_deref().ok_or("invalid_request")?;
         if url.is_empty() || url.len() > 2048 || url.chars().any(char::is_control) {
@@ -449,7 +457,13 @@ pub fn request(bytes: &[u8]) -> Result<Request, &'static str> {
     } else if raw.get("emoji").is_some() {
         return Err("invalid_request");
     }
-    if r.kind == "set_presence" {
+    if r.kind == "open_link" {
+        if !matches!(raw.get("mode"), Some(serde_json::Value::String(m)) if crate::links::Mode::parse(m).is_some())
+            || raw.get("active").is_some()
+        {
+            return Err("invalid_request");
+        }
+    } else if r.kind == "set_presence" {
         // Both required, never null.
         if !matches!(raw.get("mode"), Some(serde_json::Value::String(m)) if crate::presence::Mode::parse(m).is_some())
             || !matches!(raw.get("active"), Some(serde_json::Value::Bool(_)))
@@ -1465,7 +1479,7 @@ impl Status {
     }
 }
 pub fn envelope(kind: &str, id: Option<&str>, instance: &str, s: &Status) -> serde_json::Value {
-    serde_json::json!({"version":1,"type":kind,"id":id,"instanceId":instance,"generation":s.generation,"capabilities":["connection_status","room_catalog","room_history","message_send","thread_send","room_recipients","history_auto_refresh","room_activity","agent_profiles","thread_replies","thread_summaries","dm_open","older_history","live_updates","setup_assist","community_join","invite_mint","attachments","user_status","presence","communities","people_search","message_actions","room_manage","desktop_notify","author_profiles"],"backendRevision":crate::compatibility::BUZZ_REVISION,"status":s})
+    serde_json::json!({"version":1,"type":kind,"id":id,"instanceId":instance,"generation":s.generation,"capabilities":["connection_status","room_catalog","room_history","message_send","thread_send","room_recipients","history_auto_refresh","room_activity","agent_profiles","thread_replies","thread_summaries","dm_open","older_history","live_updates","setup_assist","community_join","invite_mint","attachments","user_status","presence","communities","people_search","message_actions","room_manage","desktop_notify","author_profiles","open_link"],"backendRevision":crate::compatibility::BUZZ_REVISION,"status":s})
 }
 pub async fn read_line<R: tokio::io::AsyncBufRead + Unpin>(
     r: &mut R,
@@ -1528,6 +1542,72 @@ mod tests {
         )
         .is_err());
         assert!(request(&vec![b'a'; LIMIT + 1]).is_err());
+    }
+    #[test]
+    fn open_link_requests_are_scoped_and_shaped() {
+        let id = "11111111-1111-4111-8111-111111111111";
+        let ok = serde_json::json!({"version":1,"id":id,"type":"open_link","url":"https://omarchy.org/",
+            "mode":"browser","generation":3,"instanceId":"i-1"});
+        let r = request(ok.to_string().as_bytes()).unwrap();
+        assert_eq!(
+            (r.url.as_deref(), r.mode.as_deref(), r.generation),
+            (Some("https://omarchy.org/"), Some("browser"), Some(3))
+        );
+        for mode in ["browser", "floating", "agent"] {
+            let mut v = ok.clone();
+            v["mode"] = mode.into();
+            assert!(request(v.to_string().as_bytes()).is_ok(), "{mode}");
+        }
+        let mut bad: Vec<serde_json::Value> = Vec::new();
+        let mut with = |key: &str, value: serde_json::Value| {
+            let mut v = ok.clone();
+            if value.is_null() {
+                v.as_object_mut().unwrap().remove(key);
+            } else {
+                v[key] = value;
+            }
+            bad.push(v);
+        };
+        with("url", serde_json::Value::Null);
+        with("url", "".into());
+        with("url", "x".repeat(4097).into());
+        with("mode", serde_json::Value::Null);
+        with("mode", "shell".into());
+        with("mode", "Browser".into());
+        with("mode", 1.into());
+        with("generation", serde_json::Value::Null);
+        with("generation", 0.into());
+        with("instanceId", serde_json::Value::Null);
+        with("id", "ui-1".into());
+        with("roomId", "22222222-2222-4222-8222-222222222222".into());
+        with("text", "private".into());
+        with("path", "/etc/passwd".into());
+        with("active", true.into());
+        for frame in bad {
+            assert!(
+                request(frame.to_string().as_bytes()).is_err(),
+                "accepted {frame}"
+            );
+        }
+        // The url and mode fields belong to no other request.
+        let relay = serde_json::json!({"version":1,"id":"ui-1","type":"get_snapshot","url":"https://a.example/"});
+        assert!(request(relay.to_string().as_bytes()).is_err());
+        let moded =
+            serde_json::json!({"version":1,"id":"ui-1","type":"get_snapshot","mode":"browser"});
+        assert!(request(moded.to_string().as_bytes()).is_err());
+    }
+    #[test]
+    fn open_link_is_an_advertised_capability() {
+        assert!(envelope(
+            "hello",
+            None,
+            "i",
+            &Status::new(&crate::config::Config::default())
+        )["capabilities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c == "open_link"));
     }
     #[test]
     fn notify_requests_are_scoped_and_bounded() {
@@ -1891,7 +1971,8 @@ mod state_tests {
                 "message_actions",
                 "room_manage",
                 "desktop_notify",
-                "author_profiles"
+                "author_profiles",
+                "open_link"
             ])
         );
         assert_eq!(v["status"]["catalog"]["state"], "unavailable");

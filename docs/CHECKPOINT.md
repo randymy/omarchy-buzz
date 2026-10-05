@@ -36,6 +36,17 @@ on the operator's self-hosted relay; the operator confirmed cross-client sending
 Hosted setup uses the official buzz.xyz handoff; connecting the community URL
 and existing identity remains manual. Self-hosted relays use the same adapter.
 
+## Clickable links with Omarchy integration (branch `links`)
+
+Links in messages are clickable (`open_link` capability): click opens the
+Omarchy default browser, shift-click a floating app window, right-click on a
+link offers Open, Open floating, Copy link and Ask agent about this. Rendering
+and launching are described in [SECURITY.md](SECURITY.md#opening-links-open_link).
+Verified: helper unit tests (URL validation, exact argv per mode, scope refusal,
+capability, launch reaping), `scripts/preview --links` and the related
+previews, `tests/test_no_rich_text.py`. Not verified here: the floating window
+against a real Hyprland rule, and Ask agent with a configured agent. Unreleased.
+
 ## Current handoff
 
 The entries below preserve milestone history. See the latest dated entry at the

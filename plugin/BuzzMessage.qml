@@ -4,6 +4,7 @@ import QtQuick.Controls as Controls
 import qs.Ui as Ui
 import qs.Commons
 import "PlainText.js" as PlainText
+import "Links.js" as Links
 
 // One message or reply. Presentation only: every value is an already validated projection.
 Column {
@@ -55,10 +56,44 @@ Column {
     // A refused or unknown edit keeps its note until something else happens.
     if (service.actionTarget === row.id && service.actionState !== "sending") service.clearAction()
   }
+  // Links in the text (`open_link`): clickable only when a helper that can open
+  // them is connected. The helper checks each URL again and starts Omarchy's launchers.
+  property int linkMenu: -1
+  readonly property bool linksUsable: shown && service.linksSupported
+  readonly property string linkNote: shown ? service.linkNoteFor(row.id) : ""
+  function openLink(url, mode) {
+    if (!linksUsable) return false
+    return service.openLink(row.id, url, mode)
+  }
+  // One entry of the link menu: it acts on the link the menu was opened for.
+  function linkAction(action) {
+    var index = linkMenu
+    if (index < 0 || index >= body.urls.length) return false
+    var done = action === "copy" ? body.copyLink(index) : openLink(body.urls[index], action)
+    if (done) linkMenu = -1
+    return done
+  }
   HoverHandler { id: rowHover }
+  // Right-click on a link opens that link's menu; anywhere else it is the
+  // message's own actions, as before. (x, y) are in this item's coordinates.
+  function contextAt(x, y) {
+    var local = root.mapToItem(body, x, y)
+    var index = body.visible ? body.linkIndexAt(local.x, local.y) : -1
+    if (index >= 0) {
+      linkMenu = linkMenu === index ? -1 : index
+      return "link"
+    }
+    linkMenu = -1
+    if (actionable) actionsOpen = !actionsOpen
+    return "message"
+  }
   TapHandler {
     acceptedButtons: Qt.RightButton
-    onTapped: if (root.actionable) root.actionsOpen = !root.actionsOpen
+    onTapped: (point) => root.contextAt(point.position.x, point.position.y)
+  }
+  Connections {
+    target: body
+    function onUrlsChanged() { root.linkMenu = -1 }
   }
   Connections {
     target: root.service
@@ -225,7 +260,9 @@ Column {
         }
       }
       // Read-only so the text can be selected and copied like any other text.
-      TextEdit {
+      // LinkText keeps it plain text, except that detected http(s) links are
+      // clickable (the one place message text is ever rendered as rich text).
+      LinkText {
         id: body
         objectName: "buzzMessageBody"
         width: parent.width
@@ -233,9 +270,10 @@ Column {
         visible: !root.editing && !(root.ready && !root.sample && root.row.text === "" && !root.row.unavailable && !root.row.edited
           && !root.row.truncated && Array.isArray(root.row.attachments) && root.row.attachments.length > 0)
         height: visible ? implicitHeight : 0
-        text: !root.ready ? "" : root.sample ? root.row.text : (root.row.unavailable ? "Content unavailable" : root.row.text)
+        source: !root.ready ? "" : root.sample ? root.row.text : (root.row.unavailable ? "Content unavailable" : root.row.text)
           + (root.row.edited ? " (edited)" : "") + (root.row.truncated ? " [truncated]" : "")
-        textFormat: TextEdit.PlainText
+        linkify: root.linksUsable && !root.row.unavailable
+        onLinkChosen: (index, url, floating) => root.openLink(url, floating ? "floating" : "browser")
         wrapMode: TextEdit.Wrap
         readOnly: true
         selectByMouse: true
@@ -245,11 +283,93 @@ Column {
         opacity: root.row.unavailable ? 0.6 : 1
         font.family: Style.font.family
         font.pixelSize: Style.font.body
-        function copyAll() {
-          selectAll()
-          copy()
-          deselect()
+      }
+      // The right-click menu of one link: where it goes, and what to do with it.
+      Column {
+        objectName: "buzzLinkMenu"
+        visible: root.linkMenu >= 0 && root.linkMenu < body.urls.length
+        width: parent.width
+        spacing: Style.space(4)
+        Text {
+          objectName: "buzzLinkMenuTarget"
+          width: parent.width
+          text: root.linkMenu >= 0 && root.linkMenu < body.urls.length ? Links.describe(body.urls[root.linkMenu]) : ""
+          textFormat: Text.PlainText
+          wrapMode: Text.WrapAnywhere
+          maximumLineCount: 3
+          elide: Text.ElideRight
+          color: Color.foreground
+          opacity: 0.75
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
         }
+        Flow {
+          width: parent.width
+          spacing: Style.space(6)
+          Ui.Button {
+            objectName: "buzzLinkOpen"
+            text: "Open"
+            tooltipText: "Open in your default browser"
+            fontSize: Style.font.caption
+            horizontalPadding: Style.space(6)
+            verticalPadding: Style.space(2)
+            focusable: true
+            onClicked: root.linkAction("browser")
+          }
+          Ui.Button {
+            objectName: "buzzLinkOpenFloating"
+            text: "Open floating"
+            tooltipText: "Open in a floating window (shift-click)"
+            fontSize: Style.font.caption
+            horizontalPadding: Style.space(6)
+            verticalPadding: Style.space(2)
+            focusable: true
+            onClicked: root.linkAction("floating")
+          }
+          Ui.Button {
+            objectName: "buzzLinkCopy"
+            text: "Copy link"
+            tooltipText: "Copy the link's address"
+            fontSize: Style.font.caption
+            horizontalPadding: Style.space(6)
+            verticalPadding: Style.space(2)
+            focusable: true
+            onClicked: root.linkAction("copy")
+          }
+          Ui.Button {
+            objectName: "buzzLinkAsk"
+            text: "Ask agent about this"
+            tooltipText: "Ask your default agent about this link"
+            fontSize: Style.font.caption
+            horizontalPadding: Style.space(6)
+            verticalPadding: Style.space(2)
+            focusable: true
+            onClicked: root.linkAction("agent")
+          }
+          Ui.Button {
+            objectName: "buzzLinkMenuClose"
+            text: "Close"
+            tooltipText: "Close this menu"
+            fontSize: Style.font.caption
+            horizontalPadding: Style.space(6)
+            verticalPadding: Style.space(2)
+            foreground: Util.alpha(Color.foreground, 0.6)
+            focusable: true
+            onClicked: root.linkMenu = -1
+          }
+        }
+      }
+      Text {
+        objectName: "buzzLinkNote"
+        visible: root.linkNote !== ""
+        width: parent.width
+        text: root.linkNote
+        textFormat: Text.PlainText
+        wrapMode: Text.Wrap
+        color: Color.foreground
+        opacity: 0.75
+        font.family: Style.font.family
+        font.pixelSize: Style.font.caption
       }
       // Attachments: verified by the helper before anything is saved or shown.
       Repeater {

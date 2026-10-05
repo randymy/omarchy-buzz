@@ -49,7 +49,7 @@ def status(frame, kind):
     assert frame["status"]["identity"] is None, frame
     assert frame["status"]["relay"] is None, frame
     assert frame["status"]["clockSkewSeconds"] is None, frame
-    assert frame["capabilities"] == ["connection_status", "room_catalog", "room_history", "message_send", "thread_send", "room_recipients", "history_auto_refresh", "room_activity", "agent_profiles", "thread_replies", "thread_summaries", "dm_open", "older_history", "live_updates", "setup_assist", "community_join", "invite_mint", "attachments", "user_status", "presence", "communities", "people_search", "message_actions", "room_manage", "desktop_notify", "author_profiles"], frame
+    assert frame["capabilities"] == ["connection_status", "room_catalog", "room_history", "message_send", "thread_send", "room_recipients", "history_auto_refresh", "room_activity", "agent_profiles", "thread_replies", "thread_summaries", "dm_open", "older_history", "live_updates", "setup_assist", "community_join", "invite_mint", "attachments", "user_status", "presence", "communities", "people_search", "message_actions", "room_manage", "desktop_notify", "author_profiles", "open_link"], frame
     assert frame["status"]["catalog"]["state"] == "unavailable", frame
     assert frame["status"]["catalog"]["rooms"] == [], frame
     assert frame["status"]["catalog"]["more"] == "none" and frame["status"]["catalog"]["moreCategory"] is None, frame

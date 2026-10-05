@@ -18,6 +18,7 @@ mod invites;
 mod ipc;
 mod join;
 mod ledger;
+mod links;
 mod live;
 mod media;
 mod notify;
