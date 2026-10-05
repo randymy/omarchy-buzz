@@ -6,6 +6,7 @@ import "SampleData.js" as SampleData
 import "ActivityObserver.js" as ActivityObserver
 import "RoomActivity.js" as RoomActivity
 import "Notifications.js" as Notifications
+import "Links.js" as Links
 
 Item {
   id: root
@@ -88,6 +89,85 @@ Item {
   // a process argument. A helper without it gets a content-free line through the
   // Omarchy sender (fixed argv, ids only); the text is never sent that way.
   property bool desktopNotifySupported: false
+  // Opening links (`open_link`): the helper checks the URL again and starts
+  // Omarchy's own launchers. The panel never opens a URL itself.
+  property bool linksSupported: false
+  // Launches still waiting for the helper's answer: request id -> {row, generation, at}.
+  // Each answer lands on the message it was asked from, whatever else was clicked since.
+  property var linkPending: ({})
+  // The latest failure note per message row.
+  property var linkNotes: ({})
+  readonly property int linkPendingLimit: 8
+  readonly property int linkPendingMillis: 10000
+  readonly property int linkPendingCount: Object.keys(linkPending).length
+  readonly property var linkMessages: ({
+    link_agent_unconfigured: "No default agent is set in Omarchy, so there is nobody to ask. Choose one first (omarchy default agent).",
+    link_launcher_missing: "Omarchy's launcher for this was not found.",
+    link_launch_failed: "The launcher reported an error, so the link may not have opened.",
+    link_invalid: "The helper did not accept this link, so nothing was opened.",
+    link_scope_changed: "The community changed while this was pending. Try again.",
+    request_busy: "Too many links are opening. Try again in a moment."
+  })
+  // mode: "browser" (Omarchy's default browser), "floating" (an app window)
+  // or "agent" (the default agent, with the link in a fixed question).
+  function openLink(rowId, url, mode) {
+    if (!linksSupported || sampleMode || !bridge.running || instanceId === "" || sessionFailed
+        || ["browser", "floating", "agent"].indexOf(mode) === -1 || !Links.acceptable(url)) return false
+    pruneLinks()
+    if (typeof rowId !== "string" || linkPendingCount >= linkPendingLimit) {
+      if (typeof rowId === "string") setLinkNote(rowId, linkMessages.request_busy)
+      return false
+    }
+    var request = {version: 1, id: correlationUuid(), type: "open_link", url: url, mode: mode, generation: generation, instanceId: instanceId}
+    var pending = Object.assign({}, linkPending)
+    pending[request.id] = {row: rowId, generation: generation, at: Date.now()}
+    linkPending = pending
+    setLinkNote(rowId, "")
+    linkTimeout.restart()
+    bridge.write(JSON.stringify(request) + "\n")
+    return true
+  }
+  function setLinkNote(rowId, note) {
+    var notes = Object.assign({}, linkNotes)
+    if (note === "") delete notes[rowId]
+    else notes[rowId] = note
+    linkNotes = notes
+  }
+  function linkNoteFor(rowId) { return linkNotes[rowId] || "" }
+  // The helper's answer to a launch: a failure puts its note on the asking message.
+  // Returns true if the id was a pending launch.
+  function linkAnswered(id, category) {
+    var entry = linkPending[id]
+    if (!entry) return false
+    var pending = Object.assign({}, linkPending)
+    delete pending[id]
+    linkPending = pending
+    if (category !== "" && entry.generation === generation) setLinkNote(entry.row, linkMessages[category] || "The link did not open.")
+    else if (category === "") setLinkNote(entry.row, "")
+    return true
+  }
+  // Launches that never answered (or belong to an older scope) are forgotten.
+  function pruneLinks() {
+    var now = Date.now()
+    var pending = {}
+    for (var id in linkPending) {
+      var entry = linkPending[id]
+      if (entry.generation === generation && now - entry.at < linkPendingMillis) pending[id] = entry
+    }
+    if (Object.keys(pending).length !== linkPendingCount) linkPending = pending
+    if (linkPendingCount === 0) linkTimeout.stop()
+  }
+  function clearLinks() {
+    linkPending = ({})
+    linkNotes = ({})
+    linkTimeout.stop()
+  }
+  Timer {
+    id: linkTimeout
+    interval: 2000
+    repeat: true
+    onTriggered: root.pruneLinks()
+  }
   function sendNextNotification() {
     var viaHelper = desktopNotifySupported && !sessionFailed && bridge.running && instanceId !== ""
     if (!viaHelper && notificationProcess.running) return
@@ -2714,7 +2794,7 @@ Item {
     catalogMoreCategory = ""
     if (!sampleMode) selectedRoomId = ""
   }
-  readonly property var knownCapabilities: ["connection_status", "room_catalog", "room_history", "message_send", "room_recipients", "history_auto_refresh", "room_activity", "agent_profiles", "thread_replies", "thread_send", "thread_summaries", "dm_open", "older_history", "live_updates", "setup_assist", "community_join", "invite_mint", "attachments", "user_status", "presence", "communities", "people_search", "message_actions", "room_manage", "desktop_notify", "author_profiles"]
+  readonly property var knownCapabilities: ["connection_status", "room_catalog", "room_history", "message_send", "room_recipients", "history_auto_refresh", "room_activity", "agent_profiles", "thread_replies", "thread_send", "thread_summaries", "dm_open", "older_history", "live_updates", "setup_assist", "community_join", "invite_mint", "attachments", "user_status", "presence", "communities", "people_search", "message_actions", "room_manage", "desktop_notify", "author_profiles", "open_link"]
   // Distinct known names only, so the length bound follows the list.
   function validCapabilities(capabilities) {
     return Array.isArray(capabilities) && capabilities.length >= 1 && capabilities.length <= knownCapabilities.length
@@ -2982,9 +3062,11 @@ Item {
         "invite_forbidden", "attachment_unknown", "attachment_forbidden", "attachment_mismatch", "attachment_too_large", "attachment_invalid",
         "attachment_type_refused", "attachment_storage_unavailable", "status_invalid", "status_rate_limited", "status_rejected",
         "join_invalid", "join_rate_limited", "join_busy", "join_last", "join_full", "community_unknown", "name_invalid", "leave_owner",
-        "notify_scope_changed"].indexOf(frame.category) !== -1) {
+        "notify_scope_changed", "link_scope_changed", "link_invalid", "link_launcher_missing", "link_launch_failed", "link_agent_unconfigured"].indexOf(frame.category) !== -1) {
       if (instanceId === "" || frame.instanceId !== instanceId) return false
       if (!boundedString(frame.id, 128) || !/^ui-[0-9]+$/.test(frame.id) && !uuidValue(frame.id)) { fail("invalid_response"); return false }
+      // Said plainly; the URL is never part of the answer.
+      if (linkAnswered(frame.id, frame.category)) return true
       if (frame.id === presenceRequestId && presenceRequestId !== "") {
         // Not taken (no session yet, or busy): sent again shortly.
         presenceRequestId = ""
@@ -3101,6 +3183,7 @@ Item {
       fail("incompatible_response"); return false
     }
     if (instanceId !== "" && (frame.instanceId !== instanceId || frame.generation < generation)) return false
+    if (typeof frame.id === "string") linkAnswered(frame.id, "")
     if ((instanceId === "" && frame.type !== "hello") || (instanceId !== "" && frame.type === "hello")) {
       fail("invalid_response"); return false
     }
@@ -3294,6 +3377,7 @@ Item {
     }
     roomActivitySupported = supportsActivity
     desktopNotifySupported = frame.capabilities.indexOf("desktop_notify") !== -1
+    linksSupported = frame.capabilities.indexOf("open_link") !== -1
     if (!supportsActivity || state.connection !== "authenticated" || typeof state.identity !== "string" || catalogState === "unavailable") {
       roomActivity = RoomActivity.fresh()
     } else if (catalogState !== "loading" && !quietCatalog) {
@@ -3731,6 +3815,8 @@ Item {
       root.loseDmOpen()
       root.dmOpenSupported = false
       root.desktopNotifySupported = false
+      root.linksSupported = false
+      root.clearLinks()
       root.clearPeople()
       root.peopleSupported = false
       root.sendSupported = false

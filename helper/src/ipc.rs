@@ -1,5 +1,5 @@
 use crate::{
-    config, notify,
+    config, links, notify,
     protocol::{self, Status},
 };
 use std::{
@@ -128,6 +128,24 @@ async fn client(
                     if let Some(category)=refused {write(&mut out,&serde_json::json!({"version":1,"type":"error","id":r.id,"category":category,"instanceId":instance})).await?;continue;}
                     let notice=notify::notice(r.title.as_deref().unwrap_or_default(),r.body.as_deref().unwrap_or_default(),r.room_id.as_deref().unwrap_or_default(),r.root_id.as_deref()).expect("checked by protocol::request");
                     notify::spawn(notice,r.generation.unwrap_or_default(),status.clone());
+                }
+                if r.kind=="open_link" {
+                    // A link belongs to the session whose message offered it. The helper
+                    // checks the URL itself and launches fixed programs (`links`); the
+                    // answer says only whether it started, never the URL.
+                    let refused=if !protocol::room_scope_ok(&r,&instance,status.borrow().generation) {Some("link_scope_changed")} else {None};
+                    if let Some(category)=refused {write(&mut out,&serde_json::json!({"version":1,"type":"error","id":r.id,"category":category,"instanceId":instance})).await?;continue;}
+                    let mode=r.mode.as_deref().and_then(links::Mode::parse).expect("checked by protocol::request");
+                    let url=r.url.clone().unwrap_or_default();
+                    let outcome=match links::validate(&url) {
+                        None=>Err("link_invalid"),
+                        Some(url)=>match timeout(Duration::from_secs(5),tokio::task::spawn_blocking(move||links::open(mode,&url))).await {
+                            Ok(Ok(result))=>result,
+                            Ok(Err(_))=>Err("link_launch_failed"),
+                            Err(_)=>Err("link_launch_failed"),
+                        },
+                    };
+                    if let Err(category)=outcome {write(&mut out,&serde_json::json!({"version":1,"type":"error","id":r.id,"category":category,"instanceId":instance})).await?;continue;}
                 }
                 if r.kind=="set_relay" || r.kind=="create_identity" {
                     let refused={let current=status.borrow();
@@ -539,6 +557,70 @@ mod setup_tests {
             assert!(!frame.to_string().contains(sentinel));
         }
         assert!(received.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn open_link_in_another_scope_launches_nothing() {
+        let status = Status::new(&config::Config::default());
+        let generation = status.generation;
+        let (_tx, rx) = watch::channel(status);
+        let (commands, mut received) = mpsc::channel(1);
+        let (mut lines, mut write) = connect(rx, commands);
+        let mut seen = String::new();
+        assert_eq!(next(&mut lines, &mut seen).await["type"], "hello");
+        let id = "11111111-1111-4111-8111-111111111111";
+        for (instance, generation) in [
+            ("stale-instance", generation),
+            ("setup-fixture", generation + 1),
+        ] {
+            let request = serde_json::json!({"version":1,"id":id,"type":"open_link","url":"https://omarchy.org/",
+                "mode":"browser","instanceId":instance,"generation":generation});
+            write
+                .write_all(&serde_json::to_vec(&request).unwrap())
+                .await
+                .unwrap();
+            write.write_all(b"\n").await.unwrap();
+            let frame = answer(&mut lines, &mut seen, id).await;
+            assert_eq!(
+                (frame["type"].as_str(), frame["category"].as_str()),
+                (Some("error"), Some("link_scope_changed"))
+            );
+            assert!(!frame.to_string().contains("omarchy.org"));
+        }
+        assert!(received.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn open_link_with_an_unacceptable_url_is_refused_by_the_helper() {
+        let status = Status::new(&config::Config::default());
+        let generation = status.generation;
+        let (_tx, rx) = watch::channel(status);
+        let (commands, _received) = mpsc::channel(1);
+        let (mut lines, mut write) = connect(rx, commands);
+        let mut seen = String::new();
+        assert_eq!(next(&mut lines, &mut seen).await["type"], "hello");
+        let id = "11111111-1111-4111-8111-111111111111";
+        for url in [
+            "javascript:alert(1)",
+            "file:///etc/passwd",
+            "https://user:pw@example.com/",
+            "https://example.com/a\nb",
+            "https://",
+        ] {
+            let request = serde_json::json!({"version":1,"id":id,"type":"open_link","url":url,
+                "mode":"browser","instanceId":"setup-fixture","generation":generation});
+            write
+                .write_all(&serde_json::to_vec(&request).unwrap())
+                .await
+                .unwrap();
+            write.write_all(b"\n").await.unwrap();
+            let frame = answer(&mut lines, &mut seen, id).await;
+            assert_eq!(
+                (frame["type"].as_str(), frame["category"].as_str()),
+                (Some("error"), Some("link_invalid")),
+                "{url}"
+            );
+        }
     }
 
     #[tokio::test]
