@@ -10,6 +10,7 @@ ShellRoot {
   id: test
   property int stage: -1
   property int ticks: 0
+  property bool busy: false
   readonly property string general: "aaaaaaaa-0000-4000-8000-000000000001"
   readonly property string ops: "aaaaaaaa-0000-4000-8000-000000000002"
   readonly property string created: "bbbbbbbb-0000-4000-8000-000000000009"
@@ -92,6 +93,10 @@ ShellRoot {
     repeat: true
     running: true
     onTriggered: {
+      // keyClick/mouseClick spin a nested event loop that fires this Timer again; a
+      // nested tick would rerun the stage and tear the test down under its own handler.
+      if (test.busy) return
+      test.busy = true
       try {
         test.ticks++
         record.reload()
@@ -286,7 +291,7 @@ ShellRoot {
           console.log("PASS: Load more keeps the loaded rooms, retries after a timeout and merges the next page; New room sends a trimmed name, description and visibility, shows the relay's refusal as said, then selects the room once it is listed; Room settings shows topic and members to everyone and lets owners and admins edit details and the topic, add members by key or from DMs and remove others after confirmation, with every relay refusal shown in its own words; the panel accepts the helper's full capability list")
           Qt.quit()
         }
-      } catch (error) { console.error(error.message || error); Qt.exit(1) }
+      } catch (error) { console.error(error.message || error); Qt.exit(1) } finally { test.busy = false }
     }
   }
 }

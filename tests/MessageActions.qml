@@ -14,6 +14,7 @@ ShellRoot {
   id: test
   property int step: -1
   property int ticks: 0
+  property bool busy: false
   property bool started: false
   readonly property string mine: "a".repeat(64)
   readonly property string theirs: "b".repeat(64)
@@ -220,6 +221,10 @@ ShellRoot {
     repeat: true
     running: true
     onTriggered: {
+      // keyClick/mouseClick spin a nested event loop that fires this Timer again; a
+      // nested tick would rerun the stage and tear the test down under its own handler.
+      if (test.busy) return
+      test.busy = true
       try {
         test.ticks++
         if (test.ticks > 140) throw new Error("Message actions timed out at step " + test.step + " " + service.connection + " " + service.actionState + " " + service.actionCategory)
@@ -232,7 +237,7 @@ ShellRoot {
           return
         }
         if (current.until()) { test.step++; test.ran = false }
-      } catch (error) { console.error(error.message || error); Qt.exit(1) }
+      } catch (error) { console.error(error.message || error); Qt.exit(1) } finally { test.busy = false }
     }
   }
 }

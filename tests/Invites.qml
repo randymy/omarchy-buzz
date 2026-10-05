@@ -11,6 +11,7 @@ ShellRoot {
   id: test
   property int stage: -1
   property int ticks: 0
+  property bool busy: false
   readonly property string code: "v2.AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
   Buzz.Service {
     id: service
@@ -58,6 +59,10 @@ ShellRoot {
     repeat: true
     running: true
     onTriggered: {
+      // keyClick/mouseClick spin a nested event loop that fires this Timer again; a
+      // nested tick would rerun the stage and tear the test down under its own handler.
+      if (test.busy) return
+      test.busy = true
       try {
         test.ticks++
         if (test.ticks > 120) throw new Error("Invites timed out at stage " + test.stage + " " + service.connection + " " + service.mintState)
@@ -116,7 +121,7 @@ ShellRoot {
           console.log("PASS: Invite people offers 1/5/25 uses and 1/7/30 days, explains a refused mint, shows the buzz:// and https invite links and a message for newcomers with the code and relay host, and copies each")
           Qt.quit()
         }
-      } catch (error) { console.error(error.message || error); Qt.exit(1) }
+      } catch (error) { console.error(error.message || error); Qt.exit(1) } finally { test.busy = false }
     }
   }
 }
