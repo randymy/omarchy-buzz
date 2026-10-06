@@ -23,6 +23,8 @@ ShellRoot {
   property bool layoutWait: false
   // Set while a stage runs, so a click's event loop cannot start it again.
   property bool inStage: false
+  // Qt.quit() is asynchronous: a tick after it must not run another stage.
+  property bool finished: false
   readonly property string me: "b".repeat(64)
   readonly property string room: "11111111-1111-4111-8111-111111111111"
   readonly property string capturePath: Quickshell.env("BUZZ_GALLERY_CAPTURE")
@@ -412,7 +414,7 @@ ShellRoot {
     running: true
     repeat: true
     onTriggered: {
-      if (test.layoutWait || test.inStage) return
+      if (test.finished || test.layoutWait || test.inStage) return
       test.inStage = true
       try {
         test.ticks++
@@ -434,7 +436,7 @@ ShellRoot {
           check(test.storedOwn() === "", "Test left an avatar behind")
           if (test.capturePath === "" && test.sheetPath === "") {
             console.log("PASS: the avatar gallery rotates with Previous, Next and the arrow keys, wraps at both ends, filters by category, shuffles inside the filtered list, previews the real avatar at bar, message and profile sizes, saves a library entry through the avatar store, and checks pasted art live (valid, too wide, too tall, invalid characters, too large, colored) before saving it; the color row recolors the previews, saves with the shape, ignores invalid stored colors and is disabled for colored art")
-            Qt.quit()
+            test.finished = true; Qt.quit()
             return
           }
           // For the picture: a few categories in, Cat-like entry first.
@@ -453,14 +455,14 @@ ShellRoot {
           })
         } else if (test.stage === 4) {
           test.stage = 5
-          if (test.sheetPath === "") { Qt.quit(); return }
+          if (test.sheetPath === "") { test.finished = true; Qt.quit(); return }
           var sheet = test.contactSheet()
           sheet.visible = true
           test.settle()
           sheet.grabToImage(function(result) {
             if (!result.saveToFile(test.sheetPath)) { console.error("Could not save the contact sheet"); Qt.exit(1); return }
             console.log("PASS: contact sheet saved")
-            Qt.quit()
+            test.finished = true; Qt.quit()
           })
         } else if (test.stage === 3 && test.sheetPath !== "" && test.capturePath === "") {
           test.stage = 4
