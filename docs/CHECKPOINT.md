@@ -3741,3 +3741,27 @@ until clean:
   the user's relay: reconnect after helper restart, names after the busy-relay
   fix, one D-Bus notification. The maintainer used the installed build and
   reported it ready; individual flows were not itemized.
+
+## Release 0.0.30 — October 6
+
+Since 0.0.29 (`d75ab57`):
+
+- **Clickable links** (#22): `http(s)` links in messages open through the
+  helper into the user's Omarchy default browser, a floating app window
+  (Shift-click; class `org.omarchy.buzz-link`), or the user's default agent
+  with the link marked untrusted; Copy link reuses the message copy path.
+  Message text stays inert: `plugin/LinkText.qml` is the only rich-text
+  component, everything outside links is escaped, anchors carry an index
+  (`buzz-link:N`) never the URL, and `tests/test_no_rich_text.py` enforces
+  it. The helper re-validates every URL (http(s), ASCII host equal to the
+  typed host, no credentials, bounded) and launches a fixed argv with no
+  shell; non-ASCII hosts are shown as text and never linkified
+  (anti-lookalike). New capability `open_link`.
+- **Preview test stability** (#23): re-entrancy guards on the remaining
+  stage timers (MessageActions aborted Quickshell 9/14 runs before) and
+  `tests/test_preview_timer_guard.py` against unguarded ones.
+- **Avatar gallery test race:** `Qt.quit()` is asynchronous, so a stage tick
+  after PASS could fail the run; a `finished` flag ends the stage timer
+  (0/8 failures after, 1/4 before).
+- **Verified:** see the release PR for the full sweep, single-threaded and
+  in parallel `--release` as CI runs it.
