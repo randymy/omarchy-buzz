@@ -16,6 +16,7 @@ ShellRoot {
   id: test
   property int stage: -1
   property int ticks: 0
+  property bool busy: false
   property int wait: 0
   readonly property string me: "5".repeat(64)
   readonly property string online: "8".repeat(64)
@@ -137,6 +138,10 @@ ShellRoot {
     repeat: true
     running: true
     onTriggered: {
+      // mouseClick spins a nested event loop that fires this Timer again; a
+      // nested tick would rerun the stage and tear the test down under its own handler.
+      if (test.busy) return
+      test.busy = true
       try {
         test.ticks++
         record.reload()
@@ -215,7 +220,7 @@ ShellRoot {
           console.log("PASS: Set yourself as… sits below Update your status with the current choice marked; each change sends one set_presence {mode, active}, an unchanged one sends nothing; offscreen the idle hint follows the open panel; your own dot (green/amber/grey) sits on the avatar corner beside the connection dot; others' dots show before names in DM rows, new-DM candidates, the recipient picker and message authors, and none when unknown; sample mode shows fixture states and publishes nothing")
           Qt.quit()
         }
-      } catch (error) { console.error(error.message || error); Qt.exit(1) }
+      } catch (error) { console.error(error.message || error); Qt.exit(1) } finally { test.busy = false }
     }
   }
 }
